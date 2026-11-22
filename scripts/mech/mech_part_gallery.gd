@@ -5,7 +5,7 @@ extends Node3D
 ## the proximal joint of a leg segment, the mount point of a weapon, the neck base of a head).
 
 const PARAMS := [
-	{"id": "spacing", "label": "Spacing", "min": 1.5, "max": 4.0, "value": 2.4},
+	{"id": "spacing", "label": "Spacing", "min": 1.5, "max": 4.0, "value": 3.0},
 	{"id": "spin", "label": "Spin (rad/s)", "min": 0.0, "max": 3.0, "value": 0.5},
 	{"id": "pivots", "label": "Pivot markers (0/1)", "min": 0.0, "max": 1.0, "value": 1.0},
 ]

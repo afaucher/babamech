@@ -2,6 +2,22 @@
 # Order: $env:BABAMECH_GODOT, then babamech's own copy in build\deps (gitignored: Godot_v4.7-stable_win64_console.exe),
 # then the sibling projects' copies (flap's build\deps, Hero-Reader's third_party\godot under the antigravity scratch
 # folder). No machine-wide fallback.
+
+# GPU lock shared by every session and project on this PC (~/.claude/gpu-lock/gpu_lock.ps1; docs/testing.md, "GPU
+# sharing"). Anything that draws (a window, a hidden-desktop run) takes it and waits its turn; headless runs never do.
+# Without the lock library (another machine) these are no-ops.
+$BabamechGpuLock = Join-Path $HOME ".claude\gpu-lock\gpu_lock.ps1"
+if (Test-Path $BabamechGpuLock) { . $BabamechGpuLock }
+function Enter-BabamechGpu([string]$Purpose) {
+    if (-not (Get-Command Enter-GpuLock -ErrorAction SilentlyContinue)) { return $true }
+    return (Enter-GpuLock -Purpose "babamech: $Purpose" -NoComfy)
+}
+function Exit-BabamechGpu { if (Get-Command Exit-GpuLock -ErrorAction SilentlyContinue) { Exit-GpuLock } }
+# Hand the lock to processes that outlive the script (crew windows): held until they all close.
+function Move-BabamechGpu([int[]]$ToPid, [string]$Purpose) {
+    if (Get-Command Move-GpuLock -ErrorAction SilentlyContinue) { [void](Move-GpuLock -ToPid $ToPid -Kind window -Purpose "babamech: $Purpose") }
+}
+
 function Resolve-BabamechGodot {
     if ($env:BABAMECH_GODOT -and (Test-Path $env:BABAMECH_GODOT)) { return $env:BABAMECH_GODOT }
     $scratch = Join-Path $env:USERPROFILE ".gemini\antigravity\scratch"

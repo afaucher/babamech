@@ -18,6 +18,7 @@ config/features=PackedStringArray("4.7")
 [autoload]
 
 Session="*res://scripts/net/net_session.gd"
+Audio="*res://scripts/audio/audio_director.gd"
 
 [display]
 

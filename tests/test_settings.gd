@@ -26,6 +26,13 @@ func setup() -> void:
 
 	GameSettings.set_value("head", "toaster")
 	eq(str(GameSettings.load_settings()["head"]), "chicken", "an unknown head falls back to chicken")
+	# Accent colour: defaults to the livery's safety orange, persists, unknown ids fall back.
+	eq(str(GameSettings.DEFAULTS["accent"]), "orange", "the default accent is orange")
+	check(MechAccent.color("orange").is_equal_approx(MechMeshes.ORANGE), "the default accent is exactly the baked orange")
+	GameSettings.set_value("accent", "green")
+	eq(str(GameSettings.load_settings()["accent"]), "green", "the accent round-trips")
+	GameSettings.set_value("accent", "plaid")
+	eq(str(GameSettings.load_settings()["accent"]), "orange", "an unknown accent falls back to orange")
 
 	# The settings screen.
 	GameSettings.save_settings(GameSettings.DEFAULTS.duplicate(true))
@@ -46,6 +53,19 @@ func setup() -> void:
 	eq(Session.local_head(), "pickle", "the session carries the new head")
 	var stage_head := fe.stage.models[0].head_id if fe.stage.models.size() > 0 else ""
 	eq(stage_head, "pickle", "the preview shows the new head")
+	# Accent swatches: one per colour, the default marked; picking one saves it, the session carries it, the preview
+	# mech's orange faces turn that colour; picking orange again puts the baked look back.
+	eq(fe.accent_picks.size(), MechAccent.ORDER.size(), "a swatch per accent colour")
+	eq(Session.local_accent(), "orange", "the session starts with the default accent")
+	eq(MechAccent.applied(fe.stage.models[0]), "orange", "the preview starts in orange")
+	(fe.accent_picks["blue"] as Button).pressed.emit()
+	await frames(1)
+	eq(str(GameSettings.load_settings()["accent"]), "blue", "the accent is saved when picked")
+	eq(Session.local_accent(), "blue", "the session carries the new accent")
+	eq(MechAccent.applied(fe.stage.models[0]), "blue", "the preview mech shows the new accent")
+	(fe.accent_picks["orange"] as Button).pressed.emit()
+	await frames(1)
+	eq(MechAccent.applied(fe.stage.models[0]), "orange", "orange again: the baked colours are back")
 	fe.btn_back.pressed.emit()
 	await frames(1)
 	eq(fe.screen, "main", "Back returns to the main menu")

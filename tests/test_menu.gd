@@ -23,6 +23,12 @@ func setup() -> void:
 	fe.show_screen("hangar")
 	await frames(1)
 	check(fe.chassis_pick != null and fe.weapon_picks.size() == 5, "the hangar has a chassis pick and five hardpoints")
+	check(fe.stage.in_bay and fe.stage.bay != null and fe.stage.bay.visible, "the hangar shows the assault boat's bay")
+	eq(fe.stage.models.size(), 1, "one mech stands in a cradle")
+	eq(fe.stage.bay.state, "prep", "the bay starts in prep")
+	fe.stage.set_alert(true)
+	eq(fe.stage.bay.state, "alert", "launch puts the bay on alert")
+	fe.stage.set_alert(false)
 	var pick: OptionButton = fe.weapon_picks["side_l"]
 	var flamer := -1
 	for i in pick.item_count:
@@ -37,6 +43,7 @@ func setup() -> void:
 	fe.btn_leave.pressed.emit()
 	await frames(1)
 	eq(fe.screen, "main", "Back from the offline hangar returns to the main menu")
+	check(not fe.stage.in_bay and not fe.stage.bay.visible, "the main menu is back on the turntable")
 
 	# Solo host: Session opens a crew of one. (The menu's Play uses DEFAULT_PORT; the test uses its own port to stay
 	# clear of a running game, through the same calls.)

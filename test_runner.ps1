@@ -4,6 +4,18 @@
 #   .\test_runner.ps1 -TestAll                                      # every tests\test_*.gd, in parallel
 #   .\test_runner.ps1 -TestAll -NoImport                            # skip the import check
 #   .\test_runner.ps1 -TestName test_net_handshake -Link coast      # a net test under one link preset only
+#   .\test_runner.ps1 -Visual                                       # the VISUAL tests: real renderer, hidden window
+#
+# VISUAL TESTS (docs/testing.md): a test whose source declares `const VISUAL := true` needs real pixels. -TestAll skips
+# it; -Visual runs every visual test (or -Visual -TestName x) one at a time WITHOUT --headless, in a 1600x900 window on a
+# hidden Windows desktop (hidden_desktop.ps1, from felt / flap) so nothing shows on screen, and saves its shots to
+# test_logs\shots\. Its log is test_logs\<name>.log (--log-file). It uses the GPU, so it takes the shared GPU lock
+# (godot_env.ps1) and WAITS while another session renders or holds a window, and while ComfyUI listens on port 8188;
+# exit 2 if the GPU stays busy past $env:CLAUDE_GPU_LOCK_TIMEOUT (default 900 s). BABAMECH_SHOW_WINDOWS=1 shows the
+# window instead. Headless runs (-TestAll, -TestName) never take the lock.
+#
+# SERIAL TESTS: a test whose source declares `const SERIAL := true` (a wall-clock budget, e.g. test_perf) is left out of
+# the parallel batch and runs after everything else (the net runs too), one at a time, with no other test process going.
 #
 # Logs: test_logs\<name>.log / .err.log. A test passes only with exit code 0, the ">>> [TEST PASSED] <name> <<<"
 # marker, AND no "SCRIPT ERROR" / "Parse Error" in its output. Ordinary tests run under --fixed-fps 60.
@@ -21,24 +33,27 @@ param(
     [switch]$NoImport,
     [int]$TimeoutSec = 120,
     [string]$Link = "",
-    [int]$NetTimeoutSec = 90
+    [int]$NetTimeoutSec = 90,
+    [switch]$Visual
 )
 . "$PSScriptRoot\godot_env.ps1"
 $godot = Resolve-BabamechGodot
 $logDir = Join-Path $PSScriptRoot "test_logs"
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+# Keep Godot from importing anything written here (visual tests save PNGs under test_logs\shots).
+if (-not (Test-Path "$logDir\.gdignore")) { Set-Content -Path "$logDir\.gdignore" -Value "" }
 
-if (-not $TestAll -and $TestName -eq "") {
+if (-not $Visual -and -not $TestAll -and $TestName -eq "") {
     Write-Host "Usage: .\test_runner.ps1 -TestName <name> | -TestAll" -ForegroundColor Yellow
     Get-ChildItem "$PSScriptRoot\tests\test_*.gd" | ForEach-Object { Write-Host "  $($_.BaseName)" }
     exit 1
 }
 if (-not $NoImport) { Update-BabamechImport $godot }
 
-function Start-Godot([string]$Name, [string]$Extra = "", [string]$Timing = "--fixed-fps 60") {
+function Start-Godot([string]$Name, [string]$Extra = "", [string]$Timing = "--fixed-fps 60", [string]$Display = "--headless") {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $godot
-    $psi.Arguments = "--path `"$PSScriptRoot`" --headless $Timing -- --run-test $Name $Extra"
+    $psi.Arguments = "--path `"$PSScriptRoot`" $Display $Timing -- --run-test $Name $Extra"
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
@@ -50,6 +65,9 @@ function Start-Godot([string]$Name, [string]$Extra = "", [string]$Timing = "--fi
 }
 
 function Test-Bad([string]$Text) { return $Text -match "SCRIPT ERROR|Parse Error" }
+
+function Test-Visual([string]$Name) { return (Get-Content -Raw "$PSScriptRoot\tests\$Name.gd") -match '(?m)^const VISUAL\s*:=\s*true' }
+function Test-Serial([string]$Name) { return (Get-Content -Raw "$PSScriptRoot\tests\$Name.gd") -match '(?m)^const SERIAL\s*:=\s*true' }
 
 function Start-Test([string]$Name) {
     $g = Start-Godot $Name
@@ -133,8 +151,18 @@ function Finish-NetRun($run) {
 
 # --- Schedule ------------------------------------------------------------------------------------
 
-$names = if ($TestAll) { Get-ChildItem "$PSScriptRoot\tests\test_*.gd" | ForEach-Object { $_.BaseName } } else { @($TestName -split '[\s,]+' | Where-Object { $_ -ne "" }) }
-$max = [Math]::Max(2, [Math]::Min(12, [Environment]::ProcessorCount - 4))
+$names = if ($TestAll -or ($Visual -and $TestName -eq "")) { Get-ChildItem "$PSScriptRoot\tests\test_*.gd" | ForEach-Object { $_.BaseName } } else { @($TestName -split '[\s,]+' | Where-Object { $_ -ne "" }) }
+$existing = @($names | Where-Object { Test-Path "$PSScriptRoot\tests\$_.gd" })
+if ($Visual) {
+    # Only visual tests, one window at a time (GPU).
+    $names = @($existing | Where-Object { Test-Visual $_ })
+    if ($names.Count -eq 0) { Write-Host "No visual tests (const VISUAL := true) among: $($existing -join ', ')" -ForegroundColor Yellow; exit 1 }
+} elseif ($TestAll) {
+    $skipped = @($existing | Where-Object { Test-Visual $_ })
+    $names = @($names | Where-Object { $skipped -notcontains $_ })
+    if ($skipped.Count -gt 0) { Write-Host "  (visual tests skipped, run with -Visual: $($skipped -join ', '))" -ForegroundColor DarkGray }
+}
+$max = if ($Visual) { 1 } else { [Math]::Max(2, [Math]::Min(12, [Environment]::ProcessorCount - 4)) }
 $netMax = [Math]::Max(2, [Math]::Min(6, [int]([Environment]::ProcessorCount / 5)))
 $running = @(); $failed = @(); $total = 0
 $netRuns = @()
@@ -145,6 +173,38 @@ foreach ($n in $names) {
 }
 $netNames = @($netRuns | ForEach-Object { $_.Name } | Select-Object -Unique)
 $parallel = @($names | Where-Object { $netNames -notcontains $_ -and (Test-Path "$PSScriptRoot\tests\$_.gd") })
+if ($Visual) {
+    # Visual tests: one at a time, windowed (real renderer) on the hidden desktop; output comes back through --log-file.
+    . "$PSScriptRoot\hidden_desktop.ps1"
+    # One GPU lock for the whole batch (waits for other sessions' renders / windows; docs/testing.md "GPU sharing").
+    if (-not (Enter-BabamechGpu "visual tests")) {
+        Write-Host "Refusing -Visual: the GPU stayed busy (see above). Run headless tests, or retry later." -ForegroundColor Yellow
+        exit 2
+    }
+    try {
+        foreach ($n in $parallel) {
+            $log = "$logDir\$n.log"
+            Remove-Item $log -ErrorAction SilentlyContinue
+            $w = [Diagnostics.Stopwatch]::StartNew()
+            $code = Invoke-HiddenDesktop -Exe $godot -WorkDir $PSScriptRoot -TimeoutSec $TimeoutSec `
+                -Arguments "--path `"$PSScriptRoot`" --resolution 1600x900 --fixed-fps 60 --log-file `"$log`" -- --run-test $n"
+            $out = if (Test-Path $log) { Get-Content -Raw $log } else { "" }
+            $total += 1
+            $ok = ($code -eq 0) -and ($out -match [regex]::Escape(">>> [TEST PASSED] $n <<<")) -and -not (Test-Bad $out)
+            $secs = $w.Elapsed.TotalSeconds.ToString("F1")
+            if ($ok) { Write-Host "  PASS  $n  ($secs s, visual)" -ForegroundColor Green }
+            else {
+                $failed += $n
+                Write-Host "  FAIL  $n  ($secs s, exit $code, visual)" -ForegroundColor Red
+                $out -split "`n" | Where-Object { $_ -match "ASSERT FAILED|SCRIPT ERROR|Parse Error|ERROR:|TEST FAILED" } | Select-Object -First 15 | ForEach-Object { Write-Host "        $_" }
+            }
+        }
+    } finally { Exit-BabamechGpu }
+    $parallel = @()
+}
+# SERIAL tests (wall-clock budgets) run last, one at a time, with nothing else going.
+$serial = @($parallel | Where-Object { Test-Serial $_ })
+$parallel = @($parallel | Where-Object { $serial -notcontains $_ })
 foreach ($n in $parallel) {
     while ($true) {
         $done = @($running | Where-Object { $_.Proc.HasExited -or $_.Watch.Elapsed.TotalSeconds -gt $TimeoutSec })
@@ -178,6 +238,14 @@ if ($netRuns.Count -gt 0) {
     Write-Host "  net runs: $($netRuns.Count) in $($netWatch.Elapsed.TotalSeconds.ToString('F1')) s ($netMax at a time)" -ForegroundColor DarkCyan
 }
 
+foreach ($n in $serial) {
+    $r = Start-Test $n
+    $r.Proc.WaitForExit($TimeoutSec * 1000) | Out-Null
+    $total += 1
+    if (-not (Finish-Test $r)) { $failed += $n }
+}
+
 if ($failed.Count -gt 0) { Write-Host "$($failed.Count) of $total test(s) FAILED: $($failed -join ', ')" -ForegroundColor Red; exit 1 }
 Write-Host "All $total test(s) passed." -ForegroundColor Green
+if ($Visual) { Write-Host "Shots: $logDir\shots" -ForegroundColor DarkCyan }
 exit 0

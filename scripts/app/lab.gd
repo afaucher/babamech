@@ -31,9 +31,12 @@ var _drag := false
 var _ui: VBoxContainer
 var _subject_pick: OptionButton
 var _params_box: VBoxContainer
+var _actions_box: GridContainer      ## the subject's lab_actions() buttons (optional hook), hidden when it has none
 var _speed_label: Label
 var _status: Label
 var _lab_floor: Node3D               ## the grid floor; hidden for subjects with their own ground (lab_own_ground())
+var _lab_env: WorldEnvironment       ## the lab's own environment and sun; out of the tree for subjects that bring
+var _lab_sun: DirectionalLight3D     ## their own lighting (lab_own_lighting())
 
 
 func _ready() -> void:
@@ -56,6 +59,14 @@ func _ready() -> void:
 	if args.has("--opt") or args.has("--param"):
 		_rebuild_params()
 		_dist = float(subject.lab_radius()) * 2.0
+	# --action <id> (repeatable): fire the subject's lab actions after --action-after seconds (default 0.3).
+	var actions: Array[String] = []
+	for i in args.size() - 1:
+		if args[i] == "--action":
+			actions.append(args[i + 1])
+	if not actions.is_empty():
+		var a_after := Boot.arg_value(args, "--action-after")
+		_actions_later.call_deferred(actions, float(a_after) if a_after.is_valid_float() else 0.3)
 	var shot := Boot.arg_value(args, "--shot")
 	if shot != "":
 		var after := float(Boot.arg_value(args, "--shot-after")) if Boot.arg_value(args, "--shot-after").is_valid_float() else 1.5
@@ -75,6 +86,7 @@ func pick(id: String) -> void:
 	add_child(subject)
 	if _lab_floor != null:
 		_lab_floor.visible = not (subject.has_method("lab_own_ground") and subject.lab_own_ground())
+	_set_lab_lighting(not (subject.has_method("lab_own_lighting") and subject.lab_own_lighting()))
 	_defaults.clear()
 	for p: Dictionary in subject.lab_params():
 		_defaults[p["id"]] = float(p["value"])
@@ -87,9 +99,23 @@ func pick(id: String) -> void:
 	_rebuild_params()
 
 
+## The lab's own environment and sun, on or off. Only one WorldEnvironment may be in the tree, so a subject with its own
+## lighting rig (lab_own_lighting() true) has the lab's taken out while it is shown.
+func _set_lab_lighting(on: bool) -> void:
+	if _lab_env == null or _lab_sun == null:
+		return
+	_lab_sun.visible = on
+	if on and _lab_env.get_parent() == null:
+		add_child(_lab_env)
+	elif not on and _lab_env.get_parent() != null:
+		remove_child(_lab_env)
+
+
 func set_view(v: String) -> void:
 	view = v
 	_yaw = (VIEWS[v] as Vector2).x
+	if subject != null and subject.has_method("lab_view_yaw"):
+		_yaw += float(subject.lab_view_yaw())   # a subject that faces elsewhere than -Z turns the preset views with it
 	_pitch = (VIEWS[v] as Vector2).y
 	_place_camera()
 
@@ -175,10 +201,12 @@ func _build_world() -> void:
 	e.ambient_light_energy = 0.55
 	env.environment = e
 	add_child(env)
+	_lab_env = env
 	var sun := DirectionalLight3D.new()
 	sun.rotation = Vector3(-0.95, 0.6, 0.0)
 	sun.shadow_enabled = true
 	add_child(sun)
+	_lab_sun = sun
 	_lab_floor = Node3D.new()
 	_lab_floor.name = "LabFloor"
 	add_child(_lab_floor)
@@ -251,6 +279,10 @@ func _build_ui() -> void:
 	reset.text = "Reset params"
 	reset.pressed.connect(reset_params)
 	_ui.add_child(reset)
+	_actions_box = GridContainer.new()
+	_actions_box.columns = 3
+	_actions_box.visible = false
+	_ui.add_child(_actions_box)
 	_params_box = VBoxContainer.new()
 	_ui.add_child(_params_box)
 	var back := Button.new()
@@ -269,6 +301,7 @@ func _build_ui() -> void:
 func _rebuild_params() -> void:
 	if _params_box == null or subject == null:
 		return
+	_rebuild_actions()
 	for c in _params_box.get_children():
 		_params_box.remove_child(c)
 		c.queue_free()
@@ -301,6 +334,31 @@ func _rebuild_params() -> void:
 			subject.set_lab_param(pid, v)
 			l.text = "%s: %.2f" % [plabel, v])
 		_params_box.add_child(s)
+
+
+## Buttons for the subject's optional lab_actions() (see LabRegistry).
+func _rebuild_actions() -> void:
+	if _actions_box == null:
+		return
+	for c in _actions_box.get_children():
+		_actions_box.remove_child(c)
+		c.queue_free()
+	var acts: Array = subject.lab_actions() if subject.has_method("lab_actions") else []
+	_actions_box.visible = not acts.is_empty()
+	for a: Dictionary in acts:
+		var b := Button.new()
+		b.text = str(a.get("label", a["id"]))
+		b.clip_text = true
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		b.pressed.connect(subject.do_lab_action.bind(str(a["id"])))
+		_actions_box.add_child(b)
+
+
+func _actions_later(ids: Array[String], after: float) -> void:
+	await get_tree().create_timer(after).timeout
+	if subject != null and subject.has_method("do_lab_action"):
+		for id in ids:
+			subject.do_lab_action(id)
 
 
 func _shot(path: String, after: float) -> void:

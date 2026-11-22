@@ -23,6 +23,10 @@ func run_host() -> void:
 	for p in peers_with("roster"):
 		eq(str(reported(p, "roster")), roster_signature(), "peer %d lists the same crew as the host" % p)
 	check(await wait_done(3), "the clients are done")
+	# Stay up until the refused joiner has been dropped (REFUSE_GRACE after its sys.refuse): under load its process can
+	# be slow to read the refusal, and a host that exits first makes it see "The host left" instead of "Crew is full".
+	check(await until(func() -> bool: return Session._refused.is_empty(), NetSession.REFUSE_GRACE + 5.0),
+		"the refused joiner was dropped after its grace period")
 
 
 func run_client() -> void:

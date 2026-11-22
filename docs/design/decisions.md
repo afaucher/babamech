@@ -45,6 +45,8 @@ Co-op mech combat (up to **4 players**) inside a rotating cylinder space habitat
 - **Vertical slice** defined in [vertical-slice.md](vertical-slice.md): one mech (laser / rocket pod / mortar), small
   arena on a **curved ring segment with radial gravity**, **turrets** as the enemy, co-op as the last milestone,
   placeholder art first.
+- **Maps are arc segments, not full rings.** Ring radius is free (larger is fine); each section needs designed
+  boundary walls and transitions into them (section-layout + city-gen sessions).
 
 ## Aiming
 - True aim point drawn on the target surface with incremental indicators from each weapon to it.
@@ -71,3 +73,5 @@ Co-op mech combat (up to **4 players**) inside a rotating cylinder space habitat
 - cast: `C:\Users\alexa\.gemini\antigravity\scratch\cast`
 - flap (lab view): `C:\Users\alexa\.gemini\antigravity\scratch\flap`
 - Bridge to Friendship (customization screen): `C:\Users\alexa\.gemini\antigravity\scratch\bridge-to-friendship`
+- **Right mouse = camera zoom.** Missiles have no separate designator: they track the player's live crosshair aim point
+  for as long as they fly (keeping the crosshair on the target is the "active track"; no lock-on, no auto-track).

@@ -1,0 +1,16 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T19:59:57	mallard_broad_s808.png	flux3_klein_t2i	808	768x768			5.73	mallard_broad_prompt.txt
+2026-11-21T20:00:01	mallard_tuft_s808.png	flux3_klein_t2i	808	768x768			3.31	mallard_tuft_prompt.txt
+2026-11-21T20:00:05	mallard_heavy_s808.png	flux3_klein_t2i	808	768x768			3.28	mallard_heavy_prompt.txt
+2026-11-21T20:00:08	white_broad_s808.png	flux3_klein_t2i	808	768x768			3.38	white_broad_prompt.txt
+2026-11-21T20:00:12	white_tuft_s808.png	flux3_klein_t2i	808	768x768			3.26	white_tuft_prompt.txt
+2026-11-21T20:00:16	white_heavy_s808.png	flux3_klein_t2i	808	768x768			3.69	white_heavy_prompt.txt
+2026-11-21T20:03:35	mallard_broad_s808.png	flux3_klein_t2i	808	768x768			3.69	mallard_broad_prompt.txt
+2026-11-21T20:03:39	mallard_tuft_s808.png	flux3_klein_t2i	808	768x768			3.27	mallard_tuft_prompt.txt
+2026-11-21T20:03:43	mallard_heavy_s808.png	flux3_klein_t2i	808	768x768			3.26	mallard_heavy_prompt.txt
+2026-11-21T20:03:46	white_broad_s808.png	flux3_klein_t2i	808	768x768			3.29	white_broad_prompt.txt
+2026-11-21T20:03:50	white_tuft_s808.png	flux3_klein_t2i	808	768x768			3.28	white_tuft_prompt.txt
+2026-11-21T20:03:53	white_heavy_s808.png	flux3_klein_t2i	808	768x768			3.26	white_heavy_prompt.txt
+2026-11-21T20:03:57	teal_broad_s808.png	flux3_klein_t2i	808	768x768			3.32	teal_broad_prompt.txt
+2026-11-21T20:04:00	teal_tuft_s808.png	flux3_klein_t2i	808	768x768			3.25	teal_tuft_prompt.txt
+2026-11-21T20:04:04	teal_heavy_s808.png	flux3_klein_t2i	808	768x768			3.27	teal_heavy_prompt.txt

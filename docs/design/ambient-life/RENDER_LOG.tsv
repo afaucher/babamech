@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-22T04:26:53	pod_bubble_civic_s909.png	flux3_klein_t2i	909	1024x576			5.53	pod_bubble_civic_prompt.txt
+2026-11-22T04:26:57	pod_bubble_municipal_s909.png	flux3_klein_t2i	909	1024x576			3.3	pod_bubble_municipal_prompt.txt
+2026-11-22T04:27:00	pod_bubble_transit_s909.png	flux3_klein_t2i	909	1024x576			3.29	pod_bubble_transit_prompt.txt
+2026-11-22T04:27:04	pod_shuttle_civic_s909.png	flux3_klein_t2i	909	1024x576			3.26	pod_shuttle_civic_prompt.txt
+2026-11-22T04:27:07	pod_shuttle_municipal_s909.png	flux3_klein_t2i	909	1024x576			3.28	pod_shuttle_municipal_prompt.txt
+2026-11-22T04:27:11	pod_shuttle_transit_s909.png	flux3_klein_t2i	909	1024x576			3.28	pod_shuttle_transit_prompt.txt
+2026-11-22T04:27:14	pod_wedge_civic_s909.png	flux3_klein_t2i	909	1024x576			3.29	pod_wedge_civic_prompt.txt
+2026-11-22T04:27:18	pod_wedge_municipal_s909.png	flux3_klein_t2i	909	1024x576			3.29	pod_wedge_municipal_prompt.txt
+2026-11-22T04:27:21	pod_wedge_transit_s909.png	flux3_klein_t2i	909	1024x576			3.27	pod_wedge_transit_prompt.txt

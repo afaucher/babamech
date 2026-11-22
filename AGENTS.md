@@ -1,5 +1,9 @@
 # babamech: instructions for agents
 
+**Several agents work in this folder at once (Claude sessions and an antigravity agent). Before starting or resuming
+work, read `docs/coordination/antigravity.md` and check `git status` / `git diff`; record what you change there.**
+
+
 babamech (codename) is a co-op (up to 4 players) third-person mech combat game in Godot 4.7 / GDScript, set inside a
 rotating ring habitat. Start with `README.md`, then `docs/design/decisions.md` (every design decision so far; **do not
 edit it**, append decisions through the user) and `docs/networking.md` (the net model and what is built). The build
@@ -43,6 +47,10 @@ one as a design decision to report.
 - `scripts/mech/`: `MechCatalog` (heads, chassis, weapons: weight / passive heat / active heat), `MechModel` (the
   placeholder biped, used by menu, hangar and lab alike), `MechParts` (placeholder meshes), `HeadGallery`.
 - `scripts/ui/`: `FrontEnd` (main / settings / hangar screens, built in code), `MechStage` (the 3D preview), `BuildVersion`.
+- `scripts/world/city/`: the seeded urban district (`docs/design/city-styles.md`): `CitySite` (given structure: pillar points, ceiling openings; from the
+  section plan or a stub, `docs/design/ceiling-and-pillars.md`), `CityPlan` (layout as data, checksummed:
+  the gameplay shape), `CityBuildings` / `CityStreets` (flat-colour meshes via `CityGeo`, colours from `CityPalette`),
+  `CityLightRig` (all lighting, separate from surface colour), `CityDistrict` (nodes + collision), `CityLab` (lab subject).
 - `scripts/test_support/`: `TestCase`, `NetTest` (multi-process net tests).
 - `scenes/`: `boot.tscn`, `menu.tscn`, `lab.tscn` (thin: a root node and its script).
 
@@ -54,9 +62,28 @@ Every scene with tunable params is registered in `LabRegistry.SUBJECTS` and impl
 ## Tests
 - `.\test_runner.ps1 -TestAll` runs everything (about 15 s). Net tests with `const PEERS := N` run as N headless processes
   over ENet localhost, once per link in `const LINKS` (default off and coast). Run them after any code change.
-- Prefer headless runs. **GPU sharing:** the art session renders with local ComfyUI, whose script refuses to run while a
-  Godot window is open. Before opening a window (`run.ps1`, `lab.ps1`, screenshots), check nothing listens on port 8188,
-  and close Godot windows when done.
+- Prefer headless runs. **GPU sharing:** several sessions share one GPU with local ComfyUI renders (port 8188), which
+  hang while any Godot window draws. Everything that draws takes the shared GPU lock (`~\.claude\gpu-lock\gpu_lock.ps1`,
+  via `godot_env.ps1`) and **waits its turn**: `run.ps1` / `lab.ps1` (held while the window is open; crew windows until
+  the last closes), `test_runner.ps1 -Visual` and `Invoke-HiddenDesktop`. Headless runs never take it. Exit 2 means the
+  GPU stayed busy past `$env:CLAUDE_GPU_LOCK_TIMEOUT` (default 900 s). See who holds it:
+  `& "$HOME\.claude\gpu-lock\gpu_lock.ps1"`. Close your windows when done (renders wait on them), never close or kill
+  another session's window or ComfyUI: report it. Details: `docs/testing.md` (GPU sharing).
+- **Layout is tested headlessly** (`docs/testing.md`). `--headless` draws nothing, but Controls still lay out against the
+  1600x900 viewport, so `tests/test_layout.gd` asserts the menu (main / settings / hangar) and the lab (every subject)
+  fill the screen, panels have real sizes and key buttons are on screen, at 16:9, 4:3 and ultrawide. Any new screen,
+  HUD or panel gets checks there with `LayoutCheck` (`scripts/test_support/layout_check.gd`): `fills_screen`,
+  `full_height`, `on_screen`, `at_least`, `buttons_on_screen`. A new lab subject is covered automatically.
+- Build UI in code with `set_anchors_and_offsets_preset(...)`, not `set_anchors_preset(...)`, on a Control that is
+  already in the tree: the latter keeps its old (zero) size. That is the bug that opened the game to an empty screen.
+- **Visual tests**: a test with `const VISUAL := true` needs real pixels. `-TestAll` skips it; `.\test_runner.ps1 -Visual`
+  runs it in a real renderer on a hidden Windows desktop (`hidden_desktop.ps1`: nothing shows on screen), one at a time,
+  saves shots to `test_logs\shots\`, and waits for the GPU lock (and for ComfyUI to stop). `ShotCheck` (`scripts/test_support/shot_check.gd`):
+  `grab`, `not_blank`, `differs`. `tests/test_visual.gd` shoots the menu and every lab subject. Run `-Visual` after
+  changing how a scene looks, and look at the shots.
+- **Serial tests**: a test that measures wall-clock time (a frame budget) declares `const SERIAL := true`; the runner
+  takes it out of the parallel batch and runs it last, alone (`tests/test_perf.gd`). Other tests must not time themselves
+  against the wall clock.
 - `.\build.ps1` runs the tests and exports.
 - In a worktree, set `$env:BABAMECH_GODOT` to the Godot console exe and copy `addons/godotsteam/win64/*.dll` from the
   main checkout (gitignored).

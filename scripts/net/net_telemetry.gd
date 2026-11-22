@@ -10,6 +10,8 @@ extends RefCounted
 ## - Event columns are rates over the last second; state columns are levels at the sample.
 ##   silence_ms  the longest stretch with nothing received from the other side (the host: its quietest client).
 ##   frame_ms    this machine's longest frame that second.
+## - One-off happenings (a mission launch, a desync, a pilot sent out at the load barrier) go to note(): a line in a sidecar
+##   net_<role>_<date>_<pid>.notes.txt next to the CSV, stamped with the shared clock, so the CSV keeps its columns.
 ## (cast's casts / hits sheets are not ported yet: they come with combat.)
 
 const DIR := "user://net"
@@ -26,6 +28,8 @@ var dir := DIR
 var path := ""
 var rows_written := 0
 var peer_rows := 0
+## Every note() this session, in order (tests read them).
+var notes: PackedStringArray = []
 
 var _file: FileAccess = null
 
@@ -75,6 +79,21 @@ func note_peer_row(peer: int, row: Array) -> void:
 	peer_rows += 1
 
 
+## A one-off happening, `t` on the shared clock. Without an open file it is only kept in `notes`.
+func note(t: float, text: String) -> void:
+	var line := "%.3f %s" % [t, text]
+	notes.append(line)
+	if path == "":
+		return
+	var np := path.get_basename() + ".notes.txt"
+	var f := FileAccess.open(np, FileAccess.READ_WRITE if FileAccess.file_exists(np) else FileAccess.WRITE)
+	if f == null:
+		return
+	f.seek_end()
+	f.store_line(line)
+	f.close()
+
+
 func _write(row: Array) -> void:
 	var cells := PackedStringArray()
 	for v: Variant in row:
@@ -95,3 +114,6 @@ func _prune() -> void:
 	files.sort_custom(func(a: Array, b: Array) -> bool: return int(a[0]) < int(b[0]))
 	for i in files.size() - KEEP_FILES + 1:
 		DirAccess.remove_absolute(str(files[i][1]))
+		var np := str(files[i][1]).get_basename() + ".notes.txt"
+		if FileAccess.file_exists(np):
+			DirAccess.remove_absolute(np)

@@ -3,6 +3,7 @@
 #   .\lab.ps1 mech                    # a subject by id (ids in scripts/app/lab_registry.gd)
 #   .\lab.ps1 mech -View side         # side | front | three | top
 #   .\lab.ps1 -List                   # list the subject ids
+# The window goes through run.ps1, which takes the shared GPU lock (waits while ComfyUI renders) until it closes.
 param([string]$Subject = "", [string]$View = "", [switch]$List)
 if ($List) {
     Select-String -Path "$PSScriptRoot\scripts\app\lab_registry.gd" -Pattern '"id": "([^"]+)", "label": "([^"]+)"' |
@@ -13,3 +14,4 @@ $a = @("--scene", "res://scenes/lab.tscn")
 if ($Subject) { $a += @("--subject", $Subject) }
 if ($View) { $a += @("--view", $View) }
 & "$PSScriptRoot\run.ps1" @a
+exit $LASTEXITCODE

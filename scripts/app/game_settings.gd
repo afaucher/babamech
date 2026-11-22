@@ -3,7 +3,8 @@ extends RefCounted
 ## The player's settings, persisted in a ConfigFile (user://settings.cfg; `--settings-file` points tests and run.ps1 -Crew
 ## windows elsewhere). Static, no autoload: load_settings() -> Dictionary, save_settings(d), apply(d).
 ##
-## Profile (carried in the join handshake): player_name ("" = the Steam persona), head (MechCatalog.HEADS).
+## Profile (carried in the join handshake): player_name ("" = the Steam persona), head (MechCatalog.HEADS), accent
+## (MechAccent.ACCENTS id: the livery colour that replaces the safety orange; default "orange").
 ## Hangar (the pre-mission choice, remembered): chassis, loadout {hardpoint id: weapon id}.
 ## Video: fullscreen, vsync, msaa (0 off, 1 2x, 2 4x). Audio: master, music, sfx (0..1, linear).
 ## Network: link_sim (off / coast / rough): the crew's simulated link when this machine hosts (NetSession).
@@ -12,6 +13,7 @@ const DEFAULT_PATH := "user://settings.cfg"
 const DEFAULTS := {
 	"player_name": "",
 	"head": "chicken",
+	"accent": "orange",
 	"chassis": "strider",
 	"loadout": {},
 	"fullscreen": false,
@@ -24,7 +26,7 @@ const DEFAULTS := {
 }
 ## Which ConfigFile section each key lives in.
 const SECTIONS := {
-	"player_name": "profile", "head": "profile",
+	"player_name": "profile", "head": "profile", "accent": "profile",
 	"chassis": "hangar", "loadout": "hangar",
 	"fullscreen": "video", "vsync": "video", "msaa": "video",
 	"master": "audio", "music": "audio", "sfx": "audio",
@@ -47,6 +49,7 @@ static func load_settings() -> Dictionary:
 			out[k] = v
 	if not MechCatalog.HEADS.has(str(out["head"])):
 		out["head"] = DEFAULTS["head"]
+	out["accent"] = MechAccent.sanitize(str(out["accent"]))
 	if not MechCatalog.CHASSIS.has(str(out["chassis"])):
 		out["chassis"] = DEFAULTS["chassis"]
 	return out
@@ -74,12 +77,20 @@ static func set_value(key: String, value: Variant) -> Dictionary:
 ## Push video and audio settings to the engine. `window` false leaves the window alone (screenshots, tests).
 static func apply(d: Dictionary, window: bool = true) -> void:
 	_ensure_buses()
+	var music_lin := float(d["music"])
+	var sfx_lin := float(d["sfx"])
 	_set_bus("Master", float(d["master"]))
-	_set_bus("Music", float(d["music"]))
-	_set_bus("SFX", float(d["sfx"]))
+	_set_bus("Music", music_lin)
+	_set_bus("SFX", sfx_lin)
+	_set_bus("Ambience", sfx_lin * AudioDirector.AMBIENCE_TRIM_LINEAR if sfx_lin > 0.001 else 0.0)
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree != null:
+		var audio := tree.root.get_node_or_null("Audio") as AudioDirector
+		if audio != null:
+			audio.sync_user_volumes(music_lin, sfx_lin)
 	if DisplayServer.get_name() == "headless":
 		return
-	var vp := Engine.get_main_loop() as SceneTree
+	var vp := tree
 	if vp != null:
 		vp.root.msaa_3d = [Viewport.MSAA_DISABLED, Viewport.MSAA_2X, Viewport.MSAA_4X][clampi(int(d["msaa"]), 0, 2)]
 	if not window:
@@ -91,6 +102,7 @@ static func apply(d: Dictionary, window: bool = true) -> void:
 
 
 static func _ensure_buses() -> void:
+	AudioDirector.ensure_buses()
 	for b: String in BUSES:
 		if AudioServer.get_bus_index(b) < 0:
 			AudioServer.add_bus()

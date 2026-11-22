@@ -1,0 +1,19 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T20:29:37	hud_diegetic_civil_s7.png	flux3_klein_t2i	7	1024x576			6.17	hud_diegetic_civil_prompt.txt
+2026-11-21T20:29:42	hud_diegetic_amber_s7.png	flux3_klein_t2i	7	1024x576			3.69	hud_diegetic_amber_prompt.txt
+2026-11-21T20:29:46	hud_diegetic_holo_s7.png	flux3_klein_t2i	7	1024x576			3.66	hud_diegetic_holo_prompt.txt
+2026-11-21T20:29:50	hud_cockpit_civil_s7.png	flux3_klein_t2i	7	1024x576			3.82	hud_cockpit_civil_prompt.txt
+2026-11-21T20:29:54	hud_cockpit_amber_s7.png	flux3_klein_t2i	7	1024x576			3.71	hud_cockpit_amber_prompt.txt
+2026-11-21T20:29:58	hud_cockpit_holo_s7.png	flux3_klein_t2i	7	1024x576			3.65	hud_cockpit_holo_prompt.txt
+2026-11-21T20:30:02	hud_corners_civil_s7.png	flux3_klein_t2i	7	1024x576			3.71	hud_corners_civil_prompt.txt
+2026-11-21T20:30:05	hud_corners_amber_s7.png	flux3_klein_t2i	7	1024x576			3.67	hud_corners_amber_prompt.txt
+2026-11-21T20:30:10	hud_corners_holo_s7.png	flux3_klein_t2i	7	1024x576			3.69	hud_corners_holo_prompt.txt
+2026-11-22T08:14:31	crew_left_steam_s7.png	flux3_klein_t2i	7	1024x576			5.38	crew_left_steam_prompt.txt
+2026-11-22T08:14:35	crew_left_head_s7.png	flux3_klein_t2i	7	1024x576			3.28	crew_left_head_prompt.txt
+2026-11-22T08:14:38	crew_left_both_s7.png	flux3_klein_t2i	7	1024x576			3.27	crew_left_both_prompt.txt
+2026-11-22T08:14:42	crew_top_steam_s7.png	flux3_klein_t2i	7	1024x576			3.28	crew_top_steam_prompt.txt
+2026-11-22T08:14:45	crew_top_head_s7.png	flux3_klein_t2i	7	1024x576			3.3	crew_top_head_prompt.txt
+2026-11-22T08:14:49	crew_top_both_s7.png	flux3_klein_t2i	7	1024x576			3.28	crew_top_both_prompt.txt
+2026-11-22T08:14:52	crew_corner_steam_s7.png	flux3_klein_t2i	7	1024x576			3.27	crew_corner_steam_prompt.txt
+2026-11-22T08:14:56	crew_corner_head_s7.png	flux3_klein_t2i	7	1024x576			3.28	crew_corner_head_prompt.txt
+2026-11-22T08:14:59	crew_corner_both_s7.png	flux3_klein_t2i	7	1024x576			3.27	crew_corner_both_prompt.txt

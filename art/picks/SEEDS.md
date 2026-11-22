@@ -7,3 +7,4 @@
 | head_dog.png | renders/head_others_r1/dog_stern_s808.png | flux3_klein_t2i / 808 | tools/head_others_r1.ps1 (dog + stern) |
 | mech_base.png | renders/mech_r7/chicken_medium_s707.png | flux3_klein_t2i / 707 | tools/mech_round7.ps1 (chicken + medium) — chassis direction, pilot head superseded |
 | mech_loadout_full.png | renders/mech_r8/i_maxed_s707.png | flux3_klein_t2i / 707 | tools/mech_round8.ps1 (i_maxed) — 5-hardpoint reference |
+| head_duck.png | renders/head_duck_r1/mallard_tuft_s808.png | flux3_klein_t2i / 808 | tools/head_duck_r1.ps1 (mallard + tuft) |

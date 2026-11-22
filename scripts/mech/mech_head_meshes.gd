@@ -1,13 +1,33 @@
 class_name MechHeadMeshes
 extends RefCounted
-## The four pilot heads (art/picks/head_*.png): true low poly (about 150 faces each), one flat colour per face, stern
+## The five pilot heads (art/picks/head_*.png): true low poly (about 150 faces each), one flat colour per face, stern
 ## (heavy angled brows, narrowed eyes, mouth closed). Origin at the neck base, facing -Z, about 1.2 tall; only the head
 ## and neck stick out of the hatch. Built with MeshKit, saved by MechMeshes as head_<id>.res.
 
 const EYE_WHITE := Color(0.95, 0.94, 0.9)
 const PUPIL := Color(0.08, 0.06, 0.05)
 ## How much wider than authored each head is drawn (X and Z).
-const GIRTH := {"chicken": 1.3, "pickle": 1.12, "corn": 1.12, "dog": 1.25}
+const GIRTH := {"chicken": 1.3, "pickle": 1.12, "corn": 1.12, "dog": 1.25, "duck": 1.2}
+## The duck (art/picks/head_duck.png, a mallard drake), shared with its rig (PilotHeadDuck) so both keep one silhouette.
+## Neck-and-skull sections [y, centre z, half width, half depth]: brown chest band, white neck ring, green above.
+const DUCK_SECS := [[0.0, 0.07, 0.3, 0.32], [0.12, 0.05, 0.25, 0.26], [0.18, 0.045, 0.235, 0.245],
+	[0.44, 0.04, 0.215, 0.235], [0.72, -0.03, 0.3, 0.35], [0.95, -0.03, 0.3, 0.34], [1.14, 0.0, 0.19, 0.23]]
+const DUCK_GREEN := Color(0.17, 0.36, 0.22)
+const DUCK_GREEN_LIGHT := Color(0.25, 0.47, 0.3)
+const DUCK_BROWN := Color(0.45, 0.27, 0.16)
+const DUCK_RING := Color(0.92, 0.9, 0.86)
+const DUCK_BILL := Color(0.93, 0.74, 0.22)
+const DUCK_BROW := Color(0.11, 0.22, 0.14)
+const DUCK_NOSTRIL := Color(0.22, 0.15, 0.06)
+## The duck's stern eye: right eye position and the way the face points there.
+const DUCK_EYE := Vector3(0.18, 0.87, -0.272)
+const DUCK_EYE_OUT := Vector3(0.5, 0.08, -0.86)
+## Upper bill [root, tip, root half width / height, tip half width / height]; lower bill the same.
+const DUCK_BILL_UP := [Vector3(0, 0.765, -0.22), Vector3(0, 0.66, -0.76), Vector2(0.15, 0.09), Vector2(0.115, 0.038)]
+const DUCK_BILL_LOW := [Vector3(0, 0.69, -0.24), Vector3(0, 0.64, -0.7), Vector2(0.12, 0.04), Vector2(0.09, 0.022)]
+## Crest tuft at the back of the crown: three shards [root, tip], fanning from upright to swept back.
+const DUCK_CREST := [[Vector3(0, 1.08, 0.02), Vector3(0, 1.37, 0.16)], [Vector3(0.05, 1.02, 0.13), Vector3(0.07, 1.28, 0.4)],
+	[Vector3(-0.04, 0.95, 0.2), Vector3(-0.06, 1.1, 0.5)]]
 
 
 static func build(k: MeshKit, id: String) -> void:
@@ -17,6 +37,7 @@ static func build(k: MeshKit, id: String) -> void:
 		"pickle": _pickle(k)
 		"corn": _corn(k)
 		"dog": _dog(k)
+		"duck": _duck(k)
 		_: _chicken(k)
 	k.pop()
 
@@ -62,12 +83,13 @@ static func _chicken(k: MeshKit) -> void:
 	# Comb: four red spikes along the crown.
 	for s: Array in [[-0.2, 0.22, -0.1], [-0.07, 0.36, -0.05], [0.08, 0.38, 0.03], [0.21, 0.26, 0.1]]:
 		k.seg(Vector3(0, 1.03, s[0]), Vector3(0, 1.08 + s[1], s[0] + s[2]), Vector2(0.06, 0.1), Vector2.ZERO, 4, red, 2.0, false, 0.0)
-	# Wattles: two red drops under the beak.
+	# Wattles: two red drops under the beak (single watertight loft per wattle).
 	for side: float in [-1.0, 1.0]:
 		var top := Vector3(side * 0.05, 0.68, -0.31)
 		var mid := Vector3(side * 0.08, 0.46, -0.35)
-		k.seg(top, mid, Vector2.ZERO, Vector2(0.07, 0.07), 4, red, 2.0, false, 0.0)
-		k.seg(mid, Vector3(side * 0.08, 0.3, -0.33), Vector2(0.07, 0.07), Vector2.ZERO, 4, red.darkened(0.12), 2.0, false, 0.0)
+		var bot := Vector3(side * 0.08, 0.3, -0.33)
+		k.loft([MeshKit.ring(top, 0.0, 0.0, 4, "y", 2.0, 0.0), MeshKit.ring(mid, 0.07, 0.07, 4, "y", 2.0, 0.0),
+			MeshKit.ring(bot, 0.0, 0.0, 4, "y", 2.0, 0.0)], [red, red.darkened(0.12)], false, false)
 	_stern_eyes(k, Vector3(0.2, 0.86, -0.275), Vector3(0.6, 0.05, -0.8), white.darkened(0.1), null, 1.1)
 
 
@@ -133,5 +155,46 @@ static func _dog(k: MeshKit) -> void:
 		var root := Vector3(side * 0.3, 1.0, 0.06)
 		var bend := Vector3(side * 0.5, 0.84, 0.02)
 		k.seg(root, bend, Vector2(0.05, 0.14), Vector2(0.04, 0.17), 4, fur.darkened(0.18), MeshKit.SQUARE)
-		k.seg(bend, Vector3(side * 0.53, 0.46, -0.04), Vector2(0.04, 0.17), Vector2.ZERO, 4, fur.darkened(0.28), MeshKit.SQUARE, false)
+		k.seg(bend, Vector3(side * 0.53, 0.46, -0.04), Vector2(0.04, 0.17), Vector2.ZERO, 4, fur.darkened(0.28), MeshKit.SQUARE, true)
 	_stern_eyes(k, Vector3(0.17, 0.83, -0.325), Vector3(0.35, 0.05, -0.93), fur.darkened(0.1), EYE_WHITE, 1.15)
+
+
+## Faceted mallard green: alternate light and dark facets around and up the head.
+static func _duck_green(c: Vector3, n: Vector3) -> Color:
+	var a := int(floor((atan2(n.x, n.z) + PI) / (TAU / 8.0) + 0.5))
+	var band := int(floor(c.y / 0.2))
+	return DUCK_GREEN_LIGHT if (a + band) % 2 == 0 else DUCK_GREEN
+
+
+## A duck bill half: a six-sided (upper) or four-sided (lower) section from root to a blunt, capped tip.
+static func duck_bill(k: MeshKit, b: Array, sides: int, col: Color) -> void:
+	var r0: Vector2 = b[2]
+	var r1: Vector2 = b[3]
+	k.loft([MeshKit.ring_uv(b[0], Vector3.RIGHT * r0.x, Vector3.UP * r0.y, sides, 2.0, 0.0),
+		MeshKit.ring_uv(b[1], Vector3.RIGHT * r1.x, Vector3.UP * r1.y, sides, 2.0, 0.0)], col, false, true)
+
+
+## The two nostrils on the upper bill's top faces.
+static func duck_nostrils(k: MeshKit) -> void:
+	for side: float in [-1.0, 1.0]:
+		var c := Vector3(side * 0.05, 0.7965, -0.382)
+		k.poly(MeshKit.ring_uv(c, Vector3(0, 0.0087, 0.03), Vector3(0.012, -0.0037 * side, 0), 4, 2.0, 0.0), DUCK_NOSTRIL,
+			c + Vector3.DOWN)
+
+
+## One crest shard: a three-sided blade, thin across X, tapering to a point.
+static func duck_shard(k: MeshKit, root: Vector3, tip: Vector3, col: Color) -> void:
+	k.seg(root, tip, Vector2(0.03, 0.07), Vector2.ZERO, 3, col, 2.0, false, 0.0)
+
+
+static func _duck(k: MeshKit) -> void:
+	var rings: Array = []
+	for s: Array in DUCK_SECS:
+		rings.append(MeshKit.ring(Vector3(0, s[0], s[1]), s[2], s[3], 8, "y", 2.2))
+	k.loft(rings, [DUCK_BROWN, DUCK_RING, _duck_green], false, true)
+	duck_bill(k, DUCK_BILL_UP, 6, DUCK_BILL)
+	duck_bill(k, DUCK_BILL_LOW, 4, DUCK_BILL.darkened(0.18))
+	duck_nostrils(k)
+	for c: Array in DUCK_CREST:
+		duck_shard(k, c[0], c[1], DUCK_GREEN.darkened(0.15))
+	_stern_eyes(k, DUCK_EYE, DUCK_EYE_OUT, DUCK_BROW, EYE_WHITE, 1.1)

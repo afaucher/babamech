@@ -8,6 +8,7 @@ extends Node
 ##   --menu-shot <png>     save a screenshot of the menu after --menu-after seconds (default 1.5) and quit
 ##   --menu-screen <s>     open the menu on main | settings | hangar
 ##   --crew-shot <png>     (run.ps1 -Crew -ShotDir) save a screenshot once --crew-size players are in, then quit
+##   --seed <N>            the mission seed: the test drive's city (solo), and the host's Launch in a crew (default 1)
 ##   --net-host, --net-join <ip[:port]>, --net-port <P>, --net-link <preset>, --net-name <name>
 ##                         online dev flags (NetSession); the menu opens on the hangar once the crew is up.
 
@@ -27,8 +28,10 @@ func _ready() -> void:
 	GameSettings.apply(settings, not args.has("--menu-shot") and not args.has("--crew-shot"))
 	# The profile goes into the session before NetSession's dev flags open a crew with it (they run deferred).
 	var head := arg_value(args, "--head")
+	var accent := arg_value(args, "--accent")   # run-only, like --head (run.ps1 -Crew gives each window its own)
 	Session.set_profile(str(settings["player_name"]), head if MechCatalog.HEADS.has(head) else str(settings["head"]),
-		str(settings["chassis"]))
+		str(settings["chassis"]), accent if MechMeshes.ACCENTS.has(accent) else str(settings["accent"]),
+		settings["loadout"] as Dictionary)
 	get_tree().change_scene_to_file.call_deferred(route(args))
 
 

@@ -59,7 +59,8 @@ func setup() -> void:
 	print("[NetTest] %s %s index %d, port %d, %d processes, link %s" % [name, role, index, port, peers, link])
 	Session.wire.link.configure(link)
 	Session.telemetry_dir = "user://net_tests"
-	Session.set_profile("host" if is_host() else "c%d" % index, head_for(index), NetSession.DEFAULT_CHASSIS)
+	Session.set_profile("host" if is_host() else "c%d" % index, head_for(index), NetSession.DEFAULT_CHASSIS, accent_for(index),
+		loadout_for(index))
 	Session.event_received.connect(_on_event)
 	Session.session_ended.connect(func(reason: String) -> void:
 		ended = true
@@ -199,11 +200,40 @@ static func head_for(i: int) -> String:
 	return MechCatalog.HEAD_ORDER[i % MechCatalog.HEAD_ORDER.size()]
 
 
-## The crew as one comparable string: seat:peer:name:head:chassis, by seat.
+## Each process's accent: the host keeps the default orange, c1 red, c2 blue, c3 purple (MechAccent.ORDER)
+static func accent_for(i: int) -> String:
+	return MechAccent.ORDER[(i * 3) % MechAccent.ORDER.size()]
+
+
+## Each process's loadout on the default chassis: hardpoint k takes the (i + k)-th weapon that fits its mount, made valid
+## (MechCatalog.sanitize_loadout), so every process flies a different one.
+static func loadout_for(i: int) -> Dictionary:
+	var c := MechCatalog.chassis(NetSession.DEFAULT_CHASSIS)
+	var out := {}
+	var k := 0
+	for hp: Dictionary in c["hardpoints"]:
+		var fits := MechCatalog.weapons_for(str(hp["mount"]))
+		out[str(hp["id"])] = fits[(i + k) % fits.size()] if not fits.is_empty() else ""
+		k += 1
+	return MechCatalog.sanitize_loadout(NetSession.DEFAULT_CHASSIS, out)
+
+
+## A loadout as one comparable string: hardpoint=weapon, by hardpoint id.
+static func loadout_signature(l: Dictionary) -> String:
+	var keys := l.keys()
+	keys.sort()
+	var parts: PackedStringArray = []
+	for k: Variant in keys:
+		parts.append("%s=%s" % [str(k), str(l[k])])
+	return ",".join(parts)
+
+
+## The crew as one comparable string: seat:peer:name:head:chassis:accent:loadout, by seat.
 static func roster_signature() -> String:
 	var parts: PackedStringArray = []
 	for e: Dictionary in Session.crew():
-		parts.append("%d:%d:%s:%s:%s" % [int(e["seat"]), int(e["peer"]), str(e["name"]), str(e["head"]), str(e["chassis"])])
+		parts.append("%d:%d:%s:%s:%s:%s:%s" % [int(e["seat"]), int(e["peer"]), str(e["name"]), str(e["head"]), str(e["chassis"]),
+			str(e.get("accent", "")), loadout_signature(e.get("loadout", {}) as Dictionary)])
 	return ";".join(parts)
 
 

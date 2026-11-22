@@ -10,6 +10,8 @@ extends TestCase
 ##    unreliable_ordered, no high-level sync) apply everywhere, and NET_RULES hold scripts/net/ itself to the wire contract.
 ## 3. The lint is run against lines that must fail (LINT_SAMPLES) and lines it must leave alone (LINT_CLEAN), so a broken
 ##    regex can't pass silently.
+## 4. Carriers (cast's section 4, for mech snapshots): every var NetMechCodec.MECH_FIELDS streams is OWNER on its class (a
+##    codec must never stream SPAWN / PRIVATE / LOCAL state), and every OWNER var of those classes is carried.
 
 ## Gameplay classes that must declare net_fields() even before they define it (none yet: mechs, enemies and pickups go here
 ## when they exist, unless they define net_fields() themselves).
@@ -66,6 +68,7 @@ func setup() -> void:
 	_check_declarations(scripts)
 	_check_lint(scripts)
 	_check_lint_samples()
+	_check_carriers()
 	finish()
 
 
@@ -96,6 +99,28 @@ func _check_script(path: String) -> void:
 		check(vars.has(f), "%s: net_fields() names `%s`, which isn't a var (stale?)" % [path, f])
 		check(Net.is_kind(fields[f]), "%s: `%s` is not a Net kind" % [path, f])
 	_free(obj)
+
+
+## Class name -> script, for the carrier check.
+const CARRIER_SCRIPTS := {
+	"MechController": "res://scripts/mech/mech_controller.gd",
+	"MechRig": "res://scripts/mech/mech_rig.gd",
+}
+
+
+func _check_carriers() -> void:
+	for cls: String in NetMechCodec.MECH_FIELDS:
+		if not check(CARRIER_SCRIPTS.has(cls), "NetMechCodec.MECH_FIELDS names %s: add its script to CARRIER_SCRIPTS" % cls):
+			continue
+		var obj: Object = (load(CARRIER_SCRIPTS[cls]) as GDScript).new()
+		var fields: Dictionary = obj.net_fields()
+		var carried: Dictionary = NetMechCodec.MECH_FIELDS[cls]
+		for v: String in carried:
+			check(fields.get(v, -1) == Net.OWNER, "%s.%s is streamed by NetMechCodec but is not Net.OWNER" % [cls, v])
+		for v: String in fields:
+			if fields[v] == Net.OWNER:
+				check(carried.has(v), "%s.%s is Net.OWNER but no snapshot carries it (NetMechCodec.MECH_FIELDS)" % [cls, v])
+		_free(obj)
 
 
 func _free(obj: Object) -> void:

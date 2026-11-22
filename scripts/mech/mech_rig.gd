@@ -4,21 +4,70 @@ extends Node3D
 ## controller's motion. Feet are planted by Gait, legs are solved by LegIK, and the body bobs, dips toward a lower foot
 ## and leans into speed. The model is scaled by `mech_scale` (about 8 m tall at 2.0).
 ##
+## Airborne (thrusting, falling, off a ledge for more than `AIR_DELAY`, or high above the ground at once): the feet
+## hang under the hips in a relaxed tuck relative to the body, carried along with it, never left on the ground below
+## (they stay above the ground when it is near). On touchdown they re-plant together (Gait.land_time) and the body
+## dips by `absorb` scaled by the controller's `last_impact`.
+##
+## Hip twist (classic mech torso twist, inverted: the torso keeps the body facing, the legs turn): `leg_yaw` turns the
+## pelvis and legs toward the ground velocity relative to the body facing, at most `twist_max` either way, easing at
+## `twist_rate`. Moving backward or back-diagonally the legs keep facing roughly forward and walk backward (a reversed
+## gait) rather than twisting round; the switch has hysteresis (TWIST_HYST) so input near the side line doesn't flip
+## it. Below TWIST_SPEED the twist fades out and the legs come back to the body facing (the gait's settle steps
+## re-plant the feet). The gait gets homes under the twisted hips, so its stride, step direction and foot clearance all
+## work in the legs' frame: a strafe becomes forward or diagonal walking with full strides. Lean follows the travel
+## direction, sway the planted foot in the legs' frame.
+##
 ## Presentation only (Net LOCAL): every machine runs it from the mech's synced motion (own mech or puppet alike).
 
 var mech_scale := 2.0
-var bob := 0.12              ## body dip between steps (model units) at full speed
-var lean := 0.12             ## forward lean (rad) at run speed
+var bob := 0.1               ## body dip between steps (model units) at full speed
+var lean := 0.16             ## forward lean (rad) at run speed
 var sway := 0.04             ## sideways roll (rad) toward the planted foot while walking
+var foot_gap := 0.65         ## least sideways gap between the feet, centre to centre (model units; times mech_scale)
+var step_margin := 0.9       ## share of the leg's geometric foot lift used as the max step-up
 var probe_up := 5.0          ## ground ray starts this far above a hip's ground point (m)
 var probe_down := 12.0       ## and reaches this far below
+var air_tuck := 0.5          ## airborne feet hang this share of the max foot lift above the standing foot level
+var absorb := 0.35           ## landing dip (model units) at a landing of hard_land_speed; less for softer ones
+var absorb_time := 0.1       ## seconds to the bottom of the landing dip (it recovers over about five times that)
+
+var twist_max := deg_to_rad(90.0)    ## hip twist: the legs turn at most this far from the body facing (rad)
+var twist_rate := deg_to_rad(270.0)  ## and at most this fast (rad/s)
+
+const AIR_DELAY := 0.15      ## seconds off the floor before the legs hang (brief bumps keep the feet planted)
+const TWIST_SPEED := Vector2(1.0, 3.0)   ## ground speed (m/s) where the twist starts, and where it is full
+const TWIST_HYST := deg_to_rad(25.0)     ## the travel angle must pass the side line by this to swap forward / reversed
+const TWIST_PICK := deg_to_rad(100.0)    ## legs at the body facing: travel beyond this angle walks reversed
 
 var model: MechModel
 var gait := Gait.new()
+var leg_yaw := 0.0           ## hip twist now (rad, + = legs turned toward the body's right)
 var reached_fraction := 1.0  ## legs whose IK target was in reach last frame (diagnostics, tests)
+## Co-op puppets: the owner's leg_yaw from its snapshots, used instead of the twist computed here (NAN = compute it).
+var twist_override := NAN
 
 var _body: MechController
 var _air_time := 0.0
+var _airborne := false
+var _prev_xf := Transform3D.IDENTITY   ## the model's global transform last frame (carries hanging feet)
+var _land_t := INF                     ## seconds since touchdown
+var _land_depth := 0.0                 ## this landing's dip (model units)
+var _reversed := false                 ## the legs walk backward (travel more than ~90 deg from the body facing)
+var _pilot_facing := Vector3.ZERO      ## the body's facing last frame (the pilot head's yaw rate)
+var _pilot_steps: Array = [{}, {}]     ## each foot's last landed step info last frame (the pilot head's footfall)
+
+
+## Authority (scripts/net/net.gd): presentation, recomputed on every machine from the mech's motion, except `leg_yaw`,
+## which the owner streams (NetMechCodec) so a puppet's legs turn exactly as its owner's; the tuning is fixed at spawn.
+func net_fields() -> Dictionary:
+	return {"mech_scale": Net.SPAWN, "bob": Net.SPAWN, "lean": Net.SPAWN, "sway": Net.SPAWN, "foot_gap": Net.SPAWN,
+		"step_margin": Net.SPAWN, "probe_up": Net.SPAWN, "probe_down": Net.SPAWN, "air_tuck": Net.SPAWN,
+		"absorb": Net.SPAWN, "absorb_time": Net.SPAWN, "twist_max": Net.SPAWN, "twist_rate": Net.SPAWN,
+		"model": Net.LOCAL, "gait": Net.LOCAL, "leg_yaw": Net.OWNER, "reached_fraction": Net.LOCAL,
+		"twist_override": Net.LOCAL, "_body": Net.LOCAL, "_air_time": Net.LOCAL, "_airborne": Net.LOCAL,
+		"_prev_xf": Net.LOCAL, "_land_t": Net.LOCAL, "_land_depth": Net.LOCAL, "_reversed": Net.LOCAL,
+		"_pilot_facing": Net.LOCAL, "_pilot_steps": Net.LOCAL}
 
 
 func _ready() -> void:
@@ -47,38 +96,143 @@ func update_pose(delta: float) -> void:
 		return
 	var up := _body.up()
 	var vel := _body.velocity
-	_air_time = 0.0 if _body.is_on_floor() else _air_time + delta
-	var homes: Array = []
-	for side: float in [-1.0, 1.0]:
-		homes.append(ground_under(model.to_global(model.hip_local(side)), up))
-	gait.run_speed = _body.run_speed
-	gait.update(delta, homes, up, vel, ground_under, _air_time > 0.15)
+	var on_floor := _body.grounded()
+	_air_time = 0.0 if on_floor else _air_time + delta
 	var flat := vel - up * vel.dot(up)
+	var travel := _update_twist(delta, flat, _air_time <= AIR_DELAY)   # body-local travel direction (zero when standing)
+	var tw := MechModel.twist_basis(leg_yaw)
+	gait.facing = (model.global_basis * (tw * Vector3.FORWARD)).normalized()
+	var homes: Array = []
+	var high := INF   # how far the body is above the ground under its hips, beyond standing (m)
+	for side: float in [-1.0, 1.0]:
+		var hip := model.to_global(tw * model.hip_local(side))
+		var g := ground_under(hip, up)
+		homes.append(g)
+		high = minf(high, (hip - g).dot(up) - model.hip_local(side).y * mech_scale)
+	gait.run_speed = _body.run_speed
+	gait.foot_clearance = foot_gap * mech_scale
+	gait.max_lift = max_foot_lift()
+	gait.max_step = max_step()
+	var airborne := not on_floor and (_air_time > AIR_DELAY or high > max_step() + 0.5)
+	if airborne:
+		# Feet hang under the hips, relative to the body: carry them with it, then ease toward the tuck.
+		if _airborne:
+			var carry := model.global_transform * _prev_xf.affine_inverse()
+			for f: Dictionary in gait.feet:
+				f["pos"] = carry * (f["pos"] as Vector3)
+		for i in 2:
+			var side := -1.0 if i == 0 else 1.0
+			var hang := model.to_global(hang_local(side))
+			var over := ((homes[i] as Vector3) - hang).dot(up)   # ground above the hanging foot
+			# Never below the ground when it is near; ground far above the foot is not a foothold (the body is under
+			# a ledge, or off the deck where ground_under falls back to the ring floor).
+			if over <= 0.0 or over > max_step():
+				homes[i] = hang
+	elif _airborne:
+		_land_t = 0.0
+		var hard := maxf(_body.hard_land_speed, 0.1)
+		_land_depth = absorb * clampf(_body.last_impact / hard, 0.0, 1.0)
+	_airborne = airborne
+	_prev_xf = model.global_transform
+	gait.update(delta, homes, up, vel, ground_under, airborne, _body.global_position)
 	var k := clampf(flat.length() / maxf(_body.run_speed, 0.1), 0.0, 1.0)
 	var feet_l: Array = []
-	for p: Vector3 in gait.positions():
-		feet_l.append(model.to_local(p))
-	# Body: dip toward the lower foot (stepping down a curb), bob between steps, lean into speed, roll over the
-	# planted foot.
-	var low := minf(0.0, minf((feet_l[0] as Vector3).y, (feet_l[1] as Vector3).y))
-	var offset := Vector3(0.0, low * 0.7 - bob * k * (1.0 - gait.lift_amount()), 0.0)
+	var dirs_l: Array = []
+	var inv := model.global_basis.inverse()
+	for f: Dictionary in gait.feet:
+		feet_l.append(model.to_local(f["pos"]))
+		var d: Vector3 = f.get("dir", Vector3.ZERO)
+		dirs_l.append(inv * d if d.length_squared() > 1e-6 else Vector3.ZERO)
+	# Body: dip toward the lower foot (stepping down a curb, never more than a step), bob between steps, lean into
+	# speed, roll over the planted foot, absorb a landing. In the air: none of the ground terms.
+	var dip := 0.0
+	if _land_t < absorb_time * 8.0:
+		var x := _land_t / maxf(absorb_time, 0.01)
+		dip = _land_depth * x * exp(1.0 - x)   # down fast, back up slowly
+		_land_t += delta
+	var offset := Vector3(0.0, -dip, 0.0)
+	if not airborne:
+		var low := minf(0.0, minf((feet_l[0] as Vector3).y, (feet_l[1] as Vector3).y))
+		low = maxf(low, -max_step() / mech_scale)
+		offset.y += low * 0.7 - bob * k * (1.0 - gait.lift_amount())
 	var planted_side := 0.0
 	if gait.feet.size() == 2:
 		planted_side = (-1.0 if not gait.feet[0]["stepping"] else 0.0) + (1.0 if not gait.feet[1]["stepping"] else 0.0)
-	var rot := Vector3(-lean * k, 0.0, -sway * planted_side * minf(k * 3.0, 1.0))
+	# Lean into the travel direction (about its right), roll over the planted foot (about the legs' forward). Small
+	# angles: the two rotation vectors add up as the body's euler rotation (both horizontal, so no yaw).
+	var go := travel if travel != Vector3.ZERO else Vector3.FORWARD
+	var leg_fwd := tw * Vector3.FORWARD
+	var rot := go.cross(Vector3.UP) * (-lean * k) + leg_fwd * (sway * planted_side * minf(k * 3.0, 1.0))
 	var lengths := model.leg_lengths()
 	var legs: Array = []
 	var reached := 0
 	for i in 2:
 		var side := -1.0 if i == 0 else 1.0
-		var hip := model.hip_local(side) + offset
-		var r := LegIK.solve_leg(hip, feet_l[i], lengths.x, lengths.y, lengths.z, Vector3.UP, Vector3.FORWARD,
-				model.tarsus_lean())
+		var hip := model.hip_posed(side, offset, rot, leg_yaw)   # the hips ride the pelvis: lean, sway and twist with it
+		var r := LegIK.solve_leg(hip, feet_l[i], lengths.x, lengths.y, lengths.z, Vector3.UP, leg_fwd,
+				model.tarsus_lean(), model.leg_bend)
 		if r["reached"]:
 			reached += 1
-		legs.append({"hip": hip, "knee": r["knee"], "ankle": r["ankle"], "foot": r["foot"]})
+		legs.append({"hip": hip, "knee": r["knee"], "ankle": r["ankle"], "foot": r["foot"], "foot_dir": dirs_l[i]})
 	reached_fraction = float(reached) / 2.0
-	model.set_external_pose(legs, offset, rot)
+	model.set_external_pose(legs, offset, rot, leg_yaw)
+	# The pilot's head: motion in the hull's frame (model units), turning (+ = left), landings, effort, foot plants.
+	if model.pilot != null:
+		var hull := _body.global_basis.orthonormalized()
+		var facing := _body.forward() - up * _body.forward().dot(up)
+		var yaw_rate := 0.0
+		if delta > 0.0 and _pilot_facing.length_squared() > 1e-6 and facing.length_squared() > 1e-6:
+			yaw_rate = _pilot_facing.signed_angle_to(facing, up) / delta
+		_pilot_facing = facing
+		var footfall := false
+		for i in mini(gait.feet.size(), 2):
+			var last: Dictionary = gait.feet[i].get("last", {})
+			if not is_same(last, _pilot_steps[i]) and str(last.get("kind", "")) == "stride":
+				footfall = true
+			_pilot_steps[i] = last
+		model.pilot.idle_always = false
+		model.pilot.feed(delta, {"vel": hull.inverse() * vel / mech_scale, "yaw_rate": yaw_rate, "grounded": on_floor,
+			"effort": (_body.running and flat.length() > 1.0) or _body._climbing, "footfall": footfall})
+
+
+## Ease leg_yaw toward the travel direction (see the header); returns the travel direction in body space (unit,
+## horizontal; zero below the twist's start speed). In the air the legs turn back to the body facing (they hang under
+## the torso, and the thruster nozzles on the hips point the way the body does).
+func _update_twist(delta: float, flat: Vector3, on_ground: bool = true) -> Vector3:
+	var speed := flat.length()
+	var target := 0.0
+	var travel := Vector3.ZERO
+	if speed > 0.05:
+		travel = _body.global_basis.orthonormalized().inverse() * (flat / speed)
+		travel = Vector3(travel.x, 0.0, travel.z).normalized()
+	if on_ground and speed > TWIST_SPEED.x and travel != Vector3.ZERO:
+		var a := atan2(travel.x, -travel.z)   # travel angle from the body facing, + = toward its right
+		if absf(leg_yaw) < 0.02:
+			_reversed = absf(a) > TWIST_PICK   # legs at the body facing: pick afresh
+		elif _reversed and absf(a) < PI * 0.5 - TWIST_HYST:
+			_reversed = false
+		elif not _reversed and absf(a) > PI * 0.5 + TWIST_HYST:
+			_reversed = true
+		var t := wrapf(a + PI, -PI, PI) if _reversed else a
+		target = clampf(t, -twist_max, twist_max) * smoothstep(TWIST_SPEED.x, TWIST_SPEED.y, speed)
+	leg_yaw = twist_override if not is_nan(twist_override) else move_toward(leg_yaw, target, twist_rate * delta)
+	return travel if speed > TWIST_SPEED.x * 0.5 else Vector3.ZERO
+
+
+## Where foot `side` hangs in the air, in model space: under its hip, tucked up by air_tuck of the max lift.
+func hang_local(side: float) -> Vector3:
+	var hip := model.hip_local(side)
+	return MechModel.twist_basis(leg_yaw) * Vector3(hip.x, model.max_foot_lift() * air_tuck, -0.05)
+
+
+## How high a foot can lift before the leg folds too far (m, world): the top of a step's arc.
+func max_foot_lift() -> float:
+	return model.max_foot_lift() * mech_scale if model != null else 0.0
+
+
+## The highest ledge the legs step onto (m, world): a share of the foot lift. Taller is a wall.
+func max_step() -> float:
+	return max_foot_lift() * step_margin
 
 
 ## The ground under point p along local down (physics ray; falls back to the ring floor or y = 0).

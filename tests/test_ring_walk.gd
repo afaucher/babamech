@@ -9,10 +9,13 @@ func setup() -> void:
 	await frames(2)
 	var mech := lab.mech
 	var ring := lab.ring
-	# Walk along +s at ~walk speed for 4 s.
+	# Walk along +s for 2 s at walk speed, then run for 2 s, in a lane clear of the curbs and blocks (at these speeds
+	# the mech would otherwise leave the floor running off the high curb, which is not what this test is about).
 	lab.set_lab_option("mode", "stand")
 	await frames(30)
 	lab.bot_enabled = false
+	lab.place_mech(-11.0, 4.0)
+	await frames(20)
 	near(ring.height(mech.global_position), 0.0, 0.3, "standing on the floor")
 	var start := ring.world_to_arc(mech.global_position)
 	var worst_up := 1.0

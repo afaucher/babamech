@@ -6,23 +6,26 @@ extends Node3D
 ## primitive stand-in they replaced, kept for comparison); the rig, the node names and the hardpoints are the same. The SAME builder is used by the menu preview, the hangar line-up and the lab,
 ## so nothing can show a mech the game won't (Bridge to Friendship's rule for its character screen).
 ##
-## Legs are posed by forward kinematics from a crouch value (thigh forward to the knee, shin back to the reverse "knee"
-## (the ankle), tarsus forward to the foot), so the hip height follows from the leg lengths. The walk is a placeholder
+## Legs are posed by forward kinematics from a crouch value (with the default `leg_bend` -1: thigh back to the knee,
+## shin forward to the ankle, tarsus back to the foot; +1 is the same chain mirrored fore-aft), so the hip height
+## follows from the leg lengths. The walk is a placeholder
 ## swing (no foot planting yet: the design wants procedural IK foot planting at all speeds).
+##
+## Hip twist (set_external_pose's `leg_yaw`, driven by MechRig): the pelvis, the hip sockets and the legs turn about
+## the body's vertical axis through the hip line while the torso, weapons and cockpit keep facing -Z.
 ##
 ## Lab subject (scripts/app/lab.gd): lab_params() / set_lab_param(), lab_options() / set_lab_option(), lab_focus().
 
 const HULL := Color(0.48, 0.53, 0.58)
-const ACCENT := Color(0.9, 0.48, 0.12)
 const JOINT := Color(0.2, 0.21, 0.23)
 const FWD := Vector3(0, 0, -1)
 
 const PARAMS := [
-	{"id": "thigh", "label": "Thigh length", "min": 0.5, "max": 2.0, "value": 0.9},
+	{"id": "thigh", "label": "Thigh length", "min": 0.5, "max": 2.0, "value": 1.1},
 	{"id": "shin", "label": "Shin length", "min": 0.5, "max": 2.0, "value": 1.1},
 	{"id": "tarsus", "label": "Tarsus length", "min": 0.3, "max": 1.5, "value": 0.55},
-	{"id": "crouch", "label": "Crouch", "min": 0.0, "max": 1.0, "value": 0.35},
-	{"id": "stance", "label": "Stance width", "min": 0.3, "max": 1.6, "value": 1.1},
+	{"id": "crouch", "label": "Crouch", "min": 0.0, "max": 1.0, "value": 0.475},
+	{"id": "stance", "label": "Stance width", "min": 0.3, "max": 2.0, "value": 1.35},
 	{"id": "body", "label": "Body scale", "min": 0.6, "max": 1.6, "value": 1.0},
 	{"id": "head", "label": "Head scale", "min": 0.5, "max": 2.0, "value": 1.15},
 	{"id": "gait", "label": "Walk rate (cycles/s)", "min": 0.0, "max": 2.0, "value": 0.0},
@@ -38,6 +41,20 @@ var loadout: Dictionary = {}
 var params: Dictionary = {}
 ## Seconds of idle bob / walk (the lab's speed scales it).
 var time_scale := 1.0
+## The player's accent colour (cosmetic): tints the low-poly parts' accent surfaces (MechMeshes.apply_accent) and the
+## placeholder's trim. Set with set_accent().
+var accent: Color = MechMeshes.ORANGE
+## The pilot's expressive head in the cockpit (low-poly art only; null for the placeholder). Rebuilt (a new node) on
+## every rebuild(). `pilot_seed`: its look seed (idle blinks / glances; e.g. the roster slot), set before configure().
+var pilot: PilotHead
+var pilot_seed := 0
+## Which way the leg chain bends (cosmetic, every machine uses the same default): -1 = the "real chicken walk" (thigh
+## back-down from the hip to a knee pointing BACK, shin forward-down to the ankle, tarsus leaning back to the foot);
+## +1 = the old leg (knee forward, ankle back). The whole chain is mirrored fore-aft about the hip, the segment meshes
+## included (their front/back detail mirrors with the bend); the feet, toes and spur keep their facing. Hip height,
+## foot lift and step-up do not depend on it. Read by the FK pose here and by MechRig's IK (LegIK.solve_leg's bend).
+var leg_bend := -1.0
+const BEND_ORDER := ["chicken", "forward"]   ## lab option "legs": leg_bend -1, +1
 
 var _t := 0.0
 var _body: Node3D          ## everything above the hips (bobs, carries the head and weapons)
@@ -46,6 +63,17 @@ var _hip_height := 0.0
 var _ext_legs: Array = []              ## external (IK) leg pose, see set_external_pose()
 var _ext_body_offset := Vector3.ZERO
 var _ext_body_rot := Vector3.ZERO
+var _leg_yaw := 0.0                    ## hip twist (rad, + = legs turned toward the body's right), see set_external_pose()
+var _pelvis: Node3D                    ## the pelvis mesh (or the placeholder's pelvis box): turns with the legs
+
+
+## Authority (scripts/net/net.gd): who it is (head, chassis, loadout, accent, leg shape) is fixed at spawn from the crew
+## entry; the pose is presentation, recomputed on every machine (MechRig drives it from the mech's motion).
+func net_fields() -> Dictionary:
+	return {"art": Net.LOCAL, "head_id": Net.SPAWN, "chassis_id": Net.SPAWN, "loadout": Net.SPAWN, "params": Net.SPAWN,
+		"time_scale": Net.LOCAL, "accent": Net.SPAWN, "pilot": Net.LOCAL, "pilot_seed": Net.LOCAL, "leg_bend": Net.SPAWN,
+		"_t": Net.LOCAL, "_body": Net.LOCAL, "_legs": Net.LOCAL, "_hip_height": Net.LOCAL, "_ext_legs": Net.LOCAL,
+		"_ext_body_offset": Net.LOCAL, "_ext_body_rot": Net.LOCAL, "_leg_yaw": Net.LOCAL, "_pelvis": Net.LOCAL}
 
 
 func _init() -> void:
@@ -71,6 +99,8 @@ func rebuild() -> void:
 		remove_child(c)
 		c.queue_free()
 	_legs.clear()
+	_pelvis = null
+	pilot = null
 	if loadout.is_empty():
 		loadout = MechCatalog.sanitize_loadout(chassis_id, {})
 	var s := float(params["body"])
@@ -79,9 +109,21 @@ func rebuild() -> void:
 	add_child(_body)
 	if art == "lowpoly":
 		_build_lowpoly(s)
+		MechMeshes.apply_accent(self, accent)
 	else:
 		_build_placeholder(s)
 	pose()
+
+
+## Recolour the accent (no rebuild for the low-poly art; the placeholder bakes it into its trim boxes, so it rebuilds).
+func set_accent(c: Color) -> void:
+	accent = c
+	if _body == null:
+		return
+	if art == "lowpoly":
+		MechMeshes.apply_accent(self, accent)
+	else:
+		rebuild()
 
 
 ## The art meshes. Body parts sit in a "Chassis" node scaled by the body param, at MechMeshes.LAYOUT / MOUNTS.
@@ -96,6 +138,8 @@ func _build_lowpoly(s: float) -> void:
 		mi.position = MechMeshes.LAYOUT[part][0]
 		mi.rotation_degrees = MechMeshes.LAYOUT[part][1]
 		chassis.add_child(mi)
+		if part == "pelvis":
+			_pelvis = mi
 	for side: float in [-1.0, 1.0]:
 		var pod := MechMeshes.instance("shoulder_pod")
 		pod.name = "ShoulderPod_%s" % ("l" if side < 0.0 else "r")
@@ -107,9 +151,14 @@ func _build_lowpoly(s: float) -> void:
 	seat.name = "Cockpit"
 	seat.position = MechMeshes.LAYOUT["hatch"][0]
 	chassis.add_child(seat)
-	var head := MechParts.head(head_id, float(params["head"]) / (s * MechMeshes.BODY_SCALE))   # the head param is absolute
+	var head := Node3D.new()   # the expressive pilot head (PilotHead), in a holder named like the static head was
+	head.name = "Head_" + head_id
+	head.scale = Vector3.ONE * float(params["head"]) / (s * MechMeshes.BODY_SCALE)   # the head param is absolute
 	head.position = Vector3(0, -0.12, 0)
 	seat.add_child(head)
+	pilot = PilotHead.make(head_id, pilot_seed)
+	pilot.idle_always = true   # idles on its own (menu, hangar, lab); MechRig turns it off when it feeds the head
+	head.add_child(pilot)
 	# Hardpoints: the mount hardware (mirrored for the left) and the weapon.
 	for hp: Dictionary in MechCatalog.chassis(chassis_id)["hardpoints"]:
 		var id := str(hp["id"])
@@ -145,6 +194,12 @@ func _build_lowpoly(s: float) -> void:
 			mi.name = "%s_%s" % [part, tag]
 			add_child(mi)
 			leg[part] = mi
+		# The hip is a ball joint: the socket is part of the pelvis (it rides the body), the ball sits on the pivot.
+		var socket := MechMeshes.instance("hip_socket")
+		socket.name = "socket_" + tag
+		socket.scale = Vector3(side, 1, 1) * s
+		_body.add_child(socket)
+		leg["socket"] = socket
 		for j: String in ["hip", "knee", "ankle"]:
 			var cap := MechMeshes.instance(j + "_cap")
 			cap.name = "%s_%s" % [j, tag]
@@ -172,16 +227,17 @@ func _build_lowpoly(s: float) -> void:
 ## The primitive stand-in (boxes, spheres, cylinders).
 func _build_placeholder(s: float) -> void:
 	# Pelvis, torso pod, armour plates.
-	_body.add_child(MechParts.box(Vector3(1.0, 0.35, 0.8) * s, JOINT, Vector3(0, 0, 0)))
+	_pelvis = MechParts.box(Vector3(1.0, 0.35, 0.8) * s, JOINT, Vector3(0, 0, 0))
+	_body.add_child(_pelvis)
 	var torso := MechParts.box(Vector3(1.5, 0.95, 1.7) * s, HULL, Vector3(0, 0.6 * s, 0.1 * s))
 	torso.name = "Torso"
 	_body.add_child(torso)
-	_body.add_child(MechParts.box(Vector3(1.55, 0.12, 1.2) * s, ACCENT, Vector3(0, 1.12 * s, 0.25 * s)))
+	_body.add_child(MechParts.box(Vector3(1.55, 0.12, 1.2) * s, accent, Vector3(0, 1.12 * s, 0.25 * s)))
 	# Nose cockpit: a lower snout forward of the torso, the canopy, the pilot's head inside it.
 	var nose := MechParts.box(Vector3(1.0, 0.6, 1.1) * s, HULL.lightened(0.1), Vector3(0, 0.35 * s, -1.2 * s))
 	nose.name = "Nose"
 	_body.add_child(nose)
-	_body.add_child(MechParts.box(Vector3(1.04, 0.1, 0.3) * s, ACCENT, Vector3(0, 0.1 * s, -1.65 * s)))
+	_body.add_child(MechParts.box(Vector3(1.04, 0.1, 0.3) * s, accent, Vector3(0, 0.1 * s, -1.65 * s)))
 	var seat := Node3D.new()
 	seat.name = "Cockpit"
 	seat.position = Vector3(0, 0.62 * s, -1.2 * s)
@@ -255,17 +311,50 @@ func hip_local(side: float) -> Vector3:
 	return Vector3(side * float(params["stance"]) * 0.5 * float(params["body"]), _hip_height, 0.0)
 
 
+## Hip `side`'s pivot in model space with the body moved by `body_offset` and turned by `body_rot` (radians, the
+## body node's own rotation) from its standing pose: the hips are part of the pelvis, so they move with it.
+## `leg_yaw`: the hip twist (rad, + = toward the body's right), turning the hip line about the body's vertical axis.
+func hip_posed(side: float, body_offset: Vector3, body_rot: Vector3, leg_yaw: float = 0.0) -> Vector3:
+	return _body_rest() + body_offset + Basis.from_euler(body_rot) * (twist_basis(leg_yaw) * _hip_in_body(side))
+
+
+## The rotation of the hip twist `leg_yaw` (rad, + = toward the body's right) about the model's up.
+static func twist_basis(leg_yaw: float) -> Basis:
+	return Basis(Vector3.UP, -leg_yaw)
+
+
+## The body node's standing position (its origin is 0.1 above the hip line), and a hip pivot relative to it.
+func _body_rest() -> Vector3:
+	return Vector3(0, _hip_height + 0.1 * float(params["body"]), 0)
+
+
+func _hip_in_body(side: float) -> Vector3:
+	var s := float(params["body"])
+	return Vector3(side * float(params["stance"]) * 0.5 * s, -0.1 * s, 0.0)
+
+
+## How far a foot can lift straight up from standing before the leg folds past `fold` (the hip-to-ankle distance as
+## a share of thigh + shin), in model units. The gait's step arc and the max step-up come from this.
+func max_foot_lift(fold: float = 0.45) -> float:
+	var l := leg_lengths()
+	return maxf(_hip_height - l.z * cos(tarsus_lean()) - fold * (l.x + l.y), 0.0)
+
+
 ## Drive the legs from outside (procedural IK: MechRig). `legs`: per side (left, right) {hip, knee, ankle, foot} in model
 ## space; `body_offset` / `body_rot` move the body from its standing pose. Overrides the built-in walk until cleared.
-func set_external_pose(legs: Array, body_offset: Vector3, body_rot: Vector3) -> void:
+## `leg_yaw`: the hip twist (rad, + = toward the body's right): the pelvis, sockets, knee planes and joint caps turn by
+## it. A leg may carry "foot_dir" (model space, horizontal): where that foot's toes point (default: the legs' forward).
+func set_external_pose(legs: Array, body_offset: Vector3, body_rot: Vector3, leg_yaw: float = 0.0) -> void:
 	_ext_legs = legs
 	_ext_body_offset = body_offset
 	_ext_body_rot = body_rot
+	_leg_yaw = leg_yaw
 	pose()
 
 
 func clear_external_pose() -> void:
 	_ext_legs = []
+	_leg_yaw = 0.0
 	pose()
 
 
@@ -278,28 +367,40 @@ func pose() -> void:
 	var lt := float(params["thigh"]) * s
 	var ls := float(params["shin"]) * s
 	var lm := float(params["tarsus"]) * s
-	var a_t := lerpf(0.3, 0.95, c)     # thigh: forward of straight down
-	var a_s := -lerpf(0.45, 1.15, c)   # shin: back (the reverse joint)
-	var a_m := tarsus_lean()           # tarsus: forward again
+	var b := _bend()
+	var a_t := lerpf(0.3, 0.95, c) * b     # thigh: forward of straight down (back when flipped)
+	var a_s := -lerpf(0.45, 1.15, c) * b   # shin: back (the reverse joint; forward when flipped)
+	var a_m := tarsus_lean() * b           # tarsus: forward again (back when flipped)
 	_hip_height = lt * cos(a_t) + ls * cos(a_s) + lm * cos(a_m)
-	if _ext_legs.size() == _legs.size() and not _legs.is_empty():
+	var external := _ext_legs.size() == _legs.size() and not _legs.is_empty()
+	var tw := twist_basis(_leg_yaw if external else 0.0)
+	if _pelvis != null:   # the pelvis turns about the hip line's centre (the body's vertical axis)
+		if art == "lowpoly":
+			var rest: Array = MechMeshes.LAYOUT["pelvis"]
+			_pelvis.transform = Transform3D(tw * Basis.from_euler((rest[1] as Vector3) * (PI / 180.0)), tw * (rest[0] as Vector3))
+		else:
+			_pelvis.basis = tw
+	for leg: Dictionary in _legs:
+		if leg.has("socket"):
+			var side := float(leg["side"])
+			var socket := leg["socket"] as Node3D
+			socket.transform = Transform3D(tw * Basis.from_scale(Vector3(side, 1, 1) * s), tw * _hip_in_body(side))
+	if external:
 		_pose_external(s)
 		return
 	var gait := float(params["gait"])
 	var walking := gait > 0.0
 	var phase := _t * TAU * gait
 	var bob := (absf(sin(phase)) * 0.08 * s) if walking else sin(_t * 1.6) * 0.02 * s
-	var hip_y := _hip_height + bob
-	_body.position = Vector3(0, hip_y + 0.1 * s, 0)
+	_body.position = _body_rest() + Vector3(0, bob, 0)
 	_body.rotation = Vector3(0.03 * sin(phase * 2.0) if walking else 0.0, 0.0, 0.04 * sin(phase) if walking else 0.0)
 	var stride := float(params["stride"])
-	var w := float(params["stance"]) * 0.5 * s
 	for leg: Dictionary in _legs:
 		var side := float(leg["side"])
 		var lp := phase + (PI if side > 0.0 else 0.0)
 		var swing := stride * sin(lp) if walking else 0.0
-		var lift := maxf(0.0, cos(lp)) * 0.35 if walking else 0.0   # fold the leg while it swings forward
-		var hip := Vector3(side * w, hip_y, 0)
+		var lift := (maxf(0.0, cos(lp)) * 0.35 if walking else 0.0) * b   # fold the leg while it swings forward
+		var hip := hip_posed(side, Vector3(0, bob, 0), _body.rotation)
 		var knee := hip + _dir(a_t + swing + lift) * lt
 		var ankle := knee + _dir(a_s + swing - lift * 1.4) * ls
 		var foot := ankle + _dir(a_m + swing + lift * 0.6) * lm
@@ -316,25 +417,56 @@ func _pose_external(s: float) -> void:
 		var knee: Vector3 = p["knee"]
 		var ankle: Vector3 = p["ankle"]
 		var foot: Vector3 = p["foot"]
-		_place_leg(leg, hip, knee, ankle, foot, s)
+		_place_leg(leg, hip, knee, ankle, foot, s, _leg_yaw, p.get("foot_dir", Vector3.ZERO))
 
 
-## Put one leg's segments, joint caps and foot on its four joint points (model space).
-func _place_leg(leg: Dictionary, hip: Vector3, knee: Vector3, ankle: Vector3, foot: Vector3, s: float) -> void:
+## Put one leg's segments, joint caps and foot on its four joint points (model space). `leg_yaw`: the hip twist (the
+## knee plane and the caps turn with it); `foot_dir`: where the toes point (model space; zero = the legs' forward).
+func _place_leg(leg: Dictionary, hip: Vector3, knee: Vector3, ankle: Vector3, foot: Vector3, s: float,
+		leg_yaw: float = 0.0, foot_dir: Vector3 = Vector3.ZERO) -> void:
 	leg["points"] = {"hip": hip, "knee": knee, "ankle": ankle, "foot": foot}
+	var side := float(leg["side"])
+	var tw := twist_basis(leg_yaw)
+	var foot_yaw := -leg_yaw
+	if Vector2(foot_dir.x, foot_dir.z).length_squared() > 1e-6:
+		foot_yaw = atan2(-foot_dir.x, -foot_dir.z)   # the turn about +Y that brings -Z onto foot_dir
 	if art == "lowpoly":
-		var mirror := float(leg["side"]) < 0.0
-		MechParts.aim(leg["thigh"], hip, knee, MechMeshes.REST_LENGTH["thigh"], s, mirror)
-		MechParts.aim(leg["shin"], knee, ankle, MechMeshes.REST_LENGTH["shin"], s, mirror)
-		MechParts.aim(leg["tarsus"], ankle, foot, MechMeshes.REST_LENGTH["tarsus"], s, mirror)
-		(leg["hip"] as Node3D).position = hip
-	else:
-		MechParts.span(leg["thigh"], hip, knee, 0.32 * s, 0.4 * s)
-		MechParts.span(leg["shin"], knee, ankle, 0.24 * s, 0.3 * s)
-		MechParts.span(leg["tarsus"], ankle, foot, 0.16 * s)
+		var mirror := side < 0.0
+		var right := tw * Vector3.RIGHT
+		var b := _bend()   # flipped: the segments and caps are mirrored front-to-back too (their detail follows the bend)
+		_aim(leg["thigh"], hip, knee, MechMeshes.REST_LENGTH["thigh"], s, mirror, right, b)
+		_aim(leg["shin"], knee, ankle, MechMeshes.REST_LENGTH["shin"], s, mirror, right, b)
+		_aim(leg["tarsus"], ankle, foot, MechMeshes.REST_LENGTH["tarsus"], s, mirror, right, b)
+		var cap_basis := tw * Basis.from_scale(Vector3(side, 1, b) * s)
+		(leg["hip"] as Node3D).transform = Transform3D(cap_basis, hip)
+		(leg["knee"] as Node3D).transform = Transform3D(cap_basis, knee)
+		(leg["ankle"] as Node3D).transform = Transform3D(cap_basis, ankle)
+		(leg["foot"] as Node3D).transform = Transform3D(Basis(Vector3.UP, foot_yaw).scaled(Vector3.ONE * s), foot)
+		return
+	MechParts.span(leg["thigh"], hip, knee, 0.32 * s, 0.4 * s)
+	MechParts.span(leg["shin"], knee, ankle, 0.24 * s, 0.3 * s)
+	MechParts.span(leg["tarsus"], ankle, foot, 0.16 * s)
 	(leg["knee"] as Node3D).position = knee
 	(leg["ankle"] as Node3D).position = ankle
-	(leg["foot"] as Node3D).position = foot
+	(leg["foot"] as Node3D).transform = Transform3D(Basis(Vector3.UP, foot_yaw), foot)
+
+
+## MechParts.aim with the leg's own right (the hip twist turns it): a low-poly segment from joint `a` down to `b`,
+## stretched to fit, scaled `s` across, mirrored in X for the left leg. With right = +X it is MechParts.aim.
+## `bend` < 0 also mirrors it in its own Z (front-to-back, the flipped leg: MechModel.leg_bend).
+static func _aim(node: Node3D, a: Vector3, b: Vector3, rest: float, s: float, mirror: bool, right: Vector3,
+		bend: float = 1.0) -> void:
+	var d := a - b
+	var length := maxf(d.length(), 0.001)
+	var y := d / length
+	var x := (right - y * y.dot(right)).normalized()
+	var z := x.cross(y)
+	node.transform = Transform3D(Basis(x * (-s if mirror else s), y * (length / rest), z * (-s if bend < 0.0 else s)), a)
+
+
+## leg_bend as a clean sign (+1 or -1).
+func _bend() -> float:
+	return -1.0 if leg_bend < 0.0 else 1.0
 
 
 ## The joint points leg `i` (0 left, 1 right) was last posed on, in model space: {hip, knee, ankle, foot}.
@@ -375,6 +507,8 @@ func lab_options() -> Array:
 		{"id": "art", "label": "Art", "choices": ART_ORDER, "value": art},
 		{"id": "head", "label": "Head", "choices": MechCatalog.HEAD_ORDER, "value": head_id},
 		{"id": "chassis", "label": "Chassis", "choices": MechCatalog.CHASSIS_ORDER, "value": chassis_id},
+		{"id": "accent", "label": "Accent", "choices": MechMeshes.ACCENT_ORDER, "value": _accent_id()},
+		{"id": "legs", "label": "Leg bend", "choices": BEND_ORDER, "value": bend_id()},
 	]
 	for hp: Dictionary in MechCatalog.chassis(chassis_id)["hardpoints"]:
 		var choices: Array = [""]
@@ -391,10 +525,32 @@ func set_lab_option(id: String, v: String) -> void:
 		configure(v, chassis_id, loadout)
 	elif id == "chassis":
 		configure(head_id, v, loadout)
+	elif id == "accent":
+		set_accent(MechMeshes.ACCENTS.get(v, MechMeshes.ORANGE))
+	elif id == "legs":
+		set_bend_id(v)
 	elif id.begins_with("hp:"):
 		var l := loadout.duplicate()
 		l[id.trim_prefix("hp:")] = v
 		configure(head_id, chassis_id, l)
+
+
+## The lab's name for leg_bend ("chicken" = -1, "forward" = +1), and setting it by that name.
+func bend_id() -> String:
+	return "forward" if leg_bend > 0.0 else "chicken"
+
+
+func set_bend_id(v: String) -> void:
+	leg_bend = 1.0 if v == "forward" else -1.0
+	pose()
+
+
+## The ACCENTS id of the current accent colour ("orange" when it is not one of them).
+func _accent_id() -> String:
+	for id: String in MechMeshes.ACCENT_ORDER:
+		if (MechMeshes.ACCENTS[id] as Color).is_equal_approx(accent):
+			return id
+	return "orange"
 
 
 func lab_focus() -> Vector3:

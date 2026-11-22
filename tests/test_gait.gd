@@ -7,7 +7,7 @@ const STANCE := 1.2
 
 func setup() -> void:
 	var g := Gait.new()
-	g.run_speed = 13.0
+	g.run_speed = 22.0
 	var ground := func(p: Vector3, _up: Vector3) -> Vector3: return Vector3(p.x, 0.0, p.z)
 	var pos := Vector3.ZERO
 	var heading := 0.0
@@ -22,7 +22,7 @@ func setup() -> void:
 	for frame in int(12.0 / dt):
 		var t := float(frame) * dt
 		var k := clampf(sin(t / 12.0 * PI), 0.0, 1.0)
-		var speed := k * 13.0
+		var speed := k * 22.0
 		if t > 5.0 and t < 7.0:
 			heading += 0.8 * dt
 		var fwd := Vector3(-sin(heading), 0, -cos(heading))
@@ -39,7 +39,7 @@ func setup() -> void:
 				steps += 1
 			max_err = maxf(max_err, ((f["pos"] as Vector3) - (homes[i] as Vector3)).length())
 			prev_stepping[i] = f["stepping"]
-		if speed < 6.0 and g.stepping_count() > 1:
+		if speed < 12.0 and g.stepping_count() > 1:
 			both_at_walk += 1
 		prev = g.positions()
 	near(max_slip, 0.0, 1e-5, "planted feet never slide")

@@ -11,7 +11,9 @@
 # Players are Host, Crew2, Crew3, Crew4 with the heads chicken, pickle, corn, dog; each window keeps its own
 # settings file (user://settings_<name>.cfg), so a crew run never touches your own settings. Extra args go to every window.
 #
-# GPU sharing: windows use the GPU. If ComfyUI (port 8188) is rendering, close it first or stick to tests (headless).
+# GPU sharing: windows use the GPU, so this takes the shared GPU lock (godot_env.ps1) first and WAITS while another
+# session renders (ComfyUI, port 8188) or runs visual tests. A single window holds the lock until it closes (this script
+# blocks meanwhile); crew windows hold it until the last one closes. Close windows when done: renders wait on them.
 .  "$PSScriptRoot\godot_env.ps1"
 $godot = Resolve-BabamechGodot
 Update-BabamechImport $godot
@@ -23,11 +25,19 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     elseif ($args[$i] -eq "-ShotDir" -and $i + 1 -lt $args.Count) { $shotDir = [string]$args[$i + 1]; $i++ }
     elseif ($args[$i] -eq "-Size" -and $i + 1 -lt $args.Count) { $size = [string]$args[$i + 1]; $i++ }
     elseif ($args[$i] -eq "-JoinLate" -and $i + 1 -lt $args.Count) { $late = [double]$args[$i + 1]; $i++ }
+    elseif ($args[$i] -eq "-TestDrive") { $rest += @("--scene", "res://scenes/test_drive.tscn") }
+    elseif ($args[$i] -eq "-Seed" -and $i + 1 -lt $args.Count) { $rest += @("--seed", [string]$args[$i + 1]); $i++ }
     elseif ($args[$i] -is [array]) { $rest += ($args[$i] -join ",") }
     else { $rest += $args[$i] }
 }
+$gpu = $rest -notcontains "--headless"
+$what = "$(if ($crew -ge 2) { "crew of $crew" } else { 'game window' }) $($rest -join ' ')".Trim()
+if ($gpu -and -not (Enter-BabamechGpu $what)) {
+    Write-Host "Not opening a window: the GPU stayed busy (see above)." -ForegroundColor Yellow
+    exit 2
+}
 if ($crew -lt 2) {
-    & $godot --path $PSScriptRoot -- @rest
+    try { & $godot --path $PSScriptRoot -- @rest } finally { if ($gpu) { Exit-BabamechGpu } }
     exit $LASTEXITCODE
 }
 if ($crew -gt 4) { Write-Host "A crew is at most 4 (a 5th window would be refused: Crew is full)." -ForegroundColor Yellow }
@@ -44,13 +54,16 @@ function Start-Player([int]$n, [string[]]$gameArgs, [string]$who) {
     if ($shotDir -ne "") { New-Item -ItemType Directory -Force -Path $shotDir | Out-Null; $all += @("--crew-shot", "`"$shotDir\$who.png`"", "--crew-size", "$crew") }
     return Start-Process -FilePath $godot -ArgumentList $all -PassThru
 }
-$procs = @(Start-Player 1 @("--net-host") "Host")
-Start-Sleep -Seconds 2
-for ($n = 2; $n -le $crew; $n++) {
-    if ($late -gt 0 -and $n -eq $crew) {
-        Write-Host "Window $n joins in $late s..."
-        Start-Sleep -Milliseconds ([int]($late * 1000))
+try {
+    $procs = @(Start-Player 1 @("--net-host") "Host")
+    Start-Sleep -Seconds 2
+    for ($n = 2; $n -le $crew; $n++) {
+        if ($late -gt 0 -and $n -eq $crew) {
+            Write-Host "Window $n joins in $late s..."
+            Start-Sleep -Milliseconds ([int]($late * 1000))
+        }
+        $procs += Start-Player $n @("--net-join", "127.0.0.1:$port") "Crew$n"
     }
-    $procs += Start-Player $n @("--net-join", "127.0.0.1:$port") "Crew$n"
-}
+    if ($gpu) { Move-BabamechGpu @($procs | ForEach-Object { $_.Id }) $what }   # held until every window closes
+} finally { if ($gpu) { Exit-BabamechGpu } }   # no-op once handed to the windows; frees it if starting failed
 Write-Host "Started $crew windows on port $port$(if ($link) { " (link: $link)" }). Close them to stop."

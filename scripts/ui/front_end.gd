@@ -11,13 +11,16 @@ extends Control
 ## finds it). Join: the first open Steam lobby for this game and build; without Steam, ENet on 127.0.0.1.
 
 const LAB_SCENE := "res://scenes/lab.tscn"
+const LAUNCH_ALERT_TIME := 2.5   ## seconds of bay alert between Launch and the mission loading
 
 var screen := ""
 var settings: Dictionary = {}
 var stage: MechStage
 var panel_box: VBoxContainer
+var footer: VBoxContainer       ## pinned below panel_box's scroll (the screen's main actions)
 var status_label: Label
 var note := ""        ## why Play went the way it did ("Steam not running: ...")
+var launching := false   ## Launch pressed: the bay is in alert, the mission loads after LAUNCH_ALERT_TIME
 
 # Buttons and fields tests drive (the current screen's; null on other screens).
 var btn_play: Button
@@ -30,6 +33,7 @@ var btn_leave: Button
 var btn_launch: Button
 var name_edit: LineEdit
 var head_pick: OptionButton
+var accent_picks: Dictionary = {}   ## accent id -> Button (the swatches in Settings)
 var chassis_pick: OptionButton
 var weapon_picks: Dictionary = {}   ## hardpoint id -> OptionButton
 var crew_list: VBoxContainer
@@ -41,14 +45,14 @@ var _crew_shot_size := 0
 
 
 func _ready() -> void:
-	set_anchors_preset(Control.PRESET_FULL_RECT)
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	settings = GameSettings.load_settings()
 	var bg := ColorRect.new()
 	bg.color = Color(0.07, 0.08, 0.1)
-	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
 	var row := HBoxContainer.new()
-	row.set_anchors_preset(Control.PRESET_FULL_RECT)
+	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(row)
 	var left := PanelContainer.new()
 	left.custom_minimum_size = Vector2(520, 0)
@@ -62,13 +66,23 @@ func _ready() -> void:
 	for side in ["left", "right", "top", "bottom"]:
 		margin.add_theme_constant_override("margin_" + side, 28)
 	left.add_child(margin)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 10)
+	margin.add_child(col)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	margin.add_child(scroll)
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	col.add_child(scroll)
 	panel_box = VBoxContainer.new()
 	panel_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	panel_box.add_theme_constant_override("separation", 10)
 	scroll.add_child(panel_box)
+	# The screen's main actions, pinned under the scrolling part so they are always on screen (the hangar's Launch /
+	# Settings / Leave crew when the crew list and notes make the panel taller than the window).
+	footer = VBoxContainer.new()
+	footer.name = "Footer"
+	footer.add_theme_constant_override("separation", 10)
+	col.add_child(footer)
 	stage = MechStage.new()
 	row.add_child(stage)
 	status_label = Label.new()
@@ -85,6 +99,7 @@ func _ready() -> void:
 	Session.session_ended.connect(_on_session_ended)
 	Session.roster_changed.connect(_on_roster_changed)
 	Session.invite_received.connect(_on_invite)
+	Session.mission_started.connect(_on_mission_started)
 	var args := OS.get_cmdline_user_args()
 	_shot_path = Boot.arg_value(args, "--menu-shot")
 	if Boot.arg_value(args, "--menu-after").is_valid_float():
@@ -100,13 +115,27 @@ func _ready() -> void:
 	show_screen(first if first in ["main", "settings", "hangar", "busy"] else "main")
 	if _shot_path != "":
 		_take_shot.call_deferred()
+	var audio := _audio()
+	if audio != null and audio.music != null and DisplayServer.get_name() != "headless":
+		audio.music.set_ambience("hangar")
+		audio.music.set_mode("hangar")
+
+
+func _exit_tree() -> void:
+	var audio := _audio()
+	if audio != null and audio.music != null:
+		if audio.music.ambience_mode == "hangar":
+			audio.music.set_ambience("off")
+		if audio.music.music_mode == "hangar":
+			audio.music.set_mode("off")
 
 
 func show_screen(s: String) -> void:
 	screen = s
-	for c in panel_box.get_children():
-		panel_box.remove_child(c)
-		c.queue_free()
+	for box: Container in [panel_box, footer]:
+		for c in box.get_children():
+			box.remove_child(c)
+			c.queue_free()
 	btn_play = null
 	btn_join = null
 	btn_settings = null
@@ -117,6 +146,7 @@ func show_screen(s: String) -> void:
 	btn_launch = null
 	name_edit = null
 	head_pick = null
+	accent_picks.clear()
 	chassis_pick = null
 	weapon_picks.clear()
 	crew_list = null
@@ -137,6 +167,7 @@ func _build_main() -> void:
 	_gap(18)
 	btn_play = _button("Play / Host", _on_play)
 	btn_join = _button("Join", _on_join)
+	_button("Test drive", func() -> void: get_tree().change_scene_to_file(TestDrive.SCENE))
 	btn_settings = _button("Settings", func() -> void: show_screen("settings"))
 	btn_lab = _button("Lab", _on_lab)
 	btn_quit = _button("Quit", func() -> void: get_tree().quit())
@@ -152,7 +183,8 @@ func _build_settings() -> void:
 	_title("Settings", 40)
 	_section("Pilot")
 	name_edit = LineEdit.new()
-	name_edit.placeholder_text = "Steam name" if Session.steam_available() else "Pilot"
+	# Empty field: show the name the crew actually sees (a run-only --net-name, the Steam persona, else "Pilot").
+	name_edit.placeholder_text = Session.display_name("Steam name" if Session.steam_available() else "Pilot")
 	name_edit.text = str(settings["player_name"])
 	name_edit.max_length = 24
 	name_edit.text_changed.connect(func(t: String) -> void: _set_profile("player_name", t.strip_edges()))
@@ -161,6 +193,7 @@ func _build_settings() -> void:
 		MechCatalog.HEAD_ORDER.find(Session.local_head()),
 		func(i: int) -> void: _set_profile("head", MechCatalog.HEAD_ORDER[i]))
 	_row("Head", head_pick)
+	_row("Accent", _accent_swatches())
 	_section("Video")
 	_row("Fullscreen", _check(bool(settings["fullscreen"]), func(on: bool) -> void: _set_setting("fullscreen", on)))
 	_row("VSync", _check(bool(settings["vsync"]), func(on: bool) -> void: _set_setting("vsync", on)))
@@ -205,25 +238,28 @@ func _build_hangar() -> void:
 		var hp_id := str(hp["id"])
 		var pick := _option(labels, ids.find(str(loadout.get(hp_id, ""))), func(i: int) -> void:
 			var l := _loadout()
-			l[hp_id] = ids[i]
+			var chosen := str(ids[i])
+			l[hp_id] = chosen
 			_set_setting("loadout", l)
+			_push_profile()
 			_update_stats()
-			_refresh_stage())
+			_refresh_stage()
+			_play_mount_sfx(chosen))
 		weapon_picks[hp_id] = pick
 		_row(str(hp["label"]), pick)
 	stats_label = Label.new()
 	stats_label.add_theme_font_size_override("font_size", 14)
 	panel_box.add_child(stats_label)
 	_update_stats()
-	_gap(12)
-	btn_launch = _button("Launch mission", _on_launch)
-	btn_launch.disabled = Session.online() and not Session.hosting
-	if Session.can_invite():
-		_button("Invite crew (Steam)", func() -> void: Session.invite_crew())
-	_button("Settings", func() -> void: show_screen("settings"))
-	btn_leave = _button("Leave crew" if Session.online() else "Back", _on_leave)
 	if note != "":
 		_text(note, 13, Color(1.0, 0.75, 0.4))
+	var client := Session.online() and not Session.hosting
+	btn_launch = _button("Waiting for the host to launch" if client else "Launch mission", _on_launch, footer)
+	btn_launch.disabled = client
+	if Session.can_invite():
+		_button("Invite crew (Steam)", func() -> void: Session.invite_crew(), footer)
+	_button("Settings", func() -> void: show_screen("settings"), footer)
+	btn_leave = _button("Leave crew" if Session.online() else "Back", _on_leave, footer)
 
 
 func _build_busy() -> void:
@@ -265,8 +301,45 @@ func _on_lab() -> void:
 	get_tree().change_scene_to_file(LAB_SCENE)
 
 
+## Launch. In a crew only the host's counts: Session.start_mission sends the seed to the crew and every machine (this one
+## too) hears mission_started, plays the bay alert and loads the mission at the same moment on the shared clock. Solo
+## (offline) this machine just plays the alert and loads the test drive. No mission yet: the test drive is it.
 func _on_launch() -> void:
-	_on_status("No missions yet: the mission scene is not built.")
+	if launching:
+		return
+	if Session.online():
+		if Session.hosting:
+			Session.start_mission(_mission_seed())
+		return
+	_play_launch(LAUNCH_ALERT_TIME)
+
+
+## The mission seed: --seed for this run, else 1 (the test drive's own default).
+static func _mission_seed() -> int:
+	var s := Boot.arg_value(OS.get_cmdline_user_args(), "--seed")
+	return int(s) if s.is_valid_int() else 1
+
+
+func _on_mission_started(_params: Dictionary) -> void:
+	_play_launch(Session.mission.seconds_to_load())
+
+
+## The bay goes to launch alert (docs/design/hangar.md), then the mission loads after `delay` seconds.
+func _play_launch(delay: float) -> void:
+	if launching:
+		return
+	launching = true
+	if btn_launch == null or not is_instance_valid(btn_launch):
+		show_screen("hangar")
+	btn_launch.disabled = true
+	btn_launch.text = "Launching..."
+	stage.set_alert(true)
+	var audio := _audio()
+	if audio != null:
+		audio.play_2d("ui.hangar.alert", 0.0, 1.0, AudioDirector.BUS_SFX_TELEGRAPH)
+	await get_tree().create_timer(maxf(delay, 0.0)).timeout
+	if is_inside_tree() and launching:
+		get_tree().change_scene_to_file(TestDrive.SCENE)
 
 
 func _on_leave() -> void:
@@ -280,6 +353,11 @@ func _on_session_started(_as_host: bool) -> void:
 
 
 func _on_session_ended(_reason: String) -> void:
+	if launching:
+		launching = false
+		stage.set_alert(false)
+		show_screen("main")
+		return
 	if screen == "hangar" or screen == "busy":
 		show_screen("main")
 
@@ -299,13 +377,58 @@ func _on_status(text: String) -> void:
 	status_label.text = text
 
 
-## Name / head / chassis: saved, and the session (and so the crew) hears about it.
+## Name / head / accent / chassis: saved, and the session (and so the crew) hears about it.
 func _set_profile(key: String, value: Variant) -> void:
 	_set_setting(key, value)
-	# The session's name is the saved one unless a run-only name (--net-name) replaced it: keep that one.
+	# The session's name is the saved one unless a run-only name (--net-name) replaced it: keep that one. Same for a
+	# run-only accent (--accent): the session keeps it until the player picks one here.
 	var name_ := str(settings["player_name"]) if key == "player_name" else Session.player_name
-	Session.set_profile(name_, str(settings["head"]), str(settings["chassis"]))
+	var accent := str(settings["accent"]) if key == "accent" else Session.local_accent()
+	Session.set_profile(name_, str(settings["head"]), str(settings["chassis"]), accent, _loadout())
 	_refresh_stage()
+	_mark_accent()
+
+
+## The accent swatches: one square button per MechAccent colour, the picked one outlined in white.
+func _accent_swatches() -> Control:
+	accent_picks.clear()
+	var box := HFlowContainer.new()
+	box.add_theme_constant_override("h_separation", 6)
+	box.add_theme_constant_override("v_separation", 6)
+	for id: String in MechAccent.ORDER:
+		var b := Button.new()
+		b.name = "Accent_" + id
+		b.tooltip_text = MechAccent.display_name(id)
+		b.custom_minimum_size = Vector2(30, 30)
+		b.focus_mode = Control.FOCUS_ALL
+		b.pressed.connect(func() -> void:
+			_play_ui("ui.click")
+			_set_profile("accent", id))
+		box.add_child(b)
+		accent_picks[id] = b
+	_mark_accent()
+	return box
+
+
+func _mark_accent() -> void:
+	var current := Session.local_accent()
+	for id: String in accent_picks:
+		var b: Button = accent_picks[id]
+		if not is_instance_valid(b):
+			continue
+		var on := id == current
+		for st: String in ["normal", "hover", "pressed", "focus"]:
+			var sb := StyleBoxFlat.new()
+			sb.bg_color = MechAccent.color(id).lightened(0.12 if st == "hover" else 0.0)
+			sb.set_corner_radius_all(4)
+			sb.set_border_width_all(3 if on else (1 if st == "hover" or st == "focus" else 0))
+			sb.border_color = Color.WHITE if on else Color(1, 1, 1, 0.5)
+			b.add_theme_stylebox_override(st, sb)
+
+
+## The loadout changed: the session (and so the crew) hears about it, with the rest of the profile unchanged.
+func _push_profile() -> void:
+	Session.set_profile(Session.player_name, Session.local_head(), str(settings["chassis"]), Session.local_accent(), _loadout())
 
 
 func _set_setting(key: String, value: Variant) -> void:
@@ -352,7 +475,8 @@ func _fill_crew() -> void:
 ## The crew as the hangar shows it: the roster online, else just this player.
 func _crew_entries() -> Array:
 	if not Session.online():
-		return [{"seat": 1, "name": Session.display_name("Pilot"), "head": Session.local_head(), "chassis": Session.local_chassis(), "you": true}]
+		return [{"seat": 1, "name": Session.display_name("Pilot"), "head": Session.local_head(), "chassis": Session.local_chassis(),
+			"accent": Session.local_accent(), "you": true}]
 	var out: Array = []
 	for e: Dictionary in Session.crew():
 		var d := e.duplicate()
@@ -367,11 +491,12 @@ func _refresh_stage() -> void:
 	if screen == "hangar":
 		var mechs: Array = []
 		for e: Dictionary in _crew_entries():
-			mechs.append({"head": e["head"], "chassis": e["chassis"], "name": e["name"],
+			mechs.append({"head": e["head"], "chassis": e["chassis"], "name": e["name"], "accent": e.get("accent", MechAccent.DEFAULT),
 				"loadout": _loadout() if bool(e.get("you", false)) else {}})
-		stage.show_mechs(mechs)
+		stage.show_mechs(mechs, true)
 	else:
-		stage.show_mechs([{"head": Session.local_head(), "chassis": Session.local_chassis(), "loadout": _loadout(), "name": ""}])
+		stage.show_mechs([{"head": Session.local_head(), "chassis": Session.local_chassis(), "loadout": _loadout(), "name": "",
+			"accent": Session.local_accent()}])
 
 
 func _take_shot() -> void:
@@ -383,6 +508,9 @@ func _take_shot() -> void:
 	var img := get_viewport().get_texture().get_image()
 	var err := img.save_png(_shot_path)
 	print("shot %s %s" % [_shot_path, "ok" if err == OK else "error %d" % err])
+	if _crew_shot_size > 1:
+		# Stay in the crew a moment so the other windows still see this pilot when they take their own shot.
+		await get_tree().create_timer(4.0).timeout
 	get_tree().quit()
 
 
@@ -418,13 +546,17 @@ func _gap(h: int) -> void:
 	panel_box.add_child(c)
 
 
-func _button(t: String, cb: Callable) -> Button:
+func _button(t: String, cb: Callable, box: Container = null) -> Button:
 	var b := Button.new()
 	b.text = t
 	b.custom_minimum_size = Vector2(0, 48)
 	b.add_theme_font_size_override("font_size", 20)
-	b.pressed.connect(cb)
-	panel_box.add_child(b)
+	var is_back := t in ["Back", "Cancel", "Leave crew", "Quit"]
+	b.mouse_entered.connect(func() -> void: _play_ui("ui.hover"))
+	b.pressed.connect(func() -> void:
+		_play_ui("ui.back" if is_back else "ui.click")
+		cb.call())
+	(box if box != null else panel_box).add_child(b)
 	return b
 
 
@@ -444,15 +576,53 @@ func _option(labels: Array, selected: int, cb: Callable) -> OptionButton:
 	for t: Variant in labels:
 		o.add_item(str(t))
 	o.select(maxi(selected, 0))
-	o.item_selected.connect(cb)
+	o.mouse_entered.connect(func() -> void: _play_ui("ui.hover"))
+	o.item_selected.connect(func(i: int) -> void:
+		_play_ui("ui.click")
+		cb.call(i))
 	return o
 
 
 func _check(on: bool, cb: Callable) -> CheckBox:
 	var c := CheckBox.new()
 	c.button_pressed = on
-	c.toggled.connect(cb)
+	# The default theme's unchecked box is near-black on the dark panel: draw our own, outlined when off, orange when on.
+	for k: String in ["unchecked", "unchecked_disabled"]:
+		c.add_theme_icon_override(k, _box_icon(false))
+	for k: String in ["checked", "checked_disabled"]:
+		c.add_theme_icon_override(k, _box_icon(true))
+	c.mouse_entered.connect(func() -> void: _play_ui("ui.hover"))
+	c.toggled.connect(func(v: bool) -> void:
+		_play_ui("ui.click" if v else "ui.back")
+		cb.call(v))
 	return c
+
+
+static var _box_icons: Dictionary = {}
+
+
+## A 20 px checkbox icon: a light outline (off), or an orange box with a white tick (on). Cached.
+static func _box_icon(on: bool) -> Texture2D:
+	if _box_icons.has(on):
+		return _box_icons[on]
+	var n := 20
+	var img := Image.create(n, n, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var edge := Color(0.95, 0.6, 0.2) if on else Color(0.78, 0.8, 0.84)
+	for i in n:
+		for j in n:
+			var border := i < 2 or j < 2 or i >= n - 2 or j >= n - 2
+			if border:
+				img.set_pixel(i, j, edge)
+			elif on:
+				img.set_pixel(i, j, Color(0.9, 0.48, 0.12))
+	if on:   # the tick: a short stroke down-right, then a long one up-right
+		for t in 12:
+			var p := Vector2(5, 10).lerp(Vector2(8, 14), t / 5.0) if t < 6 else Vector2(8, 14).lerp(Vector2(15, 5), (t - 6) / 5.0)
+			for d: Vector2i in [Vector2i(0, 0), Vector2i(1, 0), Vector2i(0, 1)]:
+				img.set_pixelv(Vector2i(p) + d, Color.WHITE)
+	_box_icons[on] = ImageTexture.create_from_image(img)
+	return _box_icons[on]
 
 
 func _slider(v: float, cb: Callable) -> HSlider:
@@ -461,5 +631,31 @@ func _slider(v: float, cb: Callable) -> HSlider:
 	s.max_value = 1.0
 	s.step = 0.05
 	s.value = v
-	s.value_changed.connect(cb)
+	s.value_changed.connect(func(val: float) -> void:
+		_play_ui("ui.slider", 0.9 + val * 0.25)
+		cb.call(val))
 	return s
+
+
+func _play_ui(cue_id: String, pitch: float = 1.0) -> void:
+	var a := _audio()
+	if a != null:
+		a.play_ui(cue_id, pitch)
+
+
+func _play_mount_sfx(weapon_id: String) -> void:
+	var a := _audio()
+	if a == null:
+		return
+	if weapon_id == "":
+		a.play_ui("ui.hangar.unmount")
+		return
+	var w := float(MechCatalog.weapon(weapon_id).get("weight", 6.0))
+	# Heavier weapons bolt on with a beefier, lower clunk.
+	a.play_ui("ui.hangar.mount", clampf(1.12 - w * 0.025, 0.72, 1.12))
+
+
+func _audio() -> AudioDirector:
+	if not is_inside_tree():
+		return null
+	return get_tree().root.get_node_or_null("Audio") as AudioDirector

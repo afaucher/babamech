@@ -10,8 +10,8 @@ func setup() -> void:
 	eq(Boot.route(PackedStringArray(["--scene", "res://scenes/lab.tscn"])), "res://scenes/lab.tscn", "--scene opens that scene")
 
 	# Catalog.
-	eq(MechCatalog.HEAD_ORDER.size(), 4, "four heads")
-	for h: String in ["chicken", "pickle", "corn", "dog"]:
+	eq(MechCatalog.HEAD_ORDER.size(), 5, "five heads")
+	for h: String in ["chicken", "pickle", "corn", "dog", "duck"]:
 		check(MechCatalog.HEADS.has(h), "head %s exists" % h)
 	for id: String in MechCatalog.WEAPON_ORDER:
 		var w := MechCatalog.weapon(id)
@@ -36,18 +36,27 @@ func setup() -> void:
 		var foot := m.find_child("foot_" + side, true, false) as Node3D
 		if check(foot != null, "foot_%s exists" % side):
 			near(foot.position.y, 0.0, 0.05, "foot_%s is on the ground" % side)
-	# Chicken-style legs (the mech faces -Z): the knee forward of the hip, the reverse joint (ankle) behind the knee, the
-	# foot forward of the ankle, every joint lower than the last. (MechModel.leg_points: the joints the leg was posed on.)
-	var pts := m.leg_points(0)
-	var knee := (m.find_child("thigh_l", true, false) as Node3D)
-	var hip: Vector3 = pts["hip"]
-	var k: Vector3 = pts["knee"]
-	var ankle: Vector3 = pts["ankle"]
-	var foot_p: Vector3 = pts["foot"]
-	check(knee != null and k.z < hip.z - 0.1, "the knee is forward of the hip (%.2f vs %.2f)" % [k.z, hip.z])
-	check(ankle.z > k.z + 0.1, "the ankle is behind the knee: a reverse joint (%.2f vs %.2f)" % [ankle.z, k.z])
-	check(foot_p.z < ankle.z, "the foot is forward of the ankle")
-	check(hip.y > k.y and k.y > ankle.y and ankle.y > foot_p.y, "each joint is lower than the last")
+	# Chicken-style legs (the mech faces -Z), along MechModel.leg_bend b (-1 default: knee back): the knee b-forward of
+	# the hip, the ankle the other way from the knee, the foot b-forward of the ankle, every joint lower than the last.
+	# (MechModel.leg_points: the joints the leg was posed on.) The hip height does not depend on the bend.
+	var hh := m.hip_height()
+	eq(m.leg_bend, -1.0, "the default bend is the flipped (chicken) leg")
+	for b: float in [m.leg_bend, -m.leg_bend]:
+		m.leg_bend = b
+		m.pose()
+		var pts := m.leg_points(0)
+		var knee := (m.find_child("thigh_l", true, false) as Node3D)
+		var hip: Vector3 = pts["hip"]
+		var k: Vector3 = pts["knee"]
+		var ankle: Vector3 = pts["ankle"]
+		var foot_p: Vector3 = pts["foot"]
+		check(knee != null and -(k.z - hip.z) * b > 0.1, "bend %+d: the knee leads the hip along the bend (%.2f vs %.2f)" % [int(b), k.z, hip.z])
+		check((ankle.z - k.z) * b > 0.1, "bend %+d: the ankle sits the other way from the knee (%.2f vs %.2f)" % [int(b), ankle.z, k.z])
+		check(-(foot_p.z - ankle.z) * b > 0.0, "bend %+d: the foot follows the bend from the ankle" % int(b))
+		check(hip.y > k.y and k.y > ankle.y and ankle.y > foot_p.y, "bend %+d: each joint is lower than the last" % int(b))
+		near(m.hip_height(), hh, 1e-4, "bend %+d: same hip height" % int(b))
+	m.leg_bend = -1.0
+	m.pose()
 	var head := m.find_child("Head_dog", true, false) as Node3D
 	check(head != null, "the dog head sits in the cockpit")
 	if head != null:

@@ -1,16 +1,16 @@
 extends SceneTree
 ## Regenerate the mech's low-poly part files from the builders in scripts/mech/mech_meshes.gd:
 ##   .\tools\models\gen_mech_meshes.ps1
-## Writes res://assets/models/mech/<part>.res (one ArrayMesh per part) and the two shared materials
-## (mech_matte.tres, mech_glow.tres). tests/test_mech_parts.gd fails when the saved files lag the builders.
+## Writes res://assets/models/mech/<part>.res (one ArrayMesh per part) and the three shared materials
+## (mech_matte.tres, mech_glow.tres, mech_accent.tres). tests/test_mech_parts.gd fails when the saved files lag the builders.
 
 
 func _init() -> void:
 	DirAccess.make_dir_recursive_absolute(MechMeshes.DIR)
 	var mats := []
-	for n: String in ["matte", "glow"]:
+	for n: String in MeshKit.SURFACES:
 		var p := MechMeshes.DIR + "mech_" + n + ".tres"
-		var m := MechMeshes.make_material(n == "glow")
+		var m := MechMeshes.make_material(n)
 		ResourceSaver.save(m, p)
 		m.take_over_path(p)
 		mats.append(m)

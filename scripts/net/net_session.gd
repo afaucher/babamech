@@ -14,19 +14,31 @@ extends Node
 ##
 ## HANDSHAKE (all reliable events on NetWire, kinds "sys.*")
 ##   host -> joiner   sys.ask      {protocol, build}                   sent when the host sees the peer connect
-##   joiner -> host   sys.hello    {protocol, build, name, head, chassis, steam_id}
+##   joiner -> host   sys.hello    {protocol, build, name, head, chassis, accent, loadout, steam_id}
 ##   host -> joiner   sys.welcome  {seat, peer, entries, host_unix, link}   or   sys.refuse {reason}
 ##   host -> all      sys.roster   {entries}                            after every join, leave and profile change
-##   joiner -> host   sys.profile  {name, head, chassis}                the player changed name / head / chassis
+##   joiner -> host   sys.profile  {name, head, chassis, accent, loadout}   the player changed name / head / chassis / accent / loadout
 ##   host -> all      sys.link     {preset}                             the host changed the simulated link
 ##   host -> all      sys.bye      {reason}                             the host is leaving (then it closes)
 ## The host speaks first, so it has always registered the peer before the joiner says anything. A refused joiner is told
 ## why ("Crew is full", "Different build") and dropped REFUSE_GRACE later; the transport admits a few more peers than
 ## MAX_CREW for that.
 ##
-## ROSTER: peer id -> {peer, seat, name, head, chassis, steam_id}. The host is seat 1; a joiner takes the lowest free seat.
-## Same list on every machine (the host broadcasts it). `head` (chicken / pickle / corn / dog) and `chassis` are ids from
-## MechCatalog; this layer carries them as plain strings and never interprets them.
+## ROSTER: peer id -> {peer, seat, name, head, chassis, accent, loadout, steam_id}. The host is seat 1; a joiner takes the
+## lowest free seat. Same list on every machine (the host broadcasts it). `head` (chicken / pickle / corn / dog) and
+## `chassis` are ids from MechCatalog, `accent` an id from MechAccent; this layer carries them as plain strings and never
+## interprets them. `loadout` ({hardpoint id: weapon id}) is the one exception: the host makes it valid for the entry's
+## chassis on receipt (clean_loadout: MechCatalog.sanitize_loadout), so every machine builds the same weapons.
+##
+## MISSION (co-op step 1, cast's M1): NetMission, child "Mission". The host's Launch is start_mission(seed): one reliable
+##   mission.launch {seed, start_t, crew} to the crew; every machine (the host too) gets mission_started(params), plays
+##   the bay alert until start_t on the shared clock, then loads the mission. Each machine reports its city checksum
+##   (report_mission_built), the host compares them behind a load barrier (a mismatch is sent out with DESYNC), then
+##   mission.go {start_at}: mission_go(elapsed) fires on every machine at start_at. See net_mission.gd.
+##
+## MECH SNAPSHOTS (co-op step 2, cast's M2): NetMechStream, child "Mechs" (`mechs`). Each machine streams its own mech
+##   on NetWire.T_SNAP (unreliable, 30 Hz, client -> host; the host forwards the others' to each client) and shows the
+##   crew's as puppets interpolated ~100 ms behind host_time(). The game calls mechs.begin / feed / pose / end.
 ##
 ## LEAVING. A client leaves: the host drops it from the roster. The host leaves (or dies, or goes silent for HOST_SILENCE):
 ## every client's session ends with HOST_LEFT. No host migration. session_ended(reason) fires for every way a session (or
@@ -58,6 +70,13 @@ signal roster_changed()
 signal peer_joined(peer: int)
 signal peer_left(peer: int)
 signal status_changed(text: String)
+## The host launched a mission: {seed, start_t, crew: [roster entries by seat]} (NetMission). Load it at start_t.
+signal mission_started(params: Dictionary)
+## The load barrier passed: the mission starts now (`elapsed` seconds past start_at on the shared clock).
+signal mission_go(elapsed: float)
+## A client: the host ended the mission (mission.end). Back to the hangar. (Not emitted for this machine's own
+## end_mission(), nor when the session itself ends: session_ended covers that.)
+signal mission_ended(reason: String)
 ## A non-system reliable event from a crew member (gameplay events, test probes).
 signal event_received(from: int, kind: String, data: Dictionary, stamp: float)
 ## A non-system unreliable packet that passed the sequence check.
@@ -71,6 +90,7 @@ const MAX_CREW := 4
 const DEFAULT_PORT := 24600
 const DEFAULT_HEAD := "chicken"
 const DEFAULT_CHASSIS := "strider"
+const DEFAULT_ACCENT := "orange"
 const OPEN_TIMEOUT := 12.0      ## Steam lobby create / list / join
 const CONNECT_TIMEOUT := 10.0   ## transport connect
 const HELLO_TIMEOUT := 10.0     ## connected, waiting for the host's welcome (or a joiner's hello)
@@ -90,16 +110,21 @@ const NO_ANSWER := "The crew never answered"
 const NO_CREWS := "No crews open right now"
 const STEAM_OFF := "Steam not running"
 const ON_MISSION := "That crew is on a mission"
+const DESYNC := "Desync: different city"
+const LOAD_SLOW := "Didn't load the mission in time"
 
 var state := State.OFFLINE
 var transport := Transport.NONE
 var hosting := false
-## peer id -> {"peer", "seat", "name", "head", "chassis", "steam_id"}
+## peer id -> {"peer", "seat", "name", "head", "chassis", "accent", "steam_id"}
 var roster: Dictionary = {}
 ## This player's profile, carried in the hello. "" name = the Steam persona, else "Pilot <seat>".
 var player_name := ""
 var head_id := ""
 var chassis_id := ""
+var accent_id := ""
+## {hardpoint id: weapon id} for local_chassis() ({} = the chassis' default loadout).
+var loadout: Dictionary = {}
 ## What this machine says it is in the hello (tests change them to provoke "Different build").
 var protocol := PROTOCOL
 var build := ""
@@ -120,6 +145,9 @@ var link_from_settings := false
 var pending_invite: Dictionary = {}
 
 var wire: NetWire = null
+var mission: NetMission = null
+## Mech snapshots (co-op step 2): the local mech streamed, the crew's shown as puppets. See net_mech_stream.gd.
+var mechs: NetMechStream = null
 var lobby: SteamLobby = null
 var clock := NetClock.new()
 var telemetry: NetTelemetry = null
@@ -146,6 +174,12 @@ func _ready() -> void:
 	wire.name = "Wire"
 	wire.clock_source = host_time
 	add_child(wire)
+	mission = NetMission.new()
+	mission.name = "Mission"
+	add_child(mission)
+	mechs = NetMechStream.new()
+	mechs.name = "Mechs"
+	add_child(mechs)
 	wire.event_received.connect(_on_event)
 	wire.packet_received.connect(_on_packet)
 	lobby = SteamLobby.new()
@@ -233,6 +267,28 @@ func local_chassis() -> String:
 	return chassis_id if chassis_id != "" else DEFAULT_CHASSIS
 
 
+func local_accent() -> String:
+	return accent_id if accent_id != "" else DEFAULT_ACCENT
+
+
+## This player's loadout, valid for local_chassis().
+func local_loadout() -> Dictionary:
+	return clean_loadout(local_chassis(), loadout)
+
+
+## A loadout from the wire (or settings) made safe and valid for `chassis`: a {String: String} dictionary of at most a
+## dozen short entries, then MechCatalog.sanitize_loadout (every hardpoint present, misfits emptied; {} = the default).
+static func clean_loadout(chassis: String, v: Variant) -> Dictionary:
+	var raw := {}
+	if v is Dictionary:
+		for k: Variant in v:
+			if raw.size() >= 12:
+				break
+			if (k is String or k is StringName) and (v[k] is String or v[k] is StringName):
+				raw[str(k).left(24)] = str(v[k]).left(24)
+	return MechCatalog.sanitize_loadout(chassis, raw)
+
+
 ## The name this player shows: the profile's, else the Steam persona, else `fallback`.
 func display_name(fallback: String = "Pilot") -> String:
 	if player_name != "":
@@ -241,15 +297,21 @@ func display_name(fallback: String = "Pilot") -> String:
 	return steam_name if steam_name != "" else fallback
 
 
-## The player changed their name, head or chassis (settings, hangar). Offline it is just stored; in a session the host
-## updates its own entry and tells the crew, a client asks the host (sys.profile), which re-sends the roster.
-func set_profile(name_: String, head: String, chassis: String) -> void:
+## The player changed their name, head, chassis, accent or loadout (settings, hangar). Offline it is just stored; in a
+## session the host updates its own entry and tells the crew, a client asks the host (sys.profile), which re-sends the
+## roster. `accent` "" and `loadout_` {} keep the current ones (the stored loadout is re-validated for the chassis).
+func set_profile(name_: String, head: String, chassis: String, accent: String = "", loadout_: Dictionary = {}) -> void:
 	player_name = name_
 	head_id = head
 	chassis_id = chassis
+	if accent != "":
+		accent_id = accent
+	if not loadout_.is_empty():
+		loadout = loadout_.duplicate()
 	if state != State.ONLINE:
 		return
-	var data := {"name": display_name("Pilot %d" % int(local_entry().get("seat", 1))), "head": local_head(), "chassis": local_chassis()}
+	var data := {"name": display_name("Pilot %d" % int(local_entry().get("seat", 1))), "head": local_head(),
+		"chassis": local_chassis(), "accent": local_accent(), "loadout": local_loadout()}
 	if hosting:
 		_update_entry(1, data)
 	else:
@@ -370,6 +432,29 @@ func set_crew_state(s: String) -> void:
 		_publish_lobby()
 
 
+# --- Mission (NetMission does the work; these are the calls game and UI code make) ------------------
+
+## Host: launch a mission for the crew on `seed` (mission.launch, then mission_started on every machine). False on a
+## client, offline (solo play loads the test drive itself), or while a mission is already under way.
+func start_mission(seed_value: int) -> bool:
+	return mission.host_launch(seed_value)
+
+
+## The launched mission's params ({seed, start_t, crew}), {} when none (offline, or between missions).
+func mission_params() -> Dictionary:
+	return mission.params
+
+
+## This machine built the mission behind the load barrier: `checksum` is its city checksum (CityPlan.checksum()).
+func report_mission_built(checksum: String) -> void:
+	mission.report_built(checksum)
+
+
+## Leave the mission: the host ends it for the whole crew (mission.end), a client just for itself.
+func end_mission(reason: String = "") -> void:
+	mission.end(reason)
+
+
 ## Host: send a crew member out with a reason. It is told why, dropped at once and disconnected REFUSE_GRACE later.
 func kick(peer: int, reason: String) -> void:
 	if not hosting or state != State.ONLINE or peer == 1 or not roster.has(peer):
@@ -473,7 +558,7 @@ func _begin_host(peer: MultiplayerPeer, via: Transport) -> void:
 	wire.reset()
 	_set_state(State.ONLINE, 0.0, "")
 	roster[1] = {"peer": 1, "seat": 1, "name": display_name("Pilot 1"), "head": local_head(), "chassis": local_chassis(),
-		"steam_id": SteamIdentity.steam_id()}
+		"accent": local_accent(), "loadout": local_loadout(), "steam_id": SteamIdentity.steam_id()}
 	_apply_link(str(GameSettings.load_settings()["link_sim"]) if link_from_settings else wire.link.preset)
 	_open_telemetry()
 	_publish_lobby()
@@ -526,6 +611,8 @@ func _end(reason: String, close_now: bool = false) -> void:
 	_last_heard.clear()
 	_find_first = false
 	_deadline_usec = 0
+	crew_state = "lobby"
+	mission.reset()
 	last_reason = reason
 	_log("session ended: %s (was %s)" % [reason, State.keys()[was]])
 	session_ended.emit(reason)
@@ -719,8 +806,10 @@ func _admit(from: int, data: Dictionary) -> void:
 		seat += 1
 	if name_ == "":
 		name_ = "Pilot %d" % seat
+	var chassis := str(data.get("chassis", DEFAULT_CHASSIS))
 	roster[from] = {"peer": from, "seat": seat, "name": name_, "head": str(data.get("head", DEFAULT_HEAD)),
-		"chassis": str(data.get("chassis", DEFAULT_CHASSIS)), "steam_id": int(data.get("steam_id", 0))}
+		"chassis": chassis, "accent": str(data.get("accent", DEFAULT_ACCENT)),
+		"loadout": clean_loadout(chassis, data.get("loadout", {})), "steam_id": int(data.get("steam_id", 0))}
 	wire.send_event(from, "sys.welcome", {"seat": seat, "peer": from, "entries": crew(),
 		"host_unix": Time.get_unix_time_from_system() - host_time(), "link": link_preset})
 	_to_crew("sys.roster", {"entries": crew()})
@@ -738,6 +827,8 @@ func _update_entry(peer: int, data: Dictionary) -> void:
 	e["name"] = name_ if name_ != "" else e["name"]
 	e["head"] = str(data.get("head", e["head"]))
 	e["chassis"] = str(data.get("chassis", e["chassis"]))
+	e["accent"] = str(data.get("accent", e.get("accent", DEFAULT_ACCENT)))
+	e["loadout"] = clean_loadout(str(e["chassis"]), data.get("loadout", e.get("loadout", {})))
 	_to_crew("sys.roster", {"entries": crew()})
 	roster_changed.emit()
 
@@ -776,7 +867,8 @@ func _client_sys(from: int, kind: String, data: Dictionary) -> void:
 		"sys.ask":
 			if state == State.HELLO or state == State.CONNECTING:
 				wire.send_event(1, "sys.hello", {"protocol": protocol, "build": _build(), "name": display_name(""),
-					"head": local_head(), "chassis": local_chassis(), "steam_id": SteamIdentity.steam_id()})
+					"head": local_head(), "chassis": local_chassis(), "accent": local_accent(), "loadout": local_loadout(),
+					"steam_id": SteamIdentity.steam_id()})
 		"sys.welcome":
 			if state == State.ONLINE:
 				return

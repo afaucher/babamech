@@ -1,0 +1,68 @@
+# Enemies
+
+Status: **approved design**, 2026-11-22. Parent: [game-design.md](game-design.md) §2, §6, §7; slice milestone S6 in
+[vertical-slice.md](vertical-slice.md); weapons in [weapons.md](weapons.md). Net rules: `AGENTS.md`, [../networking.md](../networking.md).
+
+## 1. Roster & Combat Roles
+
+Hijacked civil-defense robots, emplacements, and armored vehicles repainted in invader dark obsidian & crimson livery:
+
+| Class | ID | Archetype | Mass Class (`Combat.MASS`) | Role in Vertical City Combat |
+|---|---|---|---|---|
+| **Enforcer Turret** | `turret` | Static fortified gun emplacement | `static` (0× knockback, **aim kick** Δv × 3°) | Rooftop & chokepoint overwatch (S6 anchor). Forces cover, roof flanking, aim-kick suppression (1 Side Laser kicks aim off by 24°), or indirect Back Mortar strikes. |
+| **Hound Skirmisher** | `strider` | Light mobile bipedal patrol walker | `light` (×1.0 knockback) | Street/park patrol, flanker, spotter, and **knockback / roof-shove / wall-slam showcase**. Relays sightings to the squad after 0.45 s. |
+| **Bastion Siege Tank** | `tank` | Heavy armored tracked assault vehicle | `heavy` (×0.25 knockback) | Avenue anchor & verticality puzzle. Slow, heavy, dodgeable siege cannon + cover-flushing arc mortar. Exposes glowing rear/top radiator **`vents`** weak point to reward rooftop jumping and flanking. |
+
+## 2. Scale, Silhouettes & Contrast
+
+Measured against the **8.0 m** player mech, **5.6 m** street trees, **12 m** streets, **20 m** avenues, and **40 m** ceiling:
+
+- **Enforcer Turret (`turret`):** `4.8 m W × 4.8 m D × 5.6 m H`. Octagonal armored plinth, rotating drum turret, twin heavy blaster barrels extending 3.8 m, crimson optic mast rising to 5.6 m.
+- **Hound Skirmisher (`strider`):** `3.8 m W × 4.2 m L × 5.2 m H`. Wide reverse-jointed dark legs, hunched forward angular chassis, underslung rapid carbine, twin antenna fins, bright crimson visor slit.
+- **Bastion Siege Tank (`tank`):** `6.8 m W × 9.6 m L × 5.4 m H`. Twin wide armored tread sponsons, sloped glacis with crimson chevrons, flat angular turret with 6.4 m siege cannon, raised glowing rear/top radiator vent deck (`y = 2.6..3.4 m`).
+
+**Palette (`EnemyMeshes`):** high-contrast cool obsidian (`#1c1f26`), slate armor (`#333845`), gunmetal steel (`#525761`), invader crimson trim (`#c21c24`), unshaded crimson optic glow (`#ff242e`, flaring white-amber on telegraph), and orange-crimson vent glow (`#ff661a`) — popping sharply against the warm sunlit cream/terracotta/sage `CityPalette` and the white/orange player mech.
+
+**Feedback (no floating ASCII text walls):**
+- Compact world-space `EnemyStatusBar`: distance-scaled crimson chevron when alerted (flashes hot yellow-white while telegraphing), thin red HP bar + amber heat sliver once alerted/damaged, 1-word status tag only during `STAGGER` or `OVERHEAT`.
+- Diegetic cues: `0.07 s` hit-flash overlay per struck component, part destruction sparks & charred stub swap, overheat droop + vents/smoke, scaled `ImpactFx` death explosion.
+
+## 3. Components, Weak Points, Heat & TTK
+
+Core component is always the first key in `max_hp`. Killing either the core component or a critical weak point immediately destroys the unit (`_dead = true`, `destroyed() == true`, remaining HP zeroed).
+
+| Unit | Heat (Cap / Cool) | Component | HP | Mult | On 0 HP |
+|---|---|---|---:|---:|---|
+| `turret` | `60 / 4.0` | `base` *(core)* | 120 | 1.0× | Destroyed (`R = 4.5 m`) |
+| | | `gun` *(weak point)* | 70 | 1.25× | Critical kill (gun head pops → detonation) |
+| `strider` | `50 / 5.0` | `chassis` *(core)* | 95 | 1.0× | Destroyed (`R = 3.5 m`) |
+| | | `legs` | 55 | 1.0× | Cripples speed to 25%, 1.5 s stagger; 60% overflow to `chassis` |
+| | | `sensor` *(weak point)* | 45 | 1.5× | Critical kill (instant sensor blowout) |
+| `tank` | `100 / 4.0` | `hull` *(core)* | 280 | 1.0× | Destroyed (`R = 6.5 m` + column) |
+| | | `turret` | 130 | 1.0× | Destroys main cannon, deals 100 shock dmg to `hull` |
+| | | `vents` *(weak point)* | 80 | 1.75× (+1.5× heat) | Reactor meltdown kill |
+
+## 4. Enemy Weapons & Telegraphs (Hard Floor ≥ 0.3 s)
+
+Stored in `EnemyCatalog.WEAPONS` (separate from player `MechCatalog.WEAPONS`; `CombatWorld.stats()` falls back to `EnemyCatalog`). Fired through `CombatWorld.fire(record)` as deterministic scheduled effects with `"enemy": true` and `"team": "enemy"`.
+
+| Weapon ID | User | Telegraph | Pattern | Speed | Size (× Growth) | Damage | Splash | Δv | Self Heat | Cooldown |
+|---|---|---|---|---:|---|---:|---|---:|---:|---:|
+| `enemy_bolter` | Turret | 0.55 s | 3-shot burst (0.18 s), 1.2° | 48 m/s | 0.65 m (×2.5) | 14 | — | 1.5 | 10 | 2.4 s |
+| `enemy_pulse` | Skirmisher | 0.45 s | 4-shot burst (0.12 s), 2.0° | 58 m/s | 0.50 m (×2.8) | 7 | — | 0.6 | 8 | 2.0 s |
+| `enemy_siege_shell` | Tank (LOS) | 0.90 s | Single heavy shell | 42 m/s | 1.00 m (×2.5) | 38 | 22 / 6.0 m | 6.0 | 22 | 3.6 s |
+| `enemy_mortar` | Tank (No LOS > 2.5 s) | 0.60 s + ≥ 2.4 s arc | Single arcing shell + closing ground ring | ballistic | 0.80 m (×3.0) | 30 | 20 / 6.5 m | 3.5 (+2.5 lift) | 24 | 5.5 s |
+
+## 5. AI, Squad Coordination & Curved-Deck Navigation
+
+- **Host-owned (`owner_peer = 0`):** AI, movement, and squad coordination run only when `CombatWorld.owns(enemy)`.
+- **Curved-deck movement:** Macro pathfinding runs A\* over `CityPlan.road_graph()` (plus open park/plaza nodes) in 2D arc `(x, s)` space; local steering adds sibling separation and 3-ray obstacle avoidance, then projects back onto `RingFrame` with radial `up_at(pos)` and downward ground snapping. Knockback updates `up` and `ground_y` dynamically so rooftop enemies shoved past a ledge fall to the street.
+- **Shared target board (`EnemySquad`):** Fed only by real physics LOS checks (or damage alerts). Sightings propagate to squadmates within 90 m after a `0.45 s` comm relay delay (killing the spotter first cancels the relay).
+- **Attack slots:** At most `max_attackers` (default 2) enemies may telegraph/fire at the same player target simultaneously, prioritized by unit weight and rotated fairly.
+
+## 6. Audio Integration Contract
+
+- `EnemyBase` joins group `"enemies"`; `EnemySquad` joins group `"enemy_squad"`; `PlayerTarget` joins group `"player_target"`.
+- `EnemySquad` emits `enemy_event(kind: String, enemy: Node, payload: Dictionary)` forwarding:
+  `telegraph_started`, `telegraph_cancelled`, `alerted`, `weapon_fired`, `component_damaged`, `component_destroyed`, `overheated`, `rebooted`, `destroyed`, `footstep`.
+- `CombatWorld` emits `impact_spawned(point: Vector3, radius: float, explosive: bool, is_energy: bool)` inside `spawn_impact()`.

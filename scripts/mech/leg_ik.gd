@@ -5,6 +5,8 @@ extends RefCounted
 ## The leg reads like a bird's: the thigh reaches FORWARD to a hidden knee, the shin runs BACK down to the ankle (the
 ## visible "reverse knee"), and the tarsus leans forward again to the foot. The tarsus keeps a fixed lean from the
 ## local up, which turns the three-bone chain into a two-bone solve from the hip to the ankle, bent toward `fwd`.
+## `bend` = -1 mirrors the chain fore-aft about the hip (MechModel.leg_bend): the knee bends BACK, the ankle forward,
+## the tarsus leans back to the foot.
 
 
 ## Two-bone solve: the joint between bones of length l1 and l2 for a chain from `root` toward `target`, bent toward
@@ -27,11 +29,13 @@ static func solve_two_bone(root: Vector3, target: Vector3, l1: float, l2: float,
 
 
 ## The whole leg: hip and wanted foot position, segment lengths, the leg's local up and forward, and the tarsus lean
-## (radians forward of straight down, ankle to foot). Returns {knee, ankle, foot, reached}; `foot` differs from the
-## input only when the target was out of reach.
+## (radians forward of straight down, ankle to foot), and `bend` (+1: knee forward; -1: the mirrored leg, knee back,
+## tarsus leaning back). Returns {knee, ankle, foot, reached}; `foot` differs from the input only when the target was
+## out of reach.
 static func solve_leg(hip: Vector3, foot: Vector3, thigh: float, shin: float, tarsus: float, up: Vector3,
-		fwd: Vector3, tarsus_lean: float) -> Dictionary:
-	var ankle_want := foot + up * (tarsus * cos(tarsus_lean)) - fwd * (tarsus * sin(tarsus_lean))
-	var r := solve_two_bone(hip, ankle_want, thigh, shin, fwd)
+		fwd: Vector3, tarsus_lean: float, bend: float = 1.0) -> Dictionary:
+	var pole := fwd * (1.0 if bend >= 0.0 else -1.0)
+	var ankle_want := foot + up * (tarsus * cos(tarsus_lean)) - pole * (tarsus * sin(tarsus_lean))
+	var r := solve_two_bone(hip, ankle_want, thigh, shin, pole)
 	var ankle: Vector3 = r["end"]
 	return {"knee": r["joint"], "ankle": ankle, "foot": ankle + (foot - ankle_want), "reached": r["reached"]}
