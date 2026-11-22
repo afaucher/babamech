@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:12:02	hut_mech_s303.png	flux3_klein_t2i	303	768x768			3.7	hut_mech_prompt.txt
+2026-11-21T18:12:05	hut_hybrid_s303.png	flux3_klein_t2i	303	768x768			3.27	hut_hybrid_prompt.txt
+2026-11-21T18:12:08	hut_organic_s303.png	flux3_klein_t2i	303	768x768			3.29	hut_organic_prompt.txt
+2026-11-21T18:12:12	upright_mech_s303.png	flux3_klein_t2i	303	768x768			3.29	upright_mech_prompt.txt
+2026-11-21T18:12:15	upright_hybrid_s303.png	flux3_klein_t2i	303	768x768			3.28	upright_hybrid_prompt.txt
+2026-11-21T18:12:19	upright_organic_s303.png	flux3_klein_t2i	303	768x768			3.29	upright_organic_prompt.txt
+2026-11-21T18:12:22	egg_mech_s303.png	flux3_klein_t2i	303	768x768			3.32	egg_mech_prompt.txt
+2026-11-21T18:12:26	egg_hybrid_s303.png	flux3_klein_t2i	303	768x768			3.26	egg_hybrid_prompt.txt
+2026-11-21T18:12:29	egg_organic_s303.png	flux3_klein_t2i	303	768x768			3.26	egg_organic_prompt.txt

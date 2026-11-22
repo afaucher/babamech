@@ -1,0 +1,11 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:06:33	i_strider_s101.png	flux3_klein_t2i	101	768x768			5.72	i_strider_prompt.txt
+2026-11-21T18:06:57	a_babayaga_s101.png	flux3_klein_t2i	101	768x768			5.35	a_babayaga_prompt.txt
+2026-11-21T18:07:00	b_rescue_s101.png	flux3_klein_t2i	101	768x768			3.28	b_rescue_prompt.txt
+2026-11-21T18:07:04	c_loader_s101.png	flux3_klein_t2i	101	768x768			3.29	c_loader_prompt.txt
+2026-11-21T18:07:07	d_toy_s101.png	flux3_klein_t2i	101	768x768			3.25	d_toy_prompt.txt
+2026-11-21T18:07:10	e_riveted_s101.png	flux3_klein_t2i	101	768x768			3.26	e_riveted_prompt.txt
+2026-11-21T18:07:14	f_habitat_s101.png	flux3_klein_t2i	101	768x768			3.26	f_habitat_prompt.txt
+2026-11-21T18:07:17	g_scrap_s101.png	flux3_klein_t2i	101	768x768			3.29	g_scrap_prompt.txt
+2026-11-21T18:07:21	h_brawler_s101.png	flux3_klein_t2i	101	768x768			3.26	h_brawler_prompt.txt
+2026-11-21T18:07:24	i_strider_s101.png	flux3_klein_t2i	101	768x768			3.28	i_strider_prompt.txt

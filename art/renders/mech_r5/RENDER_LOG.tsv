@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:34:33	military_cradle_s505.png	flux3_klein_t2i	505	768x768			3.7	military_cradle_prompt.txt
+2026-11-21T18:34:37	military_bay_s505.png	flux3_klein_t2i	505	768x768			3.27	military_bay_prompt.txt
+2026-11-21T18:34:40	military_prow_s505.png	flux3_klein_t2i	505	768x768			3.3	military_prow_prompt.txt
+2026-11-21T18:34:44	civil_cradle_s505.png	flux3_klein_t2i	505	768x768			3.41	civil_cradle_prompt.txt
+2026-11-21T18:34:47	civil_bay_s505.png	flux3_klein_t2i	505	768x768			3.3	civil_bay_prompt.txt
+2026-11-21T18:34:51	civil_prow_s505.png	flux3_klein_t2i	505	768x768			3.26	civil_prow_prompt.txt
+2026-11-21T18:34:54	industrial_cradle_s505.png	flux3_klein_t2i	505	768x768			3.35	industrial_cradle_prompt.txt
+2026-11-21T18:34:58	industrial_bay_s505.png	flux3_klein_t2i	505	768x768			3.28	industrial_bay_prompt.txt
+2026-11-21T18:35:01	industrial_prow_s505.png	flux3_klein_t2i	505	768x768			3.25	industrial_prow_prompt.txt

@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:44:34	pickle_stern_s808.png	flux3_klein_t2i	808	768x768			3.29	pickle_stern_prompt.txt
+2026-11-21T18:44:37	pickle_angry_s808.png	flux3_klein_t2i	808	768x768			3.27	pickle_angry_prompt.txt
+2026-11-21T18:44:41	pickle_furious_s808.png	flux3_klein_t2i	808	768x768			3.28	pickle_furious_prompt.txt
+2026-11-21T18:44:44	corn_stern_s808.png	flux3_klein_t2i	808	768x768			3.09	corn_stern_prompt.txt
+2026-11-21T18:44:47	corn_angry_s808.png	flux3_klein_t2i	808	768x768			3.3	corn_angry_prompt.txt
+2026-11-21T18:44:51	corn_furious_s808.png	flux3_klein_t2i	808	768x768			3.29	corn_furious_prompt.txt
+2026-11-21T18:44:54	dog_stern_s808.png	flux3_klein_t2i	808	768x768			3.26	dog_stern_prompt.txt
+2026-11-21T18:44:58	dog_angry_s808.png	flux3_klein_t2i	808	768x768			3.26	dog_angry_prompt.txt
+2026-11-21T18:45:01	dog_furious_s808.png	flux3_klein_t2i	808	768x768			3.27	dog_furious_prompt.txt

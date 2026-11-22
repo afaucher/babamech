@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:49:24	day_pristine_s909.png	flux3_klein_t2i	909	1024x576			3.37	day_pristine_prompt.txt
+2026-11-21T18:49:27	day_livedin_s909.png	flux3_klein_t2i	909	1024x576			3.25	day_livedin_prompt.txt
+2026-11-21T18:49:30	day_occupied_s909.png	flux3_klein_t2i	909	1024x576			3.26	day_occupied_prompt.txt
+2026-11-21T18:49:34	clinical_pristine_s909.png	flux3_klein_t2i	909	1024x576			3.26	clinical_pristine_prompt.txt
+2026-11-21T18:49:37	clinical_livedin_s909.png	flux3_klein_t2i	909	1024x576			3.27	clinical_livedin_prompt.txt
+2026-11-21T18:49:41	clinical_occupied_s909.png	flux3_klein_t2i	909	1024x576			3.28	clinical_occupied_prompt.txt
+2026-11-21T18:49:44	dusk_pristine_s909.png	flux3_klein_t2i	909	1024x576			3.25	dusk_pristine_prompt.txt
+2026-11-21T18:49:48	dusk_livedin_s909.png	flux3_klein_t2i	909	1024x576			3.28	dusk_livedin_prompt.txt
+2026-11-21T18:49:51	dusk_occupied_s909.png	flux3_klein_t2i	909	1024x576			3.27	dusk_occupied_prompt.txt

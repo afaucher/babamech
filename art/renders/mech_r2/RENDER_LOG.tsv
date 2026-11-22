@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:10:55	a_chickenwalker_s202.png	flux3_klein_t2i	202	768x768			3.76	a_chickenwalker_prompt.txt
+2026-11-21T18:10:58	b_hunched_s202.png	flux3_klein_t2i	202	768x768			3.31	b_hunched_prompt.txt
+2026-11-21T18:11:02	c_tankhull_s202.png	flux3_klein_t2i	202	768x768			3.3	c_tankhull_prompt.txt
+2026-11-21T18:11:05	d_hut_s202.png	flux3_klein_t2i	202	768x768			3.31	d_hut_prompt.txt
+2026-11-21T18:11:08	e_egg_s202.png	flux3_klein_t2i	202	768x768			3.27	e_egg_prompt.txt
+2026-11-21T18:11:12	f_upright_s202.png	flux3_klein_t2i	202	768x768			3.3	f_upright_prompt.txt
+2026-11-21T18:11:15	g_strider_s202.png	flux3_klein_t2i	202	768x768			3.3	g_strider_prompt.txt
+2026-11-21T18:11:19	h_squat_s202.png	flux3_klein_t2i	202	768x768			3.27	h_squat_prompt.txt
+2026-11-21T18:11:22	i_rescue_s202.png	flux3_klein_t2i	202	768x768			3.28	i_rescue_prompt.txt

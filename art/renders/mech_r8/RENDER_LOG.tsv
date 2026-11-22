@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:46:12	a_twincannon_s707.png	flux3_klein_t2i	707	768x768			3.7	a_twincannon_prompt.txt
+2026-11-21T18:46:15	b_missilebox_s707.png	flux3_klein_t2i	707	768x768			3.27	b_missilebox_prompt.txt
+2026-11-21T18:46:19	c_asym_s707.png	flux3_klein_t2i	707	768x768			3.29	c_asym_prompt.txt
+2026-11-21T18:46:22	d_mortar_s707.png	flux3_klein_t2i	707	768x768			3.38	d_mortar_prompt.txt
+2026-11-21T18:46:26	e_hipgatling_s707.png	flux3_klein_t2i	707	768x768			3.26	e_hipgatling_prompt.txt
+2026-11-21T18:46:29	f_laser_s707.png	flux3_klein_t2i	707	768x768			3.26	f_laser_prompt.txt
+2026-11-21T18:46:33	g_railgun_s707.png	flux3_klein_t2i	707	768x768			3.39	g_railgun_prompt.txt
+2026-11-21T18:46:36	h_booms_s707.png	flux3_klein_t2i	707	768x768			3.27	h_booms_prompt.txt
+2026-11-21T18:46:40	i_maxed_s707.png	flux3_klein_t2i	707	768x768			3.26	i_maxed_prompt.txt

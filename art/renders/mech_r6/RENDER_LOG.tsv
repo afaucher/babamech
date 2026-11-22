@@ -1,0 +1,13 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:35:56	chicken_head_s606.png	flux3_klein_t2i	606	768x768			3.7	chicken_head_prompt.txt
+2026-11-21T18:35:59	chicken_chest_s606.png	flux3_klein_t2i	606	768x768			3.27	chicken_chest_prompt.txt
+2026-11-21T18:36:03	chicken_waist_s606.png	flux3_klein_t2i	606	768x768			3.27	chicken_waist_prompt.txt
+2026-11-21T18:36:06	pickle_head_s606.png	flux3_klein_t2i	606	768x768			3.41	pickle_head_prompt.txt
+2026-11-21T18:36:10	pickle_chest_s606.png	flux3_klein_t2i	606	768x768			3.3	pickle_chest_prompt.txt
+2026-11-21T18:36:13	pickle_waist_s606.png	flux3_klein_t2i	606	768x768			3.27	pickle_waist_prompt.txt
+2026-11-21T18:36:17	corn_head_s606.png	flux3_klein_t2i	606	768x768			3.39	corn_head_prompt.txt
+2026-11-21T18:36:20	corn_chest_s606.png	flux3_klein_t2i	606	768x768			3.26	corn_chest_prompt.txt
+2026-11-21T18:36:24	corn_waist_s606.png	flux3_klein_t2i	606	768x768			3.25	corn_waist_prompt.txt
+2026-11-21T18:36:27	dog_head_s606.png	flux3_klein_t2i	606	768x768			3.42	dog_head_prompt.txt
+2026-11-21T18:36:31	dog_chest_s606.png	flux3_klein_t2i	606	768x768			3.28	dog_chest_prompt.txt
+2026-11-21T18:36:34	dog_waist_s606.png	flux3_klein_t2i	606	768x768			3.29	dog_waist_prompt.txt

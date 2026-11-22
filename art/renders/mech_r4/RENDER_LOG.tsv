@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:13:12	hut_flank_s404.png	flux3_klein_t2i	404	768x768			3.69	hut_flank_prompt.txt
+2026-11-21T18:13:16	hut_raised_s404.png	flux3_klein_t2i	404	768x768			3.29	hut_raised_prompt.txt
+2026-11-21T18:13:19	hut_collar_s404.png	flux3_klein_t2i	404	768x768			3.29	hut_collar_prompt.txt
+2026-11-21T18:13:23	upright_flank_s404.png	flux3_klein_t2i	404	768x768			3.34	upright_flank_prompt.txt
+2026-11-21T18:13:26	upright_raised_s404.png	flux3_klein_t2i	404	768x768			3.28	upright_raised_prompt.txt
+2026-11-21T18:13:30	upright_collar_s404.png	flux3_klein_t2i	404	768x768			3.28	upright_collar_prompt.txt
+2026-11-21T18:13:33	egg_flank_s404.png	flux3_klein_t2i	404	768x768			3.33	egg_flank_prompt.txt
+2026-11-21T18:13:36	egg_raised_s404.png	flux3_klein_t2i	404	768x768			3.25	egg_raised_prompt.txt
+2026-11-21T18:13:40	egg_collar_s404.png	flux3_klein_t2i	404	768x768			3.28	egg_collar_prompt.txt

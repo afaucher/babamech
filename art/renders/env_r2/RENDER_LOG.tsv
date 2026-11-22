@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:51:17	a_urban_street_s909.png	flux3_klein_t2i	909	1024x576			3.44	a_urban_street_prompt.txt
+2026-11-21T18:51:20	b_urban_roofs_s909.png	flux3_klein_t2i	909	1024x576			3.28	b_urban_roofs_prompt.txt
+2026-11-21T18:51:24	c_park_s909.png	flux3_klein_t2i	909	1024x576			3.25	c_park_prompt.txt
+2026-11-21T18:51:27	d_industrial_s909.png	flux3_klein_t2i	909	1024x576			3.28	d_industrial_prompt.txt
+2026-11-21T18:51:30	e_openair_s909.png	flux3_klein_t2i	909	1024x576			3.26	e_openair_prompt.txt
+2026-11-21T18:51:34	f_transit_rail_s909.png	flux3_klein_t2i	909	1024x576			3.26	f_transit_rail_prompt.txt
+2026-11-21T18:51:37	g_transit_ramp_s909.png	flux3_klein_t2i	909	1024x576			3.27	g_transit_ramp_prompt.txt
+2026-11-21T18:51:41	h_elevator_s909.png	flux3_klein_t2i	909	1024x576			3.28	h_elevator_prompt.txt
+2026-11-21T18:51:44	i_plaza_s909.png	flux3_klein_t2i	909	1024x576			3.26	i_plaza_prompt.txt

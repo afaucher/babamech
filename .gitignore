@@ -1,0 +1,18 @@
+# Godot
+.godot/
+*.tmp
+# Generated
+test_logs/
+build/
+# Build stamp written by build.ps1 (packed into the .pck)
+version.txt
+# GodotSteam binaries copied from ../cast (see addons/godotsteam/README.md) -- never committed
+addons/godotsteam/win64/*
+!addons/godotsteam/win64/.gitkeep
+# Concept-art renders are reproducible from art/tools/*.ps1 + SEEDS.md: keep only the grids (and singles the docs cite)
+art/renders/**/*.png
+art/renders/**/*.png.import
+!art/renders/**/grid_*.png
+!art/renders/**/grid_*.png.import
+!art/renders/env_r1/day_occupied_s909.png
+!art/renders/env_r1/day_occupied_s909.png.import

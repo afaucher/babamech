@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-21T18:41:34	p150_stern_s808.png	flux3_klein_t2i	808	768x768			3.3	p150_stern_prompt.txt
+2026-11-21T18:41:37	p150_angry_s808.png	flux3_klein_t2i	808	768x768			3.25	p150_angry_prompt.txt
+2026-11-21T18:41:41	p150_furious_s808.png	flux3_klein_t2i	808	768x768			3.26	p150_furious_prompt.txt
+2026-11-21T18:41:44	p400_stern_s808.png	flux3_klein_t2i	808	768x768			3.27	p400_stern_prompt.txt
+2026-11-21T18:41:48	p400_angry_s808.png	flux3_klein_t2i	808	768x768			3.25	p400_angry_prompt.txt
+2026-11-21T18:41:51	p400_furious_s808.png	flux3_klein_t2i	808	768x768			3.3	p400_furious_prompt.txt
+2026-11-21T18:41:55	p900_stern_s808.png	flux3_klein_t2i	808	768x768			3.26	p900_stern_prompt.txt
+2026-11-21T18:41:58	p900_angry_s808.png	flux3_klein_t2i	808	768x768			3.26	p900_angry_prompt.txt
+2026-11-21T18:42:01	p900_furious_s808.png	flux3_klein_t2i	808	768x768			3.26	p900_furious_prompt.txt

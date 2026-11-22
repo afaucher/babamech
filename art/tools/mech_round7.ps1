@@ -1,0 +1,31 @@
+# Round 7: head-out pilot, every character LOW POLY. Grid = 4 pilots (rows) x 3 facet levels (cols).
+Set-Location (Join-Path $PSScriptRoot "..\..")
+$R = "$HOME\.claude\skills\local-render\render.ps1"
+$out = "art\renders\mech_r7"
+
+$common = "Low poly 3D game vehicle concept render, flat-shaded faceted polygons, highly stylized, clean simple shapes. " +
+  "A BIPEDAL combat mech with EXACTLY TWO LEGS: a rounded armored mechanical torso in white and safety-orange civil-defense livery with amber lights (a war machine, not a building) on two legs. " +
+  "The legs are mechanical but shaped like a chicken's legs: armored thigh, a knee that clearly bends BACKWARD like a bird's (reverse-jointed, digitigrade), long angled shin with pistons, and a big metal foot with three forward toes and a rear spur. " +
+  "No arms and no hands at all. Two big shoulder weapon pods are mounted HIGH on top of the torso, raised above the pilot and pointing forward. " +
+  "At the front of the torso a nose juts forward with a round hatch and a tall armored back plate behind it. " +
+  "The pilot sits INSIDE the mech: ONLY ITS HEAD AND NECK stick up out of the hatch in the nose, the rest of its body hidden inside. The head is OVERSIZED, comically big, about as wide as the torso. " +
+  "Full body of the mech, three-quarter front view, camera at torso height. Against a plain even soft grey-blue background, no floor, no shadow, soft studio lighting. No text, no interface, no border, no watermark. "
+
+$pilots = [ordered]@{
+  "chicken" = "The pilot is a white chicken with a red comb, red wattle and yellow beak."
+  "pickle"  = "The pilot is a green dill pickle character with bumps, cartoon eyes and a smiling mouth."
+  "corn"    = "The pilot is a corn-on-the-cob character with yellow kernels, green husk leaves peeled back like a collar, cartoon eyes and a smile."
+  "dog"     = "The pilot is a friendly golden-brown dog with floppy ears and a black nose."
+}
+$facets = [ordered]@{
+  "chunky" = "The pilot is modelled in VERY low poly: only a few dozen large flat triangular facets, sharp angular planes, flat solid colours, no texture, no fur, no feathers, like an early 3D game model."
+  "medium" = "The pilot is modelled in low poly: clearly visible flat triangular facets, simplified geometric planes, flat solid colours per facet, no smooth surfaces, no fur or feather detail."
+  "papercraft" = "The pilot is modelled in low poly papercraft style: crisp folded-paper facets with slight colour variation between faces, flat matte colours, geometric and clean."
+}
+
+$i = 0; $n = $pilots.Count * $facets.Count
+foreach ($p in $pilots.Keys) { foreach ($f in $facets.Keys) {
+  $i++
+  $keep = if ($i -lt $n) { @{ KeepServer = $true } } else { @{} }
+  & $R -Name "${p}_${f}" -Prompt ($common + $pilots[$p] + " " + $facets[$f]) -Seeds 707 -Width 768 -Height 768 -OutDir $out @keep
+} }
