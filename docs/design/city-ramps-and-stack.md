@@ -212,3 +212,92 @@ Props were the cost that grew with the stack, fixed in a second pass (`CityProps
 
 Not built: hiding decks that cannot be seen from the active deck (about 0.45 ms of GPU, and a risk of popping when
 `follow()` switches decks 0.25 s late on a ramp); a shorter daylight shadow distance.
+
+### Quality levels (2026-11-22)
+
+A LAN test laptop (Intel UHD 620) ran the 3-deck stack at 230-430 ms a frame. `CityQuality` (`scripts/world/city/city_quality.gd`,
+`LOW = 0`, `MEDIUM = 1`, `HIGH = 2`, `name_of(q)`, the numbers in `LEVELS`) is a local draw level: `CityStack.set_quality(q)`
+and `AmbientLife.set_quality(q)`, any time, before or after the build, switchable at runtime. It never touches a plan,
+a checksum, a prop, a collision shape, an RNG draw, a life timetable or who can be hit: a LOW and a HIGH machine play the
+same game (`tests/test_city_quality.gd`). HIGH is exactly the look before levels existed (the test restores every flag
+after LOW). Lab: city subject, option "quality" (`--city site=stack,camera=avenue,quality=low`).
+
+| | HIGH | MEDIUM | LOW |
+|---|---|---|---|
+| decks drawn | all | active +- 1 | active + the one below |
+| daylight shadows | on, 4 splits, 320 m | on, 2 splits, 220 m | off (the daylight also lights the deck below) |
+| fills (omni) | all (39 per deck on seed 4) | every 2nd, on the drawn decks | none; ambient + fill energy x share cut |
+| SSAO / glow | on / on | off / on | off / off |
+| block mesh range | unlimited | 320 m | 230 m |
+| life drawn within | 200 m (`DRAW_R`) | 160 m | 110 m |
+
+Hidden decks are `visible = false` on the deck node: collision, props simulation and life keep running. Fills of hidden
+decks are hidden (not just masked). Life: only the drawing is cut (`_show_person` / `_show_vehicle`, the tram);
+the bands (`EVAL_R` / `DRAW_R`), sampling, `_on` / `_von` (what local shots can hit) and the host's decisions are
+unchanged. Fog and filmic tone mapping stay at every level; SSIL, SDFGI and volumetric fog are never on.
+
+**Holes and ramp mouths.** LOW draws the deck below the active one: without it, looking down a shaft or a ramp from the
+upper deck shows the background colour, and `deck_at` switches only 1 m below the upper floor (`FOOT_SLACK`), so a mech
+walks most of the way down a ramp still "on" the upper deck. Cost of the deck below at LOW (avenue, 1600x900): 0.53 ->
+0.65 GPU ms, 382 k -> 858 k primitives, 28 -> 57 draws. Not covered: walking UP a ramp at LOW the deck above is hidden
+until `deck_at` switches near the top, so the ceiling opening over the ramp shows the background colour (sky blue,
+fogged), not black; it pops in at the top.
+
+**Measured** (`run_city_perf.ps1 -Quality all [-Resolution WxH]`, RTX 3080, forward+, MSAA 2x, vsync off, seed 4 from
+the entry deck; frame / GPU ms averages; we cannot emulate a UHD 620, so the relative change is what counts):
+
+| view, level | 3840x2160 frame / GPU | 1600x900 frame / GPU | 1024x576 frame / GPU | draws | primitives | omni | shadows |
+|---|---|---|---|---|---|---|---|
+| avenue HIGH | 4.80 / 4.29 | 1.78 / 1.43 | 1.58 / 1.23 | 182 | 1.77 M | 117 | on |
+| avenue MEDIUM | 3.73 / 3.23 | 1.35 / 0.99 | 1.15 / 0.80 | 98 | 1.10 M | 40 | on |
+| avenue LOW | 2.67 / 2.19 | 1.01 / 0.65 | 0.87 / 0.53 | 57 | 0.86 M | 0 | off |
+| ramp HIGH | 4.66 / 4.16 | 1.76 / 1.41 | 1.53 / 1.19 | 196 | 1.82 M | 117 | on |
+| ramp MEDIUM | 3.57 / 3.09 | 1.35 / 0.99 | 1.16 / 0.81 | 106 | 1.14 M | 40 | on |
+| ramp LOW | 2.49 / 2.01 | 0.97 / 0.61 | 0.84 / 0.49 | 53 | 0.84 M | 0 | off |
+| shaft HIGH | 4.00 / 3.51 | 1.48 / 1.14 | 1.26 / 0.91 | 151 | 1.61 M | 117 | on |
+| shaft MEDIUM | 3.01 / 2.53 | 1.13 / 0.78 | 0.98 / 0.63 | 85 | 1.05 M | 40 | on |
+| shaft LOW | 2.08 / 1.60 | 0.83 / 0.47 | 0.73 / 0.38 | 45 | 0.81 M | 0 | off |
+
+(The 3840x2160 column is `--resolution 1600x900` on the hidden desktop, which its DPI scale turns into a 4K window; the
+probe now forces the window with `--perf-size`; asked for 1280x720 the render target came out 1024x576.) GPU time: LOW is
+about half of HIGH (-49% at 4K, -55% at 1600x900), MEDIUM about -25%. Outside the city, at LOW avenue 1600x900: MSAA off
+0.65 -> 0.43 GPU ms, and a 0.75 3D render scale 0.36; HIGH with MSAA off 1.43 -> 1.13.
+
+Shots (entry deck avenue, same camera): `docs/design/city-shots/quality_high.png`, `quality_medium.png`,
+`quality_low.png`. LOW is flatter (no shadows or ambient occlusion) and a little brighter, every building and street
+still distinct; MEDIUM is hard to tell from HIGH at a glance.
+
+### Incremental build (2026-11-22)
+
+The same LAN laptop spent 7.8 s inside ONE frame in `CityStack.build()` (1.2 s on the host PC), which starved the
+network. The build can now be spread over frames:
+
+    stack.build_begin(sec, overrides := {})   # cheap: frees the old decks, stores the section
+    stack.build_step(budget_ms := 8.0) -> bool # chunks until budget_ms of wall time is spent (at least one); true when done
+    stack.build_progress() -> float            # 0..1, never goes down
+    stack.build_done() -> bool                 # false from build_begin until the last chunk (and before any build)
+    stack.build(sec, overrides)                # unchanged: begin + step to the end
+    life.setup_stack_begin(stack, ...)  /  life.setup_step(budget_ms := 8.0) -> bool  /  life.setup_done()
+
+A build is a queue of chunks run in order (an explicit queue of [label, Callable], no coroutines): per deck
+`CityDistrict.build_deck_begin` / `build_step()` (one chunk each; `build()` / `build_deck()` run the same queue to the
+end): plan, ground (one part per road along s + 3, `CityStreets.ground_part`), ramps, buildings 16 at a time into their
+block's CityGeo, columns, block meshes 6 at a time, props, furniture, walls, ceiling (2 girder bays or 16 girder lines
+per chunk, `CityStreets.ceiling_range`), ceiling mesh, strips mesh, backdrop, collision (floor, walls, ramps, buildings
+60 at a time), finish; then the stack's rig and entry chunks. Every split keeps the order of triangles, digests, nodes,
+collision shapes and `look` draws, so a stepped build is exactly a one-shot one (`tests/test_city_build_steps.gd`, also
+checked against the code before the change: same checksums, digests, shapes, names, props for seeds 4, 1, 7 and two
+districts). `stats.ms` is the time inside chunks, plus `stats.chunks`, `stats.max_chunk_ms`; `chunk_log` holds every
+chunk's label and ms ("d1 ceiling 3/22").
+
+Measured headless on the dev PC, section seed 4: 156 chunks, 1.17 s in all (the same as one shot), max chunk 36 ms. Over
+20 ms: the ceiling mesh (18-36 ms) and strips mesh (7-15 ms), each ONE `ArrayMesh.add_surface_from_arrays` of up to
+~150 k triangles that cannot be split without changing the mesh (several surfaces or nodes). Everything else is 0.3-18 ms
+(the spine road's ground part 17 ms, plan 7-11 ms, props 11-13 ms). Before the split the worst chunks were the ceiling
+(128-270 ms) and the ground (58-65 ms).
+
+While building: finished decks are in `decks` and in the tree, the deck being built is a child too; `checksum()`,
+`deck_ring()`, `entry_transform()`, `spawn_transforms()` are valid only once `build_done()`; `follow` waits. Calling
+`build_begin` again mid-build throws the half away. Ambient life: 4 chunks per deck (plan + people, traffic, tram cars
+and barriers, first exact draw) + 1, 150-170 ms in all, max chunk ~31 ms; until `setup_done()` its `units` stay empty and
+`stack` null, the units do not run, and life.* events heard meanwhile are replayed when it finishes.

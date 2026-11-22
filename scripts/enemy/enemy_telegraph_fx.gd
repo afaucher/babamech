@@ -69,6 +69,31 @@ func show_telegraph(muzzle: Vector3, aim: Vector3, frac: float, locked: bool, ma
 	_beam.visible = false
 
 
+## Bright pulsing amber-crimson aerial flare ring for EnemyDrone's interruptible 0.65 s Alert Beacon.
+func show_beacon_flare(at: Vector3, up: Vector3, frac: float, dt: float) -> void:
+	_t += dt
+	_tick_relay(dt)
+	if frac <= 0.0 or not is_inside_tree():
+		hide_telegraph()
+		return
+	var f := clampf(frac, 0.0, 1.0)
+	var pulse := 1.0 + 0.24 * sin(_t * 48.0)
+	var r := lerpf(0.55, 1.45, f) * pulse
+	_shell.visible = true
+	_core.visible = true
+	_beam.visible = false
+	_shell.global_transform = Transform3D(Basis(Vector3(0.2, 1.0, 0.3).normalized(), _t * SPIN * 1.4) * Basis.from_scale(Vector3.ONE * r), at)
+	_core.global_transform = Transform3D(Basis(Vector3(1.0, 0.3, 0.2).normalized(), -_t * SPIN * 1.8) * Basis.from_scale(Vector3.ONE * r * 0.85), at)
+	# Drive the halo ring cleanly while the beacon flare is building (visible from 120+ m away).
+	var u_up := up.normalized() if up.length_squared() > 1e-6 else Vector3.UP
+	var fwd := Vector3.FORWARD if absf(u_up.dot(Vector3.FORWARD)) < 0.95 else Vector3.RIGHT
+	var x := fwd.cross(u_up).normalized()
+	var b := Basis(x, u_up, x.cross(u_up).normalized())
+	var rad := lerpf(1.6, 5.8, f) * (0.92 + 0.14 * sin(_t * 36.0))
+	_relay_ring.visible = true
+	_relay_ring.global_transform = Transform3D(b * Basis.from_scale(Vector3.ONE * rad), at)
+
+
 func tick_only(dt: float) -> void:
 	_t += dt
 	_tick_relay(dt)

@@ -256,14 +256,16 @@ func _on_fired(record: Dictionary) -> void:
 	var is_local := (not is_enemy) and shooter == local_shooter
 	var bus := AudioDirector.BUS_SFX_PLAYER if is_local else AudioDirector.BUS_SFX_WORLD
 	var prof := "local_mech" if is_local else "weapon"
-	var cue := "wpn." + w + ".fire"
-	if not SoundBank.has_cue(cue):
-		cue = "wpn.autocannon.fire"
+	var cue := _weapon_fire_cue(w)
 	var pitch := 1.0
-	if w == "rockets":
-		# Walk pitch slightly across the 6 tubes so the 0.6 s salvo ripples cleanly.
+	if w == "rockets" or w == "enemy_rockets":
+		# Walk pitch slightly across tubes so salvos ripple cleanly.
 		var tube := posmod(int(record.get("shot_index", 0)), 6)
 		pitch = 0.94 + float(tube) * 0.025
+	elif w == "enemy_lance":
+		pitch = 1.18
+	elif w == "enemy_scatter":
+		pitch = 0.82
 	a.play_3d(cue, origin, 0.0, pitch, prof, bus)
 	if is_enemy:
 		a.play_3d("enemy.fire.accent", origin, -2.0, 1.0, "weapon", AudioDirector.BUS_SFX_WORLD)
@@ -446,7 +448,9 @@ func _on_enemy_event(kind: String, _enemy: Node, payload: Dictionary) -> void:
 		"telegraph_started":
 			var tk := str(payload.get("kind", "generic"))
 			var dur := float(payload.get("duration", 0.55))
-			a.play_enemy_telegraph(id, tk, pos, dur)
+			a.play_enemy_telegraph(id, _telegraph_audio_kind(tk), pos, dur)
+			if tk == "beacon":
+				a.play_enemy_alert("relay", pos)
 			if a.music != null:
 				a.music.bump_combat(0.20)
 		"telegraph_cancelled":
@@ -462,9 +466,7 @@ func _on_enemy_event(kind: String, _enemy: Node, payload: Dictionary) -> void:
 			if _enemy_fired_recent.has(id) and absf(now_t - float(_enemy_fired_recent[id])) < 0.05:
 				return
 			var w := str(payload.get("weapon", "autocannon"))
-			var cue := "wpn." + w + ".fire"
-			if not SoundBank.has_cue(cue):
-				cue = "wpn.autocannon.fire"
+			var cue := _weapon_fire_cue(w)
 			a.play_3d(cue, pos, 0.0, 1.0, "weapon", AudioDirector.BUS_SFX_WORLD)
 			a.play_3d("enemy.fire.accent", pos, -2.0, 1.0, "weapon", AudioDirector.BUS_SFX_WORLD)
 			if a.music != null:
@@ -525,6 +527,24 @@ func _spin_tag(slot_idx: int) -> String:
 
 func _lock_tag() -> String:
 	return "wpn.lock.%d" % get_instance_id()
+
+
+func _weapon_fire_cue(w: String) -> String:
+	match w:
+		"enemy_lance": return "wpn.railgun.fire"
+		"enemy_rockets": return "wpn.rockets.fire"
+		"enemy_scatter": return "wpn.autocannon.fire"
+	var cue := "wpn." + w + ".fire"
+	return cue if SoundBank.has_cue(cue) else "wpn.autocannon.fire"
+
+
+func _telegraph_audio_kind(tk: String) -> String:
+	match tk:
+		"lance": return "beam"
+		"salvo": return "mortar"
+		"scatter": return "rush"
+		"beacon": return "pulse"
+	return tk
 
 
 func _audio() -> AudioDirector:

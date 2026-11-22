@@ -54,12 +54,19 @@ signal remote_hit(target_id: String, hit: Hit)
 signal fired(record: Dictionary)
 signal shake(strength: float, point: Vector3)
 signal impact_spawned(point: Vector3, radius: float, explosive: bool, is_energy: bool)
+## A shot's impact at `point` with its splash radius (0 for a plain round), with the fire record it came from: emitted by
+## `splash` on every machine that runs the shot (EnemySquad's hearing listens on the host).
+signal impact_from(record: Dictionary, point: Vector3, radius: float)
 signal advanced(dt: float, space: PhysicsDirectSpaceState3D)
 ## A repair drone started here (launch_drone): the launcher's own (CombatNet broadcasts it) or a remote one.
 signal drone_launched(record: Dictionary, drone: RepairDrone)
 
 const PROP_COLOR := Color(0.42, 0.4, 0.36)    ## debris colour of a prop that names none
 const LIFE_RESCAN := 0.5          ## s of clock between "ambient_life" group lookups while the node is missing
+
+## DEV ONLY: damage multiplier on hits against team "enemy" (TestDrive sets it for `--dev-fast-clear`, so a bot run
+## clears decks quickly without skipping any transition). 1 = normal play.
+static var dev_enemy_damage := 1.0
 
 var now := 0.0
 var mission_seed := 0
@@ -580,6 +587,8 @@ func resolve_hit(record: Dictionary, st: Dictionary, target: CombatTarget, compo
 
 
 func deliver(target: CombatTarget, h: Hit) -> void:
+	if dev_enemy_damage != 1.0 and target.team == "enemy":
+		h.damage *= dev_enemy_damage   # DEV ONLY (--dev-fast-clear): scaled where the hit is decided, before it travels
 	if owns(target):
 		target.apply_hit(h)
 		hit_landed.emit(target, h)
@@ -591,6 +600,7 @@ func deliver(target: CombatTarget, h: Hit) -> void:
 ## splash_damage × (1 - d / R) and a radial Δv of splash_knockback (+ splash_lift up) scaled the same way.
 func splash(record: Dictionary, st: Dictionary, point: Vector3, exclude: CombatTarget = null) -> void:
 	var rad := float(st.get("splash_radius", 0.0))
+	impact_from.emit(record, point, rad)
 	var dmg := float(st.get("splash_damage", 0.0))
 	var pdv := float(st.get("prop_blast", st.get("splash_knockback", 0.0)))
 	if rad > 0.0 and pdv > 0.0 and decides_shot(record):

@@ -26,19 +26,23 @@ func _world(physics: bool = false) -> CombatWorld:
 
 
 func _catalog_and_meshes() -> void:
-	eq(EnemyCatalog.CLASS_ORDER, ["turret", "strider", "tank"], "three starter enemy classes")
+	eq(EnemyCatalog.CLASS_ORDER, ["turret", "turret_sniper", "turret_missile", "strider", "strider_breacher", "tank", "drone"],
+		"all 7 enemy classes registered")
 	for cid: String in EnemyCatalog.CLASS_ORDER:
 		var u := EnemyCatalog.unit(cid)
 		check(not u.is_empty(), "class %s in catalog" % cid)
 		var comps: Array = u["components"]
 		check(comps.size() >= 2, "%s has multiple components" % cid)
 		eq(str((comps[0] as Dictionary)["id"]), str(u["core"]), "%s core component is first" % cid)
-	for wid: String in ["enemy_bolter", "enemy_pulse", "enemy_siege_shell", "enemy_mortar"]:
+	for wid: String in ["enemy_bolter", "enemy_pulse", "enemy_siege_shell", "enemy_mortar",
+			"enemy_lance", "enemy_rockets", "enemy_scatter"]:
 		check(not EnemyCatalog.weapon(wid).is_empty(), "enemy weapon %s in catalog" % wid)
 		check(WeaponRegistry.built(wid), "enemy weapon %s registered" % wid)
 		check(EnemyCatalog.telegraph_duration(wid, 1.0) >= EnemyCatalog.MIN_TELEGRAPH, "%s telegraph >= 0.3s" % wid)
-	for part: String in ["turret_base", "turret_gun", "turret_gun_wreck", "strider_chassis", "strider_sensor",
-			"strider_leg", "tank_hull", "tank_turret", "tank_turret_wreck", "tank_vents"]:
+	for part: String in ["turret_base", "turret_gun", "turret_gun_wreck", "turret_sniper_gun", "turret_missile_gun",
+			"strider_chassis", "strider_breacher_chassis", "strider_sensor", "strider_leg",
+			"tank_hull", "tank_turret", "tank_turret_wreck", "tank_vents",
+			"drone_hull", "drone_optic", "drone_cone"]:
 		var m := EnemyMeshes.mesh(part)
 		check(m != null and m.get_surface_count() > 0, "EnemyMeshes.%s builds" % part)
 

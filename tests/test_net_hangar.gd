@@ -83,5 +83,5 @@ func run_client() -> void:
 func after_end() -> void:
 	await frames(2)
 	eq(fe.screen, "main", "the host leaving takes the client back to the main menu")
-	check(fe.status_label.text.contains(NetSession.HOST_LEFT) or Session.last_reason == NetSession.HOST_LEFT, "with the reason")
+	check(fe.status_label.text.contains(NetSession.HOST_ENDED) or Session.last_reason == NetSession.HOST_ENDED, "with the reason")
 	fe.queue_free()

@@ -31,25 +31,43 @@ static func _c(id: String) -> Color:
 
 ## Everything on the deck's surface. The floor holes are left out of all of it (CityGeo.holes) and edged afterwards.
 static func ground(geo: CityGeo, plan: CityPlan) -> void:
-	var e := plan.extent
-	var cuts := plan.floor_cuts()
-	geo.holes = cuts
-	geo.g_rect(e.position.x, e.end.x, e.position.y, e.end.y, 0.0, _c("asphalt"))
-	for i in plan.roads_x.size():
+	for part in ground_parts(plan):
+		ground_part(geo, plan, part)
+
+
+## ground() split into ground_parts(plan) calls, made in order 0, 1, ... into the same geo (CityDistrict's incremental
+## build): the same triangles in the same order as one call. 0: the asphalt; then one part per road along s (roads_x);
+## then the cross roads; the blocks; open lots, the floor holes' edges and their soffits.
+static func ground_parts(plan: CityPlan) -> int:
+	return plan.roads_x.size() + 4
+
+
+static func ground_part(geo: CityGeo, plan: CityPlan, part: int) -> void:
+	var nx := plan.roads_x.size()
+	if part == 0:
+		var e := plan.extent
+		geo.holes = plan.floor_cuts()
+		geo.g_rect(e.position.x, e.end.x, e.position.y, e.end.y, 0.0, _c("asphalt"))
+	elif part <= nx:
+		var i := part - 1
 		if plan.roads_x[i]["kind"] == "spine":
 			_spine(geo, plan.roads_x[i], plan.roads_s)
 		else:
 			_road(geo, plan.roads_x[i], plan.roads_s, false)
-	for j in plan.roads_s.size():
-		_road(geo, plan.roads_s[j], plan.roads_x, true)
-	for b: Dictionary in plan.blocks:
-		_block(geo, b["rect"])
-	for l: Dictionary in plan.lots:
-		if l["kind"] == "open":
-			_open_lot(geo, l)
-	for o in cuts:
-		_floor_hole(geo, o, plan.site.slab, plan.ramp_mouth(o))
-	_soffits(geo, cuts, plan.site.slab)
+	elif part == nx + 1:
+		for j in plan.roads_s.size():
+			_road(geo, plan.roads_s[j], plan.roads_x, true)
+	elif part == nx + 2:
+		for b: Dictionary in plan.blocks:
+			_block(geo, b["rect"])
+	elif part == nx + 3:
+		var cuts := geo.holes
+		for l: Dictionary in plan.lots:
+			if l["kind"] == "open":
+				_open_lot(geo, l)
+		for o in cuts:
+			_floor_hole(geo, o, plan.site.slab, plan.ramp_mouth(o))
+		_soffits(geo, cuts, plan.site.slab)
 
 
 ## A rectangle on the road. `swap` false: u is x (across a road that runs along s), v is s. True: the other way round.
@@ -703,6 +721,22 @@ static func _in_any(rects: Array[Rect2], x: float, s: float) -> bool:
 ## Builds the ceiling over `area`. The strips go to their own geometry (they take the emissive material). Returns the
 ## strips' x positions, for the light rig.
 static func ceiling(geo: CityGeo, strips: CityGeo, area: Rect2, plan: CityPlan, rng: RandomNumberGenerator) -> PackedFloat32Array:
+	return ceiling_range(geo, strips, area, plan, rng, 0, ceiling_steps(area))
+
+
+## How many steps ceiling_range() splits the ceiling over `area` into: one per girder bay (panels, strip, ribs), one per
+## girder line (girder, duct), one for the openings' edges.
+static func ceiling_steps(area: Rect2) -> int:
+	var x0 := floorf(area.position.x / GIRDER_PITCH) * GIRDER_PITCH
+	var x1 := ceilf(area.end.x / GIRDER_PITCH) * GIRDER_PITCH
+	var nx := int(round((x1 - x0) / GIRDER_PITCH))
+	return nx + (nx + 1) + 1
+
+
+## Steps [from, to) of ceiling() (CityDistrict's incremental build): calling it over consecutive ranges into the same
+## geos with the same rng gives exactly one ceiling() call's triangles, order and rng draws. Returns the strips' x
+## positions of the bays in the range (concatenate them).
+static func ceiling_range(geo: CityGeo, strips: CityGeo, area: Rect2, plan: CityPlan, rng: RandomNumberGenerator, from: int, to: int) -> PackedFloat32Array:
 	var height := plan.p("ceiling")
 	var x0 := floorf(area.position.x / GIRDER_PITCH) * GIRDER_PITCH
 	var x1 := ceilf(area.end.x / GIRDER_PITCH) * GIRDER_PITCH
@@ -720,7 +754,7 @@ static func ceiling(geo: CityGeo, strips: CityGeo, area: Rect2, plan: CityPlan, 
 	for q: Dictionary in plan.site.pillars:
 		var m := float(q["half"]) + DROP_PANEL
 		pads.append(Rect2(float(q["x"]) - m, float(q["s"]) - m, m * 2.0, m * 2.0))
-	for i in nx:
+	for i in range(clampi(from, 0, nx), clampi(to, 0, nx)):
 		var gx := x0 + float(i) * GIRDER_PITCH
 		var mid_x := gx + PANEL_X
 		strip_x.append(mid_x)
@@ -753,7 +787,7 @@ static func ceiling(geo: CityGeo, strips: CityGeo, area: Rect2, plan: CityPlan, 
 				if (e == 1 and j < ns - 1) or _in_any(holes, mid_x, rs + RIB_PITCH * float(e)):
 					continue
 				geo.box(geo.frame(mid_x, rs + RIB_PITCH * float(e), height - 0.3), Vector3.ZERO, Vector3(GIRDER_PITCH, 1.0, 1.2), rib)
-	for i in nx + 1:
+	for i in range(clampi(from - nx, 0, nx + 1), clampi(to - nx, 0, nx + 1)):
 		var gx := x0 + float(i) * GIRDER_PITCH
 		for j in ns:
 			for half in 2:      # two pieces per bay so the girder follows the curve
@@ -763,8 +797,9 @@ static func ceiling(geo: CityGeo, strips: CityGeo, area: Rect2, plan: CityPlan, 
 				geo.box(geo.frame(gx, mid, height - 0.7), Vector3.ZERO, Vector3(1.5, 2.2, RIB_PITCH * 0.505), rib)
 				if i % 2 == 0 and not _in_any(pads, gx + 1.7, mid):      # service duct
 					geo.box(geo.frame(gx + 1.7, mid, height - 1.5), Vector3.ZERO, Vector3(1.1, 0.8, RIB_PITCH * 0.505), _c("metal"))
-	for hole in holes:
-		_opening(geo, strips, hole, height, plan.site.slab)
+	if from <= 2 * nx + 1 and to > 2 * nx + 1:
+		for hole in holes:
+			_opening(geo, strips, hole, height, plan.site.slab)
 	return strip_x
 
 

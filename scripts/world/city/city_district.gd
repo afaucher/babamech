@@ -26,107 +26,277 @@ const SEAM := 0.06     ## facet slabs overlap by this much, so a ray down the cr
 
 var _digest := 0
 
+## INCREMENTAL BUILD (docs/design/city-ramps-and-stack.md section 8, "Incremental build"). A build is a queue of chunks
+## run in order, one per build_step(); build() / build_deck() run the same queue to the end in one call, so a stepped
+## build gives exactly the same nodes, digest, stats and `look` draws. The first chunk makes the plan and queues the rest
+## (their number depends on the plan). Chunk sizes below keep every chunk under ~20 ms on the dev PC.
+const BUILDINGS_PER_CHUNK := 16         ## buildings meshed (into their block's CityGeo) per chunk
+const BLOCKS_PER_CHUNK := 6             ## finished block meshes instanced per chunk
+const SHAPE_BUILDINGS_PER_CHUNK := 60   ## buildings whose collision shapes are made per chunk
+const CEILING_BAYS_PER_CHUNK := 2       ## CityStreets.ceiling_range girder bays per chunk (~4-5 ms each)
+const CEILING_LINES_PER_CHUNK := 16     ## and girder lines per chunk (~0.7 ms each)
+
+var _queue: Array = []                  ## [label, Callable] chunks of the build in progress, in order
+var _qi := 0                            ## next chunk to run
+var _plan_maker: Callable               ## the first chunk: returns the CityPlan
+var chunk_label := ""                   ## label of the last chunk run ("buildings 2/5")
+var chunk_ms := 0.0                     ## its time
+var _b_us := 0                          ## usec spent in this build's chunks (stats.ms)
+var _look: RandomNumberGenerator        ## the build's cosmetic generator (seeded once, drawn in chunk order)
+var _tris := 0
+var _per_block: Array[CityGeo] = []
+var _holder: Node3D
+var _body: StaticBody3D
+var _cgeo: CityGeo
+var _holes: Array[Rect2] = []
+var _shapes := 0
+var _walled := false
+var _open_edge := false
+var _views: Array[Rect2] = []
+var _area := Rect2()                    ## the ceiling's area
+var _ground_geo: CityGeo
+var _ceil_geo: CityGeo
+var _strip_geo: CityGeo
+
 
 func build(params: Dictionary = {}, given: CitySite = null) -> void:
-	_build(Time.get_ticks_msec(), CityPlan.make(params, given))
+	build_begin(params, given)
+	while not build_step():
+		pass
 
 
 ## One whole deck of a mission section (CityPlan.for_deck): the same children and collision as build().
 func build_deck(section: SectionPlan, deck: int, overrides: Dictionary = {}) -> void:
-	_build(Time.get_ticks_msec(), CityPlan.for_deck(section, deck, overrides))
+	build_deck_begin(section, deck, overrides)
+	while not build_step():
+		pass
 
 
-func _build(t0: int, new_plan: CityPlan) -> void:
+## Start build() without running it: frees the old children (not the rig); build_step() does the rest.
+func build_begin(params: Dictionary = {}, given: CitySite = null) -> void:
+	_begin(func() -> CityPlan: return CityPlan.make(params, given))
+
+
+## Start build_deck() without running it.
+func build_deck_begin(section: SectionPlan, deck: int, overrides: Dictionary = {}) -> void:
+	_begin(func() -> CityPlan: return CityPlan.for_deck(section, deck, overrides))
+
+
+## Run ONE chunk of the build in progress; true once the build is finished (and on every later call).
+func build_step() -> bool:
+	if _qi >= _queue.size():
+		return true
+	var t := Time.get_ticks_usec()
+	var c: Array = _queue[_qi]
+	_qi += 1
+	chunk_label = c[0]
+	(c[1] as Callable).call()
+	var dt := Time.get_ticks_usec() - t
+	_b_us += dt
+	chunk_ms = float(dt) / 1000.0
+	if _qi >= _queue.size():
+		stats["ms"] = float(_b_us) / 1000.0
+		_queue.clear()
+		_qi = 0
+		return true
+	return false
+
+
+## True when no build is in progress (plan, ring, props, stats are the last finished build's).
+func build_done() -> bool:
+	return _qi >= _queue.size()
+
+
+## 0..1 through the build in progress (1 when done); never goes down during one build.
+func build_progress() -> float:
+	if _queue.is_empty():
+		return 1.0
+	return float(_qi) / float(_queue.size())
+
+
+func _begin(maker: Callable) -> void:
 	for c in get_children():
 		if c != rig:
 			remove_child(c)
 			c.queue_free()
-	plan = new_plan
+	_plan_maker = maker
+	_queue = [["plan", _c_plan]]
+	_qi = 0
+	_b_us = 0
+	_per_block.clear()
+	_holder = null
+	_body = null
+
+
+func _c_plan() -> void:
+	plan = _plan_maker.call()
 	ring = RingFrame.new(plan.p("radius"))
-	var look := RandomNumberGenerator.new()
-	look.seed = plan.cosmetic_seed()
+	_look = RandomNumberGenerator.new()
+	_look.seed = plan.cosmetic_seed()
 	_digest = 0
-	var tris := 0
-
-	var ground := CityGeo.new(ring)
-	CityStreets.ground(ground, plan)
-	tris += _add(ground, "Ground", self)
-	if not plan.ramps.is_empty():
-		var ramp_geo := CityGeo.new(ring)
-		CityStreets.ramps(ramp_geo, plan)
-		tris += _add(ramp_geo, "Ramps", self)
-
-	var holder := Node3D.new()
-	holder.name = "Buildings"
-	add_child(holder)
-	var per_block: Array[CityGeo] = []
-	for i in plan.blocks.size():
-		per_block.append(CityGeo.new(ring))
-	for i in plan.buildings.size():
-		var b: Dictionary = plan.buildings[i]
-		var geo := per_block[int(plan.lots[b["lot"]]["block"])]
-		CityBuildings.build(geo, building_frame(i), core_frame(i), plan, i, look)
-	if not plan.columns.is_empty():
-		var cols := CityGeo.new(ring)
-		for c: Dictionary in plan.columns:
-			CityBuildings.column(cols, _frame_at(c["x"], c["s"]), c, plan.p("ceiling"))
-		tris += _add(cols, "Columns", holder)
-	for i in per_block.size():
-		if not per_block[i].is_empty():
-			tris += _add(per_block[i], "Block%d" % i, holder)
-
-	props = CityProps.new()
-	props.deck = plan.deck if plan.section != null else -1   # stack decks tag their prop events (CityProps.deck)
-	props.setup(plan, ring)
-	var furn := CityGeo.new(ring)
-	CityStreets.furniture(furn, plan, props.items)
-	tris += _add(furn, "Furniture", self)
-	add_child(props)
-	tris += props.tri_count()
-
+	_tris = 0
+	_shapes = 0
+	# Walls, backdrop views and the ceiling's area: plan data only, needed now to know how many ceiling chunks to queue.
 	var bounds := plan.boundary()
-	var walled := not bounds.is_empty()
-	if walled:
-		var wall_geo := CityGeo.new(ring)
-		CityStreets.walls(wall_geo, plan)
-		tris += _add(wall_geo, "Walls", self, false)
+	_walled = not bounds.is_empty()
 	# The backdrop: all round an open district, or beyond each window wall that looks out onto it.
-	var open_edge := with_backdrop and not walled
-	var views: Array[Rect2] = []
+	_open_edge = with_backdrop and not _walled
+	_views.clear()
 	if with_backdrop:
 		for w: Dictionary in bounds:
 			if w["backdrop"]:
-				views.append(CityStreets.backdrop_edge(plan, int(w["side"])))
-	var area := CityStreets.backdrop_area(plan) if open_edge else plan.extent.grow(1.0 if walled else 14.0)
-	for v in views:
-		area = area.merge(v)
-	var ceil_geo := CityGeo.new(ring)
-	var strips := CityGeo.new(ring)
-	strip_x = CityStreets.ceiling(ceil_geo, strips, area, plan, look)
-	tris += _add(ceil_geo, "Ceiling", self, false)
-	var strip_node := strips.instance("Strips", CityPalette.strip_material())
+				_views.append(CityStreets.backdrop_edge(plan, int(w["side"])))
+	_area = CityStreets.backdrop_area(plan) if _open_edge else plan.extent.grow(1.0 if _walled else 14.0)
+	for v in _views:
+		_area = _area.merge(v)
+	var gp := CityStreets.ground_parts(plan)
+	for part in gp:
+		_queue.append(["ground %d/%d" % [part + 1, gp], _c_ground.bind(part, part == gp - 1)])
+	if not plan.ramps.is_empty():
+		_queue.append(["ramps", _c_ramps])
+	var nb := plan.buildings.size()
+	var n := maxi(ceili(float(nb) / BUILDINGS_PER_CHUNK), 1)
+	for j in n:
+		_queue.append(["buildings %d/%d" % [j + 1, n], _c_buildings.bind(j * BUILDINGS_PER_CHUNK, mini((j + 1) * BUILDINGS_PER_CHUNK, nb))])
+	if not plan.columns.is_empty():
+		_queue.append(["columns", _c_columns])
+	n = ceili(float(plan.blocks.size()) / BLOCKS_PER_CHUNK)
+	for j in n:
+		_queue.append(["blocks %d/%d" % [j + 1, n], _c_blocks.bind(j * BLOCKS_PER_CHUNK, mini((j + 1) * BLOCKS_PER_CHUNK, plan.blocks.size()))])
+	_queue.append(["props", _c_props])
+	_queue.append(["furniture", _c_furniture])
+	if _walled:
+		_queue.append(["walls", _c_walls])
+	# Ceiling: the girder bays (panels, strip, ribs: heavy) a few per chunk, then the girder lines and openings (light).
+	var steps := CityStreets.ceiling_steps(_area)
+	var bays := (steps - 2) / 2
+	var cuts: Array[int] = []
+	for a in range(0, bays, CEILING_BAYS_PER_CHUNK):
+		cuts.append(a)
+	for a in range(bays, steps, CEILING_LINES_PER_CHUNK):
+		cuts.append(a)
+	cuts.append(steps)
+	for j in cuts.size() - 1:
+		_queue.append(["ceiling %d/%d" % [j + 1, cuts.size() - 1], _c_ceiling.bind(cuts[j], cuts[j + 1])])
+	_queue.append(["ceiling mesh", _c_ceiling_mesh])
+	_queue.append(["strips mesh", _c_strips_mesh])
+	_queue.append(["backdrop", _c_backdrop])
+	_queue.append(["shapes floor", _col_floor])
+	_queue.append(["shapes walls", _col_walls])
+	_queue.append(["shapes ramps", _col_ramps])
+	n = maxi(ceili(float(nb) / SHAPE_BUILDINGS_PER_CHUNK), 1)
+	for j in n:
+		_queue.append(["shapes buildings %d/%d" % [j + 1, n], _col_buildings.bind(j * SHAPE_BUILDINGS_PER_CHUNK, mini((j + 1) * SHAPE_BUILDINGS_PER_CHUNK, nb))])
+	_queue.append(["finish", _c_finish])
+
+
+func _c_ground(part: int, last: bool) -> void:
+	if part == 0:
+		_ground_geo = CityGeo.new(ring)
+	CityStreets.ground_part(_ground_geo, plan, part)
+	if last:
+		_tris += _add(_ground_geo, "Ground", self)
+		_ground_geo = null
+
+
+func _c_ramps() -> void:
+	var ramp_geo := CityGeo.new(ring)
+	CityStreets.ramps(ramp_geo, plan)
+	_tris += _add(ramp_geo, "Ramps", self)
+
+
+## Buildings a..b-1 meshed into their block's CityGeo (instanced in _c_blocks once every building is in).
+func _c_buildings(a: int, b: int) -> void:
+	if a == 0:
+		_holder = Node3D.new()
+		_holder.name = "Buildings"
+		add_child(_holder)
+		_per_block.clear()
+		for i in plan.blocks.size():
+			_per_block.append(CityGeo.new(ring))
+	for i in range(a, b):
+		var bd: Dictionary = plan.buildings[i]
+		var geo := _per_block[int(plan.lots[bd["lot"]]["block"])]
+		CityBuildings.build(geo, building_frame(i), core_frame(i), plan, i, _look)
+
+
+func _c_columns() -> void:
+	var cols := CityGeo.new(ring)
+	for c: Dictionary in plan.columns:
+		CityBuildings.column(cols, _frame_at(c["x"], c["s"]), c, plan.p("ceiling"))
+	_tris += _add(cols, "Columns", _holder)
+
+
+func _c_blocks(a: int, b: int) -> void:
+	for i in range(a, b):
+		if not _per_block[i].is_empty():
+			_tris += _add(_per_block[i], "Block%d" % i, _holder)
+		_per_block[i] = null      # its mesh is committed: let the CityGeo go
+
+
+func _c_props() -> void:
+	props = CityProps.new()
+	props.deck = plan.deck if plan.section != null else -1   # stack decks tag their prop events (CityProps.deck)
+	props.setup(plan, ring)
+
+
+func _c_furniture() -> void:
+	var furn := CityGeo.new(ring)
+	CityStreets.furniture(furn, plan, props.items)
+	_tris += _add(furn, "Furniture", self)
+	add_child(props)
+	_tris += props.tri_count()
+
+
+func _c_walls() -> void:
+	var wall_geo := CityGeo.new(ring)
+	CityStreets.walls(wall_geo, plan)
+	_tris += _add(wall_geo, "Walls", self, false)
+
+
+## Ceiling steps a..b-1 (CityStreets.ceiling_range) into the ceiling and strip geos; _c_ceiling_mesh instances them.
+func _c_ceiling(a: int, b: int) -> void:
+	if a == 0:
+		_ceil_geo = CityGeo.new(ring)
+		_strip_geo = CityGeo.new(ring)
+		strip_x = PackedFloat32Array()
+	strip_x.append_array(CityStreets.ceiling_range(_ceil_geo, _strip_geo, _area, plan, _look, a, b))
+
+
+func _c_ceiling_mesh() -> void:
+	_tris += _add(_ceil_geo, "Ceiling", self, false)
+	_ceil_geo = null
+
+
+func _c_strips_mesh() -> void:
+	var strip_node := _strip_geo.instance("Strips", CityPalette.strip_material())
 	strip_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(strip_node)
-	tris += strips.tri_count()
+	_tris += _strip_geo.tri_count()
+	_strip_geo = null
 
-	if open_edge or not views.is_empty():
+
+func _c_backdrop() -> void:
+	if _open_edge or not _views.is_empty():
 		var back := CityGeo.new(ring)
-		if open_edge:
-			CityStreets.backdrop(back, plan, look)
-		for v in views:
-			CityStreets.backdrop(back, plan, look, v)
-		tris += _add(back, "Backdrop", self, false)
+		if _open_edge:
+			CityStreets.backdrop(back, plan, _look)
+		for v in _views:
+			CityStreets.backdrop(back, plan, _look, v)
+		_tris += _add(back, "Backdrop", self, false)
 
-	var shapes := _build_collision()
+
+func _c_finish() -> void:
 	for g in find_children("*", "GeometryInstance3D", true, false):
 		(g as GeometryInstance3D).layers = render_layer
-
 	if with_rig:
 		if rig == null:
 			rig = CityLightRig.new()
 			add_child(rig)
 		rig.setup(ring, plan.extent, plan.p("ceiling"), strip_x)
-	stats = {"triangles": tris, "shapes": shapes, "buildings": plan.buildings.size(), "props": props.items.size(), "ms": Time.get_ticks_msec() - t0}
+	stats = {"triangles": _tris, "shapes": _shapes, "buildings": plan.buildings.size(), "props": props.items.size(), "ms": float(_b_us) / 1000.0}
+	_per_block.clear()
+	_cgeo = null
 
 
 ## The upright frame building i is built in: origin on the sidewalk under its centre, Y radial.
@@ -176,15 +346,21 @@ func _add(geo: CityGeo, node_name: String, parent: Node, shadows: bool = true) -
 
 # --- Collision -------------------------------------------------------------------------------------------
 
-func _build_collision() -> int:
-	var body := StaticBody3D.new()
-	body.name = "Collision"
-	add_child(body)
-	var geo := CityGeo.new(ring)
+## The collision is made in chunks, in this order (the shapes' order under Collision is the same as one pass):
+## _col_floor (deck and ceiling slabs), _col_walls (boundary walls, sidewalks, hole curbs), _col_ramps, _col_buildings
+## (in batches, the last one adds the park columns). Each adds its count to _shapes.
+func _col_floor() -> void:
+	_body = StaticBody3D.new()
+	_body.name = "Collision"
+	add_child(_body)
+	_cgeo = CityGeo.new(ring)
+	_holes = plan.floor_cuts()
+	var body := _body
+	var geo := _cgeo
 	var e := plan.extent.grow(14.0)
 	var count := 0
 	var ceiling := plan.p("ceiling")
-	var holes := plan.floor_cuts()
+	var holes := _holes
 	# Deck and ceiling: one slab per facet, the deck left open over the floor holes.
 	var br := CityGeo.breaks(e.position.y, e.end.y)
 	for k in br.size() - 1:
@@ -211,6 +387,16 @@ func _build_collision() -> int:
 			if sp[1] - sp[0] > 0.1:
 				_shape(body, geo.frame((sp[0] + sp[1]) * 0.5, mid, ceiling), Vector3(0, 0.5, 0), Vector3(sp[1] - sp[0], 1.0, length + SEAM))
 				count += 1
+	_shapes += count
+
+
+func _col_walls() -> void:
+	var body := _body
+	var geo := _cgeo
+	var e := plan.extent.grow(14.0)
+	var count := 0
+	var ceiling := plan.p("ceiling")
+	var holes := _holes
 	# Boundary walls: solid floor to ceiling except across a portal (the way in or out), which keeps only its lintel.
 	for w: Dictionary in plan.boundary():
 		var side: int = w["side"]
@@ -245,10 +431,20 @@ func _build_collision() -> int:
 			curbs.append(Rect2(o.position.x, o.end.y, o.size.x, c))
 		for q in curbs:
 			count += _ground_box(body, geo, q, 0.0, c)
+	_shapes += count
+
+
+func _col_ramps() -> void:
 	for r: Dictionary in plan.ramps:
-		count += _ramp_collision(body, geo, r)
-	# Building tiers.
-	for i in plan.buildings.size():
+		_shapes += _ramp_collision(_body, _cgeo, r)
+
+
+## Building tiers, solids, gables and pillar cores of buildings a..b-1; the last batch adds the park columns too.
+func _col_buildings(a: int, b: int) -> void:
+	var body := _body
+	var count := 0
+	var ceiling := plan.p("ceiling")
+	for i in range(a, b):
 		var xf := building_frame(i)
 		for t: Dictionary in plan.buildings[i]["tiers"]:
 			var y0: float = -1.0 if float(t["y0"]) <= 0.0 else float(t["y0"])
@@ -275,13 +471,14 @@ func _build_collision() -> int:
 			var cs: Vector2 = plan.buildings[i]["core"]["size"]
 			_shape(body, core_frame(i), Vector3(0, ceiling * 0.5, 0), Vector3(cs.x, ceiling + 2.0, cs.y))
 			count += 1
-	for col: Dictionary in plan.columns:
-		var w := float(col["half"]) * 2.0
-		var cf := _frame_at(col["x"], col["s"])
-		_shape(body, cf, Vector3(0, ceiling * 0.5, 0), Vector3(w, ceiling + 2.0, w))
-		_convex(body, cf, ring_points(col))      # the planted stone ring round its foot
-		count += 2
-	return count
+	if b >= plan.buildings.size():
+		for col: Dictionary in plan.columns:
+			var w := float(col["half"]) * 2.0
+			var cf := _frame_at(col["x"], col["s"])
+			_shape(body, cf, Vector3(0, ceiling * 0.5, 0), Vector3(w, ceiling + 2.0, w))
+			_convex(body, cf, ring_points(col))      # the planted stone ring round its foot
+			count += 2
+	_shapes += count
 
 
 ## A civic gable as a convex prism in its own frame (CityBuildings.gable_frame): the eaves rectangle and the ridge.

@@ -105,7 +105,11 @@ function Get-NetSpec([string]$Name) {
     $lm = [regex]::Match($src, '(?m)^const LINKS\s*:=\s*\[([^\]]*)\]')
     if ($lm.Success) { $links = @([regex]::Matches($lm.Groups[1].Value, '"([a-z]+)"') | ForEach-Object { $_.Groups[1].Value }) }
     if ($Link -ne "") { $links = @($Link) }
-    return @{ Peers = [int]$m.Groups[1].Value; Links = $links }
+    # `const NET_TIMEOUT := N`: a long net test (a whole bot-played mission) gets N s instead of -NetTimeoutSec.
+    $timeout = $NetTimeoutSec
+    $tm = [regex]::Match($src, '(?m)^const NET_TIMEOUT\s*:=\s*(\d+)')
+    if ($tm.Success) { $timeout = [Math]::Max($NetTimeoutSec, [int]$tm.Groups[1].Value) }
+    return @{ Peers = [int]$m.Groups[1].Value; Links = $links; Timeout = $timeout }
 }
 
 # A random UDP port that is free right now and not handed to another run of this runner (ENet binds UDP). Random over
@@ -132,13 +136,13 @@ function Start-NetRun([string]$Name, [int]$Peers, [string]$LinkName, [int]$Retry
     for ($i = 1; $i -lt $Peers; $i++) {
         $procs += [PSCustomObject]@{ Role = "c$i"; G = (Start-Godot $Name "--net-role client --net-index $i $common" $netTiming) }
     }
-    return [PSCustomObject]@{ Name = $Name; Link = $LinkName; Peers = $Peers; Port = $port; Retry = $Retry; Label = "$Name [$LinkName]"; Procs = $procs; Watch = [Diagnostics.Stopwatch]::StartNew() }
+    return [PSCustomObject]@{ Name = $Name; Link = $LinkName; Peers = $Peers; Port = $port; Retry = $Retry; Label = "$Name [$LinkName]"; Procs = $procs; Watch = [Diagnostics.Stopwatch]::StartNew(); Timeout = (Get-NetSpec $Name).Timeout }
 }
 
 function Test-NetRunExited($run) { return @($run.Procs | Where-Object { -not $_.G.Proc.HasExited }).Count -eq 0 }
 
 function Finish-NetRun($run) {
-    $deadline = [DateTime]::Now.AddSeconds([Math]::Max(0, $NetTimeoutSec - $run.Watch.Elapsed.TotalSeconds))
+    $deadline = [DateTime]::Now.AddSeconds([Math]::Max(0, $run.Timeout - $run.Watch.Elapsed.TotalSeconds))
     foreach ($p in $run.Procs) {
         $left = [Math]::Max(0, ($deadline - [DateTime]::Now).TotalMilliseconds)
         if (-not $p.G.Proc.WaitForExit([int]$left)) { try { $p.G.Proc.Kill() } catch {}; $p.G.Proc.WaitForExit() }
@@ -323,7 +327,7 @@ if ($netRuns.Count -gt 0) {
             $next = $queue[0]; $queue.RemoveAt(0)
             $active += Start-NetRun $next.Name $next.Peers $next.Link $next.Retry
         }
-        $doneRun = $active | Where-Object { (Test-NetRunExited $_) -or $_.Watch.Elapsed.TotalSeconds -gt $NetTimeoutSec } | Select-Object -First 1
+        $doneRun = $active | Where-Object { (Test-NetRunExited $_) -or $_.Watch.Elapsed.TotalSeconds -gt $_.Timeout } | Select-Object -First 1
         if ($doneRun -eq $null) { Start-Sleep -Milliseconds 100; continue }
         $res = Finish-NetRun $doneRun
         if ($res -is [string]) {   # "retry" ($true -eq "retry" is true in PowerShell, so test the type)

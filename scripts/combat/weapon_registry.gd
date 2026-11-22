@@ -17,6 +17,9 @@ const BEHAVIOURS := {
 	"enemy_pulse": preload("res://scripts/combat/weapons/enemy_pulse.gd"),
 	"enemy_siege_shell": preload("res://scripts/combat/weapons/enemy_siege_shell.gd"),
 	"enemy_mortar": preload("res://scripts/combat/weapons/enemy_mortar.gd"),
+	"enemy_lance": preload("res://scripts/combat/weapons/enemy_lance.gd"),
+	"enemy_rockets": preload("res://scripts/combat/weapons/enemy_rockets.gd"),
+	"enemy_scatter": preload("res://scripts/combat/weapons/enemy_scatter.gd"),
 }
 
 static var _instances: Dictionary = {}

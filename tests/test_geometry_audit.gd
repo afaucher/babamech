@@ -140,8 +140,10 @@ func _audit_mech_meshes() -> void:
 
 
 func _audit_enemy_meshes() -> void:
-	var parts := ["turret_base", "turret_gun", "turret_gun_wreck", "strider_chassis", "strider_sensor", "strider_leg",
-		"tank_hull", "tank_turret", "tank_turret_wreck", "tank_vents", "debris_plate", "debris_chunk", "rupture_core"]
+	var parts := ["turret_base", "turret_gun", "turret_gun_wreck", "turret_sniper_gun", "turret_missile_gun",
+		"strider_chassis", "strider_breacher_chassis", "strider_sensor", "strider_leg",
+		"tank_hull", "tank_turret", "tank_turret_wreck", "tank_vents",
+		"drone_hull", "drone_optic", "drone_cone", "debris_plate", "debris_chunk", "rupture_core"]
 	for part: String in parts:
 		var m := EnemyMeshes.mesh(part)
 		var st := _check_mesh_winding(m, "EnemyMeshes.%s" % part)

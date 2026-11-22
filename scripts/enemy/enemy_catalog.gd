@@ -1,11 +1,12 @@
 class_name EnemyCatalog
 extends RefCounted
-## Pure data for the starter enemy roster and enemy weapons (docs/design/enemies.md).
+## Pure data for the enemy roster (including long/short-range variants & aerial Patrol Drone) and enemy weapons
+## (docs/design/enemies.md, docs/design/enemy-tactics-and-drones.md).
 ## Kept separate from MechCatalog so player hangar / WeaponRangeLab stay clean; CombatWorld.stats() falls back here.
 
 const MIN_TELEGRAPH := 0.3        ## AGENTS.md rule 7: enemy telegraphs are never shorter than 0.3 s
 
-const CLASS_ORDER := ["turret", "strider", "tank"]
+const CLASS_ORDER := ["turret", "turret_sniper", "turret_missile", "strider", "strider_breacher", "tank", "drone"]
 
 ## Enemy classes. `components` is ordered with the CORE component first (index 0) so splash / fallback damage hits core.
 const CLASSES := {
@@ -41,6 +42,70 @@ const CLASSES := {
 				"spheres": [{"center": Vector3(0.0, 3.4, -0.3), "radius": 1.8}]},
 		],
 	},
+	"turret_sniper": {
+		"name": "Marksman Turret",
+		"mass_class": "static",
+		"size": Vector3(4.8, 6.2, 6.4),
+		"core": "base",
+		"heat_cap": 65.0,
+		"cooling": 4.0,
+		"move_speed": 0.0,
+		"flank_speed": 0.0,
+		"turn_rate": 0.0,
+		"slew_rate": 2.0,
+		"patrol_sight_range": 105.0,
+		"sight_range": 215.0,
+		"fov_deg": 110.0,
+		"primary_weapon": "enemy_lance",
+		"secondary_weapon": "",
+		"preferred_range": 145.0,
+		"min_range": 16.0,
+		"explosion_radius": 4.5,
+		"explosion_column": 0.0,
+		"slot_priority": 1.8,
+		"probe_height": 2.6,
+		"body_radius": 2.4,
+		"eye_height": 5.0,
+		"bar_height": 7.0,
+		"components": [
+			{"id": "base", "hp": 140.0, "mult": 1.0, "heat_mult": 1.0, "weak_point": false, "critical_kill": false,
+				"spheres": [{"center": Vector3(0.0, 1.3, 0.0), "radius": 2.3}]},
+			{"id": "gun", "hp": 75.0, "mult": 1.25, "heat_mult": 1.0, "weak_point": true, "critical_kill": true,
+				"spheres": [{"center": Vector3(0.0, 3.5, -0.4), "radius": 1.85}]},
+		],
+	},
+	"turret_missile": {
+		"name": "Salvo Turret",
+		"mass_class": "static",
+		"size": Vector3(5.2, 5.8, 4.8),
+		"core": "base",
+		"heat_cap": 70.0,
+		"cooling": 4.0,
+		"move_speed": 0.0,
+		"flank_speed": 0.0,
+		"turn_rate": 0.0,
+		"slew_rate": 2.2,
+		"patrol_sight_range": 92.0,
+		"sight_range": 195.0,
+		"fov_deg": 120.0,
+		"primary_weapon": "enemy_rockets",
+		"secondary_weapon": "",
+		"preferred_range": 125.0,
+		"min_range": 18.0,
+		"explosion_radius": 5.0,
+		"explosion_column": 0.0,
+		"slot_priority": 1.7,
+		"probe_height": 2.6,
+		"body_radius": 2.5,
+		"eye_height": 4.8,
+		"bar_height": 6.8,
+		"components": [
+			{"id": "base", "hp": 155.0, "mult": 1.0, "heat_mult": 1.0, "weak_point": false, "critical_kill": false,
+				"spheres": [{"center": Vector3(0.0, 1.3, 0.0), "radius": 2.3}]},
+			{"id": "gun", "hp": 80.0, "mult": 1.25, "heat_mult": 1.0, "weak_point": true, "critical_kill": true,
+				"spheres": [{"center": Vector3(0.0, 3.5, -0.2), "radius": 1.95}]},
+		],
+	},
 	"strider": {
 		"name": "Hound Skirmisher",
 		"mass_class": "light",
@@ -58,6 +123,7 @@ const CLASSES := {
 		"primary_weapon": "enemy_pulse",
 		"secondary_weapon": "",
 		"preferred_range": 40.0,
+		"engage_range": 82.0,
 		"min_range": 16.0,
 		"explosion_radius": 3.5,
 		"explosion_column": 0.0,
@@ -67,12 +133,48 @@ const CLASSES := {
 		"eye_height": 4.3,
 		"bar_height": 6.1,
 		"components": [
-			{"id": "chassis", "hp": 100.0, "mult": 1.0, "heat_mult": 1.0, "weak_point": false, "critical_kill": false,
+			{"id": "chassis", "hp": 125.0, "mult": 1.0, "heat_mult": 1.0, "weak_point": false, "critical_kill": false,
 				"spheres": [{"center": Vector3(0.0, 3.5, -0.1), "radius": 1.65}]},
 			{"id": "legs", "hp": 55.0, "mult": 1.0, "heat_mult": 1.0, "weak_point": false, "critical_kill": false,
 				"cripple_speed": 0.25, "cripple_stagger": 1.5, "overflow_to_core": 0.6,
 				"spheres": [{"center": Vector3(0.0, 1.4, 0.0), "radius": 1.45}]},
-			{"id": "sensor", "hp": 40.0, "mult": 1.5, "heat_mult": 1.0, "weak_point": true, "critical_kill": true,
+			{"id": "sensor", "hp": 65.0, "mult": 1.5, "heat_mult": 1.0, "weak_point": true, "critical_kill": true,
+				"spheres": [{"center": Vector3(0.0, 4.3, -1.2), "radius": 0.85}]},
+		],
+	},
+	"strider_breacher": {
+		"name": "Hound Breacher",
+		"mass_class": "light",
+		"size": Vector3(4.2, 5.2, 4.4),
+		"core": "chassis",
+		"heat_cap": 55.0,
+		"cooling": 5.0,
+		"move_speed": 10.2,
+		"flank_speed": 14.5,
+		"turn_rate": 3.2,
+		"slew_rate": 3.8,
+		"patrol_sight_range": 64.0,
+		"sight_range": 135.0,
+		"fov_deg": 105.0,
+		"primary_weapon": "enemy_scatter",
+		"secondary_weapon": "",
+		"preferred_range": 34.0,
+		"engage_range": 58.0,
+		"min_range": 12.0,
+		"explosion_radius": 3.8,
+		"explosion_column": 0.0,
+		"slot_priority": 1.2,
+		"probe_height": 2.6,
+		"body_radius": 1.9,
+		"eye_height": 4.3,
+		"bar_height": 6.2,
+		"components": [
+			{"id": "chassis", "hp": 140.0, "mult": 1.0, "heat_mult": 1.0, "weak_point": false, "critical_kill": false,
+				"spheres": [{"center": Vector3(0.0, 3.5, -0.15), "radius": 1.75}]},
+			{"id": "legs", "hp": 60.0, "mult": 1.0, "heat_mult": 1.0, "weak_point": false, "critical_kill": false,
+				"cripple_speed": 0.25, "cripple_stagger": 1.5, "overflow_to_core": 0.6,
+				"spheres": [{"center": Vector3(0.0, 1.4, 0.0), "radius": 1.45}]},
+			{"id": "sensor", "hp": 70.0, "mult": 1.5, "heat_mult": 1.0, "weak_point": true, "critical_kill": true,
 				"spheres": [{"center": Vector3(0.0, 4.3, -1.2), "radius": 0.85}]},
 		],
 	},
@@ -93,6 +195,7 @@ const CLASSES := {
 		"primary_weapon": "enemy_siege_shell",
 		"secondary_weapon": "enemy_mortar",
 		"preferred_range": 68.0,
+		"engage_range": 125.0,
 		"min_range": 24.0,
 		"explosion_radius": 6.5,
 		"explosion_column": 14.0,
@@ -113,6 +216,40 @@ const CLASSES := {
 			{"id": "vents", "hp": 90.0, "mult": 1.75, "heat_mult": 1.5, "weak_point": true, "critical_kill": true,
 				"kill_cause": "meltdown",
 				"spheres": [{"center": Vector3(0.0, 3.1, 3.2), "radius": 1.5}]},
+		],
+	},
+	"drone": {
+		"name": "Patrol Scout Drone",
+		"mass_class": "light",
+		"size": Vector3(2.4, 1.6, 2.4),
+		"core": "hull",
+		"heat_cap": 40.0,
+		"cooling": 6.0,
+		"move_speed": 12.5,
+		"flank_speed": 16.0,
+		"turn_rate": 3.4,
+		"slew_rate": 4.5,
+		"patrol_sight_range": 115.0,
+		"sight_range": 175.0,
+		"hear_radius": 120.0,
+		"fov_deg": 160.0,
+		"primary_weapon": "",
+		"secondary_weapon": "",
+		"preferred_range": 105.0,
+		"min_range": 72.0,
+		"cruise_alt": 15.0,
+		"explosion_radius": 3.0,
+		"explosion_column": 0.0,
+		"slot_priority": 0.0,
+		"probe_height": 0.8,
+		"body_radius": 1.4,
+		"eye_height": 0.35,
+		"bar_height": 2.6,
+		"components": [
+			{"id": "hull", "hp": 55.0, "mult": 1.0, "heat_mult": 1.0, "weak_point": false, "critical_kill": false,
+				"spheres": [{"center": Vector3(0.0, 0.25, 0.0), "radius": 1.3}]},
+			{"id": "optic", "hp": 28.0, "mult": 1.5, "heat_mult": 1.0, "weak_point": true, "critical_kill": true,
+				"spheres": [{"center": Vector3(0.0, -0.35, -0.55), "radius": 0.65}]},
 		],
 	},
 }
@@ -154,6 +291,32 @@ const WEAPONS := {
 		"telegraph": 0.70, "telegraph_kind": "mortar", "lock_share": 0.45, "lead_factor": 0.35,
 		"burst": 1, "burst_interval": 0.0, "burst_cooldown": 6.5, "self_heat": 24.0,
 	},
+	"enemy_lance": {
+		"name": "Marksman Lance", "kind": "shell", "damage": 48.0, "rate": 1.0, "salvo": 1, "reload": 0.0,
+		"speed": 115.0, "range": 215.0, "falloff_start": 175.0, "falloff_min": 0.85, "spread": 0.3,
+		"knockback": 4.5, "splash_damage": 0.0, "splash_radius": 0.0, "target_heat": 0.0, "ammo": -1,
+		"growth": 2.2, "growth_full": 140.0, "size": 0.95, "trail": 0.45, "impact_radius": 2.2, "muzzle": 5.4,
+		"telegraph": 0.95, "telegraph_kind": "lance", "lock_share": 0.55, "lead_factor": 0.72,
+		"burst": 1, "burst_interval": 0.0, "burst_cooldown": 4.2, "self_heat": 16.0,
+	},
+	"enemy_rockets": {
+		"name": "Salvo Rocket Pod", "kind": "rocket", "damage": 22.0, "rate": 4.5, "salvo": 1, "reload": 0.0,
+		"speed": 40.0, "range": 190.0, "falloff_start": 190.0, "falloff_min": 1.0, "spread": 2.2,
+		"knockback": 1.2, "splash_damage": 12.0, "splash_radius": 4.0, "splash_knockback": 2.0, "splash_lift": 1.0,
+		"target_heat": 0.0, "ammo": -1, "explosive": true, "wobble": 0.55, "prop_blast": 3.5,
+		"growth": 2.0, "growth_full": 120.0, "size": 0.95, "trail": 1.0, "impact_radius": 2.6, "muzzle": 1.6,
+		"telegraph": 0.85, "telegraph_kind": "salvo", "lock_share": 0.45, "lead_factor": 0.55,
+		"burst": 3, "burst_interval": 0.22, "burst_cooldown": 4.6, "self_heat": 16.0,
+	},
+	"enemy_scatter": {
+		"name": "Breacher Scattergun", "kind": "bullet", "damage": 13.0, "rate": 4.0, "salvo": 1, "reload": 0.0,
+		"speed": 56.0, "range": 68.0, "falloff_start": 38.0, "falloff_min": 0.55, "spread": 1.2,
+		"pellets": 5, "fan_deg": 7.5,
+		"knockback": 1.4, "splash_damage": 0.0, "splash_radius": 0.0, "target_heat": 0.0, "ammo": -1,
+		"growth": 2.4, "growth_full": 60.0, "size": 0.52, "trail": 0.22, "impact_radius": 1.1, "muzzle": 2.55,
+		"telegraph": 0.50, "telegraph_kind": "scatter", "lock_share": 0.50, "lead_factor": 0.60,
+		"burst": 1, "burst_interval": 0.0, "burst_cooldown": 2.6, "self_heat": 12.0,
+	},
 }
 
 
@@ -163,6 +326,18 @@ static func unit(id: String) -> Dictionary:
 
 static func weapon(id: String) -> Dictionary:
 	return WEAPONS.get(id, {})
+
+
+static func engage_range(type_id: String) -> float:
+	var u := unit(type_id)
+	if u.has("engage_range"):
+		return float(u["engage_range"])
+	var prim := str(u.get("primary_weapon", ""))
+	if prim == "":
+		return float(u.get("preferred_range", 80.0))
+	var wr := float(weapon(prim).get("range", 120.0))
+	var pref := float(u.get("preferred_range", 60.0))
+	return minf(wr * 0.85, pref * 1.45)
 
 
 static func telegraph_duration(weapon_id: String, scale: float = 1.0) -> float:

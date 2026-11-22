@@ -319,32 +319,40 @@ func _multi_seed_spawn_and_patrol_audit() -> void:
 		var list := EnemySpawner.spawn_all(plan, ring, spawn_p, w, sq, seed_i, false)
 		await frames(2)
 		var sp := w.space()
-		var seed_ok := list.size() >= 4 and list.size() <= 5
+		var seed_ok := list.size() >= 5 and list.size() <= 6
 		total_enemies += list.size()
 
 		for e in list:
 			var arc := ring.world_to_arc(e.global_position)
 			var d_spawn := Vector2(arc.x, arc.y).distance_to(Vector2(0.0, 12.0))
-			if d_spawn < EnemySpawner.SPAWN_SAFE_RADIUS - 0.1:
+			var safe_r := EnemySpawner.DRONE_SAFE_RADIUS if e.enemy_type == "drone" else EnemySpawner.SPAWN_SAFE_RADIUS
+			if d_spawn < safe_r - 0.1:
 				seed_ok = false
 				check(false, "seed %d %s too close to spawn (%.1f m)" % [seed_i, e.target_id, d_spawn])
-			var clear_r := EnemySpawner.TURRET_CLEAR if e.enemy_type == "turret" else (EnemySpawner.TANK_CLEAR if e.enemy_type == "tank" else EnemySpawner.STRIDER_CLEAR)
+			var clear_r := EnemySpawner.TURRET_CLEAR if e.enemy_type.begins_with("turret") else (
+				EnemySpawner.TANK_CLEAR if e.enemy_type == "tank" else (
+				EnemySpawner.DRONE_CLEAR if e.enemy_type == "drone" else EnemySpawner.STRIDER_CLEAR))
 			if not EnemySpawner.clear_of_buildings(plan, Vector2(arc.x, arc.y), clear_r * 0.9, arc.z + 0.25):
 				seed_ok = false
 				check(false, "seed %d %s overlaps building/pillar at %s" % [seed_i, e.target_id, str(arc)])
-			# Real physics ground / rooftop surface check.
-			var u := ring.up_at(e.global_position)
-			var q := PhysicsRayQueryParameters3D.create(e.global_position + u * 1.5, e.global_position - u * 4.0)
-			var h := sp.intersect_ray(q)
-			if h.is_empty():
-				seed_ok = false
-				check(false, "seed %d %s has no physics surface underneath" % [seed_i, e.target_id])
-			else:
-				var err := absf(((h["position"] as Vector3) - e.global_position).dot(u))
-				max_ground_err = maxf(max_ground_err, err)
-				if err > 1.0:
+			if e.enemy_type == "drone":
+				if arc.z < 11.0 or arc.z > 22.0:
 					seed_ok = false
-					check(false, "seed %d %s ground mismatch %.2f m" % [seed_i, e.target_id, err])
+					check(false, "seed %d %s drone altitude out of cruise band (%.1f m)" % [seed_i, e.target_id, arc.z])
+			else:
+				# Real physics ground / rooftop surface check.
+				var u := ring.up_at(e.global_position)
+				var q := PhysicsRayQueryParameters3D.create(e.global_position + u * 1.5, e.global_position - u * 4.0)
+				var h := sp.intersect_ray(q)
+				if h.is_empty():
+					seed_ok = false
+					check(false, "seed %d %s has no physics surface underneath" % [seed_i, e.target_id])
+				else:
+					var err := absf(((h["position"] as Vector3) - e.global_position).dot(u))
+					max_ground_err = maxf(max_ground_err, err)
+					if err > 1.0:
+						seed_ok = false
+						check(false, "seed %d %s ground mismatch %.2f m" % [seed_i, e.target_id, err])
 
 		# Live 12 s physics patrol audit for seeds 1..3.
 		if seed_i <= 3:
@@ -362,7 +370,7 @@ func _multi_seed_spawn_and_patrol_audit() -> void:
 			var best_move := 0.0
 			for e in list:
 				var moved := float(path_dist[e.target_id])
-				if e.enemy_type != "turret":
+				if not e.enemy_type.begins_with("turret"):
 					best_move = maxf(best_move, moved)
 				var up_dot := e.global_basis.y.dot(ring.up_at(e.global_position))
 				check(up_dot > 0.97, "seed %d %s stays upright after 12 s patrol (dot=%.3f)" % [seed_i, e.target_id, up_dot])
@@ -448,9 +456,9 @@ func _real_weapon_ttk_and_rooftop_vents() -> void:
 	var ammo_before := int(rack.slots()[2]["ammo"])
 	var skr_ttk := _fire_until_dead(w, rack, sk_r, "chassis", 2.2)
 	var rockets_used := ammo_before - int(rack.slots()[2]["ammo"])
-	var dmg_done := 100.0 - float(sk_r.hp.get("chassis", 0.0))
+	var dmg_done := float(sk_r.max_hp.get("chassis", 125.0)) - float(sk_r.hp.get("chassis", 0.0))
 	check((sk_r.destroyed() or dmg_done >= 50.0) and rockets_used <= 6,
-		"one Rocket Pod salvo chunks/kills a 100 HP Skirmisher at 45 m (%d rockets, %.0f dmg, %.2f s)" % [rockets_used, dmg_done, skr_ttk])
+		"one Rocket Pod salvo chunks/kills a Skirmisher at 45 m (%d rockets, %.0f dmg, %.2f s)" % [rockets_used, dmg_done, skr_ttk])
 
 	# B. Real laser + autocannon vs Enforcer Turret gun weak point at 50 m.
 	mech.heat = 0.0

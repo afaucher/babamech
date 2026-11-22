@@ -17,7 +17,11 @@ extends Node
 ##            mission.ready {sum}). The host compares each with
 ##            its own: a different one is a DESYNC (printed, noted in telemetry, kept in `desyncs`), and that pilot is
 ##            sent out (Session.kick, reason DESYNC). A member that has not reported LOAD_TIMEOUT after start_t is sent
-##            out with LOAD_SLOW. A member that leaves just stops being waited for.
+##            out with LOAD_SLOW. A member that leaves just stops being waited for. Right before its (blocking) build a
+##            machine says mission.loading {} (report_loading), and mission.ready carries the build time {sum, ms}.
+##            While a member is loading (launch until it reports, or until go on a client), the session's silence
+##            watchdogs allow load_allowance() instead of CLIENT_SILENCE / HOST_SILENCE: a slow machine blocked in its
+##            build is not "gone" (NetSession; docs/networking.md "Timeouts").
 ##   PENDING  Every remaining member reported the host's checksum: mission.go {start_at} (START_LEAD ahead on the shared
 ##            clock, so every machine has it in time).
 ##   RUNNING  start_at reached: mission_go(elapsed) on every machine; the mechs are released.
@@ -61,7 +65,16 @@ var slow: Array = []
 ## The mission's progress as last decided by the host (MissionRules.state()), {} before the first decision.
 var state: Dictionary = {}
 
+## The load barrier's timeout for this machine (LOAD_TIMEOUT; tests shorten it on every process).
+var load_timeout := LOAD_TIMEOUT
+## Host: peer -> its build time in ms (from mission.ready; the host's own under 1).
+var build_ms: Dictionary = {}
+
+## Launches on this machine since the process started (the [Flow] log tells a relaunch apart).
+static var launches := 0
+
 var _sums: Dictionary = {}   ## host: peer -> reported checksum
+var _judged: Dictionary = {}   ## host: peer -> true once its checksum was logged ok
 var _started := false
 var _busy := false
 
@@ -86,7 +99,35 @@ func reset() -> void:
 	local_sum = ""
 	state = {}
 	_sums = {}
+	_judged = {}
+	build_ms = {}
 	_started = false
+
+
+## Launched and not yet past the barrier on this machine (LAUNCH or LOADING): the crew is (or may be) building.
+func loading() -> bool:
+	return phase == LAUNCH or phase == LOADING
+
+
+## Host: `peer` is a member of the loading mission that hasn't reported its build yet.
+func waiting_for(peer: int) -> bool:
+	return loading() and not _sums.has(peer) and members().has(peer)
+
+
+## The silence a loading member (or, on a client, the host) is allowed: past the LOAD_SLOW kick, so the kick (with its
+## reason) always comes first.
+func load_allowance() -> float:
+	return load_timeout + LAUNCH_LEAD + 5.0
+
+
+## This machine is about to build the mission (a long, blocking step on a slow machine): tell the host (mission.loading).
+func report_loading() -> void:
+	var s := _s()
+	if s == null or not s.online() or not loading():
+		return
+	_note("mission loading: build starts")
+	if not s.hosting:
+		s.send_event(1, "mission.loading", {})
 
 
 ## A mission was launched and has not ended on this machine.
@@ -118,23 +159,26 @@ func host_launch(seed_value: int, mode: String = MODE_STACK) -> bool:
 	s.set_crew_state("mission")
 	s.send_event(0, "mission.launch", params)
 	_note("mission launch: seed %d, %s, crew %d, loads at %.3f" % [seed_value, params["mode"], crew.size(), float(params["start_t"])])
+	launches += 1
+	FlowLog.say("relaunch" if launches > 1 else "launch", "#%d seed %d, %s, crew %d" % [launches, seed_value, params["mode"], crew.size()])
 	s.mission_started.emit(params)
 	return true
 
 
 ## This machine built the mission: report its checksum (the host keeps it as the reference).
-func report_built(checksum: String) -> void:
+func report_built(checksum: String, ms: int = 0) -> void:
 	var s := _s()
 	local_sum = checksum + checksum_salt
 	if s == null or not s.online() or (phase != LAUNCH and phase != LOADING):
 		return
 	phase = LOADING
-	_note("mission built: checksum %s" % local_sum)
+	_note("mission built in %d ms: checksum %s" % [ms, local_sum])
 	if s.hosting:
 		_sums[1] = local_sum
+		build_ms[1] = ms
 		_judge()
 	else:
-		s.send_event(1, "mission.ready", {"sum": local_sum})
+		s.send_event(1, "mission.ready", {"sum": local_sum, "ms": ms})
 
 
 ## Leave the mission. The host ends it for everyone; a client only for itself.
@@ -144,6 +188,7 @@ func end(reason: String = "") -> void:
 	var s := _s()
 	if s != null and s.online() and s.hosting:
 		s.send_event(0, "mission.end", {"reason": reason if reason != "" else HOST_ENDED})
+		FlowLog.say("mission_ended", reason if reason != "" else HOST_ENDED)
 		_note("mission end: %s" % (reason if reason != "" else HOST_ENDED))
 	if s != null:
 		s.set_crew_state("lobby")
@@ -184,8 +229,12 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 		return
 	var s := _s()
 	if s.hosting:
-		if kind == "mission.ready" and (phase == LAUNCH or phase == LOADING) and members().has(from):
+		if kind == "mission.loading" and loading() and members().has(from):
+			_note("peer %d (%s) is building the mission" % [from, _name_of(from)])
+		elif kind == "mission.ready" and (phase == LAUNCH or phase == LOADING) and members().has(from):
 			_sums[from] = str(data.get("sum", ""))
+			build_ms[from] = int(data.get("ms", 0))
+			_note("peer %d (%s) built the mission in %d ms" % [from, _name_of(from), int(build_ms[from])])
 			_judge()
 		return
 	if from != 1:
@@ -202,11 +251,14 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 			phase = LAUNCH
 			s.set_crew_state("mission")
 			_note("mission launch heard: seed %d, %s, crew %d, loads at %.3f" % [int(params["seed"]), params["mode"], crew.size(), float(params["start_t"])])
+			launches += 1
+			FlowLog.say("launch received", "#%d seed %d, %s, crew %d" % [launches, int(params["seed"]), params["mode"], crew.size()])
 			s.mission_started.emit(params)
 		"mission.go":
 			if phase == LAUNCH or phase == LOADING:
 				start_at = float(data.get("start_at", 0.0))
 				phase = PENDING
+				FlowLog.say("checksum ok", "the barrier passed, starts at %.3f" % start_at)
 				_started = false
 				if data.get("state") is Dictionary and not (data["state"] as Dictionary).is_empty():
 					_take_state(data["state"])
@@ -216,6 +268,7 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 		"mission.end":
 			if phase != IDLE:
 				var why := str(data.get("reason", HOST_ENDED))
+				FlowLog.say("mission_ended", why)
 				s.set_crew_state("lobby")
 				reset()
 				s.mission_ended.emit(why)
@@ -251,8 +304,13 @@ func _judge() -> void:
 		print("[Net] DESYNC: %s built a different city (ours %s, theirs %s): sent out" % [who, mine, str(_sums[p])])
 		_note("DESYNC peer %d (%s): ours %s, theirs %s" % [p, who, mine, str(_sums[p])])
 		desyncs.append({"peer": p, "name": who, "ours": mine, "theirs": str(_sums[p])})
+		FlowLog.say("checksum mismatch", "%s (peer %d): ours %s, theirs %s" % [who, p, mine, str(_sums[p])])
 		_sums.erase(p)
 		s.kick(p, NetSession.DESYNC)
+	for p: int in _sums.keys():
+		if not _judged.has(p) and str(_sums[p]) == mine:
+			_judged[p] = true
+			FlowLog.say("checksum ok", "%s (peer %d) %s" % [_name_of(p), p, mine])
 	var waiting := false
 	for p: int in members():
 		if not _sums.has(p):
@@ -298,14 +356,15 @@ func _process(_delta: float) -> void:
 	if s == null or not s.online() or phase == IDLE:
 		return
 	if s.hosting and (phase == LAUNCH or phase == LOADING) and _sums.has(1) \
-			and s.host_time() > float(params.get("start_t", 0.0)) + LOAD_TIMEOUT:
+			and s.host_time() > float(params.get("start_t", 0.0)) + load_timeout:
 		for p: int in members():
 			if p != 1 and not _sums.has(p) and not slow.has(p):
 				slow.append(p)
-				_note("peer %d (%s) didn't load in time: sent out" % [p, _name_of(p)])
+				_note("peer %d (%s) didn't load in %.0f s: sent out (%s)" % [p, _name_of(p), load_timeout, NetSession.LOAD_SLOW])
 				s.kick(p, NetSession.LOAD_SLOW)
 		_judge()
 	if phase == PENDING and not _started and s.host_time() >= start_at:
 		_started = true
 		phase = RUNNING
+		FlowLog.say("mission_go", "crew %d" % members().size())
 		s.mission_go.emit(s.host_time() - start_at)

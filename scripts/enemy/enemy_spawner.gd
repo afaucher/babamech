@@ -8,26 +8,31 @@ extends RefCounted
 ## the entry on any plan (W4); spots over a floor hole (shafts, ramp lanes: `plan.floor_cuts()`) are refused.
 
 const SPAWN_SAFE_RADIUS := 48.0    ## m around player spawn kept clear so you aren't ambushed on frame 0
+const DRONE_SAFE_RADIUS := 68.0    ## m min distance for Patrol Drone spawn (never aggro on frame 0)
+const DRONE_CRUISE_ALT := 15.0     ## m default hover altitude above deck floor
 const MIN_ROOF_SPAN := 7.0         ## m minimum roof tier width/length for a 4.8 m Enforcer Turret
-const STRIDER_CLEAR := 2.2         ## m ground clearance radius for Hound Skirmisher
+const STRIDER_CLEAR := 2.2         ## m ground clearance radius for Hound Skirmisher / Breacher
 const TANK_CLEAR := 3.8            ## m ground clearance radius for Bastion Siege Tank
-const TURRET_CLEAR := 2.5          ## m clearance radius for Enforcer Turret on rooftops
+const TURRET_CLEAR := 2.5          ## m clearance radius for Enforcer Turret variants on rooftops
+const DRONE_CLEAR := 2.2           ## m aerial clearance radius for Patrol Drone
 
 
-## Compute deterministic spawn specs (4–5 well-spaced enemies solo; scaled cleanly for 2–4 player co-op crews).
+## Compute deterministic spawn specs (5–6 well-spaced enemies solo incl. 1 Patrol Drone; scaled cleanly for 2–4 co-op crews).
 static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vector3, crew_size: int = 1) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	if plan == null or ring == null:
 		return out
 	var rng := RandomNumberGenerator.new()
-	rng.seed = hash([plan.checksum(), "enemies_v2"])
+	rng.seed = hash([plan.checksum(), "enemies_v3"])
 	var p_arc := ring.world_to_arc(player_spawn)
 	var p2 := Vector2(p_arc.x, p_arc.y)
 	var used_spots: Array[Vector2] = [p2]
 	var next_id := [1]
 	var lane := _lane_x(plan)
 
-	# 1. Avenue Scout (1 Hound Skirmisher ~54 m ahead, patrolling AWAY/ACROSS the avenue so it doesn't shoot on frame 0).
+	# 1. Avenue Scout (1 Hound Skirmisher or Breacher ~54 m ahead, patrolling AWAY/ACROSS the avenue).
+	var scout_type := "strider_breacher" if rng.randi() % 2 == 0 else "strider"
+	var park_type := "strider" if scout_type == "strider_breacher" else "strider_breacher"
 	var s_skirm := clampf(p_arc.y + 54.0, plan.extent.position.y + 18.0, plan.extent.end.y - 22.0)
 	var x_off := -4.0 if rng.randi() % 2 == 0 else 4.0
 	var x_skirm := lane + x_off
@@ -37,10 +42,11 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 		var p_b := Vector2(lane + 5.5, minf(sk_pt.y + 14.0, plan.extent.end.y - 14.0))
 		var p_c := Vector2(lane + 5.5, sk_pt.y)
 		# Face away down +s (yaw 0.0) so the player sees it first and chooses when to engage.
-		out.append(_spec(next_id, "strider", sk_pt.x, sk_pt.y, 0.0, 0.0, "vanguard", [p_a, p_b, p_c]))
+		out.append(_spec(next_id, scout_type, sk_pt.x, sk_pt.y, 0.0, 0.0, "vanguard", [p_a, p_b, p_c]))
 		used_spots.append(sk_pt)
 
-	# 2. Mid-District Rooftop Turret (1 Enforcer Turret overlooking a mid-avenue / park sector, facing perpendicular/away).
+	# 2. Mid-District Rooftop Turret (Enforcer or Missile Turret overlooking mid-avenue / park, facing perpendicular/away).
+	var mid_turret_type := "turret_missile" if rng.randi() % 2 == 0 else "turret"
 	var roof_cands := _rooftop_candidates(plan, lane)
 	var ave_roof := _pick_roof(plan, roof_cands, used_spots, p2, 62.0, 110.0, true, rng)
 	if ave_roof.is_empty():
@@ -48,14 +54,14 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 	if not ave_roof.is_empty():
 		var rp := Vector2(float(ave_roof["x"]), float(ave_roof["s"]))
 		var away_yaw := _yaw_toward(p2, rp) + (PI * 0.35 if rp.x >= lane else -PI * 0.35)
-		var sp := _spec(next_id, "turret", rp.x, rp.y, float(ave_roof["h"]), away_yaw, "vanguard_roof")
+		var sp := _spec(next_id, mid_turret_type, rp.x, rp.y, float(ave_roof["h"]), away_yaw, "vanguard_roof")
 		sp["b_center"] = ave_roof["b_center"]
 		sp["t_off"] = ave_roof["t_off"]
 		sp["t_y1"] = ave_roof["t_y1"]
 		out.append(sp)
 		used_spots.append(rp)
 
-	# 3. Far Avenue Siege Tank (1 Bastion Siege Tank anchoring a distant avenue intersection ~96 m ahead, outside patrol sight).
+	# 3. Far Avenue Siege Tank (1 Bastion Siege Tank anchoring a distant avenue intersection ~96 m ahead).
 	var s_tank := clampf(p_arc.y + 96.0, plan.extent.position.y + 24.0, plan.extent.end.y - 20.0)
 	var raw_tank := _nearest_avenue_crossing(plan, s_tank, p2, lane)
 	var tank_pt := _find_clear_ground(plan, raw_tank, TANK_CLEAR, used_spots, 22.0, p2)
@@ -65,7 +71,7 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 		]))
 		used_spots.append(tank_pt)
 
-	# 4. Distant Park / Plaza Patrol (1 Hound Skirmisher well away from spawn, >= 72 m out).
+	# 4. Distant Park / Plaza Patrol (opposite light variant from #1, well away from spawn >= 72 m out).
 	var open_pts := _open_lot_centers(plan)
 	for oi in open_pts.size():
 		var c := _find_clear_ground(plan, open_pts[oi], STRIDER_CLEAR, used_spots, 28.0, p2)
@@ -73,42 +79,49 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 			continue
 		var r := 8.0
 		var patrol: Array[Vector2] = [c + Vector2(-r, -r * 0.5), c + Vector2(r, -r * 0.5), c + Vector2(r, r * 0.5), c + Vector2(-r, r * 0.5)]
-		out.append(_spec(next_id, "strider", c.x, c.y, CityPlan.CURB_H, _yaw_toward(p2, c), "park_patrol", patrol))
+		out.append(_spec(next_id, park_type, c.x, c.y, CityPlan.CURB_H, _yaw_toward(p2, c), "park_patrol", patrol))
 		used_spots.append(c)
 		break
 
-	# 5. Far Flank Rooftop Overwatch (1 Enforcer Turret >= 95 m away on the far side of the district).
+	# 5. Far Flank Rooftop Overwatch (1 Sniper Turret >= 95 m away contesting long-range avenue sightlines).
 	var far_roof := _pick_roof(plan, roof_cands, used_spots, p2, 95.0, 175.0, false, rng)
 	if not far_roof.is_empty():
 		var rp := Vector2(float(far_roof["x"]), float(far_roof["s"]))
-		var sp := _spec(next_id, "turret", rp.x, rp.y, float(far_roof["h"]), _yaw_toward(p2, rp), "rooftop")
+		var sp := _spec(next_id, "turret_sniper", rp.x, rp.y, float(far_roof["h"]), _yaw_toward(p2, rp), "rooftop")
 		sp["b_center"] = far_roof["b_center"]
 		sp["t_off"] = far_roof["t_off"]
 		sp["t_y1"] = far_roof["t_y1"]
 		out.append(sp)
 		used_spots.append(rp)
 
-	# Co-op crew reinforcements (crew_size >= 2): deterministic extra pockets; solo (crew_size == 1) untouched.
+	# 6. Patrol / Scout Drone (1 unarmed aerial spotter >= 68 m out on a mid-to-far avenue loop, 15 m altitude).
+	var s_drone := clampf(p_arc.y + 82.0, plan.extent.position.y + 24.0, plan.extent.end.y - 24.0)
+	var d_side := 14.0 if rng.randi() % 2 == 0 else -14.0
+	var d_pt := _find_clear_drone_spot(plan, Vector2(lane + d_side, s_drone), used_spots, p2, DRONE_SAFE_RADIUS)
+	if not is_nan(d_pt.x):
+		var d_loop := _drone_patrol_loop(plan, d_pt, lane)
+		out.append(_spec(next_id, "drone", d_pt.x, d_pt.y, DRONE_CRUISE_ALT, _yaw_toward(p2, d_pt), "drone_patrol", d_loop))
+		used_spots.append(d_pt)
+
+	# Co-op crew reinforcements (crew_size >= 2): deterministic extra pockets mixing variants + 2nd Drone at crew >= 3.
 	var crew := clampi(crew_size, 1, 4)
 	if crew >= 2:
-		# Extra mid-district flanking Skirmisher + second rooftop Turret.
 		var extra_sk := _find_clear_ground(plan, Vector2(lane - x_off * 2.0, clampf(p_arc.y + 68.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)), STRIDER_CLEAR, used_spots, 16.0, p2)
 		if not is_nan(extra_sk.x):
 			var pa := extra_sk + Vector2(-8.0, 8.0)
 			var pb := extra_sk + Vector2(8.0, 8.0)
-			out.append(_spec(next_id, "strider", extra_sk.x, extra_sk.y, 0.0, 0.0, "coop_flank", [pa, pb]))
+			out.append(_spec(next_id, "strider_breacher", extra_sk.x, extra_sk.y, 0.0, 0.0, "coop_flank", [pa, pb]))
 			used_spots.append(extra_sk)
 		var coop_roof := _pick_roof(plan, roof_cands, used_spots, p2, 60.0, 155.0, false, rng)
 		if not coop_roof.is_empty():
 			var crp := Vector2(float(coop_roof["x"]), float(coop_roof["s"]))
-			var csp := _spec(next_id, "turret", crp.x, crp.y, float(coop_roof["h"]), _yaw_toward(p2, crp), "coop_roof")
+			var csp := _spec(next_id, "turret_missile", crp.x, crp.y, float(coop_roof["h"]), _yaw_toward(p2, crp), "coop_roof")
 			csp["b_center"] = coop_roof["b_center"]
 			csp["t_off"] = coop_roof["t_off"]
 			csp["t_y1"] = coop_roof["t_y1"]
 			out.append(csp)
 			used_spots.append(crp)
 	if crew >= 3:
-		# Second Bastion Siege Tank anchoring a side/far avenue sector + escort Skirmisher.
 		var s_t2 := clampf(p_arc.y + 78.0, plan.extent.position.y + 24.0, plan.extent.end.y - 24.0)
 		var side_x := 36.0 if rng.randi() % 2 == 0 else -36.0
 		var t2_pt := _find_clear_ground(plan, Vector2(lane + side_x, s_t2), TANK_CLEAR, used_spots, 22.0, p2)
@@ -127,12 +140,16 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 				esc_pt + Vector2(-7.0, 0.0), esc_pt + Vector2(7.0, 0.0),
 			]))
 			used_spots.append(esc_pt)
+		# Second Patrol Drone on the opposite far flank.
+		var d2_pt := _find_clear_drone_spot(plan, Vector2(lane - d_side * 1.4, clampf(p_arc.y + 112.0, plan.extent.position.y + 26.0, plan.extent.end.y - 22.0)), used_spots, p2, 84.0)
+		if not is_nan(d2_pt.x):
+			out.append(_spec(next_id, "drone", d2_pt.x, d2_pt.y, DRONE_CRUISE_ALT + 1.0, _yaw_toward(p2, d2_pt), "coop_drone", _drone_patrol_loop(plan, d2_pt, lane)))
+			used_spots.append(d2_pt)
 	if crew >= 4:
-		# Fourth-player pressure: extra far rooftop overwatch turret.
 		var r4 := _pick_roof(plan, roof_cands, used_spots, p2, 68.0, 175.0, false, rng)
 		if not r4.is_empty():
 			var r4p := Vector2(float(r4["x"]), float(r4["s"]))
-			var r4sp := _spec(next_id, "turret", r4p.x, r4p.y, float(r4["h"]), _yaw_toward(p2, r4p), "coop_roof_4p")
+			var r4sp := _spec(next_id, "turret_sniper", r4p.x, r4p.y, float(r4["h"]), _yaw_toward(p2, r4p), "coop_roof_4p")
 			r4sp["b_center"] = r4["b_center"]
 			r4sp["t_off"] = r4["t_off"]
 			r4sp["t_y1"] = r4["t_y1"]
@@ -183,9 +200,10 @@ static func spawn_all(plan: CityPlan, ring: RingFrame, player_spawn: Vector3, wo
 
 static func make_enemy(type_id: String) -> EnemyBase:
 	match type_id:
-		"turret": return EnemyTurret.new()
-		"strider": return EnemyStrider.new()
+		"turret", "turret_sniper", "turret_missile": return EnemyTurret.new()
+		"strider", "strider_breacher": return EnemyStrider.new()
 		"tank": return EnemyTank.new()
+		"drone": return EnemyDrone.new()
 	return EnemyTurret.new()
 
 
@@ -243,6 +261,44 @@ static func _find_clear_ground(plan: CityPlan, want: Vector2, radius: float, use
 		if clear_of_buildings(plan, cand, radius, 0.0):
 			return cand
 	return Vector2(NAN, NAN)
+
+
+static func _find_clear_drone_spot(plan: CityPlan, want: Vector2, used: Array[Vector2], p2: Vector2,
+		min_spawn_d: float) -> Vector2:
+	var lane := _lane_x(plan)
+	var cands: Array[Vector2] = [
+		want,
+		Vector2(lane, want.y),
+		want + Vector2(12.0, 0.0), want + Vector2(-12.0, 0.0),
+		want + Vector2(0.0, 14.0), want + Vector2(0.0, -14.0),
+		Vector2(lane + 10.0, want.y + 18.0), Vector2(lane - 10.0, want.y + 18.0),
+		Vector2(lane, clampf(p2.y + 94.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)),
+	]
+	for rs: Dictionary in plan.roads_s:
+		var s := (float(rs["a"]) + float(rs["b"])) * 0.5
+		cands.append(Vector2(lane, s))
+	for cand in cands:
+		if cand.distance_to(p2) < min_spawn_d:
+			continue
+		if not _clear_of(cand, used, 10.0):
+			continue
+		if clear_of_buildings(plan, cand, DRONE_CLEAR, DRONE_CRUISE_ALT):
+			return cand
+	return Vector2(NAN, NAN)
+
+
+static func _drone_patrol_loop(plan: CityPlan, start: Vector2, lane: float) -> Array[Vector2]:
+	var ext := plan.extent.grow(-16.0)
+	var x_lo := clampf(lane - 26.0, ext.position.x, ext.end.x)
+	var x_hi := clampf(lane + 26.0, ext.position.x, ext.end.x)
+	var s_lo := clampf(start.y - 22.0, ext.position.y, ext.end.y)
+	var s_hi := clampf(start.y + 30.0, ext.position.y, ext.end.y)
+	return [
+		Vector2(clampf(start.x, ext.position.x, ext.end.x), clampf(start.y, ext.position.y, ext.end.y)),
+		Vector2(x_hi, s_hi),
+		Vector2(x_lo, s_hi),
+		Vector2(x_lo, s_lo),
+	]
 
 
 static func _spec(next_id: Array, type_id: String, x: float, s: float, h: float, yaw_arc: float,

@@ -28,6 +28,11 @@ func _run() -> void:
 	var seed_ := int(Boot.arg_value(args, "--perf-seed")) if Boot.arg_value(args, "--perf-seed").is_valid_int() else 4
 	_say("renderer %s, adapter %s, size %s" % [RenderingServer.get_current_rendering_method(), RenderingServer.get_video_adapter_name(),
 			str(get_viewport().get_visible_rect().size)])
+	if Boot.arg_value(args, "--perf-quality") != "":
+		await _quality_cases(seed_, Boot.arg_value(args, "--perf-quality"))
+		_say("done")
+		get_tree().quit()
+		return
 	if args.has("--perf-drive"):
 		for mode: String in ["district", "stack", "district", "stack"]:
 			await _drive_case(mode)
@@ -168,6 +173,7 @@ func _stack_cases(seed_: int) -> void:
 		shapes += (d.get_node("Collision") as Node).get_child_count()
 	_say("stack seed %d: %d decks, lab add+build %d ms (stack.stats.ms %s), stats %s, collision shapes %d, static mem +%.0f MB (now %.0f MB), vram %.0f MB" % [
 			seed_, stack.decks.size(), build_ms, str(stack.stats.get("ms", -1)), str(stack.stats), shapes, _mem() - m0, _mem(), _vram()])
+	await _stepped_build(seed_)
 	for k in stack.decks.size():
 		lab.set_lab_param("deck", float(k))
 		lab.set_lab_option("camera", "avenue")
@@ -203,6 +209,31 @@ func _stack_cases(seed_: int) -> void:
 	_say("summary:")
 	for r in _rows:
 		_say("  " + r)
+
+
+## The same section built incrementally (CityStack.build_begin / build_step, one chunk per frame): total ms inside the
+## chunks, chunk count, the worst chunk and the five slowest by label, and every chunk with --perf-chunks.
+func _stepped_build(seed_: int) -> void:
+	var st := CityStack.new()
+	st.name = "SteppedStack"
+	add_child(st)
+	st.build_begin(SectionPlan.make({"seed": float(seed_)}))
+	var frames := 0
+	while not st.build_step(0.0):
+		frames += 1
+		await get_tree().process_frame
+	var log_ := st.chunk_log.duplicate()
+	if OS.get_cmdline_user_args().has("--perf-chunks"):
+		for c: Array in log_:
+			_say("  chunk %-28s %7.2f ms" % [c[0], c[1]])
+	log_.sort_custom(func(a: Array, b: Array) -> bool: return float(a[1]) > float(b[1]))
+	var top := []
+	for i in mini(5, log_.size()):
+		top.append("%s %.1f" % [log_[i][0], log_[i][1]])
+	_say("stack seed %d stepped build: %.1f ms in %d chunks (%d frames), max chunk %.1f ms; slowest: %s" % [seed_,
+			float(st.stats["ms"]), int(st.stats["chunks"]), frames + 1, float(st.stats["max_chunk_ms"]), ", ".join(top)])
+	st.queue_free()
+	await get_tree().process_frame
 
 
 ## Physics with this scene's static shapes: a mech walking (its move_and_slide), the physics process time, 1,000 rays.
@@ -297,3 +328,105 @@ func _physics(mech: MechController, ring: RingFrame, label: String) -> void:
 	_say("%s physics: physics-process %.3f ms/frame avg, MechController.step %.3f avg / %.3f max ms, 1000 rays %.2f ms (%d hits), active bodies %d, pairs %d" % [
 			label, phys / float(n), step / 120.0, step_max, ray_ms, hits,
 			Performance.get_monitor(Performance.PHYSICS_3D_ACTIVE_OBJECTS), Performance.get_monitor(Performance.PHYSICS_3D_COLLISION_PAIRS)])
+
+
+# --- Quality levels (CityQuality; --perf-quality <0|1|2|all>, run_city_perf.ps1 -Quality) -----------------------------
+
+## The stack (lab, site stack) at each requested quality level through the same cameras (the entry deck's avenue, the
+## first ramp's top looking down it, the first shaft's railing): frame ms (avg, p95), the viewport's GPU / CPU render ms,
+## draw calls, primitives, objects, omni fills switched on, decks drawn and whether the daylight casts shadows.
+func _quality_cases(seed_: int, which: String) -> void:
+	var levels: Array[int] = []
+	if which == "all":
+		levels.assign([CityQuality.HIGH, CityQuality.MEDIUM, CityQuality.LOW])
+	else:
+		for part in which.split(",", false):
+			levels.append(CityQuality.clamp_level(int(part)))
+	# --perf-size WxH: force the window (and so the 3D render, stretch mode canvas_items) to that many pixels; --resolution
+	# alone is scaled by the desktop's DPI on the hidden desktop.
+	var want := Boot.arg_value(OS.get_cmdline_user_args(), "--perf-size").split("x")
+	if want.size() == 2 and want[0].is_valid_int() and want[1].is_valid_int():
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+		DisplayServer.window_set_size(Vector2i(int(want[0]), int(want[1])))
+		for i in 5:
+			await get_tree().process_frame
+	var lab := CityLab.new()
+	lab.options["site"] = "stack"
+	lab.params["seed"] = float(seed_)
+	add_child(lab)
+	var stack := lab.stack
+	var entry := int(stack.section.entry["deck"])
+	_say("quality: stack seed %d, %d decks, entry deck %d, window %s, render target %s, msaa_3d %d, scaling 3d %.2f" % [seed_,
+			stack.decks.size(), entry, str(DisplayServer.window_get_size()), str(get_viewport().get_texture().get_size()),
+			get_viewport().msaa_3d, get_viewport().scaling_3d_scale])
+	var rows: Array[String] = []
+	for view: String in ["avenue", "ramp", "shaft"]:
+		for q in levels:
+			lab.set_lab_param("deck", float(entry))
+			lab.set_lab_option("camera", view)
+			stack.set_quality(q)
+			rows.append(await _measure_quality("%-6s %-6s" % [view, CityQuality.name_of(q)], stack))
+	if levels.has(CityQuality.LOW):
+		# Attribution at LOW, from the avenue and the ramp: the deck below (drawn at LOW so holes and ramp mouths are not a
+		# void), and settings outside the city (Engine's): MSAA off, 3D render scale 0.75.
+		var vp := get_viewport()
+		var msaa := vp.msaa_3d
+		for view: String in ["avenue", "ramp"]:
+			lab.set_lab_param("deck", float(entry))
+			lab.set_lab_option("camera", view)
+			stack.set_quality(CityQuality.LOW)
+			if stack.active_deck + 1 < stack.decks.size():
+				stack.decks[stack.active_deck + 1].visible = false
+				rows.append(await _measure_quality("%-6s low, no deck below" % view, stack))
+				stack.decks[stack.active_deck + 1].visible = true
+		lab.set_lab_option("camera", "avenue")
+		stack.set_quality(CityQuality.LOW)
+		vp.msaa_3d = Viewport.MSAA_DISABLED
+		rows.append(await _measure_quality("avenue low, msaa off  ", stack))
+		vp.scaling_3d_scale = 0.75
+		rows.append(await _measure_quality("avenue low, msaa off, scale 0.75", stack))
+		vp.scaling_3d_scale = 1.0
+		vp.msaa_3d = msaa
+		stack.set_quality(CityQuality.HIGH)
+		vp.msaa_3d = Viewport.MSAA_DISABLED
+		rows.append(await _measure_quality("avenue high, msaa off ", stack))
+		vp.msaa_3d = msaa
+	stack.set_quality(CityQuality.HIGH)
+	_say("quality summary (view, level, avg / p95 frame ms, GPU / CPU render ms, draws, primitives, objects, omni fills on, decks drawn, sun shadows):")
+	for r in rows:
+		_say("  " + r)
+	lab.queue_free()
+	await get_tree().process_frame
+
+
+func _measure_quality(label: String, stack: CityStack) -> String:
+	for i in WARM:
+		await get_tree().process_frame
+	var ms: Array[float] = []
+	var gpu := 0.0
+	var cpu := 0.0
+	var draws := 0.0
+	var prims := 0.0
+	var objs := 0.0
+	var prev := Time.get_ticks_usec()
+	for i in MEASURE:
+		await get_tree().process_frame
+		var now := Time.get_ticks_usec()
+		ms.append(float(now - prev) / 1000.0)
+		prev = now
+		gpu += RenderingServer.viewport_get_measured_render_time_gpu(_vp)
+		cpu += RenderingServer.viewport_get_measured_render_time_cpu(_vp)
+		draws += RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
+		prims += RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME)
+		objs += RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_OBJECTS_IN_FRAME)
+	var n := float(MEASURE)
+	var avg := 0.0
+	for v in ms:
+		avg += v
+	avg /= n
+	ms.sort()
+	var row := "%s avg %6.2f  p95 %6.2f ms | gpu %6.2f  cpu-render %5.2f ms | draws %5.0f  prims %8.0f  objs %5.0f | omni %3d  decks %s  shadows %s" % [
+			label, avg, ms[int(n * 0.95)], gpu / n, cpu / n, draws / n, prims / n, objs / n, stack.rig.fills_on(),
+			str(stack.decks_drawn()), "on" if stack.rig.sun.shadow_enabled else "off"]
+	_say(row)
+	return row

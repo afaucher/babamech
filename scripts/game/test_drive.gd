@@ -43,6 +43,9 @@ const MODE_STACK := NetMission.MODE_STACK         ## "stack": the multi-deck mis
 const MODE_DISTRICT := NetMission.MODE_DISTRICT   ## "district": one CityDistrict (the pre-stack test drive)
 const OFFLINE_PEER := 9000              ## offline crew: fake owner peer = OFFLINE_PEER + seat
 const FALL_OUT := 25.0               ## m below the lowest floor: fell out of the city, back to the spawn
+const KEEPALIVE_CHUNK_MS := 40.0     ## crew mission, unstepped load: stack build chunks between two transport services
+const DEV_FAST_CLEAR := 10.0         ## DEV ONLY: --dev-fast-clear, enemies take this many times the damage
+const STEP_BUDGET_MS := 8.0          ## stepped load: wall time per frame for the stack build / life setup
 
 ## The menu's solo Launch hands its {seed, mode} to the next test drive here (consumed by _ready).
 static var solo_launch: Dictionary = {}
@@ -50,6 +53,17 @@ static var solo_launch: Dictionary = {}
 ## Mechs 2..N are idle puppets (no input, no physics, no MechPuppet) with fake owner peers OFFLINE_PEER + seat, placed at
 ## the crew slots like a real crew; their rigs, gait, FX and audio still run. 0 / 1 = just your mech. Read once by _ready.
 static var offline_crew := 0
+## Tests (test_net_load_stall): a crew CLIENT blocks its main thread this many ms in _ready, right before the build (a
+## slow laptop's load, with no transport servicing at all). 0 = off. Read once by _ready.
+static var test_stall_ms := 0
+## A crew mission in the stack loads STEPPED: CityStack.build_step and AmbientLife.setup_step once per frame with a
+## progress line, mission.ready only after both. False: the whole load in _ready (crew tests that check the scene two
+## frames after adding it; NetTest sets it, tests of the stepped load set it back). Solo always loads in _ready.
+static var stepped_load := true
+## Tests: run the mission bot (MissionBot) with this profile as if `--bot <profile>` were given ("" = only the flag).
+static var bot_profile := ""
+## Tests: DEV `--dev-bot-travel` for the mission bot (MissionBot.dev_travel).
+static var dev_bot_travel := false
 
 var seed_value := 1
 ## "stack" or "district". Set before the node enters the tree to force it (tests); "" = from the launch / flags.
@@ -92,6 +106,21 @@ var _seats: Dictionary = {}       ## crew mission: owner peer -> crew seat (the 
 var _audio_deck: Dictionary = {}  ## stack: owner peer -> the deck its MechAudio reads footstep surfaces from
 var _audio_check := 0.0           ## s until the next per-deck MechAudio check
 var _leaving := false             ## a scene change back to the menu is under way
+var _note_label: Label            ## crew mission: "c1 dropped: went silent while loading" (Session.crew_note), a few s
+var _note_until := 0              ## msec the note hides at
+var _flow: Dictionary = {}        ## [Flow] log watch: {contact, done: [objective ids], outcome, kills, check}
+## The scene is fully set up (city, combat, life, HUD, crew sync): right after _ready for solo and unstepped loads,
+## after the last step of a stepped crew load. `mission_loaded` fires then too. Wait for it before measuring.
+signal mission_loaded()
+
+## A stepped crew load is under way: the city, combat and life aren't there yet (no input, physics or HUD use).
+var loading := false
+var loaded := false
+## --bot: the AI playing this machine's mech through the mission (scripts/game/mission_bot.gd), null otherwise.
+var bot: MissionBot
+var _load_label: Label            ## "Building the station... 63%" while loading
+var _t_load := 0                  ## msec the load started
+var _t_city := 0                  ## msec the city was done
 
 
 ## Authority (scripts/net/net.gd): the seed and the spawn layout are fixed by the mission; everything else here is this
@@ -103,10 +132,12 @@ func net_fields() -> Dictionary:
 		"spawn_order": Net.SPAWN, "crewed": Net.SPAWN, "_help": Net.LOCAL, "_spawn": Net.SPAWN,
 		"_ignore_mouse_until": Net.LOCAL, "_shooting": Net.LOCAL, "_held": Net.PRIVATE, "crew_sync": Net.LOCAL,
 		"_seats": Net.SPAWN, "mission": Net.LOCAL, "enemies_spawned": Net.LOCAL,
-		"_leaving": Net.LOCAL}
+		"_leaving": Net.LOCAL, "_note_label": Net.LOCAL, "_note_until": Net.LOCAL, "_flow": Net.LOCAL,
+		"loading": Net.LOCAL, "loaded": Net.LOCAL, "bot": Net.LOCAL, "_load_label": Net.LOCAL, "_t_load": Net.LOCAL, "_t_city": Net.LOCAL}
 
 
 func _ready() -> void:
+	add_to_group(GraphicsQuality.GROUP)   # _on_graphics_quality when the setting changes
 	var args := OS.get_cmdline_user_args()
 	var sess := Net.session()
 	var params: Dictionary = sess.mission_params() if sess != null and sess.online() else {}
@@ -124,8 +155,19 @@ func _ready() -> void:
 		seed_value = int(s)
 	if city_mode == "":
 		city_mode = mode
+	_t_load = Time.get_ticks_msec()
+	if crewed:
+		# Tell the host this machine is building (a slow laptop takes seconds). The stepped load builds over frames; the
+		# unstepped one blocks this frame and keeps the transport serviced between its steps (_keep_alive).
+		sess.report_mission_loading()
+		sess.service_transport()
+		FlowLog.say("load start", "seed %d, %s" % [seed_value, mode])
+		if test_stall_ms > 0 and not sess.hosting:
+			print("[TestDrive] test stall: blocking the main thread %d ms" % test_stall_ms)
+			OS.delay_msec(test_stall_ms)
 	if city_mode == MODE_STACK:
 		stack = CityStack.new()
+		stack.set_quality(GraphicsQuality.level())   # presentation only, any time (Settings > Graphics quality)
 		stack.name = "Stack"
 		add_child(stack)
 	else:
@@ -150,18 +192,85 @@ func _ready() -> void:
 	if stack != null:
 		stack.follow(cam)   # the daylight lights the deck this machine's camera is on (local presentation)
 	_build_hud()
+	if crewed:
+		# Connected before the load, so the session ending (or the host ending the mission) while loading leaves too.
+		_held = true
+		sess.mission_go.connect(func(_elapsed: float) -> void: _held = false)
+		sess.mission_ended.connect(func(_reason: String) -> void: _back_to_menu())
+		sess.session_ended.connect(func(_reason: String) -> void: _back_to_menu())
+		sess.crew_note.connect(_show_note)
+		sess.mission_go.connect(func(_e: float) -> void: _flow_watch())
+	if crewed and stack != null and stepped_load:
+		_load_stepped(args)   # a coroutine: returns at its first frame
+		return
+	_keep_alive()
 	build_city(seed_value)
+	_t_city = Time.get_ticks_msec()
+	_finish_setup(args, false)
+
+
+## The stepped crew load: the mechs wait (no physics) while the stack builds a few ms per frame, then the scene is set
+## up and AmbientLife sets up a few ms per frame; mission.ready goes only after both (so mission.go waits for every
+## machine's whole load).
+func _load_stepped(args: PackedStringArray) -> void:
+	loading = true
+	for p: int in mechs:
+		(mechs[p] as Node).process_mode = Node.PROCESS_MODE_DISABLED
+	stack.position = Vector3.ZERO
+	stack.build_begin(SectionPlan.make({"seed": float(seed_value)}))
+	while not stack.build_step(STEP_BUDGET_MS):
+		_show_loading(stack.build_progress() * 0.85)
+		await get_tree().process_frame
+		if _leaving or not is_inside_tree():
+			return
+	build_city(seed_value, true)
+	_t_city = Time.get_ticks_msec()
+	for p: int in mechs:
+		(mechs[p] as Node).process_mode = Node.PROCESS_MODE_INHERIT
+	await _finish_setup(args, true)
+
+
+func _show_loading(f: float) -> void:
+	if _load_label == null:
+		return
+	_load_label.visible = true
+	_load_label.text = "Building the station... %d%%" % clampi(int(f * 100.0), 0, 100)
+
+
+## Everything after the city: combat, audio, life, HUD, the crew's sync, the mission, then (crew) mission.ready.
+## `stepped`: life sets up over frames (AmbientLife.setup_step) before the report.
+func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
+	var sess := Net.session()
+	_keep_alive()
 	combat = TestDriveCombat.new()
 	combat.name = "Combat"
 	add_child(combat)
 	combat.setup(self)
+	_keep_alive()
 	combat_audio = CombatAudio.new()
 	combat_audio.name = "CombatAudio"
 	add_child(combat_audio)
 	combat_audio.bind(combat.world, combat.rack, city.props, "player%d" % CombatWorld.local_peer())
 	combat_audio.bind_squad(combat.squad)
 	combat_audio.bind_player_target(combat.player_target)
-	_build_life()
+	if stepped:
+		life = AmbientLife.new()
+		life.set_quality(GraphicsQuality.level())
+		life.name = "AmbientLife"
+		add_child(life)
+		life.setup_stack_begin(stack)
+		while not life.setup_step(STEP_BUDGET_MS):
+			_show_loading(0.85 + 0.15 * 0.5)
+			await get_tree().process_frame
+			if _leaving or not is_inside_tree():
+				return
+		_bind_life()
+		loading = false
+		if _load_label != null:
+			_load_label.visible = false
+	else:
+		_build_life()
+	_keep_alive()
 	var hud := MechHud.for_drive(self)   # weapons, heat, damage, crosshair + aim pips (scripts/ui/mech_hud.gd)
 	if combat.player_target != null:
 		hud.component_source = combat.player_target.component_fractions
@@ -191,11 +300,29 @@ func _ready() -> void:
 	_shooting = shot != ""
 	_capture(not _shooting)
 	if crewed:
-		_held = true
-		sess.mission_go.connect(func(_elapsed: float) -> void: _held = false)
-		sess.mission_ended.connect(func(_reason: String) -> void: _back_to_menu())
-		sess.session_ended.connect(func(_reason: String) -> void: _back_to_menu())
-		sess.report_mission_built(mission_checksum())
+		var ms := Time.get_ticks_msec() - _t_load
+		FlowLog.say("load done", "%d ms%s (city %d ms, stack build %s ms, longest chunk %s ms), checksum %s" % [ms,
+			" stepped" if stepped else "", _t_city - _t_load, str(stack.stats.get("ms", "?")) if stack != null else "-",
+			str(stack.stats.get("max_chunk_ms", "?")) if stack != null else "-", mission_checksum()])
+		if not sess.online():
+			_back_to_menu.call_deferred()   # the session ended inside the build (seen by a keep-alive poll)
+		else:
+			sess.report_mission_built(mission_checksum(), ms)
+	if args.has("--dev-fast-clear"):
+		CombatWorld.dev_enemy_damage = DEV_FAST_CLEAR
+		print("[TestDrive] DEV --dev-fast-clear: enemies take %.0fx damage" % DEV_FAST_CLEAR)
+	if (args.has("--bot") or bot_profile != "") and stack != null:
+		# --bot [profile]: the AI plays the mission (MissionBot). A crew's bot starts when the barrier passes.
+		var profile := bot_profile if bot_profile != "" else Boot.arg_value(args, "--bot")
+		if crewed:
+			sess.mission_go.connect(func(_e: float) -> void:
+				if bot == null and is_inside_tree():
+					bot = MissionBot.attach(self, profile))
+		else:
+			bot = MissionBot.attach(self, profile)
+			_flow_watch()
+	loaded = true
+	mission_loaded.emit()
 	if _shooting:
 		var after := float(Boot.arg_value(args, "--shot-after")) if Boot.arg_value(args, "--shot-after").is_valid_float() else 4.0
 		_shot.call_deferred(shot, after, args.has("--thrust"))
@@ -218,14 +345,96 @@ func _exit_tree() -> void:
 		Audio.music.set_mode("off")
 
 
+## Crew mission: service the transport from inside the blocking load (Session.service_transport: no dispatch).
+func _keep_alive() -> void:
+	var sess := Net.session()
+	if crewed and sess != null:
+		sess.service_transport()
+
+
+## Crew mission: a short line under the help text ("c1 dropped: went silent while loading"), for a few seconds.
+func _show_note(text: String) -> void:
+	if _note_label == null:
+		return
+	_note_label.text = text
+	_note_label.visible = true
+	_note_until = Time.get_ticks_msec() + 8000
+
+
+func _process(delta: float) -> void:
+	if _note_label != null and _note_label.visible and Time.get_ticks_msec() > _note_until:
+		_note_label.visible = false
+	if not _flow.is_empty():
+		_flow["check"] = float(_flow["check"]) - delta
+		if float(_flow["check"]) <= 0.0:
+			_flow["check"] = 0.25
+			_flow_progress()
+
+
+## [Flow] lines for the mission's transitions on this machine (FlowLog): first enemy contact, each kill, each objective
+## (deck cleared k, extraction reached), the outcome. Started at mission_go (crew) or at once (solo with --bot).
+func _flow_watch() -> void:
+	if not _flow.is_empty() or combat == null:
+		return
+	_flow = {"contact": false, "done": [], "outcome": "", "kills": 0, "check": 0.0}
+	combat.world.hit_landed.connect(func(t: CombatTarget, h: Hit) -> void:
+		if not bool(_flow.get("contact", true)) and (t.team == "enemy" or str(h.shooter).begins_with("enemy") or t.team == "player"):
+			_flow["contact"] = true
+			FlowLog.say("first enemy contact", "%s hit %s" % [h.shooter, t.target_id]))
+	if combat.squad != null:
+		for e in combat.squad.enemies:
+			_flow_enemy(e)
+		combat.squad.enemy_spawned.connect(_flow_enemy)
+
+
+func _flow_enemy(e: EnemyBase) -> void:
+	if not is_instance_valid(e):
+		return
+	e.destroyed_enemy.connect(func(en: EnemyBase, cause: String, _at: Vector3) -> void:
+		_flow["kills"] = int(_flow.get("kills", 0)) + 1
+		FlowLog.say("enemy killed", "%s (deck %d, %s), kill %d, alive per deck %s" % [en.name, en.spawn_deck, cause,
+			int(_flow["kills"]), str(enemies_alive_per_deck())]))
+
+
+func _flow_progress() -> void:
+	if mission == null or mission.rules == null:
+		return
+	var st := mission.rules.state()
+	var done: Array = _flow["done"]
+	for id: Variant in st.get("done", []) as Array:
+		if not done.has(id):
+			done.append(id)
+			var sid := str(id)
+			if sid.begins_with("clear_"):
+				FlowLog.say("deck cleared", "deck %s" % sid.trim_prefix("clear_"))
+			elif sid == "extract":
+				FlowLog.say("extraction reached")
+			else:
+				FlowLog.say("objective done", sid)
+	var outcome := str(st.get("outcome", ""))
+	if outcome != "" and outcome != str(_flow["outcome"]):
+		_flow["outcome"] = outcome
+		FlowLog.say("mission " + outcome, str(st.get("reason", "")))
+
+
 ## Generate the city for `seed` (the stack, or one district) and put the mechs at the start: the stack's entry road, or
 ## the district's central avenue.
-func build_city(seed: int) -> void:
+func build_city(seed: int, built: bool = false) -> void:
 	seed_value = seed
 	var entry := Transform3D.IDENTITY
 	if stack != null:
-		stack.position = Vector3.ZERO
-		stack.build(SectionPlan.make({"seed": float(seed)}))
+		if built:
+			pass   # the stepped load built it (CityStack.build_step)
+		elif crewed:
+			stack.position = Vector3.ZERO
+			# The chunked build (CityStack.build_begin / build_step), the transport serviced between chunks so a slow machine
+			# keeps its link alive; the same city and checksum as build().
+			stack.build_begin(SectionPlan.make({"seed": float(seed)}))
+			while not stack.build_step(KEEPALIVE_CHUNK_MS):
+				_keep_alive()
+		else:
+			stack.position = Vector3.ZERO
+			stack.build(SectionPlan.make({"seed": float(seed)}))
 		var k := int(stack.section.entry["deck"])
 		stack.position = -stack.section.deck_offset(k)   # the entry deck's floor through the world origin
 		city = stack.decks[k]
@@ -269,9 +478,23 @@ func build_city(seed: int) -> void:
 ## and every enemy (src -1), seen from every mech and the camera.
 func _build_life() -> void:
 	life = AmbientLife.new()
+	life.set_quality(GraphicsQuality.level())
 	life.name = "AmbientLife"
 	add_child(life)
 	_setup_life()
+	_bind_life(false)
+
+
+## Wire life to the scene once its units exist: the pushers (after a stepped setup: `pushers`), the combat world, the
+## viewers, enemies coming and going.
+func _bind_life(pushers: bool = true) -> void:
+	if pushers:
+		for p: int in mechs:
+			life.add_pusher(mechs[p], 1.0, p)
+		if combat.squad != null:
+			for e in combat.squad.enemies:
+				if is_instance_valid(e):
+					life.add_pusher(e, e.body_radius, -1)
 	life.bind_combat(combat.world)
 	for p: int in mechs:
 		life.add_viewer(mechs[p])
@@ -286,6 +509,15 @@ func _build_life() -> void:
 
 
 ## (Re)build life on the current city and register the pushers (also after N rebuilt the city).
+## Settings > Graphics quality changed (GraphicsQuality.notify): the city and the ambient life redraw at the new level
+## (presentation only: no checksum, collision or synced state changes).
+func _on_graphics_quality(q: int) -> void:
+	if stack != null:
+		stack.set_quality(q)
+	if life != null:
+		life.set_quality(q)
+
+
 func _setup_life() -> void:
 	if stack != null:
 		life.setup_stack(stack)
@@ -483,7 +715,7 @@ func _make_mech() -> MechController:
 
 
 func _physics_process(delta: float) -> void:
-	if mech == null:
+	if mech == null or loading:
 		return
 	if _held and not drive_override:
 		mech.move_input = Vector2.ZERO
@@ -532,6 +764,8 @@ func _follow_audio_decks() -> void:
 
 
 func _unhandled_input(e: InputEvent) -> void:
+	if loading and not (e is InputEventKey and (e as InputEventKey).keycode == KEY_ESCAPE):
+		return
 	if e is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		if Time.get_ticks_msec() < _ignore_mouse_until:
 			return
@@ -582,3 +816,24 @@ func _build_hud() -> void:
 	_help.add_theme_color_override("font_outline_color", Color(0, 0, 0))
 	_help.add_theme_constant_override("outline_size", 4)
 	root.add_child(_help)
+	_note_label = Label.new()
+	_note_label.name = "CrewNote"
+	_note_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	_note_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_note_label.offset_top = 40
+	_note_label.add_theme_color_override("font_color", Color(1.0, 0.65, 0.4))
+	_note_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	_note_label.add_theme_constant_override("outline_size", 4)
+	_note_label.visible = false
+	root.add_child(_note_label)
+	_load_label = Label.new()
+	_load_label.name = "Loading"
+	_load_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	_load_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_load_label.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_load_label.add_theme_font_size_override("font_size", 28)
+	_load_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.95))
+	_load_label.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	_load_label.add_theme_constant_override("outline_size", 6)
+	_load_label.visible = false
+	root.add_child(_load_label)

@@ -10,6 +10,10 @@ extends Node3D
 ## so decks never light or shadow each other. The active deck is local presentation: each machine uses the deck its
 ## camera (or its mech, follow()) is on. Gameplay state lives in the decks' plans and props, not here.
 ##
+## QUALITY (CityQuality, local presentation only): set_quality(q) hides decks away from the active one (LOW: the active
+## deck and the one below it; MEDIUM: and the one above), cuts the rig's fills, shadows and screen-space extras and
+## shortens the block meshes' draw range; set_active_deck re-applies it. Plans, props, collision and checksums never change.
+##
 ## Every deck's CityProps is in group "city_props"; systems that look one up should ask props_at(pos) when a node in
 ## group "city_stack" exists.
 ##
@@ -40,6 +44,8 @@ var decks: Array[CityDistrict] = []
 var rig: CityLightRig
 var stats: Dictionary = {}       ## totals over the decks: triangles, shapes, buildings, props, ms (whole build)
 var active_deck := 0
+var quality := CityQuality.HIGH  ## local presentation (CityQuality): set_quality; never touches plans, props or collision
+var _quality_touched := false    ## a level below HIGH was applied since the last HIGH (HIGH then restores every flag)
 
 var _follow: Node3D
 var _follow_in := 0.0
@@ -112,37 +118,136 @@ static func deck_layer(k: int) -> int:
 	return 1 << (k + 1)
 
 
+## Build every deck of the section in one call (build_begin + build_step until done).
 func build(sec: SectionPlan, overrides: Dictionary = {}) -> void:
-	var t0 := Time.get_ticks_msec()
+	build_begin(sec, overrides)
+	while not build_step(INF):
+		pass
+
+
+# --- Incremental build (docs/design/city-ramps-and-stack.md section 8) -----------------------------------------------
+## build_begin() frees the old decks and resets; each build_step(budget_ms) runs chunks (each deck's CityDistrict chunks,
+## then the light rig, then the entry) until budget_ms of wall time is spent, always at least one, and returns true once
+## the stack is finished. The result is exactly build()'s. While building, the finished decks are in `decks` and in the
+## tree, the deck being built is a child too, and checksum(), deck_ring(), entry_transform() and spawn_transforms() are
+## valid only once build_done(). stats.ms = time spent inside the chunks (not between frames), stats.chunks and
+## stats.max_chunk_ms; chunk_log = [[label, ms], ...] of every chunk in order ("d1 buildings 3/9").
+enum Stage { IDLE, DECKS, RIG, ENTRY, DONE }
+
+var chunk_log: Array = []
+var _stage := Stage.IDLE
+var _bk := 0                       ## the deck being built
+var _building: CityDistrict        ## its district (not yet in `decks`)
+var _overrides: Dictionary = {}
+var _fills: Array = []
+var _b_us := 0
+var _b_max_us := 0
+
+
+func build_begin(sec: SectionPlan, overrides: Dictionary = {}) -> void:
 	for d in decks:
 		remove_child(d)
 		d.queue_free()
+	if _building != null and is_instance_valid(_building):
+		remove_child(_building)
+		_building.queue_free()
+	_building = null
 	decks.clear()
 	_rings.clear()
 	section = sec
-	var fills := []
+	_overrides = overrides
+	_fills = []
+	chunk_log = []
 	stats = {"triangles": 0, "shapes": 0, "buildings": 0, "props": 0}
-	for k in sec.deck_count:
-		var d := CityDistrict.new()
-		d.name = "Deck%d" % k
-		d.with_rig = false
-		d.render_layer = deck_layer(k)
-		d.position = sec.deck_offset(k)
-		add_child(d)
-		d.build_deck(sec, k, overrides)
-		decks.append(d)
-		_rings.append(DeckRing.new(d.ring.radius, d))
-		for key: String in stats:
-			stats[key] = int(stats[key]) + int(d.stats[key])
-		fills.append({"ring": d.ring, "offset": d.position, "area": d.plan.extent, "ceiling": d.plan.p("ceiling"),
-				"strip_x": d.strip_x, "layer": deck_layer(k), "reach": minf(d.plan.p("ceiling") * 1.5, sec.p("pitch") * 0.9)})
-	if rig == null:
-		rig = CityLightRig.new()
-		add_child(rig)
-	rig.setup_decks(fills)
-	_entry_slide = entry_slide()
-	set_active_deck(active_deck)
-	stats["ms"] = Time.get_ticks_msec() - t0
+	_bk = 0
+	_b_us = 0
+	_b_max_us = 0
+	_stage = Stage.DECKS if sec.deck_count > 0 else Stage.RIG
+
+
+## Run chunks until budget_ms of wall time is spent (at least one); true once the whole build is finished.
+func build_step(budget_ms: float = 8.0) -> bool:
+	var start := Time.get_ticks_usec()
+	while _stage != Stage.DONE and _stage != Stage.IDLE:
+		var t := Time.get_ticks_usec()
+		var label := _chunk()
+		var dt := Time.get_ticks_usec() - t
+		_b_us += dt
+		_b_max_us = maxi(_b_max_us, dt)
+		chunk_log.append([label, float(dt) / 1000.0])
+		if _stage == Stage.DONE:
+			stats["ms"] = float(_b_us) / 1000.0
+			stats["max_chunk_ms"] = float(_b_max_us) / 1000.0
+			stats["chunks"] = chunk_log.size()
+			break
+		if float(Time.get_ticks_usec() - start) >= budget_ms * 1000.0:
+			break
+	return _stage == Stage.DONE
+
+
+## 0..1 through the build (each deck one share, the rig and entry one more); never goes down. 0 before any build.
+func build_progress() -> float:
+	var n := float(section.deck_count + 1) if section != null else 1.0
+	match _stage:
+		Stage.IDLE:
+			return 0.0
+		Stage.DECKS:
+			var part := _building.build_progress() if _building != null else 0.0
+			return minf((float(_bk) + part) / n, (n - 1.0) / n)
+		Stage.RIG:
+			return (n - 1.0) / n
+		Stage.ENTRY:
+			return (n - 0.5) / n
+	return 1.0
+
+
+## True once the last build_begin's build is finished (false before any build and while one runs).
+func build_done() -> bool:
+	return _stage == Stage.DONE
+
+
+## One chunk of the build; returns its label.
+func _chunk() -> String:
+	match _stage:
+		Stage.DECKS:
+			var k := _bk
+			if _building == null:
+				var nd := CityDistrict.new()
+				nd.name = "Deck%d" % k
+				nd.with_rig = false
+				nd.render_layer = deck_layer(k)
+				nd.position = section.deck_offset(k)
+				add_child(nd)
+				nd.build_deck_begin(section, k, _overrides)
+				_building = nd
+			var d := _building
+			var finished := d.build_step()
+			var label := "d%d %s" % [k, d.chunk_label]
+			if finished:
+				decks.append(d)
+				_rings.append(DeckRing.new(d.ring.radius, d))
+				for key: String in ["triangles", "shapes", "buildings", "props"]:
+					stats[key] = int(stats[key]) + int(d.stats[key])
+				_fills.append({"ring": d.ring, "offset": d.position, "area": d.plan.extent, "ceiling": d.plan.p("ceiling"),
+						"strip_x": d.strip_x, "layer": deck_layer(k), "reach": minf(d.plan.p("ceiling") * 1.5, section.p("pitch") * 0.9)})
+				_building = null
+				_bk += 1
+				if _bk >= section.deck_count:
+					_stage = Stage.RIG
+			return label
+		Stage.RIG:
+			if rig == null:
+				rig = CityLightRig.new()
+				add_child(rig)
+			rig.setup_decks(_fills)
+			_stage = Stage.ENTRY
+			return "rig"
+		Stage.ENTRY:
+			_entry_slide = entry_slide()
+			set_active_deck(active_deck)
+			_stage = Stage.DONE
+			return "entry"
+	return ""
 
 
 ## Section checksum + every deck's plan checksum: equal on two machines = the same stack.
@@ -335,6 +440,7 @@ func set_active_deck(k: int) -> void:
 	active_deck = clampi(k, 0, maxi(decks.size() - 1, 0))
 	if rig != null:
 		rig.light_layers(CityLightRig.ALWAYS | deck_layer(active_deck))
+	apply_quality()
 
 
 ## Keep the active deck on whichever deck `node` stands on (null stops).
@@ -344,7 +450,7 @@ func follow(node: Node3D) -> void:
 
 
 func _process(delta: float) -> void:
-	if _follow == null or decks.is_empty():
+	if _follow == null or decks.is_empty() or not build_done():
 		return
 	if not is_instance_valid(_follow):
 		_follow = null
@@ -355,3 +461,54 @@ func _process(delta: float) -> void:
 		var k := deck_at(_follow.global_position)
 		if k != active_deck:
 			set_active_deck(k)
+
+
+# --- Quality (CityQuality: local presentation only) -----------------------------------------------------------------
+
+## Draw level q (CityQuality.LOW / MEDIUM / HIGH): which decks are drawn round the active one, the rig's lights and
+## extras, how far block meshes are drawn. Any time, before or after build(), switchable at runtime; follows the active
+## deck (set_active_deck re-applies it). Never touches a plan, a prop, a collision shape or anything synced: a hidden
+## deck keeps its collision, its props simulation and its life. HIGH (the default) is the look before levels existed.
+func set_quality(q: int) -> void:
+	quality = CityQuality.clamp_level(q)
+	apply_quality()
+
+
+## Re-apply the current quality to everything built (set_active_deck calls it, so it runs at the end of every build).
+## Nothing is touched while the level is HIGH and no lower level was ever applied.
+func apply_quality() -> void:
+	if quality == CityQuality.HIGH and not _quality_touched:
+		return
+	_quality_touched = quality != CityQuality.HIGH
+	var lv := CityQuality.level(quality)
+	var shown: Array = []
+	for k in decks.size():
+		var on := CityQuality.deck_drawn(quality, k, active_deck)
+		shown.append(on)
+		decks[k].visible = on
+		_set_block_range(decks[k], float(lv["block_range"]))
+	if rig != null:
+		var mask := CityLightRig.ALWAYS | deck_layer(active_deck)
+		if bool(lv["sun_below"]) and active_deck + 1 < decks.size() and bool(shown[active_deck + 1]):
+			mask |= deck_layer(active_deck + 1)
+		rig.light_layers(mask)
+		rig.set_quality(quality, shown, active_deck)
+
+
+## Decks drawn now (CityQuality.deck_drawn for the active deck): for tests and the perf probe.
+func decks_drawn() -> Array[int]:
+	var out: Array[int] = []
+	for k in decks.size():
+		if decks[k].visible:
+			out.append(k)
+	return out
+
+
+## Every block mesh of deck d (Buildings/Block<n>) hidden beyond `range_m` m from the camera (0: always drawn).
+static func _set_block_range(d: CityDistrict, range_m: float) -> void:
+	var holder := d.get_node_or_null("Buildings")
+	if holder == null:
+		return
+	for c in holder.get_children():
+		if c is GeometryInstance3D and str(c.name).begins_with("Block"):
+			(c as GeometryInstance3D).visibility_range_end = range_m

@@ -20,6 +20,11 @@ const LOSS_RECV := 3         ## k_ESteamNetworkingConfig_FakePacketLoss_Recv (fl
 const JITTER_RECV_AVG := 56  ## k_ESteamNetworkingConfig_FakePacketJitter_Recv_Avg (float, ms)
 const JITTER_RECV_MAX := 57  ## k_ESteamNetworkingConfig_FakePacketJitter_Recv_Max (float, ms)
 const JITTER_RECV_PCT := 58  ## k_ESteamNetworkingConfig_FakePacketJitter_Recv_Pct (float, percent of packets)
+const TIMEOUT_CONNECTED := 25   ## k_ESteamNetworkingConfig_TimeoutConnected (int32, ms; Steam's default 10000)
+## A connected Steam link is dropped after this long without a word. Steam answers keepalives on its own service thread,
+## so a blocked main thread alone shouldn't trip it; it is widened like ENet's anyway (NetSession.ENET_TIMEOUT_MAX_MS):
+## the session's watchdogs are the authority on "gone".
+const CONNECTED_TIMEOUT_MS := 60000
 
 
 ## The config values a preset sets: [[config id, "int" | "float", value, name], ...]. Unknown presets are "off".
@@ -49,6 +54,16 @@ static func apply(steam: Object, preset: String) -> Dictionary:
 		out[str(v[3])] = ok
 	print("[Net] Steam fake link: %s %s" % [preset, str(out)])
 	return out
+
+
+## Widen Steam's connected-link timeout (global scope; set before the SteamMultiplayerPeer opens its connection, which
+## takes the value at creation). Returns whether Steam took it; false without Steam.
+static func apply_timeouts(steam: Object) -> bool:
+	if steam == null or not steam.has_method("setGlobalConfigValueInt32"):
+		return false
+	var ok := _set_value(steam, _id("NETWORKING_CONFIG_TIMEOUT_CONNECTED", TIMEOUT_CONNECTED), "int", CONNECTED_TIMEOUT_MS)
+	print("[Net] Steam connected timeout %d ms: %s" % [CONNECTED_TIMEOUT_MS, "set" if ok else "NOT set"])
+	return ok
 
 
 static func _set_value(steam: Object, id: int, kind: String, value: Variant) -> bool:

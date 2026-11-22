@@ -160,6 +160,9 @@ func _menu(sz: Vector2i) -> void:
 	lc.on_screen(fe.head_pick, tag + " settings head")
 	for id: String in fe.accent_picks:
 		lc.on_screen(fe.accent_picks[id], "%s settings accent %s" % [tag, id], Vector2(24, 24), 1.0)
+	await _reachable(fe.quality_pick, tag + " settings graphics quality")
+	await _reachable(fe.renderer_pick, tag + " settings renderer")
+	await _reachable(fe.quality_note, tag + " settings graphics note")
 	await _reachable(fe.btn_back, tag + " settings Back")
 
 	fe.show_screen("hangar")

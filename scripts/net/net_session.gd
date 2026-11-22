@@ -19,7 +19,7 @@ extends Node
 ##   host -> all      sys.roster   {entries}                            after every join, leave and profile change
 ##   joiner -> host   sys.profile  {name, head, chassis, accent, loadout}   the player changed name / head / chassis / accent / loadout
 ##   host -> all      sys.link     {preset}                             the host changed the simulated link
-##   host -> all      sys.bye      {reason}                             the host is leaving (then it closes)
+##   host -> all      sys.bye      {reason}                             the host is leaving (closes once the crew has)
 ## The host speaks first, so it has always registered the peer before the joiner says anything. A refused joiner is told
 ## why ("Crew is full", "Different build") and dropped REFUSE_GRACE later; the transport admits a few more peers than
 ## MAX_CREW for that.
@@ -44,8 +44,11 @@ extends Node
 ##   NetWire.T_ENEMY (unreliable, ACTIVE_RATE / IDLE_RATE); clients show puppets ~100 ms behind host_time(). Spawns,
 ##   telegraphs, destruction and enemy fire are reliable "enemy.*" events (scripts/game/enemy_sync.gd).
 ##
-## LEAVING. A client leaves: the host drops it from the roster. The host leaves (or dies, or goes silent for HOST_SILENCE):
-## every client's session ends with HOST_LEFT. No host migration. session_ended(reason) fires for every way a session (or
+## LEAVING. A client leaves: the host drops it from the roster. The host leaves normally (leave(), or its process quits):
+## sys.bye {reason} (HOST_CLOSED / HOST_ENDED), the transport kept open BYE_LINGER at most until every client has closed
+## its end, and each client's session ends with that reason. The host's transport closes with no bye (crash, kill, ENet
+## gave up): HOST_LEFT; the host silent for HOST_SILENCE: HOST_SILENT. A kick ends with its own reason. No host migration. While a mission loads, the silence limits
+## widen to the load allowance and ENet's own timeouts are wide (docs/networking.md "Timeouts"). session_ended(reason) fires for every way a session (or
 ## an attempt at one) ends.
 ##
 ## CLOCK: NetClock, pinged over unreliable packets; `host_time()` is the shared clock.
@@ -74,6 +77,9 @@ signal roster_changed()
 signal peer_joined(peer: int)
 signal peer_left(peer: int)
 signal status_changed(text: String)
+## Host: a crew member was dropped or sent out, with the reason ("c1 dropped: went silent while loading"). The mission HUD
+## shows it; telemetry notes carry it too.
+signal crew_note(text: String)
 ## The host launched a mission: {seed, start_t, crew: [roster entries by seat]} (NetMission). Load it at start_t.
 signal mission_started(params: Dictionary)
 ## The load barrier passed: the mission starts now (`elapsed` seconds past start_at on the shared clock).
@@ -104,12 +110,31 @@ const HELLO_TIMEOUT := 10.0     ## connected, waiting for the host's welcome (or
 const HOST_SILENCE := 6.0       ## a client hears nothing from the host this long: the host is gone
 const CLIENT_SILENCE := 10.0    ## the host hears nothing from a client this long: drop it
 const REFUSE_GRACE := 1.0       ## a refused joiner is dropped this long after being told why
+const KICK_WAIT := 30.0         ## a kicked member that is never heard again is disconnected this long after the kick
 const ENET_THROTTLE_INTERVAL_MS := 5000
 const ENET_THROTTLE_UP := 2
+## ENet's own peer timeout (ENetPacketPeer.set_timeout). ENet's default (limit 32, 5000 ms min, 30000 ms max) dropped a
+## client whose main thread was blocked ~6 s building the mission (no service, so no acks: the host's reliable resends hit
+## the limit and the 5 s minimum). These are wide on purpose: the session's own watchdogs (HOST_SILENCE, CLIENT_SILENCE,
+## the loading allowance) decide when a member is gone; ENet only catches a link that is dead for half a minute.
+const ENET_TIMEOUT_LIMIT := 32
+const ENET_TIMEOUT_MIN_MS := 30000
+const ENET_TIMEOUT_MAX_MS := 60000
+## This machine's own frame took longer than this: the silence clocks pause for the stall (it was us, not them).
+const STALL_GRACE := 0.5
 
 const CREW_FULL := "Crew is full"
 const DIFFERENT_BUILD := "Different build"
-const HOST_LEFT := "The host left"
+## The host's transport closed with no sys.bye first (it crashed, was killed, or ENet gave up on the link): not a normal
+## end, not a silence either (HOST_SILENT). A host that ends normally says why in sys.bye (HOST_ENDED / HOST_CLOSED).
+const HOST_LEFT := "Lost the host (connection closed)"
+## sys.bye reasons: the host's process is quitting (or a hands-off run is over) / the host left the crew from the menu.
+const HOST_ENDED := "The host ended the session"
+const HOST_CLOSED := "The host closed the crew"
+## After sys.bye the host keeps its transport open this long (or until every client has closed its end, which a client
+## does as soon as it reads the bye): a disconnect landing in the same receive batch as the bye would discard it, so the
+## client would only see the transport close (HOST_LEFT).
+const BYE_LINGER := 1.5
 const YOU_LEFT := "You left the crew"
 const CREW_CLOSED := "You closed the crew"
 const CONNECT_FAILED := "Couldn't reach the crew"
@@ -121,6 +146,8 @@ const RELAY := "net.relay"           ## broadcast_event, client -> host
 const RELAY_FWD := "net.relay_fwd"   ## broadcast_event, host -> the other clients
 const DESYNC := "Desync: different city"
 const LOAD_SLOW := "Didn't load the mission in time"
+const HOST_SILENT := "Lost the host (no answer)"
+const HOST_LOST_LOADING := "Lost the host while loading"
 
 var state := State.OFFLINE
 var transport := Transport.NONE
@@ -177,6 +204,10 @@ var _find_first := false           ## a join_first() is waiting for the lobby li
 var _probe := false                ## --net-steam-probe
 var _steam_link := false           ## Steam's fake-lag config is set (cleared when the session ends)
 var _last_frame_usec := 0
+var _prev_process_usec := 0        ## the last _process (any state but OFFLINE): this machine's own stalls
+var _last_service_usec := 0        ## the last service_transport()
+var _linger_peer: MultiplayerPeer = null   ## a host after sys.bye: the old transport, closed when the crew has gone
+var _linger_until_usec := 0
 
 
 func _ready() -> void:
@@ -213,10 +244,18 @@ func _ready() -> void:
 		_apply_flags.call_deferred(OS.get_cmdline_user_args(), OS.get_cmdline_args())
 
 
-## The process is quitting: closing the transport is what tells the others.
+## The process is quitting. A host says bye (HOST_ENDED) and keeps polling its transport for up to BYE_LINGER, until
+## every client has read it and closed its end; closing the transport is what tells the others otherwise.
 func _exit_tree() -> void:
-	if state != State.OFFLINE:
+	if hosting and state == State.ONLINE:
+		leave(CREW_CLOSED, HOST_ENDED)
+	elif state != State.OFFLINE:
 		_end(CREW_CLOSED if hosting else YOU_LEFT, true)
+	if _linger_peer != null:
+		while _linger_peer != null and Time.get_ticks_usec() < _linger_until_usec and not multiplayer.get_peers().is_empty():
+			multiplayer.poll()
+			OS.delay_msec(5)
+		_close_linger()
 
 
 # --- Asking (anyone may) -------------------------------------------------------------------------------
@@ -400,15 +439,21 @@ func join_lobby(lobby_id: int) -> bool:
 	return lobby.join(lobby_id)
 
 
-## Leave the session (or stop trying to join one). The host tells everyone first.
-func leave(reason: String = "") -> void:
+## Leave the session (or stop trying to join one). The host tells everyone first: sys.bye {bye_reason} (HOST_CLOSED by
+## default; HOST_ENDED when the game quits or a hands-off run is over), then keeps the transport open until every client
+## has closed its end, BYE_LINGER at most, so the bye is read before the disconnect.
+func leave(reason: String = "", bye_reason: String = HOST_CLOSED) -> void:
 	if state == State.OFFLINE:
 		return
 	if reason == "":
 		reason = CREW_CLOSED if hosting else YOU_LEFT
 	if hosting and state == State.ONLINE:
-		_to_crew("sys.bye", {"reason": HOST_LEFT})
+		_to_crew("sys.bye", {"reason": bye_reason})
 		wire.flush()
+		_log("said bye to the crew: %s" % bye_reason)
+		if roster.size() > 1:
+			_end(reason, false, true)
+			return
 	_end(reason)
 
 
@@ -475,8 +520,14 @@ func mission_params() -> Dictionary:
 
 ## This machine built the mission behind the load barrier: `checksum` is its city checksum (TestDrive.mission_checksum():
 ## CityStack.checksum() for a stack, CityPlan.checksum() for a district).
-func report_mission_built(checksum: String) -> void:
-	mission.report_built(checksum)
+## `ms`: how long the build took (telemetry, [Flow] logs).
+func report_mission_built(checksum: String, ms: int = 0) -> void:
+	mission.report_built(checksum, ms)
+
+
+## This machine starts building the launched mission (a long blocking step on a slow machine): tells the host.
+func report_mission_loading() -> void:
+	mission.report_loading()
 
 
 ## Host: the mission's progress changed (MissionRules.state()): sent to the crew as a reliable mission.state, and in
@@ -501,7 +552,9 @@ func kick(peer: int, reason: String) -> void:
 		return
 	wire.send_event(peer, "sys.refuse", {"reason": reason})
 	wire.flush()
-	_refused[peer] = Time.get_ticks_usec() + int(REFUSE_GRACE * 1e6)
+	# A member is disconnected only REFUSE_GRACE after it is heard again (so it has had the refusal: an ENet disconnect
+	# landing in the same receive batch would discard it), or KICK_WAIT at the latest (a stalled client, say).
+	_refused[peer] = {"at": Time.get_ticks_usec(), "kick": true}
 	_drop(peer, "was sent out: %s" % reason)
 
 
@@ -583,6 +636,7 @@ func _can_start() -> bool:
 	if state != State.OFFLINE:
 		push_warning("[Net] already in a session")
 		return false
+	_close_linger()
 	last_reason = ""
 	return true
 
@@ -603,6 +657,7 @@ func _begin_host(peer: MultiplayerPeer, via: Transport) -> void:
 	_open_telemetry()
 	_publish_lobby()
 	_log("hosting via %s" % ("steam" if via == Transport.STEAM else "enet"))
+	FlowLog.say("session hosting", "steam" if via == Transport.STEAM else "enet")
 	status_changed.emit("Crew open. Waiting for pilots.")
 	session_started.emit(true)
 	roster_changed.emit()
@@ -622,11 +677,18 @@ func _set_state(s: State, timeout: float, status: String) -> void:
 		status_changed.emit(status)
 
 
-## `close_now`: close the transport immediately (only safe outside its poll).
-func _end(reason: String, close_now: bool = false) -> void:
+## `close_now`: close the transport immediately (only safe outside its poll). `linger`: a host that just said bye keeps
+## the transport open (polled, everything it delivers ignored: the state is OFFLINE) until the crew has closed its ends
+## or BYE_LINGER passes (_process, _exit_tree).
+func _end(reason: String, close_now: bool = false, linger: bool = false) -> void:
+	FlowLog.say("session ended", reason)   # before the state resets: the line still says host / client and the peer
 	var was := state
 	var peer := multiplayer.multiplayer_peer
-	if peer != null and not (peer is OfflineMultiplayerPeer):
+	if linger and peer != null and not (peer is OfflineMultiplayerPeer):
+		_close_linger()
+		_linger_peer = peer
+		_linger_until_usec = Time.get_ticks_usec() + int(BYE_LINGER * 1e6)
+	elif peer != null and not (peer is OfflineMultiplayerPeer):
 		# Deferred: _end often runs inside the peer's own poll (an RPC or a disconnect signal), and freeing the peer
 		# there crashes the engine. Until then state is OFFLINE, so nothing it still delivers is used.
 		if close_now:
@@ -666,6 +728,17 @@ func _close_peer(peer: MultiplayerPeer) -> void:
 	peer.close()
 
 
+## The transport kept open after a bye: close it now (the crew has gone, the linger ran out, or a new session starts).
+func _close_linger() -> void:
+	if _linger_peer == null:
+		return
+	var peer := _linger_peer
+	_linger_peer = null
+	_linger_until_usec = 0
+	_log("closing the transport after the bye")
+	_close_peer(peer)
+
+
 # --- Transport callbacks -----------------------------------------------------------------------------
 
 func _on_peer_connected(id: int) -> void:
@@ -679,14 +752,15 @@ func _on_peer_connected(id: int) -> void:
 
 
 func _on_peer_disconnected(id: int) -> void:
+	_log("transport: peer %d disconnected" % id)
 	if hosting:
 		_pending.erase(id)
 		_refused.erase(id)
 		_last_heard.erase(id)
 		if roster.has(id):
-			_drop(id, "left")
+			_drop(id, "lost the link while loading" if mission.waiting_for(id) else "left")
 	elif id == 1 and state != State.OFFLINE:
-		_end(HOST_LEFT)
+		_end(HOST_LOST_LOADING if mission.loading() else HOST_LEFT)
 
 
 func _on_connected_to_server() -> void:
@@ -697,6 +771,7 @@ func _on_connected_to_server() -> void:
 	_set_state(State.HELLO, HELLO_TIMEOUT, "Connected. Saying hello...")
 
 
+## ENet's peer timeout is widened (ENET_TIMEOUT_*: a main thread blocked by a slow load must not be dropped by ENet).
 ## ENet throttles a connection whose round trips vary by dropping UNRELIABLE packets on purpose; the lag link's jitter
 ## provokes exactly that. The throttle is not allowed to fall, so unreliable loss on ENet is the link's alone (cast).
 func _tune_enet(peer_id: int) -> void:
@@ -706,6 +781,9 @@ func _tune_enet(peer_id: int) -> void:
 	var pp := enet.get_peer(peer_id)
 	if pp != null:
 		pp.throttle_configure(ENET_THROTTLE_INTERVAL_MS, ENET_THROTTLE_UP, 0)
+		pp.set_timeout(ENET_TIMEOUT_LIMIT, ENET_TIMEOUT_MIN_MS, ENET_TIMEOUT_MAX_MS)
+	else:
+		push_warning("[Net] no ENet peer %d to tune" % peer_id)
 
 
 func _on_connection_failed() -> void:
@@ -715,6 +793,10 @@ func _on_connection_failed() -> void:
 
 func _on_server_disconnected() -> void:
 	if state == State.OFFLINE:
+		return
+	_log("transport: the host's connection closed")
+	if state == State.ONLINE and mission.loading():
+		_end(HOST_LOST_LOADING)
 		return
 	_end(HOST_LEFT if state == State.ONLINE or state == State.HELLO else CONNECT_FAILED)
 
@@ -729,6 +811,7 @@ func _on_lobby_created(lobby_id: int) -> void:
 		_end("This build has no Steam transport")
 		return
 	peer.set("no_nagle", true)
+	NetSteamLink.apply_timeouts(SteamIdentity.steam())
 	var err := int(peer.call("create_host", 0))
 	if err != OK:
 		_end("Steam couldn't host (error %d)" % err)
@@ -763,6 +846,7 @@ func _on_lobby_joined(_lobby_id: int) -> void:
 		_end(CONNECT_FAILED)
 		return
 	peer.set("no_nagle", true)
+	NetSteamLink.apply_timeouts(SteamIdentity.steam())
 	var err := int(peer.call("create_client", host_steam_id, 0))
 	if err != OK:
 		_end("%s (Steam error %d)" % [CONNECT_FAILED, err])
@@ -872,6 +956,7 @@ func _admit(from: int, data: Dictionary) -> void:
 	_to_crew("sys.roster", {"entries": crew()})
 	_publish_lobby()
 	_log("%s joined (peer %d, seat %d, head %s, chassis %s)" % [name_, from, seat, roster[from]["head"], roster[from]["chassis"]])
+	FlowLog.say("crew joined", "%s peer %d seat %d, crew %d" % [name_, from, seat, roster.size()])
 	status_changed.emit("%s joined." % name_)
 	peer_joined.emit(from)
 	roster_changed.emit()
@@ -902,8 +987,9 @@ func _refuse(peer: int, name_: String, reason: String) -> void:
 	refusals.append({"peer": peer, "name": name_, "reason": reason})
 	wire.send_event(peer, "sys.refuse", {"reason": reason})
 	wire.flush()
-	_refused[peer] = Time.get_ticks_usec() + int(REFUSE_GRACE * 1e6)
+	_refused[peer] = {"at": Time.get_ticks_usec(), "kick": false}
 	_log("refused %s (peer %d): %s" % [name_, peer, reason])
+	FlowLog.say("joiner refused", "%s peer %d: %s" % [name_, peer, reason])
 
 
 func _drop(peer: int, why: String) -> void:
@@ -912,7 +998,12 @@ func _drop(peer: int, why: String) -> void:
 	_to_crew("sys.roster", {"entries": crew()})
 	_publish_lobby()
 	_log("%s %s (peer %d)" % [str(e["name"]), why, peer])
-	status_changed.emit("%s left." % str(e["name"]))
+	if telemetry != null:
+		telemetry.note(host_time(), "crew: %s %s (peer %d)" % [str(e["name"]), why, peer])
+	var text := "%s left" % str(e["name"]) if why == "left" else "%s dropped: %s" % [str(e["name"]), why]
+	status_changed.emit(text + ".")
+	crew_note.emit(text)
+	FlowLog.say("crew left" if why == "left" else "crew dropped", "%s (peer %d), crew %d" % [text, peer, roster.size()])
 	peer_left.emit(peer)
 	roster_changed.emit()
 
@@ -938,6 +1029,7 @@ func _client_sys(from: int, kind: String, data: Dictionary) -> void:
 			_set_state(State.ONLINE, 0.0, "")
 			_open_telemetry()
 			_log("welcomed: seat %d as peer %d" % [int(data.get("seat", 0)), local_id()])
+			FlowLog.say("session joined", "seat %d, crew %d, host %s" % [int(data.get("seat", 0)), roster.size(), host_name()])
 			status_changed.emit("Joined %s's crew." % host_name())
 			session_started.emit(false)
 			roster_changed.emit()
@@ -949,9 +1041,13 @@ func _client_sys(from: int, kind: String, data: Dictionary) -> void:
 			if state == State.ONLINE:
 				_apply_link(str(data.get("preset", "off")))
 		"sys.refuse":
+			FlowLog.say("session refused", str(data.get("reason", CONNECT_FAILED)))
 			_end(str(data.get("reason", CONNECT_FAILED)))
 		"sys.bye":
-			_end(HOST_LEFT)
+			# A normal end: show the host's reason. _end closes this end at once (deferred), which is what lets the
+			# lingering host close too.
+			var why := str(data.get("reason", ""))
+			_end(why if why != "" else HOST_ENDED)
 
 
 func _set_roster(entries: Array) -> void:
@@ -996,8 +1092,14 @@ func _on_packet(from: int, type: int, seq: int, stamp_ms: int, payload: PackedBy
 func _process(_delta: float) -> void:
 	if state == State.OFFLINE:
 		_last_frame_usec = 0
+		_prev_process_usec = 0
+		if _linger_peer != null and (Time.get_ticks_usec() >= _linger_until_usec or multiplayer.get_peers().is_empty()):
+			_close_linger()
 		return
 	var now := Time.get_ticks_usec()
+	if _prev_process_usec > 0 and now - _prev_process_usec > int(STALL_GRACE * 1e6):
+		_pause_silence(now - _prev_process_usec, now)
+	_prev_process_usec = now
 	clock.advance(now)
 	if state == State.ONLINE:
 		if _last_frame_usec > 0:
@@ -1014,8 +1116,10 @@ func _process(_delta: float) -> void:
 	if hosting:
 		_host_watch(now)
 	else:
-		if now - int(_last_heard.get(1, now)) > int(HOST_SILENCE * 1e6):
-			_end(HOST_LEFT)
+		var loading := mission.loading()
+		var limit := maxf(HOST_SILENCE, mission.load_allowance()) if loading else HOST_SILENCE
+		if now - int(_last_heard.get(1, now)) > int(limit * 1e6):
+			_end(HOST_LOST_LOADING if loading else HOST_SILENT)
 			return
 		if now >= _next_ping_usec:
 			var buf := StreamPeerBuffer.new()
@@ -1034,15 +1138,62 @@ func _host_watch(now: int) -> void:
 	for id: int in _pending.keys():
 		if now - int(_pending[id]) > int(HELLO_TIMEOUT * 1e6):
 			_pending.erase(id)
+			_log("peer %d: no hello in time, disconnecting" % id)
 			peer.disconnect_peer(id)
 	for id: int in _refused.keys():
-		if now > int(_refused[id]):
+		var r: Dictionary = _refused[id]
+		var at := int(r["at"])
+		var due := at + int(REFUSE_GRACE * 1e6)
+		if bool(r["kick"]):
+			var heard := int(_last_heard.get(id, 0))
+			due = heard + int(REFUSE_GRACE * 1e6) if heard > at else at + int(KICK_WAIT * 1e6)
+		if now > due:
 			_refused.erase(id)
+			_log("peer %d: refused / sent out earlier, disconnecting" % id)
 			peer.disconnect_peer(id)
 	for id: int in roster.keys():
-		if id != 1 and now - int(_last_heard.get(id, now)) > int(CLIENT_SILENCE * 1e6):
-			_drop(id, "went silent")
-			peer.disconnect_peer(id)
+		if id == 1:
+			continue
+		var loading := mission.waiting_for(id)
+		var limit := maxf(CLIENT_SILENCE, mission.load_allowance()) if loading else CLIENT_SILENCE
+		if now - int(_last_heard.get(id, now)) > int(limit * 1e6):
+			_drop(id, "went silent while loading" if loading else "went silent")
+			peer.disconnect_peer(id)   # (_drop logged why)
+
+
+## This machine's frame was blocked for `gap_usec` (a slow mission build, a hitch): nobody could have been heard while we
+## weren't listening, so every silence clock (and a pending handshake deadline) moves forward by the stall. Packets that
+## did arrive during it were already taken by this frame's poll (SceneMultiplayer polls before any _process).
+func _pause_silence(gap_usec: int, now: int) -> void:
+	for k: Variant in _last_heard.keys():
+		_last_heard[k] = mini(now, int(_last_heard[k]) + gap_usec)
+	for k: Variant in _pending.keys():
+		_pending[k] = mini(now, int(_pending[k]) + gap_usec)
+	if _deadline_usec > 0:
+		_deadline_usec += gap_usec
+	if state == State.ONLINE:
+		var text := "this machine stalled %d ms: silence clocks paused" % (gap_usec / 1000)
+		_log(text)
+		if telemetry != null:
+			telemetry.note(host_time(), text)
+
+
+## Keep the link alive from inside a long blocking step (the mission build): service the transport (ENet answers acks
+## and pings, Steam takes its messages) and push out what is queued, WITHOUT dispatching anything: what arrives waits in
+## the peer's queue for the next SceneMultiplayer poll, so no event reaches game code that isn't set up yet. Cheap; at
+## most every 20 ms. Safe to call offline.
+func service_transport() -> void:
+	if state == State.OFFLINE:
+		return
+	var now := Time.get_ticks_usec()
+	if now - _last_service_usec < 20000:
+		return
+	_last_service_usec = now
+	var peer := multiplayer.multiplayer_peer
+	if peer == null or peer is OfflineMultiplayerPeer:
+		return
+	peer.poll()
+	wire.flush()
 
 
 # --- Telemetry ---------------------------------------------------------------------------------------

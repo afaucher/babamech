@@ -68,7 +68,8 @@ func run_host() -> void:
 		check(not e.puppet, "%s is a real enemy on the host" % e.target_id)
 		eq(td.stack.deck_at(e.global_position), e.spawn_deck, "%s stands on its own deck %d" % [e.target_id, e.spawn_deck])
 		var up := e.up
-		var hit := sp.intersect_ray(PhysicsRayQueryParameters3D.create(e.global_position + up * 1.0, e.global_position - up * 2.0))
+		var drop := 24.0 if e.enemy_type == "drone" else 2.0
+		var hit := sp.intersect_ray(PhysicsRayQueryParameters3D.create(e.global_position + up * 1.0, e.global_position - up * drop))
 		check(not hit.is_empty(), "%s has floor under it (deck %d)" % [e.target_id, e.spawn_deck])
 	for p in peers_with("ready"):
 		var r: Dictionary = reported(p, "ready")
@@ -90,9 +91,9 @@ func run_host() -> void:
 	var mover: EnemyBase = null
 	var turret: EnemyBase = null
 	for e in td.combat.squad.enemies:
-		if mover == null and e.enemy_type == "strider":
+		if mover == null and e.enemy_type.begins_with("strider"):
 			mover = e
-		if turret == null and e.enemy_type == "turret":
+		if turret == null and e.enemy_type.begins_with("turret"):
 			turret = e
 	if mover == null:
 		mover = td.combat.squad.enemies[0]
@@ -204,11 +205,11 @@ func run_host() -> void:
 	# 5. TELEGRAPH toward c1 --------------------------------------------------------------------------------
 	var t2: EnemyBase = null
 	for e in td.combat.squad.enemies:   # on the entry deck: an enemy only engages mechs on its own deck
-		if e.enemy_type == "turret" and not e.destroyed() and e != turret and e.spawn_deck == k:
+		if e.enemy_type.begins_with("turret") and not e.destroyed() and e != turret and e.spawn_deck == k:
 			t2 = e
 	if t2 == null:
 		for e in td.combat.squad.enemies:
-			if not e.destroyed() and e != mover and e.spawn_deck == k:
+			if not e.destroyed() and e != mover and e.spawn_deck == k and e.enemy_type != "drone":
 				t2 = e
 	if check(t2 != null and pb != null, "an enemy is left to telegraph"):
 		var pc := pb.mech.global_position
@@ -390,7 +391,7 @@ func _state() -> Dictionary:
 		dead[e.target_id] = e.destroyed()
 		wreck[e.target_id] = e.destroyed() and e.has_active_flame()
 		aims[e.target_id] = e.puppet_aim()
-		muzzles[e.target_id] = e.muzzle_world("enemy_bolter" if e.enemy_type == "turret" else "")
+		muzzles[e.target_id] = e.muzzle_world("enemy_bolter" if e.enemy_type.begins_with("turret") else "")
 	var final := Vector3.ZERO
 	var tracked := sync.by_net.get(track_n) as EnemyBase
 	if tracked != null and is_instance_valid(tracked):

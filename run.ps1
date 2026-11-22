@@ -1,4 +1,5 @@
-# run.ps1 - play babamech (windowed). Extra args go to the game, e.g.
+# run.ps1 - play babamech (windowed). Extra args go to the game (known Godot engine options such as --log-file,
+# --resolution, --headless go to the engine, before "--"), e.g.
 #   .\run.ps1 --scene res://scenes/lab.tscn
 #   .\run.ps1 --menu-shot C:\shots\menu.png      # save the menu after --menu-after s (default 1.5) and quit
 #
@@ -30,14 +31,30 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     elseif ($args[$i] -is [array]) { $rest += ($args[$i] -join ",") }
     else { $rest += $args[$i] }
 }
-$gpu = $rest -notcontains "--headless"
-$what = "$(if ($crew -ge 2) { "crew of $crew" } else { 'game window' }) $($rest -join ' ')".Trim()
+# Godot engine options go BEFORE "--" (after it Godot hands everything to the game as user args, so e.g. --log-file
+# would be ignored); everything else goes after it, to the game.
+$engineValue = @("--log-file", "--resolution", "--position", "--path", "--rendering-driver", "--rendering-method",
+    "--display-driver", "--audio-driver", "--screen", "--max-fps", "--fixed-fps", "--time-scale", "--frame-delay",
+    "--xr-mode", "--tablet-driver", "--text-driver", "--quit-after")
+$engineFlag = @("--headless", "--verbose", "-v", "--quiet", "-q", "--fullscreen", "-f", "--maximized", "-m",
+    "--windowed", "-w", "--always-on-top", "-t", "--debug", "-d", "--print-fps", "--disable-vsync", "--gpu-validation",
+    "--single-window", "--quit", "--debug-collisions", "--debug-navigation", "--disable-crash-handler")
+$engine = @(); $game = @()
+for ($i = 0; $i -lt $rest.Count; $i++) {
+    $a = [string]$rest[$i]
+    if ($engineValue -contains $a -and $i + 1 -lt $rest.Count) { $engine += @($a, [string]$rest[$i + 1]); $i++ }
+    elseif ($engineFlag -contains $a) { $engine += $a }
+    else { $game += $a }
+}
+$rest = $game
+$gpu = $engine -notcontains "--headless"
+$what = "$(if ($crew -ge 2) { "crew of $crew" } else { 'game window' }) $(($engine + $rest) -join ' ')".Trim()
 if ($gpu -and -not (Enter-BabamechGpu $what)) {
     Write-Host "Not opening a window: the GPU stayed busy (see above)." -ForegroundColor Yellow
     exit 2
 }
 if ($crew -lt 2) {
-    try { & $godot --path $PSScriptRoot -- @rest } finally { if ($gpu) { Exit-BabamechGpu } }
+    try { & $godot --path $PSScriptRoot @engine -- @rest } finally { if ($gpu) { Exit-BabamechGpu } }
     exit $LASTEXITCODE
 }
 if ($crew -gt 4) { Write-Host "A crew is at most 4 (a 5th window would be refused: Crew is full)." -ForegroundColor Yellow }
@@ -49,7 +66,7 @@ $heads = @("chicken", "pickle", "corn", "dog", "chicken")
 $w = [int]($size -split "x")[0]; $h = [int]($size -split "x")[1]
 function Start-Player([int]$n, [string[]]$gameArgs, [string]$who) {
     $x = 40 + (($n - 1) % 2) * ($w + 20); $y = 40 + [Math]::Floor(($n - 1) / 2) * ($h + 30)
-    $all = @("--path", "`"$PSScriptRoot`"", "--resolution", $size, "--position", "$x,$y", "--") + $gameArgs + $common + `
+    $all = @("--path", "`"$PSScriptRoot`"", "--resolution", $size, "--position", "$x,$y") + $engine + @("--") + $gameArgs + $common + `
         @("--net-name", $who, "--head", $heads[($n - 1) % $heads.Count], "--settings-file", "user://settings_$($who.ToLower()).cfg") + $rest
     if ($shotDir -ne "") { New-Item -ItemType Directory -Force -Path $shotDir | Out-Null; $all += @("--crew-shot", "`"$shotDir\$who.png`"", "--crew-size", "$crew") }
     return Start-Process -FilePath $godot -ArgumentList $all -PassThru

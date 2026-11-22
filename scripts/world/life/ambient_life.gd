@@ -137,6 +137,8 @@ var _viewers: Array = []            ## registered viewer nodes (Node3D)
 var _views := PackedVector3Array()  ## a unit's viewers on its deck, district-local
 var _cull := false                  ## false: everything is near (no viewer known)
 var _active := true                 ## false: no viewer on this deck (nothing evaluated or drawn)
+var quality := CityQuality.HIGH     ## set_quality: local presentation only
+var _draw_r := DRAW_R               ## quality: m from a viewer an agent is drawn (bands, hit tests and events ignore it)
 # host and local bookkeeping
 var _pending: Array = []            ## host: threats waiting to be sent [x, s, r, st]
 var _recent: Array = []             ## host: [t, x, s, r, st] sent within MERGE_S
@@ -147,6 +149,13 @@ var _pusher_arc: Array[Vector2] = []
 var _asked: Dictionary = {}
 var _vasked: Dictionary = {}
 var _heard: Dictionary = {}         ## "kind:cell" -> time of the last event of that kind there
+# incremental setup (setup_stack_begin / setup_step)
+var _setup_part := -1               ## a unit mid setup: its next part, SETUP_PARTS when set up but its stack is not (-1: running; else _process waits)
+var _su_stack: CityStack            ## a stack node mid setup_stack_begin: the stack (`stack` is set when done)
+var _su_k := 0                      ## the deck being set up
+var _su_unit: AmbientLife           ## its unit
+var _su_units: Array[AmbientLife] = []   ## the decks' units set up so far (they become `units` when all are done)
+var _su_events: Array = []          ## life.* events heard while setting up, replayed when done
 
 
 func net_fields() -> Dictionary:
@@ -167,7 +176,10 @@ func net_fields() -> Dictionary:
 		"_vaxis": Net.LOCAL, "_vpx": Net.LOCAL, "_vps": Net.LOCAL, "_vdir": Net.LOCAL, "_von": Net.LOCAL,
 		"_vband": Net.LOCAL, "_vbounds": Net.LOCAL, "_vany": Net.LOCAL, "_tram_state": Net.LOCAL,
 		"_viewers": Net.LOCAL, "_views": Net.LOCAL, "_cull": Net.LOCAL, "_active": Net.LOCAL,
+		"quality": Net.LOCAL, "_draw_r": Net.LOCAL,     # drawing only (CityQuality): never what is simulated or hit
 		"_pusher_arc": Net.LOCAL, "_heard": Net.LOCAL,
+		"_setup_part": Net.LOCAL, "_su_stack": Net.LOCAL, "_su_k": Net.LOCAL, "_su_unit": Net.LOCAL, "_su_units": Net.LOCAL,
+		"_su_events": Net.LOCAL,
 	}
 
 
@@ -212,10 +224,44 @@ func _exit_tree() -> void:
 ## Counts < 0: the defaults.
 func setup(d: CityDistrict, people_count: int = -1, pod_count: int = -1, cart_count: int = -1) -> void:
 	_clear_units()
+	_setup_begin(d, people_count, pod_count, cart_count)
+	while _setup_part < SETUP_PARTS:
+		_setup_chunk()
+	_setup_part = -1
+
+
+## setup() in SETUP_PARTS chunks (the stack's setup_step runs one per call): the same calls in the same order.
+## 0: plan, crowd, figures, per-person arrays; 1: traffic; 2: tram cars and barriers; 3: the first exact draw.
+const SETUP_PARTS := 4
+
+func _setup_begin(d: CityDistrict, people_count: int, pod_count: int, cart_count: int) -> void:
 	district = d
 	people = people_count
 	pods = pod_count
 	carts = cart_count
+	_setup_part = 0
+
+
+func _setup_chunk() -> void:
+	var part := _setup_part
+	_setup_part = part + 1      # SETUP_PARTS when all are done: the caller sets -1 (setup, or the stack when every deck is)
+	match part:
+		0:
+			_setup_people()
+		1:
+			_build_traffic()
+		2:
+			_build_section()
+			_set_layers(figures)
+			_tick = -1
+			_follow()
+		3:
+			_redraw_exact(false)
+
+
+func _setup_people() -> void:
+	var d := district
+	var people_count := people
 	_ring = d.ring
 	_geo = CityGeo.new(_ring)
 	plan = LifePlan.make(d.plan, people_count)
@@ -261,20 +307,24 @@ func setup(d: CityDistrict, people_count: int = -1, pod_count: int = -1, cart_co
 	_last_send = -INF
 	_online_clock = Net.online()
 	now = _clock()
-	_build_traffic()
-	_build_section()
-	_set_layers(figures)
-	_tick = -1
-	_follow()
-	_redraw_exact(false)
 
 
 ## One AmbientLife for every deck of a built CityStack: a unit per deck (child "Deck<k>"), counts per deck as for a
 ## district (60 people, 12 pods, 4 carts by deck area, the same caps) and one tram per deck. Every deck's CityProps is
 ## bound (props going down are threats on their own deck). Counts < 0: the defaults.
 func setup_stack(s: CityStack, people_count: int = -1, pod_count: int = -1, cart_count: int = -1) -> void:
+	setup_stack_begin(s, people_count, pod_count, cart_count)
+	while not setup_step(INF):
+		pass
+
+
+## setup_stack() spread over frames: setup_stack_begin() is cheap (drops the old units); each setup_step(budget_ms) runs
+## chunks (SETUP_PARTS per deck, then one to finish) until budget_ms of wall time is spent, always at least one, and
+## returns true once done. The result is exactly setup_stack()'s. Until setup_done(): `units` is empty and `stack` null
+## (ids(), sweep(), blast(), snapshot() see no life), the units being set up do not run, and life.* events heard are
+## kept and replayed, in order, when the setup finishes.
+func setup_stack_begin(s: CityStack, people_count: int = -1, pod_count: int = -1, cart_count: int = -1) -> void:
 	_clear_units()
-	stack = s
 	people = people_count
 	pods = pod_count
 	carts = cart_count
@@ -282,26 +332,70 @@ func setup_stack(s: CityStack, people_count: int = -1, pod_count: int = -1, cart
 	plan = null
 	sent.clear()
 	_online_clock = Net.online()
-	for k in s.decks.size():
-		var u := AmbientLife.new()
-		u._root = self
-		u.deck = k
-		u.remove_from_group("ambient_life")
-		u.name = "Deck%d" % k
-		u.time_scale = time_scale
-		add_child(u)
-		u.setup(s.decks[k], people_count, pod_count, cart_count)
+	_su_stack = s
+	_su_k = 0
+	_su_events.clear()
+
+
+## Run setup chunks until budget_ms of wall time is spent (at least one); true once the setup is done (and when there
+## is no setup in progress).
+func setup_step(budget_ms: float = 8.0) -> bool:
+	var start := Time.get_ticks_usec()
+	while _su_stack != null:
+		_setup_stack_chunk()
+		if _su_stack == null or float(Time.get_ticks_usec() - start) >= budget_ms * 1000.0:
+			break
+	return _su_stack == null
+
+
+## True when no setup_stack_begin() setup is in progress.
+func setup_done() -> bool:
+	return _su_stack == null
+
+
+func _setup_stack_chunk() -> void:
+	var s := _su_stack
+	if _su_k < s.decks.size():
+		var k := _su_k
+		if _su_unit == null:
+			var nu := AmbientLife.new()
+			nu._root = self
+			nu.deck = k
+			nu.remove_from_group("ambient_life")
+			nu.name = "Deck%d" % k
+			nu.time_scale = time_scale
+			add_child(nu)
+			nu._setup_begin(s.decks[k], people, pods, carts)
+			_su_unit = nu
+		var u := _su_unit
+		u._setup_chunk()
+		if u._setup_part < SETUP_PARTS:
+			return
 		var base := k * ID_STRIDE
 		u.civilian_killed.connect(func(id: int, p: Vector3, src: int) -> void: civilian_killed.emit(base + id, p, src))
 		u.civilian_event.connect(civilian_event.emit)
 		u.vehicle_event.connect(vehicle_event.emit)
 		u.tally_changed.connect(tally_changed.emit)
-		units.append(u)
+		_su_units.append(u)
+		_su_unit = null
+		_su_k += 1
+		return
+	units = _su_units.duplicate()
+	_su_units.clear()
+	for u in units:
+		u._setup_part = -1      # every deck is set up: the units run from now on
+	for k in s.decks.size():
 		if s.decks[k].props != null:
 			bind_props(s.decks[k].props)
+	stack = s
+	_su_stack = null
 	now = units[0].now if not units.is_empty() else 0.0
 	_route_pushers()
 	_stack_views()
+	var held := _su_events
+	_su_events = []
+	for e: Array in held:
+		_on_event(e[0], e[1], e[2], e[3])
 
 
 func _clear_units() -> void:
@@ -310,6 +404,15 @@ func _clear_units() -> void:
 		u.queue_free()
 	units.clear()
 	stack = null
+	if _su_unit != null and is_instance_valid(_su_unit):
+		_su_units.append(_su_unit)
+	for u in _su_units:
+		if is_instance_valid(u):
+			remove_child(u)
+			u.queue_free()
+	_su_units.clear()
+	_su_unit = null
+	_su_stack = null
 
 
 ## The deck unit k of a stack (this node itself on a district of its own).
@@ -518,6 +621,47 @@ func _band_of(p: Vector3) -> int:
 	return MID if best <= DRAW_R * DRAW_R else FAR
 
 
+# --- Quality (CityQuality: drawing only) --------------------------------------------------------------------
+
+## Draw level q (CityQuality.LOW / MEDIUM / HIGH): people, vehicles and the tram are drawn only within
+## CityQuality.level(q).life_draw_r of a viewer (DRAW_R at HIGH). Nothing else changes: the bands (EVAL_R / DRAW_R),
+## sampling, events, `_on` / `_von` (what this machine's shots can hit), the host's decisions and every pose and state
+## stay exactly as at HIGH. On a stack's node it covers every deck. Any time, before or after setup.
+func set_quality(q: int) -> void:
+	quality = CityQuality.clamp_level(q)
+	_draw_r = minf(float(CityQuality.level(quality)["life_draw_r"]), DRAW_R)
+
+
+## The draw radius in force (a stack's unit uses its stack node's).
+func _life_draw_r() -> float:
+	return _root._draw_r if _root != null else _draw_r
+
+
+## Whether an agent at `p` (district-local) is drawn at this quality: always with no viewer known or at full radius.
+func _drawn_at(p: Vector3) -> bool:
+	var r := _life_draw_r()
+	if not _cull or r >= DRAW_R:
+		return true
+	for v in _views:
+		if v.distance_squared_to(p) <= r * r:
+			return true
+	return false
+
+
+func _show_person(id: int, mesh: int, xf: Transform3D) -> void:
+	if _drawn_at(xf.origin):
+		figures.show_pose(id, mesh, xf)
+	else:
+		figures.hide_person(id)
+
+
+func _show_vehicle(vid: int, want: int, xf: Transform3D) -> void:
+	if _drawn_at(xf.origin):
+		cars.show_vehicle(vid, want, xf)
+	else:
+		cars.hide_vehicle(vid)
+
+
 func _stack_views() -> void:
 	var pts: Variant = _viewer_points()
 	if pts == null:
@@ -547,6 +691,8 @@ func _clock() -> float:
 
 
 func _process(delta: float) -> void:
+	if _setup_part >= 0:
+		return              # a unit still being set up (setup_step)
 	if stack != null:
 		for u in units:
 			u.time_scale = time_scale
@@ -851,7 +997,7 @@ func _display() -> void:
 	for id in plan.total():
 		if _falling.has(id):
 			var e := _sample(id, now)
-			figures.show_pose(id, int(e[1]), e[0])
+			_show_person(id, int(e[1]), e[0])
 			_px[id] = e[3]
 			_ps[id] = e[4]
 			_pos[id] = (e[0] as Transform3D).origin
@@ -870,7 +1016,7 @@ func _display() -> void:
 			var f := clampf((now - _ta[id]) / maxf(_tb[id] - _ta[id], 1e-6), 0.0, 1.0)
 			if not _xa[id].is_equal_approx(_xb[id]):
 				xf = _xa[id].interpolate_with(_xb[id], f)
-		figures.show_pose(id, mesh, xf)
+		_show_person(id, mesh, xf)
 		_pos[id] = xf.origin
 		_up[id] = xf.basis.y.normalized()
 		var alive := not crowd.dead.has(id)
@@ -912,7 +1058,7 @@ func _vdisplay() -> void:
 			haz = _vhaz[vid] == 1
 			if not _vxa[vid].is_equal_approx(_vxb[vid]):
 				xf = _vxa[vid].interpolate_with(_vxb[vid], clampf((now - _vta[vid]) / maxf(_vtb[vid] - _vta[vid], 1e-6), 0.0, 1.0))
-		cars.show_vehicle(vid, (LifeCars.HAZARD_BRIGHT if blink else LifeCars.HAZARD_DARK) if haz else LifeCars.PLAIN, xf)
+		_show_vehicle(vid, (LifeCars.HAZARD_BRIGHT if blink else LifeCars.HAZARD_DARK) if haz else LifeCars.PLAIN, xf)
 		_vstore(vid, xf)
 		if first:
 			_vbounds = AABB(_vpos[vid], Vector3.ZERO)
@@ -969,7 +1115,7 @@ func _redraw_exact(events: bool) -> void:
 			figures.hide_person(id)
 			_on[id] = 0
 			continue
-		figures.show_pose(id, int(e[1]), e[0])
+		_show_person(id, int(e[1]), e[0])
 		_pos[id] = (e[0] as Transform3D).origin
 		_up[id] = (e[0] as Transform3D).basis.y.normalized()
 		_px[id] = e[3]
@@ -1005,7 +1151,7 @@ func _redraw_exact(events: bool) -> void:
 			_vtip[vid] = true
 		else:
 			_vtip.erase(vid)
-		cars.show_vehicle(vid, (LifeCars.HAZARD_BRIGHT if blink else LifeCars.HAZARD_DARK) if bool(e[1]) else LifeCars.PLAIN, e[0])
+		_show_vehicle(vid, (LifeCars.HAZARD_BRIGHT if blink else LifeCars.HAZARD_DARK) if bool(e[1]) else LifeCars.PLAIN, e[0])
 		_vstore(vid, e[0])
 		_vbounds = AABB(_vpos[vid], Vector3.ZERO) if vfirst else _vbounds.expand(_vpos[vid])
 		vfirst = false
@@ -1032,6 +1178,9 @@ func _tram_step() -> void:
 		var c := _geo.frame(tram.x, float(p["s"]), 0.0).origin
 		near = _band_of(c) != FAR or _band_of(_geo.frame(tram.x, float(p["s"]) + LifeTram.HALF, 0.0).origin) != FAR \
 				or _band_of(_geo.frame(tram.x, float(p["s"]) - LifeTram.HALF, 0.0).origin) != FAR
+		if near and _life_draw_r() < DRAW_R:      # quality: drawn only within the shorter draw radius (bodies still move)
+			near = _drawn_at(c) or _drawn_at(_geo.frame(tram.x, float(p["s"]) + LifeTram.HALF, 0.0).origin) \
+					or _drawn_at(_geo.frame(tram.x, float(p["s"]) - LifeTram.HALF, 0.0).origin)
 	var blink := fposmod(now * BLINK_HZ, 1.0) < 0.5
 	var lights := (LifeTramCars.HAZARD_BRIGHT if blink else LifeTramCars.HAZARD_DARK) if bool(p["hazard"]) else LifeTramCars.PLAIN
 	for i in LifeTram.CARS:
@@ -1703,6 +1852,9 @@ func restore(bytes: PackedByteArray) -> void:
 
 func _on_event(_from: int, kind: String, data: Dictionary, _stamp: float) -> void:
 	if not kind.begins_with("life."):
+		return
+	if _su_stack != null:
+		_su_events.append([_from, kind, data, _stamp])     # replayed when setup_step finishes
 		return
 	if not units.is_empty():
 		var s0 := Net.session()

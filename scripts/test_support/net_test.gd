@@ -13,7 +13,7 @@ extends TestCase
 ## the host waits for them (wait_reports) and asserts. A client's own failed checks are forwarded to the host
 ## too. Override run_host() and run_client(); when run_host() returns the host prints the PASS marker and
 ## quits. A client, after run_client(), says done and waits for the session to end, then checks the reason
-## (expect_end, default NetSession.HOST_LEFT) and exits. The runner fails the test unless EVERY process
+## (expect_end, default NetSession.HOST_ENDED) and exits. The runner fails the test unless EVERY process
 ## exits 0, the host printed the marker and no log has a SCRIPT ERROR.
 ##
 ## Real time, not lockstep: the runner starts net processes with --max-fps 60 instead of --fixed-fps, every
@@ -30,7 +30,8 @@ var link := "off"
 ## Seconds before the runner's own kill: the TestCase timer is restarted with this.
 var net_timeout := 60.0
 ## The reason a client expects its session to end with after run_client().
-var expect_end := NetSession.HOST_LEFT
+## (The host's process quitting says bye: HOST_ENDED.)
+var expect_end := NetSession.HOST_ENDED
 
 ## Host: peer -> {key: value} from report().
 var reports: Dictionary = {}
@@ -58,6 +59,9 @@ func setup() -> void:
 			(c as Timer).stop()
 	print("[NetTest] %s %s index %d, port %d, %d processes, link %s" % [name, role, index, port, peers, link])
 	Session.wire.link.configure(link)
+	# Crew tests check the mission scene two frames after adding it: load it in _ready (tests of the stepped load, which
+	# is what the game does, set it back: net_load_stall_case.gd).
+	TestDrive.stepped_load = false
 	Session.telemetry_dir = "user://net_tests"
 	Session.set_profile("host" if is_host() else "c%d" % index, head_for(index), NetSession.DEFAULT_CHASSIS, accent_for(index),
 		loadout_for(index))

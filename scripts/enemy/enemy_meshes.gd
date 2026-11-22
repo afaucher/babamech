@@ -15,6 +15,7 @@ const FLASH_COL := Color(1.0, 0.72, 0.62)       ## brief hit-flash overlay tint
 static var _cache: Dictionary = {}
 static var _flash_mat: StandardMaterial3D
 static var _charred_mat: StandardMaterial3D
+static var _scanner_mat: StandardMaterial3D
 
 
 static func mesh(part: String) -> ArrayMesh:
@@ -24,14 +25,20 @@ static func mesh(part: String) -> ArrayMesh:
 	match part:
 		"turret_base": _turret_base(k)
 		"turret_gun": _turret_gun(k)
+		"turret_sniper_gun": _turret_sniper_gun(k)
+		"turret_missile_gun": _turret_missile_gun(k)
 		"turret_gun_wreck": _turret_gun_wreck(k)
 		"strider_chassis": _strider_chassis(k)
+		"strider_breacher_chassis": _strider_breacher_chassis(k)
 		"strider_sensor": _strider_sensor(k)
 		"strider_leg": _strider_leg(k)
 		"tank_hull": _tank_hull(k)
 		"tank_turret": _tank_turret(k)
 		"tank_turret_wreck": _tank_turret_wreck(k)
 		"tank_vents": _tank_vents(k)
+		"drone_hull": _drone_hull(k)
+		"drone_optic": _drone_optic(k)
+		"drone_cone": _drone_cone(k)
 		"debris_plate": _debris_plate(k)
 		"debris_chunk": _debris_chunk(k)
 		"rupture_core": _rupture_core(k)
@@ -68,12 +75,25 @@ static func charred_material() -> StandardMaterial3D:
 	return _charred_mat
 
 
+## Cached translucent unshaded scanner cone material for Patrol Scout Drones.
+static func scanner_material() -> StandardMaterial3D:
+	if _scanner_mat == null:
+		_scanner_mat = StandardMaterial3D.new()
+		_scanner_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_scanner_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		_scanner_mat.albedo_color = Color(1.0, 0.34, 0.14, 0.22)
+		_scanner_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return _scanner_mat
+
+
 ## Pre-cache destruction & flame meshes once at setup so first kill in combat causes zero frame spike.
 static func prewarm() -> void:
-	for p: String in ["debris_plate", "debris_chunk", "rupture_core", "turret_gun_wreck", "tank_turret_wreck"]:
+	for p: String in ["debris_plate", "debris_chunk", "rupture_core", "turret_gun_wreck", "tank_turret_wreck",
+			"turret_sniper_gun", "turret_missile_gun", "strider_breacher_chassis", "drone_hull", "drone_optic", "drone_cone"]:
 		mesh(p)
 	charred_material()
 	flash_material()
+	scanner_material()
 	LowPolyFlame.jet()
 	for b: int in [LowPolyFlame.HOT, LowPolyFlame.WARM, LowPolyFlame.COOL]:
 		LowPolyFlame.tongue(b)
@@ -317,3 +337,146 @@ static func _rupture_core(k: MeshKit) -> void:
 	k.ico(Vector3(0.0, 0.0, 0.0), Vector3(0.95, 0.52, 0.95), VENT_GLOW)
 	k.ico(Vector3(0.38, 0.14, -0.24), Vector3(0.55, 0.42, 0.52), VENT_GLOW)
 	k.ico(Vector3(-0.34, 0.10, 0.28), Vector3(0.50, 0.38, 0.48), VENT_GLOW)
+
+
+# --- Long/Short Variants & Patrol Scout Drone (strictly watertight: 0 open edges) -------------------------
+
+## Marksman Sniper Turret head: sleek drum + tall twin-vane sensor mast + 5.4 m twin-rail lance barrel.
+static func _turret_sniper_gun(k: MeshKit) -> void:
+	k.loft([
+		MeshKit.ring(Vector3(0, 0.1, 0.2), 1.5, 1.85, 8, "y", 3.2),
+		MeshKit.ring(Vector3(0, 1.1, 0.15), 1.65, 2.0, 8, "y", 3.2),
+		MeshKit.ring(Vector3(0, 1.95, 0.25), 1.25, 1.55, 8, "y", 3.2),
+	], [ARMOR_DARK, ARMOR_PLATE])
+	for side: float in [-1.0, 1.0]:
+		k.box(Vector3(0.28, 0.95, 2.5), TRIM_RED, Vector3(side * 1.65, 1.08, 0.15))
+		# Tall twin-vane sniper sensor mast (reads distinctly at 180+ m).
+		k.seg(Vector3(side * 0.62, 1.95, 0.35), Vector3(side * 0.92, 3.85, 0.65),
+			Vector2(0.14, 0.26), Vector2(0.06, 0.10), 4, ARMOR_PLATE, MeshKit.SQUARE)
+		k.box(Vector3(0.20, 0.45, 0.42), TRIM_RED, Vector3(side * 0.78, 3.15, 0.50))
+	k.box(Vector3(1.9, 1.15, 0.95), ARMOR_DARK, Vector3(0.0, 1.08, 2.15))
+	k.glow = true
+	k.box(Vector3(1.3, 0.42, 0.16), VENT_GLOW, Vector3(0.0, 1.08, 2.62))
+	k.glow = false
+	# Wide rangefinder optic bar above breech.
+	k.box(Vector3(1.45, 0.78, 1.05), ARMOR_DARK, Vector3(0.0, 2.38, -0.2))
+	k.glow = true
+	k.box(Vector3(1.22, 0.32, 0.16), OPTIC_GLOW, Vector3(0.0, 2.40, -0.74))
+	k.glow = false
+	# Extra-long 5.4 m twin-rail lance accelerator barrel.
+	k.box(Vector3(0.85, 0.75, 1.55), STEEL, Vector3(0.0, 1.05, -1.75))
+	for side: float in [-1.0, 1.0]:
+		k.box(Vector3(0.18, 0.38, 3.65), ARMOR_DARK, Vector3(side * 0.28, 1.05, -3.55))
+	for i in 4:
+		var z := -2.55 - float(i) * 0.80
+		k.box(Vector3(0.82, 0.52, 0.20), STEEL, Vector3(0.0, 1.05, z))
+	k.glow = true
+	k.box(Vector3(0.16, 0.16, 3.3), OPTIC_GLOW, Vector3(0.0, 1.05, -3.75))
+	k.tube(Vector3(0.0, 1.05, -5.28), Vector3(0.0, 1.05, -5.45), 0.18, 6, OPTIC_GLOW)
+	k.glow = false
+
+
+## Salvo Missile Turret head: armored drum + twin boxy 3-tube shoulder rocket pods flanking the drum.
+static func _turret_missile_gun(k: MeshKit) -> void:
+	k.loft([
+		MeshKit.ring(Vector3(0, 0.1, 0.15), 1.65, 1.75, 8, "y", 3.2),
+		MeshKit.ring(Vector3(0, 1.15, 0.1), 1.80, 1.82, 8, "y", 3.2),
+		MeshKit.ring(Vector3(0, 2.05, 0.2), 1.40, 1.45, 8, "y", 3.2),
+	], [ARMOR_DARK, ARMOR_PLATE])
+	k.box(Vector3(2.1, 1.2, 0.85), ARMOR_DARK, Vector3(0.0, 1.1, 1.92))
+	k.glow = true
+	k.box(Vector3(1.5, 0.45, 0.16), VENT_GLOW, Vector3(0.0, 1.1, 2.34))
+	k.glow = false
+	# Wide target-lock optic dome on top.
+	k.box(Vector3(1.75, 0.85, 1.15), ARMOR_DARK, Vector3(0.0, 2.50, -0.1))
+	k.box(Vector3(1.85, 0.22, 1.22), TRIM_RED, Vector3(0.0, 2.98, -0.1))
+	k.glow = true
+	k.box(Vector3(1.45, 0.36, 0.18), OPTIC_GLOW, Vector3(0.0, 2.52, -0.70))
+	k.glow = false
+	# Twin boxy 3-tube shoulder rocket pods (x = +-1.95).
+	for side: float in [-1.0, 1.0]:
+		var px := side * 1.95
+		k.box(Vector3(0.55, 0.48, 0.9), STEEL, Vector3(side * 1.45, 1.35, -0.05))
+		k.box(Vector3(1.15, 1.35, 2.15), ARMOR_DARK, Vector3(px, 1.45, -0.15))
+		k.box(Vector3(1.22, 0.34, 1.85), TRIM_RED, Vector3(px, 2.02, -0.15))
+		k.box(Vector3(0.95, 0.95, 0.26), STEEL, Vector3(px, 1.45, 0.95))
+		# 3 launch tubes stacked vertically/staggered on the front face with glowing red warheads.
+		for ti in 3:
+			var oy := 1.05 + float(ti) * 0.40
+			var ox := px + (0.22 if ti == 1 else -0.18) * side
+			k.tube(Vector3(ox, oy, -1.18), Vector3(ox, oy, -1.42), 0.17, 6, STEEL)
+			k.glow = true
+			k.tube(Vector3(ox, oy, -1.40), Vector3(ox, oy, -1.56), 0.12, 6, OPTIC_GLOW, 0.03)
+			k.glow = false
+
+
+## Hound Breacher chassis: broad armored ramming prow + wider shield pauldrons + twin-drum scatter cannon.
+static func _strider_breacher_chassis(k: MeshKit) -> void:
+	k.box(Vector3(1.55, 0.65, 1.35), STEEL, Vector3(0.0, 0.0, 0.1))
+	k.tube(Vector3(-1.38, 0.0, 0.0), Vector3(1.38, 0.0, 0.0), 0.25, 8, ARMOR_DARK)
+	k.loft([
+		MeshKit.ring(Vector3(0, 0.95, 1.35), 1.12, 0.68, 6, "z", 2.8),
+		MeshKit.ring(Vector3(0, 1.25, 0.25), 1.55, 0.95, 6, "z", 2.8),
+		MeshKit.ring(Vector3(0, 1.18, -1.10), 1.42, 0.80, 6, "z", 2.8),
+		MeshKit.ring(Vector3(0, 1.02, -1.92), 1.05, 0.55, 6, "z", 2.8),
+	], [ARMOR_DARK, ARMOR_PLATE, ARMOR_DARK])
+	# Heavy slanted armored ramming prow on the front chest.
+	k.push(MeshKit.xf(Vector3(0.0, 1.18, -1.85), Vector3(18.0, 0.0, 0.0)))
+	k.box(Vector3(2.15, 0.88, 0.36), ARMOR_DARK)
+	k.box(Vector3(2.22, 0.28, 0.40), TRIM_RED, Vector3(0.0, 0.16, -0.02))
+	k.pop()
+	# Oversized breacher shoulder shields (4.2 m span).
+	for side: float in [-1.0, 1.0]:
+		k.push(MeshKit.xf(Vector3(side * 1.72, 1.45, -0.25), Vector3(0.0, 0.0, -side * 12.0)))
+		k.box(Vector3(0.86, 1.22, 2.35), ARMOR_DARK)
+		k.box(Vector3(0.92, 0.36, 1.95), TRIM_RED, Vector3(0.0, 0.30, -0.08))
+		k.pop()
+	# Shorter rugged rear antenna stubs.
+	for side: float in [-1.0, 1.0]:
+		k.seg(Vector3(side * 0.78, 1.85, 0.55), Vector3(side * 0.92, 2.45, 0.95),
+			Vector2(0.14, 0.24), Vector2(0.07, 0.10), 4, ARMOR_PLATE, MeshKit.SQUARE)
+	k.glow = true
+	k.box(Vector3(1.25, 0.34, 0.14), VENT_GLOW, Vector3(0.0, 1.0, 1.44))
+	k.glow = false
+	# Underslung twin-drum scatter cannon (muzzle at z = -2.58 m).
+	k.box(Vector3(1.05, 0.55, 1.35), STEEL, Vector3(0.0, 0.48, -1.25))
+	for side: float in [-1.0, 1.0]:
+		k.tube(Vector3(side * 0.46, 0.36, -0.95), Vector3(side * 0.46, 0.36, -1.65), 0.28, 8, ARMOR_DARK)
+		k.tube(Vector3(side * 0.26, 0.50, -1.65), Vector3(side * 0.26, 0.50, -2.50), 0.16, 6, STEEL)
+		k.glow = true
+		k.tube(Vector3(side * 0.26, 0.50, -2.48), Vector3(side * 0.26, 0.50, -2.58), 0.13, 6, OPTIC_GLOW)
+		k.glow = false
+
+
+## Patrol Scout Drone hull (2.4 x 2.4 x 1.1 m): hovering tri-fin shrouded rotor disc, strictly watertight.
+static func _drone_hull(k: MeshKit) -> void:
+	k.lathe([Vector2(0.55, -0.24), Vector2(0.92, 0.0), Vector2(0.88, 0.26), Vector2(0.52, 0.48), Vector2(0.20, 0.54)],
+		6, [ARMOR_DARK, ARMOR_PLATE, ARMOR_DARK, ARMOR_PLATE], true, true)
+	# Dorsal crimson beacon crown + twin sensor fins.
+	k.box(Vector3(0.70, 0.18, 0.70), TRIM_RED, Vector3(0.0, 0.58, 0.0))
+	k.glow = true
+	k.ico(Vector3(0.0, 0.78, 0.0), Vector3(0.22, 0.22, 0.22), OPTIC_GLOW)
+	k.glow = false
+	# Three swept shrouded rotor fins at 120 deg intervals (2.4 m diameter).
+	for i in 3:
+		k.push(MeshKit.xf(Vector3.ZERO, Vector3(0.0, float(i) * 120.0, 0.0)))
+		k.box(Vector3(0.46, 0.24, 0.92), ARMOR_DARK, Vector3(0.0, 0.12, -0.78))
+		k.box(Vector3(0.76, 0.30, 0.52), ARMOR_PLATE, Vector3(0.0, 0.10, -1.10))
+		k.box(Vector3(0.80, 0.12, 0.32), TRIM_RED, Vector3(0.0, 0.24, -1.12))
+		k.glow = true
+		k.box(Vector3(0.48, 0.08, 0.26), VENT_GLOW, Vector3(0.0, -0.06, -1.10))
+		k.glow = false
+		k.pop()
+
+
+## Drone belly crimson optic dome (weak point at (0, -0.35, -0.55)).
+static func _drone_optic(k: MeshKit) -> void:
+	k.ico(Vector3(0.0, 0.0, 0.0), Vector3(0.48, 0.38, 0.52), ARMOR_DARK)
+	k.glow = true
+	k.ico(Vector3(0.0, -0.05, -0.30), Vector3(0.30, 0.24, 0.26), OPTIC_GLOW)
+	k.glow = false
+
+
+## Watertight downward translucent scanner frustum (origin at belly optic, extends along -Z / -Y).
+static func _drone_cone(k: MeshKit) -> void:
+	k.lathe([Vector2(0.18, 0.0), Vector2(2.6, -9.5)], 8, VENT_GLOW, true, true)

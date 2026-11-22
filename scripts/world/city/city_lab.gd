@@ -17,6 +17,8 @@ extends Node3D
 ## "ramp_foot" stands on the road 30 m past the first ramp's foot looking back up it (embankment, piers, ceiling opening),
 ## "ramp_under" beside it where it is 12-20 m up, looking along the underside and the row of piers (cockpit height, 9 m).
 ##   --city site=stack,seed=4,camera=ramp
+## Option "quality" (high / medium / low): CityQuality's draw level (CityStack.set_quality; a district's own rig only
+## changes its lights and extras). `--city site=stack,camera=avenue,quality=low`.
 
 const PARAMS := [
 	{"id": "seed", "label": "Seed", "min": 1.0, "max": 200.0},
@@ -48,7 +50,8 @@ const DOZER_RUN_OUT := 8.0       ## the lap starts and ends this far past the bl
 
 var time_scale := 1.0
 var params: Dictionary = {}
-var options := {"lighting": "day", "camera": "lab", "ceiling": "auto", "backdrop": "auto", "props": "idle", "site": "alone"}
+var options := {"lighting": "day", "camera": "lab", "ceiling": "auto", "backdrop": "auto", "props": "idle", "site": "alone",
+		"quality": "high"}
 var district: CityDistrict      ## the district on show: on its own, or the stack's deck the cameras stand on
 var stack: CityStack
 
@@ -111,12 +114,22 @@ func rebuild() -> void:
 		else:
 			district.build(params)
 	_rig().apply(str(options["lighting"]))
+	_apply_quality()
 	_apply_view()
 	_apply_props()
 	if stack != null:
 		print("[city] seed %d  stack checksum %s  %s" % [int(params["seed"]), stack.checksum(), str(stack.stats)])
 	else:
 		print("[city] seed %d  checksum %s  %s" % [int(params["seed"]), district.plan.checksum(), str(district.stats)])
+
+
+## Option "quality" (CityQuality, local presentation): the stack's decks, lights and ranges, or a district's own rig.
+func _apply_quality() -> void:
+	var q := CityQuality.from_name(str(options["quality"]))
+	if stack != null:
+		stack.set_quality(q)
+	elif district != null and district.rig != null:
+		district.rig.set_quality(q)
 
 
 func _rig() -> CityLightRig:
@@ -187,6 +200,7 @@ func lab_options() -> Array:
 		{"id": "backdrop", "label": "Backdrop", "choices": ["auto", "on", "off"], "value": options["backdrop"]},
 		{"id": "props", "label": "Street props", "choices": ["idle", "demo"], "value": options["props"]},
 		{"id": "site", "label": "Site", "choices": ["alone", "section", "stack"], "value": options["site"]},
+		{"id": "quality", "label": "Draw quality (CityQuality)", "choices": ["high", "medium", "low"], "value": options["quality"]},
 	]
 
 
@@ -202,6 +216,8 @@ func set_lab_option(id: String, value: String) -> void:
 		_dirty = SETTLE_FRAMES
 	elif id == "props":
 		_apply_props()
+	elif id == "quality":
+		_apply_quality()
 	else:
 		_apply_view()
 

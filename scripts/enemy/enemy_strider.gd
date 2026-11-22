@@ -30,12 +30,16 @@ func net_fields() -> Dictionary:
 	return f
 
 
+func _chassis_mesh_name() -> String:
+	return "strider_breacher_chassis" if enemy_type == "strider_breacher" else "strider_chassis"
+
+
 func _build_visuals() -> void:
 	_chassis_pivot = Node3D.new()
 	_chassis_pivot.name = "ChassisPivot"
 	_chassis_pivot.position = Vector3(0.0, 2.6, 0.0)
 	add_child(_chassis_pivot)
-	_chassis_mi = EnemyMeshes.instance("strider_chassis")
+	_chassis_mi = EnemyMeshes.instance(_chassis_mesh_name())
 	_chassis_pivot.add_child(_chassis_mi)
 	_register_comp_mesh("chassis", _chassis_mi)
 	_sensor_mi = EnemyMeshes.instance("strider_sensor")
@@ -61,7 +65,8 @@ func _build_visuals() -> void:
 
 func muzzle_world(_weapon_id: String = "") -> Vector3:
 	if _chassis_pivot != null and _chassis_pivot.is_inside_tree():
-		return _chassis_pivot.global_transform * Vector3(0.0, 0.48, -2.5)
+		var z := -2.58 if enemy_type == "strider_breacher" else -2.5
+		return _chassis_pivot.global_transform * Vector3(0.0, 0.48, z)
 	return super.muzzle_world()
 
 

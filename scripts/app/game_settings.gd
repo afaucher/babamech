@@ -6,7 +6,10 @@ extends RefCounted
 ## Profile (carried in the join handshake): player_name ("" = the Steam persona), head (MechCatalog.HEADS), accent
 ## (MechAccent.ACCENTS id: the livery colour that replaces the safety orange; default "orange").
 ## Hangar (the pre-mission choice, remembered): chassis, loadout {hardpoint id: weapon id}.
-## Video: fullscreen, vsync, msaa (0 off, 1 2x, 2 4x). Audio: master, music, sfx (0..1, linear).
+## Video: fullscreen, vsync, msaa (0 off, 1 2x, 2 4x), quality (CityQuality.LOW / MEDIUM / HIGH = 0 / 1 / 2, GraphicsQuality;
+## -1 in DEFAULTS = never chosen: load_settings auto-detects, LOW on an integrated GPU, else HIGH), renderer (auto /
+## forward_plus / gl_compatibility: GraphicsQuality.sync_renderer, takes effect at the next launch).
+## Audio: master, music, sfx (0..1, linear).
 ## Network: link_sim (off / coast / rough): the crew's simulated link when this machine hosts (NetSession).
 
 const DEFAULT_PATH := "user://settings.cfg"
@@ -19,6 +22,8 @@ const DEFAULTS := {
 	"fullscreen": false,
 	"vsync": true,
 	"msaa": 1,
+	"quality": -1,
+	"renderer": "auto",
 	"master": 0.8,
 	"music": 0.7,
 	"sfx": 0.8,
@@ -28,7 +33,7 @@ const DEFAULTS := {
 const SECTIONS := {
 	"player_name": "profile", "head": "profile", "accent": "profile",
 	"chassis": "hangar", "loadout": "hangar",
-	"fullscreen": "video", "vsync": "video", "msaa": "video",
+	"fullscreen": "video", "vsync": "video", "msaa": "video", "quality": "video", "renderer": "video",
 	"master": "audio", "music": "audio", "sfx": "audio",
 	"link_sim": "network",
 }
@@ -42,6 +47,7 @@ static func load_settings() -> Dictionary:
 	var out := DEFAULTS.duplicate(true)
 	var cfg := ConfigFile.new()
 	if cfg.load(path) != OK:
+		out["quality"] = sanitize_quality(out["quality"])
 		return out
 	for k: String in DEFAULTS:
 		var v: Variant = cfg.get_value(SECTIONS[k], k, DEFAULTS[k])
@@ -52,7 +58,16 @@ static func load_settings() -> Dictionary:
 	out["accent"] = MechAccent.sanitize(str(out["accent"]))
 	if not MechCatalog.CHASSIS.has(str(out["chassis"])):
 		out["chassis"] = DEFAULTS["chassis"]
+	out["quality"] = sanitize_quality(out["quality"])
+	out["renderer"] = GraphicsQuality.sanitize_renderer(out["renderer"])
 	return out
+
+
+## A saved quality level (0..2), or the auto-detected one for anything else (never chosen, broken).
+static func sanitize_quality(v: Variant) -> int:
+	if v is int and int(v) >= CityQuality.LOW and int(v) <= CityQuality.HIGH:
+		return int(v)
+	return GraphicsQuality.detect()
 
 
 static func save_settings(d: Dictionary) -> bool:
@@ -77,6 +92,7 @@ static func set_value(key: String, value: Variant) -> Dictionary:
 ## Push video and audio settings to the engine. `window` false leaves the window alone (screenshots, tests).
 static func apply(d: Dictionary, window: bool = true) -> void:
 	_ensure_buses()
+	GraphicsQuality.use_settings(d)
 	var music_lin := float(d["music"])
 	var sfx_lin := float(d["sfx"])
 	_set_bus("Master", float(d["master"]))
@@ -92,7 +108,7 @@ static func apply(d: Dictionary, window: bool = true) -> void:
 		return
 	var vp := tree
 	if vp != null:
-		vp.root.msaa_3d = [Viewport.MSAA_DISABLED, Viewport.MSAA_2X, Viewport.MSAA_4X][clampi(int(d["msaa"]), 0, 2)]
+		GraphicsQuality.apply_viewport(vp.root)   # render scale + the msaa setting (off at LOW)
 	if not window:
 		return
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_ENABLED if bool(d["vsync"]) else DisplayServer.VSYNC_DISABLED)

@@ -48,9 +48,13 @@ const ALWAYS := 1 | (1 << 19)
 var preset := "day"
 var env: Environment
 var sun: DirectionalLight3D
+var quality := CityQuality.HIGH  ## local presentation (CityQuality): set_quality
 
 var _world: WorldEnvironment
 var _fills: Node3D
+var _deck_fills: Array = []      ## setup_decks: deck k -> its OmniLight3Ds (empty after setup(): one district)
+var _shown: Array = []           ## set_quality: deck k is drawn (true / false); empty: every deck
+var _active := 0                 ## set_quality: the active deck
 
 
 static func preset_ids() -> Array[String]:
@@ -105,7 +109,9 @@ func setup(ring: RingFrame, area: Rect2, ceiling: float, strip_x: PackedFloat32A
 func setup_decks(list: Array) -> void:
 	_clear_fills()
 	for d: Dictionary in list:
+		var before := _fills.get_child_count()
 		_hang(d["ring"], d["offset"], d["area"], d["ceiling"], d["strip_x"], d["reach"], ALWAYS | int(d["layer"]))
+		_deck_fills.append(_fills.get_children().slice(before))
 	apply(preset)
 
 
@@ -116,6 +122,7 @@ func light_layers(mask: int) -> void:
 
 
 func _clear_fills() -> void:
+	_deck_fills.clear()
 	for c in _fills.get_children():
 		_fills.remove_child(c)
 		c.queue_free()
@@ -162,3 +169,59 @@ func apply(id: String) -> void:
 	var strip := CityPalette.strip_material()
 	strip.emission = p["strip"]
 	strip.emission_energy_multiplier = p["strip_energy"]
+	_apply_quality()
+
+
+# --- Quality (CityQuality: local presentation) -----------------------------------------------------------------
+
+## Draw level q (CityQuality.LOW / MEDIUM / HIGH). `shown`: per deck of setup_decks, whether it is drawn (empty: all);
+## `active`: the deck the daylight is on. Fills of a deck not shown are hidden; the active deck keeps every
+## `fill_every`-th fill, other shown decks every `other_fill_every`-th; the ambient rises for the active deck's fills
+## switched off; shadows, splits, SSAO and glow follow the level. HIGH restores exactly what apply() sets.
+func set_quality(q: int, shown: Array = [], active: int = 0) -> void:
+	quality = CityQuality.clamp_level(q)
+	_shown = shown.duplicate()
+	_active = active
+	_apply_quality()
+
+
+## Omni fills switched on now (for tests and the perf probe).
+func fills_on() -> int:
+	var n := 0
+	for l: OmniLight3D in _fills.get_children():
+		if l.visible and not l.is_queued_for_deletion():
+			n += 1
+	return n
+
+
+func _apply_quality() -> void:
+	if not PRESETS.has(preset) or _fills == null:
+		return
+	var lv := CityQuality.level(quality)
+	var p: Dictionary = PRESETS[preset]
+	env.ssao_enabled = bool(lv["ssao"])
+	env.glow_enabled = bool(lv["glow"])
+	sun.shadow_enabled = bool(lv["sun_shadows"])
+	sun.directional_shadow_max_distance = float(lv["shadow_distance"])
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_4_SPLITS if int(lv["shadow_splits"]) >= 4 \
+			else DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	var groups: Array = _deck_fills
+	if groups.is_empty():
+		groups = [_fills.get_children()]       # one district (setup): all its fills are the active deck's
+	var active := _active if not _deck_fills.is_empty() else 0
+	var off_share := 0.0
+	for k in groups.size():
+		var shown := k >= _shown.size() or bool(_shown[k])
+		var every := int(lv["fill_every"]) if k == active else int(lv["other_fill_every"])
+		if not shown:
+			every = 0
+		var list: Array = groups[k]
+		var off := 0
+		for i in list.size():
+			var on := every > 0 and i % every == 0
+			(list[i] as OmniLight3D).visible = on
+			if not on:
+				off += 1
+		if k == active and not list.is_empty():
+			off_share = float(off) / float(list.size())
+	env.ambient_light_energy = float(p["ambient_energy"]) + float(lv["ambient_add"]) * float(p["fill_energy"]) * off_share

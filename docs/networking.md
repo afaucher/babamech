@@ -51,7 +51,8 @@ mission ends; mid-mission join is not built: cast's M6 seat handover is the mode
 ## Mission (co-op step 1)
 ```
 host -> crew     mission.launch {seed, mode, start_t, crew}  Session.start_mission(seed, mode): start_t = host_time() + 2.5 s
-client -> host   mission.ready  {sum}                   Session.report_mission_built(TestDrive.mission_checksum())
+client -> host   mission.loading {}                     Session.report_mission_loading(): right before the (blocking) build
+client -> host   mission.ready  {sum, ms}               Session.report_mission_built(TestDrive.mission_checksum(), build ms)
 host -> crew     mission.go     {start_at}              every remaining member reported the host's sum; start_at = +0.5 s
 host -> crew     mission.state  {state}                 the mission's progress changed (W6, below): Session.send_mission_state
 host -> crew     mission.end    {reason}                the host left the mission (Esc), or the outcome's hold ended: Session.end_mission()
@@ -90,6 +91,59 @@ host -> crew     mission.end    {reason}                the host left the missio
   come back); `test_net_stack` (2) / `test_net_stack_3` (3), scenario `tests/net_stack_case.gd`: same seed, mode and
   stack checksum everywhere, each mech in its entry slot on the entry deck's floor, no two overlapping, and
   `broadcast_event` heard once from each real sender; solo `test_stack_drive`.
+
+## Timeouts (who decides a member is gone)
+The session's own watchdogs decide; the transports' timeouts are wide so they never decide first.
+
+| What | Before | Now |
+|---|---|---|
+| ENet peer timeout (`ENetPacketPeer.set_timeout`, both sides, `_tune_enet` as soon as the peer exists) | ENet default: limit 32, min 5000 ms, max 30000 ms | limit 32, min 30000 ms, max 60000 ms (`ENET_TIMEOUT_*`) |
+| Steam connected timeout (`k_ESteamNetworkingConfig_TimeoutConnected` = 25, global, before the SteamMultiplayerPeer opens: `NetSteamLink.apply_timeouts`) | Steam default 10000 ms | 60000 ms (Steam answers keepalives on its own thread, so a blocked main thread alone doesn't trip it) |
+| Host drops a silent client | `CLIENT_SILENCE` 10 s | 10 s; while that member is loading (launch until its mission.ready): `Session.mission.load_allowance()` = load timeout + 2.5 + 5 s (52.5 s) |
+| Client ends a silent session | `HOST_SILENCE` 6 s, reason "The host left" | 6 s, reason `HOST_SILENT` "Lost the host (no answer)"; while loading (launch until mission.go): `load_allowance()`, reason `HOST_LOST_LOADING` "Lost the host while loading" |
+| Load barrier | `LOAD_TIMEOUT` 45 s after start_t, kick `LOAD_SLOW` | the same, overridable per machine: `Session.mission.load_timeout` (tests: 4 s) |
+| This machine's own stall | counted as the other side's silence | a frame longer than `STALL_GRACE` (0.5 s) moves every silence clock forward by the stall (`_pause_silence`; logged, telemetry note) |
+
+**Why** (LAN bug, UHD 620 client): `CityStack.build` blocked the laptop's main thread 7.76 s in one frame. No ENet
+service, so no acks; the host's reliable resends (events, roster) hit ENet's limit and its 5 s minimum, and the HOST's
+ENet dropped the client at ~5.8 s of silence (crew 2 -> 1). The host's ENet resets a timed-out peer silently, so the
+client, back from its stall, heard nothing and ended 6 s later with "The host left". Reproduced by
+`test_net_load_stall` with ENet's default timeouts (host: "c1 dropped: lost the link while loading").
+
+- **Stepped load (the game's crew mission in the stack):** `TestDrive._load_stepped` runs `CityStack.build_step(8 ms)`
+  once per frame ("Building the station... N%" in the middle of the screen; mechs not simulated), then sets up the
+  scene, then `AmbientLife.setup_step(8 ms)` once per frame, and only then reports `mission.ready` (so `mission.go` waits
+  for every machine's whole load). `TestDrive.loading` is true meanwhile (no input, no physics). Events that arrive
+  during the load are dispatched as usual: EnemySync pulls its manifest after setup, life replays what it heard while
+  setting up, and nothing gameplay is sent before `mission.go`. Measured here (desktop, headless): 143 chunks, longest
+  25 ms, 1.26 s of build. Crew TESTS load in `_ready` (`TestDrive.stepped_load = false`, set by NetTest) because they
+  check the scene two frames after adding it; `test_net_load_stall*` run the stepped load.
+- **Keep-alive inside a blocking load** (the unstepped path, and any long frame): `Session.service_transport()` polls
+  the transport (ENet acks and pings, Steam takes its messages) and flushes, WITHOUT dispatching: what arrives waits in
+  the peer's queue for the next SceneMultiplayer poll. The unstepped crew load builds the stack with `build_step(40 ms)`
+  chunks in one frame and services the link between chunks and setup steps.
+- **Kicks:** a member sent out (`Session.kick`: DESYNC, LOAD_SLOW) is disconnected `REFUSE_GRACE` after it is HEARD
+  again (so it has had the refusal; an ENet disconnect in the same receive batch would discard it), or `KICK_WAIT`
+  (30 s) at the latest. Refused joiners keep the plain 1 s grace.
+- **Reasons on screen:** a client's `Session.last_reason` (the menu shows it) is `LOAD_SLOW`, `DESYNC`,
+  `HOST_LOST_LOADING`, `HOST_SILENT` or `HOST_LEFT` (the host said bye or closed). The host's `Session.crew_note(text)`
+  ("c1 dropped: went silent while loading", "c1 dropped: lost the link while loading", "c1 dropped: was sent out:
+  Didn't load the mission in time") shows under the test drive's help line for 8 s and is a telemetry note.
+- Tests: `test_net_load_stall` (a client blocks its main thread 12 s in the mission load while the host keeps sending
+  reliable events: it lands in the mission, the crew stays 2), `test_net_load_stall_slow` (load timeout 4 s, the same
+  stall: kicked with LOAD_SLOW, both sides say why). Hook: `TestDrive.test_stall_ms` (client only).
+
+## LAN soak (bots, automation, [Flow] logs)
+Every transition prints one `[Flow] t=<host_time> peer=<id> <role> <what>: <detail>` line (`FlowLog.say`): session
+hosting / joined / refused / ended, crew joined / dropped, hangar entered, launch / launch received / relaunch, load
+start / done, checksum ok / mismatch, mission_go, first enemy contact, enemy killed, deck cleared, extraction reached,
+mission won, mission_ended, back in hangar. A hands-off two-mission run (scratch export, ENet):
+`host: --net-host --net-port P --bot --dev-fast-clear --dev-bot-travel --auto-launch 2 --auto-relaunch --auto-quit`,
+`client: --net-join 127.0.0.1:P --bot --dev-fast-clear --dev-bot-travel --auto-quit`. `--bot` = MissionBot
+(scripts/game/mission_bot.gd); DEV ONLY: `--dev-fast-clear` (enemies take 10x, on the machine deciding the hit: pass it to
+every instance), `--dev-bot-travel` (the bot jumps where its walk can't get it; logged "dev travel"). CrewAuto
+(scripts/ui/crew_auto.gd) launches when every client's "crew.hangar" heartbeat shows it back in the hangar. Verified
+2026-11-22, seeds 4 (ramps) and 9 (lifts): two full missions each, both instances quit. Test: `test_net_bot_mission`.
 
 ## Mission progress (W6, win side)
 ```

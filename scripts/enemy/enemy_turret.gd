@@ -26,6 +26,13 @@ func net_fields() -> Dictionary:
 	return f
 
 
+func _gun_mesh_name() -> String:
+	match enemy_type:
+		"turret_sniper": return "turret_sniper_gun"
+		"turret_missile": return "turret_missile_gun"
+		_: return "turret_gun"
+
+
 func _build_visuals() -> void:
 	_base_mi = EnemyMeshes.instance("turret_base")
 	add_child(_base_mi)
@@ -37,7 +44,7 @@ func _build_visuals() -> void:
 	_gun_pivot = Node3D.new()
 	_gun_pivot.name = "GunPivot"
 	_turret_pivot.add_child(_gun_pivot)
-	_gun_mi = EnemyMeshes.instance("turret_gun")
+	_gun_mi = EnemyMeshes.instance(_gun_mesh_name())
 	_gun_pivot.add_child(_gun_mi)
 	_register_comp_mesh("gun", _gun_mi)
 	_wreck_mi = EnemyMeshes.instance("turret_gun_wreck")
@@ -47,7 +54,13 @@ func _build_visuals() -> void:
 
 func muzzle_world(_weapon_id: String = "") -> Vector3:
 	if _gun_pivot != null and _gun_pivot.is_inside_tree():
-		return _gun_pivot.global_transform * Vector3(_barrel_side * 0.78, 1.05, -3.86)
+		match enemy_type:
+			"turret_sniper":
+				return _gun_pivot.global_transform * Vector3(0.0, 1.05, -5.48)
+			"turret_missile":
+				return _gun_pivot.global_transform * Vector3(_barrel_side * 1.95, 1.45, -1.60)
+			_:
+				return _gun_pivot.global_transform * Vector3(_barrel_side * 0.78, 1.05, -3.86)
 	return super.muzzle_world()
 
 
@@ -102,7 +115,7 @@ func _apply_turret_pose() -> void:
 func _spawn_death_debris(_cause: String) -> void:
 	if _gun_mi != null:
 		var gxf := _gun_mi.global_transform if _gun_mi.is_inside_tree() else Transform3D(global_basis, _world_pos() + up * 2.2)
-		_pop_part("turret_gun", gxf, 9.5, 12.8, 4.5, 7.5, 4.2, false)
+		_pop_part(_gun_mesh_name(), gxf, 9.5, 12.8, 4.5, 7.5, 4.2, false)
 	_pop_plates(_world_pos() + up * 2.6, 2, 6.5, 10.5, 4.0, 8.0)
 
 

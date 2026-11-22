@@ -28,6 +28,11 @@ const RELAY_DELAY := 0.45
 const NO_LOS_MORTAR_TIME := 2.5
 const VEL_SMOOTH_RATE := 3.5      ## 1/s smoothing for target velocity lead (tracks steady walks, lags sharp dodges)
 const MAX_LEAD_TIME := 2.0        ## s max velocity lead lookahead
+const COVER_PATH_INTERVAL := 1.2  ## s throttle on 2D cover-weighted A* recompute (frame budget)
+const COVER_PEEK_MIN := 3.2       ## s min bounding run before peeking to refresh LKP
+const COVER_PEEK_MAX := 4.5       ## s max bounding run before peeking
+const COVER_PEEK_DUR := 0.9       ## s max peek exposure before snapping back to bound
+const COVER_PEEK_STEP := 4.5      ## m lateral step out toward an open sightline edge
 
 signal alerted(enemy: EnemyBase, target_id: String)
 signal comms_relayed(enemy: EnemyBase)
@@ -87,6 +92,13 @@ var _path_timer := 0.0
 var _flank_sign := 1.0
 var _last_air_fall := 0.0
 var _grounded_now := true
+var _cover_mode := ""              ## "" | "bound" | "peek" (host-private inside STATE_FLANK)
+var _cover_peek_cd := 0.0
+var _cover_peek_left := 0.0
+var _cover_peek_goal := Vector3.ZERO
+var _cover_path_timer := 0.0
+var _zigzag_t := 0.0
+var _peek_count := 0               ## telemetry / tests: completed or started cover peeks
 
 # Continuous read-only telemetry for Audio loops
 var move_speed_ratio := 0.0
@@ -144,7 +156,9 @@ func net_fields() -> Dictionary:
 		"_no_los_time": Net.PRIVATE, "_has_slot": Net.PRIVATE, "_has_los": Net.PRIVATE,
 		"_patrol_points": Net.SPAWN, "_patrol_idx": Net.PRIVATE, "_path_points": Net.PRIVATE,
 		"_path_timer": Net.PRIVATE, "_flank_sign": Net.SPAWN, "_last_air_fall": Net.PRIVATE,
-		"_grounded_now": Net.PRIVATE,
+		"_grounded_now": Net.PRIVATE, "_cover_mode": Net.PRIVATE, "_cover_peek_cd": Net.PRIVATE,
+		"_cover_peek_left": Net.PRIVATE, "_cover_peek_goal": Net.PRIVATE, "_cover_path_timer": Net.PRIVATE,
+		"_zigzag_t": Net.PRIVATE, "_peek_count": Net.PRIVATE,
 		"move_speed_ratio": Net.LOCAL, "turret_slew_speed": Net.LOCAL, "heat_ratio": Net.LOCAL,
 		"_cfg": Net.LOCAL, "_comp_meta": Net.LOCAL, "_comp_nodes": Net.LOCAL, "_flash_timers": Net.LOCAL,
 		"_telegraph_fx": Net.LOCAL, "_status_bar": Net.LOCAL, "_rng": Net.PRIVATE,
@@ -259,7 +273,11 @@ func muzzle_world(_weapon_id: String = "") -> Vector3:
 func telegraph_orb_radius(weapon_id: String) -> float:
 	match weapon_id:
 		"enemy_siege_shell": return 1.35
+		"enemy_beacon": return 1.20
+		"enemy_rockets": return 1.15
 		"enemy_mortar": return 0.95
+		"enemy_lance": return 0.95
+		"enemy_scatter": return 0.88
 		"enemy_bolter": return 0.85
 		_: return 0.62
 
@@ -368,8 +386,8 @@ func _kill(cause: String) -> void:
 	_dead = true
 	_dead_time = 0.0
 	_wreck_cooled = false
-	ai_state = STATE_DEAD
 	_cancel_telegraph("destroyed")
+	ai_state = STATE_DEAD
 	_release_slot()
 	for k: String in hp:
 		hp[k] = 0.0
@@ -885,6 +903,7 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 	if target == null:
 		_has_los = false
 		_no_los_time = 0.0
+		_cover_mode = ""
 		_cancel_telegraph("lost_los")
 		_release_slot()
 		var board_entry: Dictionary = _board_entry() if is_alerted() else {}
@@ -966,6 +985,21 @@ func receive_squad_alert(target: CombatTarget) -> void:
 		return
 	_relayed = true
 	_enter_alert(target, "relay")
+
+
+## Called by EnemySquad's hearing (host / solo only) when player fire passed, landed or hit a squadmate near this enemy:
+## like a damage alert (_on_damaged_alert), it alerts toward `shooter` with "spotted" (so its own 0.45 s relay runs), and
+## it puts the shooter's position on the squad board as the heard position, so the AI turns toward it (turret slew /
+## hull turn / search) even with no line of sight. Only live AI hears.
+func hear_fire(shooter: CombatTarget) -> void:
+	if _dead or puppet or is_alerted() or ai_mode != "live" or shooter == null or not is_instance_valid(shooter):
+		return
+	_last_target_ref = shooter
+	_last_seen_pos = _target_aim_center(shooter)
+	_aim_point = _last_seen_pos
+	if squad != null and squad.has_method("report_sighting"):
+		squad.report_sighting(self, shooter, _last_seen_pos)
+	_enter_alert(shooter, "spotted")
 
 
 func _fire_comms_relay() -> void:
@@ -1094,11 +1128,28 @@ func _fire_one_round(st: Dictionary) -> void:
 	var aim := _locked_aim
 	# Static aim kick throws turret shots visibly off target.
 	var extra_spread := float(st.get("spread", 0.0)) + aim_kick
-	var rec := Combat.fire_record(target_id, 1, _active_weapon, _active_weapon, muz, aim, world.now, _shot_index, extra_spread)
-	rec["enemy"] = true
-	rec["team"] = team
-	_shot_index += 1
-	world.fire(rec)
+	var pellets := maxi(int(st.get("pellets", 1)), 1)
+	if pellets <= 1:
+		var rec := Combat.fire_record(target_id, 1, _active_weapon, _active_weapon, muz, aim, world.now, _shot_index, extra_spread)
+		rec["enemy"] = true
+		rec["team"] = team
+		_shot_index += 1
+		world.fire(rec)
+	else:
+		# Multi-pellet horizontal fan (e.g., enemy_scatter 5-pellet 7.5 deg spread): each pellet replicates via world.fire.
+		var fan_deg := float(st.get("fan_deg", 7.5))
+		var diff := aim - muz
+		var dist := maxf(diff.length(), 1.0)
+		var base_dir := diff / dist
+		for pi in pellets:
+			var frac := (float(pi) / float(pellets - 1)) - 0.5
+			var ang := deg_to_rad(fan_deg * frac)
+			var p_aim := muz + base_dir.rotated(up, ang) * dist
+			var rec := Combat.fire_record(target_id, 1, _active_weapon, _active_weapon, muz, p_aim, world.now, _shot_index, extra_spread)
+			rec["enemy"] = true
+			rec["team"] = team
+			_shot_index += 1
+			world.fire(rec)
 	weapon_fired.emit(self, _active_weapon, muz, aim)
 	_emit_squad("weapon_fired", {"id": target_id, "weapon": _active_weapon, "pos": muz, "aim_point": aim})
 
@@ -1236,6 +1287,13 @@ func _step_engage_movement(dt: float, target_pos: Vector3, space: PhysicsDirectS
 		return
 	var pos := _world_pos()
 	var dist := pos.distance_to(target_pos)
+	var engage_r := EnemyCatalog.engage_range(enemy_type)
+	# Phase C Cover-Bounding (docs/design/enemy-tactics-and-drones.md §4): mobile ground units outside their effective
+	# weapon range advance via occluded side streets with periodic short peeks to refresh LKP instead of jogging down open lanes.
+	if dist > engage_r or (_cover_mode != "" and dist > engage_r * 0.95):
+		_step_cover_bound(dt, pos, target_pos, engage_r, base_spd, space)
+		return
+	_cover_mode = ""
 	var pref := float(_cfg.get("preferred_range", 45.0))
 	var min_r := float(_cfg.get("min_range", 16.0))
 	if not _has_los:
@@ -1251,8 +1309,8 @@ func _step_engage_movement(dt: float, target_pos: Vector3, space: PhysicsDirectS
 		away -= up * away.dot(up)
 		var dest := pos + away.normalized() * 14.0
 		_steer_toward(dest, base_spd * 0.8 * speed_scale * _speed_mult, dt, space)
-	elif enemy_type == "strider":
-		# Light skirmishers orbit/flank laterally instead of standing still in the street.
+	elif enemy_type.begins_with("strider"):
+		# Light skirmishers & breachers orbit/flank laterally instead of standing still in the street.
 		ai_state = STATE_FLANK
 		var to_t := target_pos - pos
 		to_t -= up * to_t.dot(up)
@@ -1262,6 +1320,109 @@ func _step_engage_movement(dt: float, target_pos: Vector3, space: PhysicsDirectS
 	else:
 		ai_state = STATE_ENGAGE
 		_align_to_ring()
+
+
+func _step_cover_bound(dt: float, pos: Vector3, target_pos: Vector3, engage_r: float, base_spd: float,
+		space: PhysicsDirectSpaceState3D) -> void:
+	ai_state = STATE_FLANK
+	var flank_spd := float(_cfg.get("flank_speed", base_spd)) * speed_scale * _speed_mult
+	if _cover_mode == "":
+		_cover_mode = "bound"
+		_cover_peek_cd = _rng.randf_range(COVER_PEEK_MIN, COVER_PEEK_MAX)
+		_cover_path_timer = 0.0
+	if _cover_mode == "peek":
+		if _has_los:
+			# Real physics LOS reacquired target: snap back to BOUND immediately with fresh LKP!
+			_cover_mode = "bound"
+			_cover_peek_cd = _rng.randf_range(COVER_PEEK_MIN, COVER_PEEK_MAX)
+			_cover_path_timer = 0.0
+			_path_points.clear()
+		else:
+			_cover_peek_left -= dt
+			if _cover_peek_left <= 0.0:
+				_cover_mode = "bound"
+				_cover_peek_cd = _rng.randf_range(COVER_PEEK_MIN, COVER_PEEK_MAX)
+				_cover_path_timer = 0.0
+			else:
+				_steer_toward(_cover_peek_goal, base_spd * 0.85 * speed_scale * _speed_mult, dt, space)
+				return
+	# BOUND mode: sprint along cover-weighted road graph, peeking periodically if LOS has gone stale.
+	_cover_peek_cd -= dt
+	if _cover_peek_cd <= 0.0 and not _has_los and _no_los_time >= 2.5:
+		_cover_mode = "peek"
+		_cover_peek_left = COVER_PEEK_DUR
+		_peek_count += 1
+		_cover_peek_goal = _pick_peek_point(pos, target_pos, space)
+		_steer_toward(_cover_peek_goal, base_spd * 0.85 * speed_scale * _speed_mult, dt, space)
+		return
+	_move_along_cover_plan(target_pos, flank_spd, engage_r, dt, space)
+
+
+func _move_along_cover_plan(goal_w: Vector3, spd: float, engage_r: float, dt: float,
+		space: PhysicsDirectSpaceState3D) -> void:
+	_cover_path_timer -= dt
+	if _cover_path_timer <= 0.0 and squad != null and squad.has_method("find_cover_path"):
+		_cover_path_timer = COVER_PATH_INTERVAL
+		var cur_arc := _world_to_arc2(_world_pos())
+		var goal_arc := _world_to_arc2(goal_w)
+		_path_points = squad.find_cover_path(cur_arc, goal_arc, goal_arc, spawn_deck, engage_r)
+	var steer_goal := Vector3.ZERO
+	var has_wp := false
+	while not _path_points.is_empty():
+		var wp := _arc_to_world_pos(_path_points[0])
+		if _world_pos().distance_to(wp) < 6.0:
+			_path_points.pop_front()
+		else:
+			steer_goal = wp
+			has_wp = true
+			break
+	if not has_wp:
+		# Open-ground / flat-arena fallback: lateral zigzag approach so flankers never jog straight down fire lanes.
+		_zigzag_t += dt
+		if _zigzag_t >= 2.4:
+			_zigzag_t = 0.0
+			_flank_sign = -_flank_sign
+		var pos := _world_pos()
+		var to_t := goal_w - pos
+		to_t -= up * to_t.dot(up)
+		if to_t.length_squared() > 1e-4:
+			var fwd := to_t.normalized()
+			var side := fwd.cross(up) * _flank_sign
+			steer_goal = pos + (fwd * 0.72 + side * 0.69).normalized() * 14.0
+		else:
+			steer_goal = goal_w
+	_steer_toward(steer_goal, spd, dt, space)
+
+
+func _pick_peek_point(pos: Vector3, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> Vector3:
+	var to_t := target_pos - pos
+	to_t -= up * to_t.dot(up)
+	if to_t.length_squared() < 1e-4:
+		return pos
+	var side := to_t.normalized().cross(up)
+	var cands: Array[Vector3] = [
+		pos + side * _flank_sign * COVER_PEEK_STEP,
+		pos - side * _flank_sign * COVER_PEEK_STEP,
+	]
+	if not _path_points.is_empty():
+		var nxt := _arc_to_world_pos(_path_points[0])
+		if pos.distance_to(nxt) <= 16.0:
+			cands.append(nxt)
+	var eye_o := pos + up * probe_height
+	var t_arc := _world_to_arc2(target_pos)
+	var fallback := pos
+	var has_fallback := false
+	for cand: Vector3 in cands:
+		if space != null and world != null and world.use_physics:
+			if _ray_blocked(space, eye_o, cand + up * probe_height):
+				continue
+		if not has_fallback:
+			fallback = cand
+			has_fallback = true
+		if squad != null and squad.has_method("arc_segment_occluded"):
+			if not squad.arc_segment_occluded(_world_to_arc2(cand), t_arc, spawn_deck):
+				return cand
+	return fallback
 
 
 func _move_along_plan(goal_w: Vector3, spd: float, dt: float, space: PhysicsDirectSpaceState3D) -> void:
@@ -1420,7 +1581,7 @@ func debug_info() -> Dictionary:
 	return {
 		"id": target_id, "type": enemy_type, "state": ai_state, "hp": total_hp(), "core_hp": float(hp.get(core_component(), 0.0)),
 		"heat": heat.value, "has_los": _has_los, "has_slot": _has_slot, "aim": _aim_point, "locked_aim": _locked_aim,
-		"path": _path_points, "dead": _dead,
+		"path": _path_points, "dead": _dead, "cover_mode": _cover_mode, "peek_count": _peek_count,
 	}
 
 
@@ -1433,6 +1594,13 @@ func reset_enemy() -> void:
 	_relay_timer = -1.0
 	_no_los_time = 0.0
 	_cooldown = 0.0
+	_cover_mode = ""
+	_cover_peek_cd = 0.0
+	_cover_peek_left = 0.0
+	_cover_peek_goal = Vector3.ZERO
+	_cover_path_timer = 0.0
+	_zigzag_t = 0.0
+	_peek_count = 0
 	_target_vel = Vector3.ZERO
 	_has_prev_pos = false
 	_last_seen_pos = Vector3.ZERO

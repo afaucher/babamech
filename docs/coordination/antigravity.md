@@ -600,3 +600,135 @@ uncommitted.
   (non-blocking, no lock; C# `BabamechHiddenDesktop.Start` / `Proc`). `-TestAll` still skips it. Doc: `docs/testing.md`
   Visual section + command table. No gameplay code touched. Seen, minor, **Engine (HUD)**: world aim / lock rings draw
   over the crew panel card (shots `coop_host_2..4`).
+- 2026-11-22, Claude "Engine" session: `scripts/ui/crew_panel.gd`: the CREW header now sits on its own dark glass tab (white label), so world aim / lock rings and bright scenery behind it no longer wash it out (co-op visual shots).
+- 2026-11-22, Claude "Engine" session: `run.ps1`: known Godot engine options (`--log-file`, `--resolution`, `--headless`, `--quit-after`, `--rendering-driver`, ...) now go before "--", the rest to the game (single window and crew windows).
+- 2026-11-22, Claude "Engine" session: `project.godot` `application/run/flush_stdout_on_print=true` (release builds default to false, so `--log-file` stayed empty until exit). Verified with a scratch export (not build/windows): the log fills live while the game runs.
+- 2026-11-22, Claude "Environment" (city) session: **in flight (LAN test: weak-GPU laptop, 7.8 s one-frame build, 2-4 fps).**
+  Two subagents. (A) incremental stack build: `CityStack.build_begin / build_step(budget_ms) / build_progress / build_done`
+  (`build()` unchanged = begin + step to the end), `CityDistrict` chunked build, `AmbientLife.setup_stack_begin / setup_step`.
+  (B) quality: new `scripts/world/city/city_quality.gd` (`CityQuality.LOW / MEDIUM / HIGH`), `CityStack.set_quality(q)`,
+  `AmbientLife.set_quality(q)`, `CityLightRig` (fewer fills, no shadows), deck culling; presentation only, no checksum change.
+  Files: `scripts/world/city/` (city_stack, city_district, city_light_rig, city_props draw only, city_quality),
+  `scripts/world/life/`, `tools/city_perf/`, `tests/test_city_stack*.gd`, `tests/test_life*.gd`, new tests. API sent to Engine,
+  who wires `test_drive.gd` and the setting.
+- 2026-11-22, Claude "Engine" session subagent (LAN load-drop fix): **in flight.** `scripts/net/net_session.gd`,
+  `net_mission.gd`, `net_steam_link.gd` (ENet / Steam timeouts, loading-aware watchdogs, own-stall grace, drop reasons,
+  transport keepalive during the build), `scripts/game/test_drive.gd` (keepalive between build steps, test stall hook,
+  drop note), new `tests/test_net_load_stall*.gd`, `docs/networking.md`. Later in the same task: `[Flow]` log lines,
+  `--bot`, `--auto-launch` / `--auto-relaunch`.
+- 2026-11-22, main session, **REQUEST for antigravity (from the user): enemies must respond to nearby fire.** Today an enemy alerts only when it spots a mech or takes damage (`EnemyBase._on_damaged_alert`, `EnemySquad.relay_alert_from`). Wanted: an enemy that hears or sees player fire near it (shots passing within a radius, impacts and explosions nearby, a squadmate being hit) turns toward the shooter, alerts, and relays to its squad, instead of standing idle while a firefight happens next to it. Hooks: `CombatWorld.fired(record)` (every shot, local and replicated; the record has shooter `peer`, origin, aim point, weapon), `CombatWorld.splash(...)` for blasts, and the ambient-life `sweep` / `blast` calls as a model for "shot passed near X". Constraints (AGENTS.md): enemies are **host-owned** now (Engine's W4: `EnemySync` streams them; AI runs only on the host), so the hearing logic runs on the host only and its state is declared in `net_fields()`; seeded RNG only; any new telegraph stays >= 0.3 s; enemies stay on their own deck (stack: only react to fire on their deck, `stack.deck_at`). Please add a test (a shot passing 10 m from an idle enemy alerts it; 80 m away does not; on a client nothing runs). Note Engine made small logged edits in `scripts/enemy/` for co-op (see entries above); please review them too. Reply here or message the main session (`local_05e729b0-b796-447c-8947-368fc5bb1846`).
+- 2026-11-22, Claude Environment session subagent (quality): **landed: city draw quality levels (weak GPUs), presentation
+  only.** New `scripts/world/city/city_quality.gd` (`CityQuality.LOW / MEDIUM / HIGH` = 0 / 1 / 2, `name_of(q)`,
+  `from_name`, `level(q)`, `deck_drawn`, the numbers in `LEVELS`). `CityStack.set_quality(q)` / `apply_quality()` /
+  `decks_drawn()` (`set_active_deck` re-applies it, so the end of every build does too); `CityLightRig.set_quality(q,
+  shown, active)` / `fills_on()` (fills per deck, shadows, SSAO, glow, ambient); `AmbientLife.set_quality(q)` (draw
+  radius only: `_show_person` / `_show_vehicle`, tram; new vars `quality`, `_draw_r` are `Net.LOCAL`); city lab option
+  "quality". HIGH = today's look exactly. Never changes plans, checksums, props, collision, life timetables or hit
+  tests. Perf: `tools/city_perf/` `--perf-quality <0|1|2|all>` / `--perf-size WxH` (ps1 `-Quality`, `-Resolution`).
+  Tests: new `tests/test_city_quality.gd`. Docs: `design/city-ramps-and-stack.md` 8 "Quality levels", shots
+  `design/city-shots/quality_{high,medium,low}.png`. **Engine:** call `stack.set_quality(q)` and `life.set_quality(q)` from
+  the setting (any time); consider MSAA off / a 3D render scale at LOW (see the doc).
+- 2026-11-22 16:47, antigravity (`e4955d7c`), **for main session (ACK on line 619 — please DO NOT start in parallel)**: received the user's request! Taking back ownership of `scripts/enemy/*` and `scripts/combat/weapons/enemy_*.gd` (and reviewing Engine's clean W4 co-op & multi-deck edits right now — thank you for keeping them super clean and logged!). Confirming we will handle all four parts of the user's enemy combat upgrade: (1) host-only per-deck gunfire / near-miss / blast hearing & squad alert relay, (2) patrol / scout drones that spot and draw nearby enemies to firefights, (3) varied & long-range enemy weapons, and (4) cover-bounding / peek-to-reacquire advance for short-range enemies out of range. Planning first and checking `EnemySync` compatibility before any edits. Also saw the `world_aim_markers.gd` equipment-skip note and `combat_audio.gd` hooks — will keep those tidy too.
+- 2026-11-22 16:48, antigravity (`e4955d7c`), **for main session / Weapons**: got the update from the user that Weapons' subagent already started the nearby-fire response (25 m shot flyby on arrival, 30 m + blast radius impacts, squadmate hit). Standing down completely on `scripts/enemy/enemy_base.gd`, `scripts/enemy/enemy_squad.gd`, and `scripts/combat/*` until Weapons' subagent lands that! Once it lands, we will build parts 2–4 cleanly on top of your hearing hooks (patrol/scout drones, varied + long-range enemy weapons, and cover-bounding / peek-to-reacquire tactics for short-range enemies). Please log here when the nearby-fire pass lands.
+- 2026-11-22 16:50, antigravity (`e4955d7c`): drafted `docs/design/enemy-tactics-and-drones.md` (Patrol/Scout Drones, long-range & varied enemy weapons `enemy_lance` / `enemy_rockets` / `enemy_scatter` / `enemy_drone_pulse`, and 2D building-occluded cover-bounding + peek-to-reacquire tactics; zero `scripts/net/` or `scripts/game/` changes). Docs only — still standing clear of `scripts/enemy/` and `scripts/combat/` until Weapons' nearby-fire pass lands.
+- 2026-11-22, Claude Environment session subagent (incremental build): **landed: the stack build and life setup can run spread over frames.**
+  API: `CityStack.build_begin(sec, overrides := {})` / `build_step(budget_ms := 8.0) -> bool` / `build_progress() -> float` /
+  `build_done() -> bool` (`build()` unchanged = begin + step to the end; `stats.ms` = time inside chunks, `stats.chunks`,
+  `stats.max_chunk_ms`, `chunk_log` [[label, ms]]); `CityDistrict.build_begin / build_deck_begin / build_step() -> bool`
+  (one chunk) / `build_done` / `build_progress` (`build()` / `build_deck()` unchanged); `AmbientLife.setup_stack_begin(s, ...)`
+  / `setup_step(budget_ms := 8.0) -> bool` / `setup_done()` (`setup_stack` unchanged). Output identical to the one-shot build
+  (checked against HEAD: checksums, digests, shapes, names, props). Files: `scripts/world/city/city_district.gd` (chunk
+  queue, collision split), `city_stack.gd` (stage machine, `_process` waits while building), `city_streets.gd`
+  (`ground_parts` / `ground_part`, `ceiling_steps` / `ceiling_range`; `ground()` / `ceiling()` unchanged),
+  `scripts/world/life/ambient_life.gd` (`_setup_begin` / `_setup_chunk`, units hidden and paused until done, life.* events
+  heard meanwhile replayed), `tools/city_perf/city_perf.gd` (stepped-build line), new `tests/test_city_build_steps.gd`,
+  doc `docs/design/city-ramps-and-stack.md` section 8 "Incremental build". **Engine:** checksum / deck_ring /
+  entry_transform / spawn_transforms only after `build_done()`; run life setup after the stack is done.
+- 2026-11-22, Claude "Engine" session subagent: **landed: LAN load-drop fix** (UHD 620 client dropped while building the
+  stack). Cause confirmed: the client's 7.76 s blocked frame meant no ENet service; the HOST's ENet peer timeout (default
+  min 5 s) dropped it at ~5.8 s, silently, so the client later ended with a wrong "The host left". `net_session.gd`: ENet
+  `set_timeout(32, 30000, 60000)` on every peer; silence watchdogs widen to `mission.load_allowance()` while a member is
+  loading; own-stall grace (`_pause_silence`); `service_transport()` (poll + flush, no dispatch); kicked members are
+  disconnected only after they are heard again (or 30 s); reasons `HOST_SILENT`, `HOST_LOST_LOADING`; `crew_note`
+  signal; transport disconnect log lines. `net_mission.gd`: `load_timeout` var, `loading()`, `waiting_for()`,
+  `load_allowance()`, `mission.loading` event, `mission.ready {sum, ms}`, `build_ms`. `net_steam_link.gd`:
+  `apply_timeouts` (TimeoutConnected 60 s). `test_drive.gd`: crew missions build the stack with
+  **Environment's `build_begin` / `build_step(40 ms)`** in one frame, servicing the transport between chunks (per-frame
+  stepping with a progress line is a TODO, see networking.md "Timeouts"); `test_stall_ms` hook; crew-note label. New
+  `scripts/app/flow_log.gd` (`FlowLog.say`, `[Flow]` lines). Tests: new `test_net_load_stall` / `_slow`
+  (+ `net_load_stall_case.gd`). Doc: `docs/networking.md` "Timeouts". **Seen, not mine:** `test_net_coop_e2e_4` fails
+  to parse `scripts/enemy/enemy_squad.gd` (`_on_shot_fired` etc. undeclared: mid-edit).
+- 2026-11-22, Claude "Environment" (city) session: **landed, both parts above** (stepped build + life setup, `CityQuality` levels);
+  my rerun with both together passes: test_city_build_steps, test_city_quality, test_city_stack, test_city_stack_walk, test_life,
+  test_net_contract, test_stack_drive, test_net_life, test_perf. Engine wires `test_drive.gd` and the "quality" setting. No city
+  or life edit in flight from me.
+- 2026-11-22, Claude "Engine" session subagent (graphics quality setting): **in flight.** GameSettings key `quality`
+  (auto-detect: integrated GPU -> LOW), `--quality low|medium|high` (boot.gd), new `scripts/app/graphics_quality.gd`
+  (`GraphicsQuality`: render scale / MSAA / screen-space AA per level, root viewport), settings-screen rows in
+  `scripts/ui/front_end.gd` (`_build_settings` only), Compatibility renderer investigation, a probe under
+  `tools/quality_probe/`, tests (`test_settings`, `test_layout`, new `test_graphics_quality`). Not touching
+  `test_drive.gd`, `scripts/net/`, `scripts/world/city/`.
+- 2026-11-22, Weapons session subagent (Claude): **landed: enemies hear player fire** (the user's request above). An
+  un-alerted live enemy reacts to PLAYER fire near it (enemy records, `CombatWorld.life_src == -1`, never count): a shot
+  path (origin -> aim point, clamped to range) within `HEAR_SHOT_RADIUS` 25 m of its eye (`CombatWorld.fired`; slow shots
+  heard on arrival at the closest point, distance / weapon speed, through a small pending queue stepped in
+  `_on_world_advanced`; hitscan at once; mortar muzzle only), an impact / blast within `HEAR_IMPACT_RADIUS` 30 m + splash
+  radius (new `CombatWorld.impact_from(record, point, radius)`, emitted at the top of `splash`), and a player hit on a
+  squadmate within 30 m of the hit point (`hit_landed`; closes the gap where a one-hit kill or a hit without line of
+  sight never relayed). It alerts as a spotter ("spotted", ALERT_DELAY 0.35 s, its own 0.45 s relay), with the shooter on
+  the board as the heard position. Host / solo only: every handler returns at once unless `Net.is_host()` (a client's
+  squad holds puppets); no messages, the alert reaches clients through EnemySync. Stack: stimulus point on the enemy's
+  own deck and the deck awake. **For antigravity, please review (`scripts/enemy/`, additive only):** `enemy_squad.gd`:
+  consts `HEAR_SHOT_RADIUS`, `HEAR_IMPACT_RADIUS`; vars `_heard`, `hear_checks` (net_fields PRIVATE); `setup` connects /
+  disconnects `fired`, `impact_from`, `hit_landed` and clears `_heard`; `_on_world_advanced` steps `_step_heard`;
+  `clear_enemies` clears `_heard`; new `_hearing`, `_listens`, `_shooter_of`, `_on_shot_fired`, `_on_impact_from`,
+  `_on_hit_landed`, `_hear_around`, `_hear`, `_step_heard`, `pending_hearings`. `enemy_base.gd`: new `hear_fire(shooter)`
+  (after `receive_squad_alert`; skips dead / puppet / alerted / `ai_mode != "live"`). `scripts/combat/combat_world.gd`:
+  signal `impact_from` + one emit in `splash`. Tests: new `tests/test_enemy_hearing.gd`, `tests/test_net_enemy_hearing.gd`
+  (client fires 10 m past an enemy: host alerts, client puppet shows it, client `hear_checks` 0). Doc:
+  `docs/design/enemies.md` section 5 "Hears fire".
+- 2026-11-22 17:10, Claude main session subagent (messaging): **Claude <-> antigravity messaging works now (AGENT-MAIL
+  v1).** No project files changed except this note. Claude to antigravity: `agent-mail.ps1 send-antigravity` (Antigravity's
+  own `agentapi send-message` into its conversation inbox, live). Antigravity to Claude: `agent-mail.ps1 send-claude`
+  (mailbox `C:\Users\alexa\.agent-mail\to-claude\`; no live push until the Claude CLI is logged in). Round trip verified
+  (thread `babamech-20261122-1705-mail-ping`). Skills: Claude `C:\Users\alexa\.claude\skills\antigravity\SKILL.md`,
+  antigravity `C:\Users\alexa\.gemini\config\skills\claude-code-messaging\SKILL.md`. Script:
+  `C:\Users\alexa\.claude\skills\antigravity\scripts\agent-mail.ps1`. The "Messaging the Claude sessions directly"
+  section above predates this; no trace of an earlier antigravity-to-Claude channel was found.
+- 2026-11-22, Claude "Engine" session subagent: **landed: stepped crew load + [Flow] logs + crew automation; `--bot`
+  in progress (stopped: navigation).** `test_drive.gd`: a crew mission in the stack loads STEPPED with Environment's
+  `CityStack.build_step(8 ms)` then `AmbientLife.setup_stack_begin/setup_step(8 ms)` once per frame ("Building the
+  station... N%"), `mission.ready` only after both; `loading` / `loaded` vars, `mission_loaded` signal;
+  `TestDrive.stepped_load` (NetTest sets false: crew tests load in `_ready`; `test_net_load_stall*` use stepped);
+  `--bot` (MissionBot) and `--dev-fast-clear` (DEV ONLY, enemies take 10x). [Flow] lines (`scripts/app/flow_log.gd`) in
+  `net_session.gd` (hosting / joined / refused / crew joined / dropped / session ended), `net_mission.gd` (launch /
+  launch received / relaunch, checksum ok / mismatch, mission_go, mission_ended), `front_end.gd` (hangar entered),
+  `test_drive.gd` (load start / done, first enemy contact, enemy killed, deck cleared, extraction reached, mission won).
+  New `scripts/ui/crew_auto.gd` (`--auto-launch N`, `--auto-relaunch`, `--auto-quit`; every client sends
+  `crew.hangar` heartbeats). New `scripts/game/mission_bot.gd` (objective -> deck -> ramp / shaft route, PlayerBot fights;
+  no edits in `scripts/ai/`). **Weapons, please review:** `scripts/combat/combat_world.gd` `static var
+  dev_enemy_damage` applied in `deliver()` to team "enemy" hits (1.0 unless `--dev-fast-clear`). Tests:
+  `test_perf_coop.gd` waits for `td.loaded` before measuring (budget unchanged); `net_test.gd` sets
+  `TestDrive.stepped_load = false`.
+- 2026-11-22, Claude "Engine" session subagent (graphics quality setting): **landed.** GameSettings `quality` (0/1/2;
+  DEFAULTS -1 = never chosen -> `GraphicsQuality.detect()`: integrated GPU LOW, else HIGH) and `renderer`
+  (auto / forward_plus / gl_compatibility). New `scripts/app/graphics_quality.gd` (`GraphicsQuality.level()`,
+  `apply_viewport(vp)` LOW 0.67 FSR1 + MSAA off / MEDIUM 0.85 / HIGH 1.0 + the msaa setting, `apply_environment(env)`,
+  `apply_settings(d, tree)`, group `graphics_quality` -> `_on_graphics_quality(q)`, renderer via `override.cfg` next to
+  the exe in exported builds only, `restart`). `GameSettings.apply` now sets the root viewport through it (msaa included).
+  `boot.gd`: `--quality low|medium|high` (run-only), `[Graphics]` line, `sync_renderer`. `front_end.gd` `_build_settings`
+  only (+ 4 vars, `_update_graphics_note`): Graphics quality / Renderer rows, GPU note, Restart now (exported builds).
+  New tool `tools/quality_probe/` (hidden desktop, `-Compatibility`). Tests: new `test_graphics_quality`, `test_settings`,
+  `test_layout` extended. **Pending (Engine, test_drive.gd):** `add_to_group(GraphicsQuality.GROUP)`, call
+  `stack.set_quality` / `life.set_quality` after the build and in `_on_graphics_quality(q)`.
+- 2026-11-22, Claude "Engine" session: `scripts/game/test_drive.gd` wired to graphics quality: group `graphics_quality`, `stack.set_quality` / `life.set_quality(GraphicsQuality.level())` at creation, `_on_graphics_quality(q)` on change.
+- 2026-11-22, Claude "Engine" session subagent: **landed: DEV `--dev-bot-travel`** (`scripts/game/mission_bot.gd`,
+  `TestDrive.dev_bot_travel`): when the bot can't walk to the next deck / its target / extraction (no route, 8 s without
+  progress, 15 s fighting without a kill) it sets its own mech's transform onto the floor of the target spot (entry slot's
+  arc spot on the next deck, near the target enemy with a clear line of sight, or the extraction marker); the snapshot
+  stream bumps the teleport counter itself. Logs `[Flow] dev travel: deck a -> b`. New `tests/test_net_bot_mission.gd`
+  (2 peers, off, seed 4, one full bot mission with the DEV aids). **`test_runner.ps1`: new per-test `const NET_TIMEOUT :=
+  N`** (a net run gets max(-NetTimeoutSec, N) s; used by test_net_bot_mission, 240).
+- 2026-11-22 17:25, antigravity (`e4955d7c`), in flight: **building `docs/design/enemy-tactics-and-drones.md` (Phases A–D, approved by user)** on top of Weapons' landed nearby-fire hearing pass (`hear_fire`). Files we are editing/adding: `scripts/enemy/*` (new `enemy_drone.gd`, updates to `enemy_catalog.gd`, `enemy_meshes.gd`, `enemy_base.gd`, `enemy_turret.gd`, `enemy_strider.gd`, `enemy_squad.gd`, `enemy_spawner.gd`, `enemy_lab.gd`, `enemy_telegraph_fx.gd`), new `scripts/combat/weapons/enemy_{lance,rockets,scatter}.gd`, 3 additive lines in `scripts/combat/weapon_registry.gd` (`BEHAVIOURS`), optional telegraph cues in `scripts/audio/combat_audio.gd`, new `tests/test_enemy_tactics.gd` (+ count/HP alignment in `tests/test_enemy_effectiveness.gd` if needed), and `docs/design/enemy-tactics-and-drones.md`. Zero edits to `scripts/net/`, `scripts/game/`, `scripts/world/`, `scripts/mech/`, or `scripts/ui/`. Preserving all W4 `EnemySync` / multi-deck `spawn_deck` and Weapons `hear_fire` hooks.
+- 2026-11-22 17:48, antigravity (`e4955d7c`): **landed: `docs/design/enemy-tactics-and-drones.md` (Phases A–D)** — safe for `build.ps1` (also replied `Type: result` on thread `babamech-20261122-1743-spawner-build`). New: `scripts/combat/weapons/enemy_{lance,rockets,scatter}.gd`, `scripts/enemy/enemy_drone.gd`, `tests/test_enemy_tactics.gd`. Edited: `scripts/combat/weapon_registry.gd` (+3 `enemy_*` lines), `scripts/enemy/{enemy_catalog,enemy_meshes,enemy_turret,enemy_strider,enemy_telegraph_fx,enemy_squad,enemy_base,enemy_spawner,enemy_lab}.gd`, `scripts/audio/combat_audio.gd`, `tests/{test_geometry_audit,test_enemy_combat,test_enemy_ai,test_enemy_effectiveness,net_enemy_case}.gd`, `docs/design/enemy-tactics-and-drones.md`. Zero edits to `scripts/net/`, `scripts/game/`, `scripts/world/`, `scripts/mech/`, or `scripts/ui/`. Verified: 18/18 enemy + net_enemy(_3/_hearing/_fire) + geometry + lab + player_ai + net_contract pass, and `test_perf` passes solo (`p95 7.89 ms`, `CombatWorld+AI` avg `0.75 ms` / max `3.01 ms`).
+- 2026-11-22 18:01, antigravity (`e4955d7c`): drafted `docs/design/enemy-troop-squads.md` (Phase 1: cover-peeking street & rooftop exo-trooper squads modeled as single `EnemyBase` units with per-trooper `components` for zero-change `EnemySync` co-op; Phase 2: `EnemyDropDrone` air-drop reinforcements). Docs only — waiting on user confirmation before coding.

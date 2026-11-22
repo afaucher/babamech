@@ -4,7 +4,7 @@ extends Node3D
 ## Bastion Siege Tank) beside an 8 m Strider player mech for scale/silhouette/palette inspection, plus a live skirmish
 ## arena with cover blocks, a 9 m roof perch, a moving target bot, tunable AI sliders, and a 3D debug overlay.
 
-const PRESETS := ["showcase", "skirmish", "turret_only", "strider_only", "tank_only"]
+const PRESETS := ["showcase", "skirmish", "turret_only", "strider_only", "tank_only", "drone", "long_range", "breacher_cover"]
 const AI_MODES := ["live", "idle", "telegraph_loop", "overheat"]
 const TARGET_MODES := ["strafe", "stationary", "hidden", "bot_rookie", "bot_average", "bot_veteran", "bot_brawler"]
 const DEBUG_MODES := ["on", "off"]
@@ -242,6 +242,18 @@ func _rebuild() -> void:
 			s.set_patrol_points([Vector2(-12.0, -32.0), Vector2(12.0, -32.0)])
 		"tank_only":
 			_spawn("tank", "lab_tank_1", Vector3(0.0, 0.0, -44.0), PI, ai_mode)
+		"drone":
+			var d := _spawn("drone", "lab_drone_1", Vector3(0.0, 15.0, -40.0), PI, ai_mode)
+			d.set_patrol_points([Vector2(-24.0, -32.0), Vector2(24.0, -32.0), Vector2(24.0, -56.0), Vector2(-24.0, -56.0)])
+			_spawn("strider_breacher", "lab_drone_escort", Vector3(24.0, 0.0, -48.0), PI, ai_mode)
+		"long_range":
+			_spawn("turret_sniper", "lab_sniper_1", Vector3(-22.0, 9.4, -38.0), PI, ai_mode)
+			_spawn("turret_missile", "lab_missile_1", Vector3(22.0, 7.5, -34.0), PI, ai_mode)
+		"breacher_cover":
+			var b1 := _spawn("strider_breacher", "lab_breacher_1", Vector3(-14.0, 0.0, -46.0), PI, ai_mode)
+			b1.set_patrol_points([Vector2(-18.0, -44.0), Vector2(-4.0, -44.0)])
+			var b2 := _spawn("strider_breacher", "lab_breacher_2", Vector3(14.0, 0.0, -46.0), PI, ai_mode)
+			b2.set_patrol_points([Vector2(18.0, -44.0), Vector2(4.0, -44.0)])
 	_sync_params()
 
 
@@ -327,7 +339,7 @@ func _draw_debug() -> void:
 			var c: Vector3 = sp["center"]
 			var r: float = float(sp["radius"])
 			var comp := str(sp["component"])
-			var is_wp := comp in ["gun", "sensor", "vents"]
+			var is_wp := comp in ["gun", "sensor", "vents", "optic"]
 			_draw_circle(c, r, Color(1.0, 0.85, 0.2) if is_wp else Color(0.25, 0.85, 0.95))
 		# LOS ray to current aim point (green = clear LOS, red = blocked).
 		if e.is_alerted():

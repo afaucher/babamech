@@ -33,6 +33,10 @@ var btn_leave: Button
 var btn_launch: Button
 var name_edit: LineEdit
 var head_pick: OptionButton
+var quality_pick: OptionButton       ## Settings: graphics quality Low / Medium / High (GraphicsQuality)
+var renderer_pick: OptionButton      ## Settings: renderer Auto / Forward+ / Compatibility (next launch)
+var quality_note: Label              ## Settings: the detected GPU and the renderer note
+var btn_restart: Button              ## Settings: restart now (only while a renderer change is pending, exported builds)
 var accent_picks: Dictionary = {}   ## accent id -> Button (the swatches in Settings)
 var chassis_pick: OptionButton
 var weapon_picks: Dictionary = {}   ## hardpoint id -> OptionButton
@@ -100,6 +104,7 @@ func _ready() -> void:
 	Session.roster_changed.connect(_on_roster_changed)
 	Session.invite_received.connect(_on_invite)
 	Session.mission_started.connect(_on_mission_started)
+	CrewAuto.ensure(get_tree())   # --auto-launch / --auto-relaunch / --auto-quit, and the clients' hangar heartbeat
 	var args := OS.get_cmdline_user_args()
 	_shot_path = Boot.arg_value(args, "--menu-shot")
 	if Boot.arg_value(args, "--menu-after").is_valid_float():
@@ -134,6 +139,8 @@ func _exit_tree() -> void:
 
 
 func show_screen(s: String) -> void:
+	if s == "hangar" and screen != "hangar":
+		FlowLog.say("hangar entered", "crew %d" % Session.roster.size() if Session.online() else "solo")
 	screen = s
 	for box: Container in [panel_box, footer]:
 		for c in box.get_children():
@@ -201,6 +208,21 @@ func _build_settings() -> void:
 	_row("Fullscreen", _check(bool(settings["fullscreen"]), func(on: bool) -> void: _set_setting("fullscreen", on)))
 	_row("VSync", _check(bool(settings["vsync"]), func(on: bool) -> void: _set_setting("vsync", on)))
 	_row("Anti-aliasing", _option(["Off", "MSAA 2x", "MSAA 4x"], int(settings["msaa"]), func(i: int) -> void: _set_setting("msaa", i)))
+	quality_pick = _option(["Low", "Medium", "High"], int(settings["quality"]), func(i: int) -> void:
+		_set_setting("quality", i)
+		GraphicsQuality.apply_settings(settings, get_tree())
+		_update_graphics_note())
+	_row("Graphics quality", quality_pick)
+	var auto_label := "Auto (%s)" % GraphicsQuality.renderer_label(GraphicsQuality.renderer_wanted("auto"))
+	renderer_pick = _option([auto_label, "Forward+", "Compatibility"],
+		GraphicsQuality.RENDERERS.find(str(settings["renderer"])), func(i: int) -> void:
+			_set_setting("renderer", GraphicsQuality.RENDERERS[i])
+			_update_graphics_note())
+	_row("Renderer", renderer_pick)
+	quality_note = _text("", 13, Color(0.6, 0.62, 0.65))
+	quality_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	btn_restart = _button("Restart now", func() -> void: GraphicsQuality.restart(get_tree()))
+	_update_graphics_note()
 	_section("Audio")
 	for k in [["master", "Master"], ["music", "Music"], ["sfx", "Effects"]]:
 		var key: String = k[0]
@@ -215,6 +237,23 @@ func _build_settings() -> void:
 	_text("Applies to crews you host.", 13, Color(0.6, 0.62, 0.65))
 	_gap(12)
 	btn_back = _button("Back", func() -> void: show_screen("hangar" if Session.online() else "main"))
+
+
+## The settings note under the graphics rows: the GPU (and what auto picks for it), the renderer state; Restart now only
+## while the next launch's renderer differs from this one's and this build can switch.
+func _update_graphics_note() -> void:
+	if quality_note == null or not is_instance_valid(quality_note):
+		return
+	var lines := ["GPU: %s. Auto: %s quality, %s." % [GraphicsQuality.adapter_note(), CityQuality.name_of(GraphicsQuality.detect()).capitalize(),
+		GraphicsQuality.renderer_label(GraphicsQuality.renderer_wanted("auto"))]]
+	if GraphicsQuality.override_level >= 0:
+		lines.append("This run: --quality %s." % CityQuality.name_of(GraphicsQuality.override_level))
+	var r := GraphicsQuality.sync_renderer(str(settings["renderer"]))
+	lines.append("Renderer now: %s.%s" % [GraphicsQuality.renderer_label(GraphicsQuality.renderer_current()), (" " + r) if r != "" else ""])
+	quality_note.text = "
+".join(lines)
+	if btn_restart != null and is_instance_valid(btn_restart):
+		btn_restart.visible = GraphicsQuality.can_switch_renderer() 			and GraphicsQuality.renderer_wanted(str(settings["renderer"])) != GraphicsQuality.renderer_current()
 
 
 func _build_hangar() -> void:

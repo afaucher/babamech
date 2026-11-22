@@ -4,7 +4,7 @@ extends NetTest
 ## - the client joins; the host's roster has it as seat 2 with its name "c1", head "pickle" and chassis;
 ## - the client lists the same roster (it sees the host's "chicken");
 ## - the client changes its head to "duck" (the fifth head) and its accent to "purple" (sys.profile): the host's roster and the client's both show it;
-## - the host's process exits: the client's session ends with HOST_LEFT.
+## - the host's process exits: the client's session ends with HOST_ENDED (the bye's reason).
 
 const PEERS := 2
 

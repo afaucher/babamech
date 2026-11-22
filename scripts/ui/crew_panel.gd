@@ -272,8 +272,12 @@ static func _hex(centre: Vector2, r: float) -> PackedVector2Array:
 func _draw() -> void:
 	if cards.is_empty():
 		return
-	draw_string(_font, Vector2(2, 12), "CREW", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, MechHud.DIM)
-	draw_line(Vector2(40, 7), Vector2(CARD_W, 7), Color(MechHud.CYAN, 0.35), 1.0)
+	# The header sits on its own dark glass tab, like the cards: world markers and bright scenery behind it (3D aim rings
+	# on the street, the sky) must not wash the label out.
+	draw_rect(Rect2(0, 0, 44, HEADER_H - 2.0), Color(MechHud.GLASS, 0.85), true)
+	draw_rect(Rect2(0, 0, 44, HEADER_H - 2.0), Color(MechHud.EDGE, MechHud.EDGE.a), false, 1.0)
+	draw_string(_font, Vector2(5, 12), "CREW", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, MechHud.WHITE)
+	draw_line(Vector2(48, 7), Vector2(CARD_W, 7), Color(MechHud.CYAN, 0.35), 1.0)
 
 
 func _draw_card(c: Card) -> void:

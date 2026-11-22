@@ -71,6 +71,9 @@ func _run() -> void:
 	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	add_child(td)
 	await frames(2)
+	# A crew mission loads stepped (the stack and life over frames): measure only once it is fully set up.
+	if not check(await _until(func() -> bool: return td.loaded, 30.0), "the mission load finishes"):
+		return
 	if not check(td.crewed and td.crew_sync != null, "the test drive runs the crew mission"):
 		return
 	if not check(await _until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 20.0),
