@@ -23,7 +23,8 @@ extends Node
 ##   PlayerTarget.player_component_destroyed       -> react("pain", 1)
 ##   MechController.rebooted, PlayerTarget.disabled true -> false (respawn / repair) -> react("revived")
 ##   CombatWorld.hit_landed(target, hit) with hit.shooter = this player and the target newly destroyed -> react("smirk")
-## Local only: a remote player's puppet has none of these signals (see pilot-heads.md §7).
+## Local only: a remote player's puppet has none of these signals (its hp / disabled are written straight from the stream);
+## PilotPuppetLink is its twin (see pilot-heads.md §7).
 
 const FIRING_HOLD := 0.4
 const LOOK_HOLD := 1.5

@@ -20,7 +20,7 @@ func net_fields() -> Dictionary:
 
 
 func spawn_chunk(part: String, world_xf: Transform3D, vel: Vector3, ang_vel: Vector3,
-		charred: bool = false, mesh_scale: Vector3 = Vector3.ONE) -> EnemyDebris:
+		charred: bool = false, mesh_scale: Vector3 = Vector3.ONE, r: RingFrame = null) -> EnemyDebris:
 	while chunks.size() >= MAX_DEBRIS:
 		var old: EnemyDebris = chunks.pop_front()
 		_active.erase(old)
@@ -28,7 +28,7 @@ func spawn_chunk(part: String, world_xf: Transform3D, vel: Vector3, ang_vel: Vec
 			old.queue_free()
 	var d := EnemyDebris.new()
 	add_child(d)
-	d.setup(part, world_xf, vel, ang_vel, ring, charred, mesh_scale)
+	d.setup(part, world_xf, vel, ang_vel, r if r != null else ring, charred, mesh_scale)   # r: the enemy's deck ring (W4)
 	chunks.append(d)
 	_active.append(d)
 	return d

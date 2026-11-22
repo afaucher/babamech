@@ -26,7 +26,7 @@ extends RefCounted
 const STREET_LANE := 4.45
 const AVENUE_LANE := 2.93
 const STRIP := 1.65                   ## parking strip centre, out from the curb
-const SIZE := {"pod": Vector3(1.8, 1.9, 3.4), "cart": Vector3(1.4, 1.6, 2.6)}    ## width, height, length
+const SIZE := {"pod": Vector3(1.85, 1.95, 3.5), "cart": Vector3(1.4, 1.6, 2.6)}  ## width, height, length (pod: capsule_a)
 const V_STREET := 9.0
 const V_AVENUE := 12.0
 const V_TURN := 5.0
@@ -50,6 +50,9 @@ const MODE := ["driving", "stopped", "dwell", "docked"]
 const SIDE_ORDER := [3, 0, 2, 1]      ## round a block, block on the right
 const SIDE_DIR: Array[Vector2] = [Vector2(0, 1), Vector2(0, -1), Vector2(-1, 0), Vector2(1, 0)]
 const LEG := 5                         ## floats per lap leg: t0 t1 u0 u1 kind (t relative to the lap start)
+const CHECK_STOP := 6.0                ## s every vehicle stops at a heavy checkpoint (section mode)
+const UTURN_IN := 2.5                  ## m before the junction box an avenue loop's U-turn starts (section mode)
+const AVENUE_PODS_MIN := 2             ## section mode: at least this many pods on avenue loops (when there are any)
 
 var lp: LifePlan
 var plan: CityPlan
@@ -58,12 +61,15 @@ var carts := 0
 var loops: Array = []      ## [{block, kind, pts, cum, speed (per segment), ctime (drive time at each point), drive (one lap's
                            ##   drive time), length, legs, L, phase, k, slots, dock, zones [{stop, clear, j, dep}]}]
 var vehicles: Array = []   ## [{id, kind, loop, offset}]
+## Section mode (phase 3): heavy checkpoints by junction ({junction: {x, s}}); every loop with a turn at one of those
+## junctions holds CHECK_STOP s at that stop line first (a HOLD mark tagged "check", built into the timetable).
+var checks: Dictionary = {}
 
 
 func net_fields() -> Dictionary:
 	return {
 		"lp": Net.SPAWN, "plan": Net.SPAWN, "pods": Net.SPAWN, "carts": Net.SPAWN,     # seed + params
-		"loops": Net.LOCAL, "vehicles": Net.LOCAL,          # derived on every machine, verified by checksum()
+		"loops": Net.LOCAL, "vehicles": Net.LOCAL, "checks": Net.LOCAL,     # derived on every machine (checksum())
 	}
 
 
@@ -81,6 +87,11 @@ func build(life_plan: LifePlan, pod_count: int = -1, cart_count: int = -1) -> vo
 	carts = clampi(cart_count if cart_count >= 0 else int(round(CARTS_DEFAULT * area)), 0, CARTS_CAP)
 	loops.clear()
 	vehicles.clear()
+	checks.clear()
+	if plan.section != null:
+		for hk: Dictionary in plan.section.hooks:
+			if hk["kind"] == "checkpoint" and int(hk["deck"]) == plan.deck and hk.get("size", "") == "heavy":
+				checks[lp._junction_near(Vector2(hk["x"], hk["s"]))] = {"x": float(hk["x"]), "s": float(hk["s"])}
 	var order: Array = []
 	for bi in plan.blocks.size():
 		order.append([lp.h(5001, bi), bi])
@@ -94,13 +105,15 @@ func build(life_plan: LifePlan, pod_count: int = -1, cart_count: int = -1) -> vo
 				vehicles.append({"id": vehicles.size(), "kind": "cart", "loop": li, "offset": 0.0})
 				break
 	var left := pods
+	if plan.section != null:
+		left -= _avenue_pods(pods)
 	while left > 0 and next < order.size():
 		var li := _make_loop(int(order[next][1]), "pod")
 		next += 1
 		if li < 0:
 			continue
 		var lo: Dictionary = loops[li]
-		var n := mini(mini(2, int(lo["slots"])), left)
+		var n := mini(mini(3 if plan.section != null else 2, int(lo["slots"])), left)
 		var step := maxi(int(lo["slots"]) / n, 1)
 		for i in n:
 			vehicles.append({"id": vehicles.size(), "kind": "pod", "loop": li, "offset": float(i * step * int(lo["k"])) * LifePlan.CYCLE})
@@ -121,9 +134,37 @@ func _road_of(r: Rect2, side: int) -> Dictionary:
 	for road: Dictionary in roads:
 		var hit: bool = absf(float(road["a"]) - edge) < 0.05 if side % 2 == 0 else absf(float(road["b"]) - edge) < 0.05
 		if hit:
+			if plan.section != null:
+				# Section mode: the spine's outer lanes are ramp lanes, so no block loop runs beside it; every other road
+				# (arterial, cross, perimeter) is drawn as a street, parking strips and all.
+				if road["kind"] == "spine":
+					return {}
+				return {"kind": "street", "offset": STREET_LANE, "parking": true}
 			var avenue: bool = road["kind"] == "avenue"
 			return {"kind": road["kind"], "offset": AVENUE_LANE if avenue else STREET_LANE, "parking": road["kind"] == "street"}
 	return {}
+
+
+## Section mode: whether a lap path stays on drivable road: inside the walls, out of every floor cut (and its curb) and
+## out of the rail and ramp lanes (sampled every metre, the vehicle's half width as margin).
+func _path_ok(pts: PackedVector2Array) -> bool:
+	var e := plan.extent.grow(-1.2)
+	var bad: Array[Rect2] = []
+	for o in plan.floor_cuts():
+		bad.append(o.grow(CityStreets.HOLE_CURB + 1.0))
+	for lane: String in ["rail", "ramp_a", "ramp_b"]:
+		var lx := plan.section.lane_x(lane)
+		bad.append(Rect2(lx.x - 1.0, plan.extent.position.y - 50.0, lx.y - lx.x + 2.0, plan.extent.size.y + 100.0))
+	for i in pts.size() - 1:
+		var n := maxi(int(ceil(pts[i].distance_to(pts[i + 1]))), 1)
+		for k in n + 1:
+			var p := pts[i].lerp(pts[i + 1], float(k) / float(n))
+			if not e.has_point(p):
+				return false
+			for r in bad:
+				if r.has_point(p):
+					return false
+	return true
 
 
 static func _corners(r: Rect2) -> Array:
@@ -201,6 +242,8 @@ func _make_loop(bi: int, kind: String) -> int:
 			add.call(c + CityPlan.SIDE_N[nxt] * on * sin(th) + CityPlan.SIDE_N[side] * o * cos(th), minf(V_TURN, v_of.call(nxt)))
 		var j := lp._junction_near(c + (CityPlan.SIDE_N[side] + CityPlan.SIDE_N[nxt]) * 4.0)
 		marks.append({"u": u_box - STOP_LINE - half_len, "type": WAIT, "j": j, "clear": float(u[0]) + CLEAR})
+		if checks.has(j):
+			marks.append({"u": u_box - STOP_LINE - half_len - 0.01, "type": HOLD, "dur": CHECK_STOP, "check": j})
 		# the next side up to its pull-over, or (back on the start side) to the dock / start point
 		var len_n := float(lens[nxt])
 		var mid := len_n * 0.5
@@ -220,21 +263,129 @@ func _make_loop(bi: int, kind: String) -> int:
 			add.call(lane.call(nxt, mid + 3.0, STRIP), V_PULL)
 			add.call(lane.call(nxt, mid + 7.0, on), V_PULL)
 	var ppts := PackedVector2Array(pts)
+	if plan.section != null and not _path_ok(ppts):
+		return -1
+	if kind == "cart":
+		lo["pts"] = ppts
+		lo["cum"] = _cum(ppts)
+		lo["length"] = (lo["cum"] as PackedFloat32Array)[ppts.size() - 1]
+		_bin_stops(lo, bi, marks)
+	return _finish_loop(lo, ppts, spd, marks, kind, bi)
+
+
+static func _cum(ppts: PackedVector2Array) -> PackedFloat32Array:
 	var cum := PackedFloat32Array([0.0])
 	for i in range(1, ppts.size()):
 		cum.append(cum[i - 1] + ppts[i - 1].distance_to(ppts[i]))
+	return cum
+
+
+func _finish_loop(lo: Dictionary, ppts: PackedVector2Array, spd: Array, marks: Array, kind: String, key: int) -> int:
+	var cum := _cum(ppts)
 	lo["pts"] = ppts
 	lo["cum"] = cum
 	lo["speed"] = PackedFloat32Array(spd)
 	lo["length"] = cum[cum.size() - 1]
-	if kind == "cart":
-		_bin_stops(lo, bi, marks)
 	marks.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["u"]) < float(b["u"]))
 	lo["marks"] = marks
-	lo["phase"] = floorf(lp.h(5007, bi) * LifePlan.CYCLE)
+	lo["phase"] = floorf(lp.h(5007, key) * LifePlan.CYCLE)
 	_timetable(lo, kind)
 	loops.append(lo)
 	return loops.size() - 1
+
+
+## Section mode: pods on avenue loops (half the pods, at least AVENUE_PODS_MIN, up to two per loop). Avenue loops run on
+## every other stretch of the spine's avenue lane between two cross lines (so no two share a junction), choosing the
+## parity that covers the most heavy checkpoints; loops that U-turn at a checkpoint come first. Returns how many pods.
+func _avenue_pods(total: int) -> int:
+	var sl := plan.section.spine_line
+	var ns := plan.roads_s.size()
+	var cover := [0, 0]
+	for par in 2:
+		for j in range(par, ns - 1, 2):
+			for jj: int in [j, j + 1]:
+				if checks.has(sl * ns + jj):
+					cover[par] += 1
+	var par := 0 if cover[0] > cover[1] else (1 if cover[1] > cover[0] else int(lp.h(5013, plan.deck) * 2.0) % 2)
+	var cands: Array = []
+	for j in range(par, ns - 1, 2):
+		var checked := checks.has(sl * ns + j) or checks.has(sl * ns + j + 1)
+		cands.append([0 if checked else 1, lp.h(5015, j), j])
+	cands.sort()
+	var want := mini(maxi(AVENUE_PODS_MIN, total / 2), total)
+	var n := 0
+	for cd: Array in cands:
+		if n >= want:
+			break
+		var li := _make_avenue_loop(int(cd[2]))
+		if li < 0:
+			continue
+		var lo: Dictionary = loops[li]
+		var m := mini(mini(2, int(lo["slots"])), want - n)
+		var step := maxi(int(lo["slots"]) / m, 1)
+		for i in m:
+			vehicles.append({"id": vehicles.size(), "kind": "pod", "loop": li, "offset": float(i * step * int(lo["k"])) * LifePlan.CYCLE})
+		n += m
+	return n
+
+
+## Section mode: a pod loop in the spine's avenue lane between cross lines j and j + 1, right-hand traffic (+s in the -x
+## half, -s in the +x half, the outer lane of each), a U-turn at each end (a half circle starting UTURN_IN m before the
+## junction box, timed into the junction's turn phase like every corner), docked against the avenue's -x edge midway.
+## Nothing else uses the avenue lane (block loops beside the spine are dropped) and only one avenue loop U-turns at a
+## junction, so it cannot meet another vehicle.
+func _make_avenue_loop(j: int) -> int:
+	var av := plan.avenue_x()
+	var xw := av.x + AVENUE_LANE
+	var xe := av.y - AVENUE_LANE
+	var xp := av.x + 1.7
+	var s_lo := float(plan.roads_s[j]["b"])
+	var s_hi := float(plan.roads_s[j + 1]["a"])
+	if s_hi - s_lo < 50.0:
+		return -1
+	var sl := plan.section.spine_line
+	var ns := plan.roads_s.size()
+	var rad := (xe - xw) * 0.5
+	var cx := (xw + xe) * 0.5
+	var half_len := float((SIZE["pod"] as Vector3).z) * 0.5
+	var mid := (s_lo + s_hi) * 0.5
+	var pts: Array = []
+	var spd: Array = []
+	var marks: Array = []
+	var u := [0.0]
+	var add := func(p: Vector2, v: float) -> void:
+		if not pts.is_empty():
+			u[0] = float(u[0]) + (pts[pts.size() - 1] as Vector2).distance_to(p)
+			spd.append(v)
+		pts.append(p)
+	add.call(Vector2(xp, mid), 0.0)
+	add.call(Vector2(xp, mid + 3.0), V_PULL)
+	add.call(Vector2(xw, mid + 7.0), V_PULL)
+	for end in 2:
+		var hi := end == 0
+		var x0 := xw if hi else xe
+		var s_turn := s_hi - UTURN_IN if hi else s_lo + UTURN_IN
+		add.call(Vector2(x0, s_turn), V_AVENUE)
+		var u_arc := float(u[0])
+		for step in range(1, 13):
+			var th := PI * float(step) / 12.0
+			if hi:
+				add.call(Vector2(cx - rad * cos(th), s_turn + rad * sin(th)), V_TURN)
+			else:
+				add.call(Vector2(cx + rad * cos(th), s_turn - rad * sin(th)), V_TURN)
+		var jid := sl * ns + (j + 1 if hi else j)
+		var stop_u := u_arc - (STOP_LINE - UTURN_IN) - half_len
+		marks.append({"u": stop_u, "type": WAIT, "j": jid, "clear": float(u[0]) + CLEAR})
+		if checks.has(jid):
+			marks.append({"u": stop_u - 0.01, "type": HOLD, "dur": CHECK_STOP, "check": jid})
+	add.call(Vector2(xw, mid - 7.0), V_AVENUE)
+	add.call(Vector2(xp, mid - 3.0), V_PULL)
+	add.call(Vector2(xp, mid), V_PULL)
+	var ppts := PackedVector2Array(pts)
+	if not _path_ok(ppts):
+		return -1
+	var lo := {"block": 1000 + j, "kind": "pod", "avenue": j, "pts": ppts, "speed": PackedFloat32Array(), "marks": []}
+	return _finish_loop(lo, ppts, spd, marks, "pod", 1000 + j)
 
 
 ## Cart stops beside the bins of block bi: each bin projected onto the lap, kept if it is beside a straight stretch and

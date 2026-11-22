@@ -1,7 +1,7 @@
 class_name MechPartGallery
 extends Node3D
 ## Lab subject: the low-poly art parts of the mech (MechMeshes), each on its own: every part laid out in rows by group
-## (chassis, legs, weapons, heads), or one part alone, turning. A small marker shows the origin of each part (its pivot:
+## (chassis, legs, weapons, back equipment, heads), or one part alone, turning. A small marker shows the origin of each part (its pivot:
 ## the proximal joint of a leg segment, the mount point of a weapon, the neck base of a head).
 
 const PARAMS := [
@@ -37,11 +37,13 @@ func rebuild() -> void:
 		_cols = 1
 		_add(part, Vector3(0, 1.4, 0))
 		return
-	var groups: Array = [MechMeshes.BODY_PARTS, MechMeshes.LEG_PARTS, [], []]
+	var groups: Array = [MechMeshes.BODY_PARTS, MechMeshes.LEG_PARTS, [], [], []]
 	for w: String in MechMeshes.WEAPONS:
 		(groups[2] as Array).append("weapon_" + w)
+	for e: String in MechMeshes.EQUIPMENT:
+		(groups[3] as Array).append("weapon_" + e)
 	for h: String in MechMeshes.HEADS:
-		(groups[3] as Array).append("head_" + h)
+		(groups[4] as Array).append("head_" + h)
 	var sp := float(params["spacing"])
 	_rows = groups.size()
 	_cols = 0

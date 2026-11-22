@@ -7,7 +7,19 @@ extends Node3D
 ##   C             first-person / chase camera (cosmetic, local only: ChaseCamera.toggle_first_person)
 ## Open with `.\run.ps1 -TestDrive [-Seed N]`, or Play -> Launch mission in the menu.
 ##
-## SOLO (offline, or no launched mission): your mech, seed from --seed (default 1), exactly as before co-op.
+## THE CITY (city_mode): STACK (the default; `--stack`) builds the multi-deck mission section (SectionPlan from the seed,
+##   CityStack, docs/design/city-ramps-and-stack.md) and spawns the crew on the section's entry road
+##   (CityStack.entry_transform(), entry_spawn()). The stack is placed so the ENTRY DECK's floor passes through the world
+##   origin (stack.position = -section.deck_offset(entry deck)): `city` is that deck's CityDistrict, so every system that
+##   still reads one district (combat, enemy spawner, audio, player AI) gets a plan and a RingFrame that are right in
+##   world space on the entry deck. Every mech's ring is `city.ring`: the axis is shared, so its up / gravity is right on
+##   every deck (CityStack.ring() / deck_ring(k) would do too). Falling out is CityStack.fell_out(); each mech's
+##   MechAudio reads footstep surfaces from the deck it is on (_follow_audio_decks). Every deck's props are networked
+##   (prop events carry the deck). DISTRICT (`--district`)
+##   is the old single CityDistrict, unchanged. A crew mission takes the mode from the launch params (every machine builds
+##   the same thing); the load barrier compares mission_checksum() (CityStack.checksum() or the plan's).
+## SOLO (offline, or no launched mission): your mech; seed and mode from the menu's Launch (solo_launch: a fresh random
+##   seed, like a host's), else --seed (default 1) and the flags.
 ## CREW MISSION (co-op step 1, Session.mission_params() set by the host's Launch): the seed is the mission's, and there is
 ##   one mech per crew entry (by seat) at spawn_point(i, n), each built with that entry's head / chassis / accent /
 ##   loadout and tagged with its owner (MechSpawn.owner_of). Only the local one (owner = Session.local_id()) is `mech`,
@@ -15,10 +27,36 @@ extends Node3D
 ##   CrewSync streams the local mech and shows each other one from its owner's snapshots, MechPuppet). After building, the city checksum goes to Session.report_mission_built (the load barrier); the local mech is
 ##   held still until Session.mission_go. Esc ends the mission (the host's ends it for the crew); the host ending it, or
 ##   the session ending (e.g. sent out for a desync), goes back to the menu. N (new city) is off in a crew mission.
+## ENEMIES (spawn_enemies, called by TestDriveCombat.rebuild_encounters): solo, EnemySpawner from the seed in front of the
+##   spawn, as before. Crew mission (W4, `enemy_sync`, scripts/game/enemy_sync.gd): only the HOST spawns them (in front of
+##   the entry / the district's first slot, scaled to the crew size) and runs their AI; it streams them and each client
+##   shows puppets. Stack: an encounter on every deck (its own plan and ring); each enemy carries `spawn_deck`, stays on
+##   its deck and engages only mechs on it: enemies_alive_per_deck() for MissionRules.
+## MISSION (W6, win side; `mission`, scripts/game/mission_flow.gd, stack mode only): MissionRules from the section on every
+##   machine; the host (or solo, locally) evaluates them once the mission is released and the enemies have spawned
+##   (`enemies_spawned`), clients apply the host's "mission.state". The HUD shows the objective and the extraction
+##   waypoint (MissionHud). On the outcome every machine shows the banner, then the host ends the mission for the crew and
+##   everyone goes back to the hangar (solo: FrontEnd.next_screen = "hangar"); only when this scene is the current one.
 
 const SCENE := "res://scenes/test_drive.tscn"
+const MODE_STACK := NetMission.MODE_STACK         ## "stack": the multi-deck mission section (CityStack), the default
+const MODE_DISTRICT := NetMission.MODE_DISTRICT   ## "district": one CityDistrict (the pre-stack test drive)
+const OFFLINE_PEER := 9000              ## offline crew: fake owner peer = OFFLINE_PEER + seat
+const FALL_OUT := 25.0               ## m below the lowest floor: fell out of the city, back to the spawn
+
+## The menu's solo Launch hands its {seed, mode} to the next test drive here (consumed by _ready).
+static var solo_launch: Dictionary = {}
+## Tests (perf): a solo test drive with an OFFLINE CREW of this many mechs and no session (also `--offline-crew N`).
+## Mechs 2..N are idle puppets (no input, no physics, no MechPuppet) with fake owner peers OFFLINE_PEER + seat, placed at
+## the crew slots like a real crew; their rigs, gait, FX and audio still run. 0 / 1 = just your mech. Read once by _ready.
+static var offline_crew := 0
 
 var seed_value := 1
+## "stack" or "district". Set before the node enters the tree to force it (tests); "" = from the launch / flags.
+var city_mode := ""
+## Stack mode: every deck of the mission section (the entry deck at the world origin). Null in district mode.
+var stack: CityStack
+## The district the old single-district systems use: the whole city (district mode) or the stack's entry deck.
 var city: CityDistrict
 var mech: MechController
 var rig: MechRig
@@ -34,6 +72,16 @@ var spawn_order: Array[int] = []
 var crewed := false
 ## Crew mission: mech snapshots (streams the local mech, shows the others as puppets; scripts/game/crew_sync.gd).
 var crew_sync: CrewSync
+## Crew mission: the host's enemies streamed to the crew, puppets on a client (W4; scripts/game/enemy_sync.gd).
+var enemy_sync: EnemySync
+## The civilians and vehicles of the city (W5; scripts/world/life/ambient_life.gd): ONE per scene (group "ambient_life"),
+## on every machine; the host arbitrates through Session events, offline it decides locally. Built after the city and
+## the combat world (_build_life), rebuilt with the city (solo N).
+var life: AmbientLife
+## The mission's objective and end (W6; scripts/game/mission_flow.gd): stack mode only (null in a district).
+var mission: MissionFlow
+## This machine has spawned the mission's enemies (host / solo; spawn_enemies): MissionFlow evaluates only after that.
+var enemies_spawned := false
 
 var _help: Label
 var _spawn := Transform3D.IDENTITY
@@ -41,16 +89,21 @@ var _ignore_mouse_until := 0      ## msec: the warp right after capturing the mo
 var _shooting := false
 var _held := false                ## crew mission: the local mech stands still until the load barrier passes (mission_go)
 var _seats: Dictionary = {}       ## crew mission: owner peer -> crew seat (the snapshots name mechs by seat)
+var _audio_deck: Dictionary = {}  ## stack: owner peer -> the deck its MechAudio reads footstep surfaces from
+var _audio_check := 0.0           ## s until the next per-deck MechAudio check
+var _leaving := false             ## a scene change back to the menu is under way
 
 
 ## Authority (scripts/net/net.gd): the seed and the spawn layout are fixed by the mission; everything else here is this
 ## machine's scene wiring (the mechs declare their own state).
 func net_fields() -> Dictionary:
-	return {"seed_value": Net.SPAWN, "city": Net.LOCAL, "mech": Net.LOCAL, "rig": Net.LOCAL, "cam": Net.LOCAL,
+	return {"seed_value": Net.SPAWN, "city_mode": Net.SPAWN, "stack": Net.LOCAL, "city": Net.LOCAL, "mech": Net.LOCAL,
+		"rig": Net.LOCAL, "cam": Net.LOCAL, "enemy_sync": Net.LOCAL, "life": Net.LOCAL, "_audio_deck": Net.LOCAL, "_audio_check": Net.LOCAL,
 		"drive_override": Net.LOCAL, "combat": Net.LOCAL, "combat_audio": Net.LOCAL, "mechs": Net.LOCAL,
 		"spawn_order": Net.SPAWN, "crewed": Net.SPAWN, "_help": Net.LOCAL, "_spawn": Net.SPAWN,
 		"_ignore_mouse_until": Net.LOCAL, "_shooting": Net.LOCAL, "_held": Net.PRIVATE, "crew_sync": Net.LOCAL,
-		"_seats": Net.SPAWN}
+		"_seats": Net.SPAWN, "mission": Net.LOCAL, "enemies_spawned": Net.LOCAL,
+		"_leaving": Net.LOCAL}
 
 
 func _ready() -> void:
@@ -59,13 +112,27 @@ func _ready() -> void:
 	var params: Dictionary = sess.mission_params() if sess != null and sess.online() else {}
 	crewed = not params.is_empty()
 	var s := Boot.arg_value(args, "--seed")
+	var mode := launch_mode(args)
 	if crewed:
 		seed_value = int(params.get("seed", 1))
+		mode = str(params.get("mode", MODE_DISTRICT))   # a launch without a mode came from a pre-stack host
+	elif not solo_launch.is_empty():
+		seed_value = int(solo_launch.get("seed", 1))
+		mode = str(solo_launch.get("mode", mode))
+		solo_launch = {}
 	elif s.is_valid_int():
 		seed_value = int(s)
-	city = CityDistrict.new()
-	city.name = "City"
-	add_child(city)
+	if city_mode == "":
+		city_mode = mode
+	if city_mode == MODE_STACK:
+		stack = CityStack.new()
+		stack.name = "Stack"
+		add_child(stack)
+	else:
+		city_mode = MODE_DISTRICT
+		city = CityDistrict.new()
+		city.name = "City"
+		add_child(city)
 	if crewed:
 		_spawn_crew(params.get("crew", []) as Array, sess.local_id())
 	if mech == null:   # solo (or, defensively, a crew list without this machine in it)
@@ -73,11 +140,15 @@ func _ready() -> void:
 		add_child(mech)
 		mechs[MechSpawn.owner_of(mech)] = mech
 		spawn_order.append(MechSpawn.owner_of(mech))
+		var extra := Boot.arg_value(args, "--offline-crew")
+		_spawn_offline_crew(int(extra) if extra.is_valid_int() else offline_crew)
 	cam = ChaseCamera.new()
 	cam.name = "ChaseCamera"
 	cam.target = mech
 	add_child(cam)
 	cam.current = true
+	if stack != null:
+		stack.follow(cam)   # the daylight lights the deck this machine's camera is on (local presentation)
 	_build_hud()
 	build_city(seed_value)
 	combat = TestDriveCombat.new()
@@ -90,6 +161,7 @@ func _ready() -> void:
 	combat_audio.bind(combat.world, combat.rack, city.props, "player%d" % CombatWorld.local_peer())
 	combat_audio.bind_squad(combat.squad)
 	combat_audio.bind_player_target(combat.player_target)
+	_build_life()
 	var hud := MechHud.for_drive(self)   # weapons, heat, damage, crosshair + aim pips (scripts/ui/mech_hud.gd)
 	if combat.player_target != null:
 		hud.component_source = combat.player_target.component_fractions
@@ -101,6 +173,16 @@ func _ready() -> void:
 		crew_sync.setup(self, _seats)
 		if hud.crew_panel != null:
 			hud.crew_panel.status_source = crew_sync.status
+		enemy_sync = EnemySync.new()
+		enemy_sync.name = "EnemySync"
+		add_child(enemy_sync)
+		enemy_sync.setup(self)
+	if stack != null:
+		mission = MissionFlow.new()
+		mission.name = "MissionFlow"
+		add_child(mission)
+		mission.setup(self)
+		mission.finished.connect(func(_o: String) -> void: _leave_mission())
 	if DisplayServer.get_name() != "headless" and Audio != null and Audio.music != null:
 		Audio.music.set_ambience("city")
 		Audio.music.set_mode("calm")
@@ -113,7 +195,7 @@ func _ready() -> void:
 		sess.mission_go.connect(func(_elapsed: float) -> void: _held = false)
 		sess.mission_ended.connect(func(_reason: String) -> void: _back_to_menu())
 		sess.session_ended.connect(func(_reason: String) -> void: _back_to_menu())
-		sess.report_mission_built(city.plan.checksum())
+		sess.report_mission_built(mission_checksum())
 	if _shooting:
 		var after := float(Boot.arg_value(args, "--shot-after")) if Boot.arg_value(args, "--shot-after").is_valid_float() else 4.0
 		_shot.call_deferred(shot, after, args.has("--thrust"))
@@ -136,19 +218,36 @@ func _exit_tree() -> void:
 		Audio.music.set_mode("off")
 
 
-## Generate the district for `seed` and put the mechs on the central avenue.
+## Generate the city for `seed` (the stack, or one district) and put the mechs at the start: the stack's entry road, or
+## the district's central avenue.
 func build_city(seed: int) -> void:
 	seed_value = seed
-	city.build({"seed": float(seed), "walls": 1.0})
+	var entry := Transform3D.IDENTITY
+	if stack != null:
+		stack.position = Vector3.ZERO
+		stack.build(SectionPlan.make({"seed": float(seed)}))
+		var k := int(stack.section.entry["deck"])
+		stack.position = -stack.section.deck_offset(k)   # the entry deck's floor through the world origin
+		city = stack.decks[k]
+		entry = stack.entry_transform()
+	else:
+		city.build({"seed": float(seed), "walls": 1.0})
 	var n := spawn_order.size()
 	for i in n:
 		var m: MechController = mechs[spawn_order[i]]
-		m.ring = city.ring
+		m.ring = city.ring   # stack: the entry deck's frame, on the shared axis (right on every deck)
 		var ma := m.get_node_or_null("Audio") as MechAudio
 		if ma != null:
 			ma.city = city
-		var at := spawn_point(i, n)
-		var xf := Transform3D(city.ring.basis_at_arc(at.y), city.ring.arc_to_world(at.x, at.y, CityPlan.CURB_H + 0.3))
+		_audio_deck.erase(spawn_order[i])
+		var xf: Transform3D
+		if stack != null:
+			# The stack's crew slots: one column per carriageway (clear of the planted median and the rail lane), rows
+			# going in, slid past anything blocking (plan data only: the same on every machine).
+			xf = crew_spawn(i, n)
+		else:
+			var at := spawn_point(i, n)
+			xf = Transform3D(city.ring.basis_at_arc(at.y), city.ring.arc_to_world(at.x, at.y, CityPlan.CURB_H + 0.3))
 		if m == mech:
 			_spawn = xf
 		else:
@@ -160,6 +259,46 @@ func build_city(seed: int) -> void:
 		combat.rebuild_encounters(self)
 	if combat_audio != null and city.props != null:
 		combat_audio.bind_props(city.props)
+	if life != null:
+		_setup_life()
+	if mission != null:
+		mission.rebuild()   # solo N: the new city's section and objectives
+
+
+## Ambient life for this scene: the city's civilians and vehicles, pushed by every mech (puppets too: src = owner peer)
+## and every enemy (src -1), seen from every mech and the camera.
+func _build_life() -> void:
+	life = AmbientLife.new()
+	life.name = "AmbientLife"
+	add_child(life)
+	_setup_life()
+	life.bind_combat(combat.world)
+	for p: int in mechs:
+		life.add_viewer(mechs[p])
+	life.add_viewer(cam)
+	if combat.squad != null:
+		combat.squad.enemy_spawned.connect(func(e: EnemyBase) -> void:
+			if life != null and is_instance_valid(e):
+				life.add_pusher(e, e.body_radius, -1))
+		combat.squad.enemy_removed.connect(func(e: EnemyBase) -> void:
+			if life != null:
+				life.remove_pusher(e))
+
+
+## (Re)build life on the current city and register the pushers (also after N rebuilt the city).
+func _setup_life() -> void:
+	if stack != null:
+		life.setup_stack(stack)
+	else:
+		life.setup(city)
+		if city.props != null:
+			life.bind_props(city.props)
+	for p: int in mechs:
+		life.add_pusher(mechs[p], 1.0, p)
+	if combat != null and combat.squad != null:
+		for e in combat.squad.enemies:
+			if is_instance_valid(e):
+				life.add_pusher(e, e.body_radius, -1)
 
 
 ## Where the i-th of n mechs starts, as (x across the avenue, s along it) in the district's arc frame. The central avenue
@@ -170,6 +309,98 @@ static func spawn_point(i: int, n: int) -> Vector2:
 	if n <= 1:
 		return Vector2(0.0, 12.0)
 	return Vector2(-4.0 + 8.0 * float(i % 2), 12.0 + 10.0 * floorf(i / 2.0))
+
+
+## Stack mode: where the i-th of n mechs starts, around the section's entry transform (CityStack.entry_transform(): on
+## the avenue lane of the entry road, 18 m wide, facing into the map). The same layout as spawn_point: alone, right on
+## the entry; a crew in two columns 8 m apart across the lane and rows 10 m apart going in, in seat order. Offsets follow
+## the deck's curve (arc coordinates of `deck`), each mech faces into the map. The same on every machine.
+static func entry_spawn(entry: Transform3D, deck: CityDistrict, i: int, n: int) -> Transform3D:
+	var off := Vector2.ZERO if n <= 1 else Vector2(-4.0 + 8.0 * float(i % 2), 10.0 * floorf(i / 2.0))
+	var to_deck := deck.global_transform if deck.is_inside_tree() else deck.transform
+	var local := to_deck.affine_inverse() * entry
+	var ring := deck.ring
+	var a := ring.world_to_arc(local.origin)
+	var ahead := signf((-local.basis.z).dot(ring.tangent_at(local.origin)))
+	var right := signf(local.basis.x.x)
+	var p := ring.arc_to_world(a.x + right * off.x, a.y + ahead * off.y, a.z)
+	return to_deck * Transform3D(ring.basis_at(p, ring.tangent_at(p) * ahead), p)
+
+
+## Stack mode: the i-th of n crew slots, from CityStack.spawn_transforms(n) (one column per carriageway, clear of the
+## planted median and the rail lane, rows going in, slid past anything blocking: plan data only, the same on every
+## machine). Beyond the stack's 4 slots (offline perf crews), entry_spawn() around the entry.
+func crew_spawn(i: int, n: int) -> Transform3D:
+	var slots := stack.spawn_transforms(n)
+	if i < slots.size():
+		return slots[i]
+	return entry_spawn(stack.entry_transform(), city, i, n)
+
+
+## Which city a solo test drive builds from the command line: --district gives the single district, otherwise (or
+## --stack) the multi-deck stack.
+static func launch_mode(args: PackedStringArray) -> String:
+	return MODE_DISTRICT if args.has("--district") and not args.has("--stack") else MODE_STACK
+
+
+## The enemies of this mission (TestDriveCombat.rebuild_encounters asks): solo, EnemySpawner in front of the local
+## mech's spawn (as before). Crew mission: the host spawns them around encounter_origin() (the same spot whatever seat it
+## has), scaled to the crew size, each tagged with its spawn_deck; a client spawns none (EnemySync builds the host's as
+## puppets).
+func spawn_enemies(w: CombatWorld, sq: EnemySquad) -> Array[EnemyBase]:
+	var sess := Net.session()
+	if crewed and sess != null and sess.online() and not sess.hosting:
+		return [] as Array[EnemyBase]
+	var origin := encounter_origin() if crewed else mech.global_position
+	var crew := spawn_order.size() if crewed else 1
+	if stack == null:
+		var one := EnemySpawner.spawn_all(city.plan, city.ring, origin, w, sq, seed_value, false, crew)
+		enemies_spawned = true
+		return one
+	# Stack: one encounter on EVERY deck, in that deck's plan and frame (deck_ring), laid out from the entry's spot in the
+	# deck's own arc coordinates; the plan (from the mission seed and the deck index) seeds it. Ids on decks other than the
+	# entry's get a "d<k>_" prefix (unique target ids for CombatNet / EnemySync). Each enemy paths on its deck's road
+	# graph and engages only targets on its deck (EnemySquad.deck_of).
+	sq.deck_of = stack.deck_at
+	var entry_k := int(stack.section.entry["deck"])
+	var ea := stack.to_deck_arc(origin)
+	var out: Array[EnemyBase] = []
+	for k in stack.decks.size():
+		sq.add_deck_nav(k, stack.decks[k].plan)
+		var o := origin if k == entry_k else stack.from_deck_arc(k, float(ea["x"]), float(ea["s"]), float(ea["h"]))
+		out.append_array(EnemySpawner.spawn_all(stack.decks[k].plan, city.ring if k == entry_k else stack.deck_ring(k), o, w,
+			sq, seed_value, false, crew, "" if k == entry_k else "d%d_" % k, k))
+	enemies_spawned = true
+	return out
+
+
+## Where the encounter is laid out from: the stack's entry, or the district's first spawn slot (the solo spawn).
+func encounter_origin() -> Vector3:
+	if stack != null:
+		return stack.entry_transform().origin
+	var at := spawn_point(0, 1)
+	return city.ring.arc_to_world(at.x, at.y, CityPlan.CURB_H + 0.3)
+
+
+## Alive enemies per deck (MissionRules.evaluate's "enemies"): every deck of the stack (one for a district). Right on the
+## host; a client's puppets follow the host's destruction events.
+func enemies_alive_per_deck() -> Array[int]:
+	var decks := stack.decks.size() if stack != null else 1
+	return EnemySync.alive_per_deck(combat.squad.enemies if combat != null and combat.squad != null else [], decks)
+
+
+## What the load barrier compares: the stack's checksum (section + every deck's plan) or the district plan's.
+func mission_checksum() -> String:
+	if stack != null:
+		return stack.checksum()
+	return city.plan.checksum() if city != null and city.plan != null else ""
+
+
+## The distance from the habitat's axis below which the city has floor (the lowest deck's floor radius).
+func floor_radius() -> float:
+	if stack != null and stack.section != null:
+		return stack.section.radius_of(stack.section.deck_count - 1)
+	return city.ring.radius if city != null and city.ring != null else 0.0
 
 
 func respawn() -> void:
@@ -204,14 +435,39 @@ func _spawn_crew(crew: Array, local_peer: int) -> void:
 		_seats[peer] = int(e.get("seat", spawn_order.size()))
 
 
+## Offline crew (tests): mechs 2..n as idle puppets with fake owner peers, in seat order after your mech.
+func _spawn_offline_crew(n: int) -> void:
+	for seat in range(2, mini(n, NetSession.MAX_CREW) + 1):
+		var peer := OFFLINE_PEER + seat
+		var m := MechSpawn.make(NetSession.DEFAULT_HEAD, NetSession.DEFAULT_CHASSIS, {}, peer, NetSession.DEFAULT_ACCENT)
+		m.name = "Mech_p%d" % peer
+		m.puppet = true
+		add_child(m)
+		mechs[peer] = m
+		spawn_order.append(peer)
+		_seats[peer] = seat
+
+
 ## The mech owned by `peer` (null if none).
 func mech_of(peer: int) -> MechController:
 	return mechs.get(peer) as MechController
 
 
 func _back_to_menu() -> void:
-	if crewed and is_inside_tree() and get_tree().current_scene == self:
+	if crewed and not _leaving and is_inside_tree() and get_tree().current_scene == self:
+		_leaving = true
 		get_tree().change_scene_to_file.call_deferred(Boot.MENU_SCENE)
+
+
+## The mission's end flow is over (MissionFlow.finished): back to the hangar. A crew goes there through the menu (online:
+## the hangar); solo asks the menu for its hangar. Only when this scene is the running one (tests keep theirs).
+func _leave_mission() -> void:
+	if _leaving or not is_inside_tree() or get_tree().current_scene != self:
+		return
+	_leaving = true
+	if not crewed:
+		FrontEnd.next_screen = "hangar"
+	get_tree().change_scene_to_file.call_deferred(Boot.MENU_SCENE)
 
 
 func _make_mech() -> MechController:
@@ -226,7 +482,7 @@ func _make_mech() -> MechController:
 	return m
 
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	if mech == null:
 		return
 	if _held and not drive_override:
@@ -247,9 +503,32 @@ func _physics_process(_delta: float) -> void:
 			cam.zoomed = Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
 		# Turn the body toward the camera's yaw (full turn input beyond ~15 degrees off).
 		mech.turn_input = clampf(cam.yaw_error() * 4.0, -1.0, 1.0)
-	# Fell out of the district: back to the spawn.
-	if city.ring != null and city.ring.height(mech.global_position) < -25.0:
+	# Fell out of the city (below the lowest deck's floor): back to the spawn.
+	if stack != null:
+		if stack.fell_out(mech.global_position, FALL_OUT):
+			respawn()
+	elif city != null and city.ring != null and city.ring.dist_to_axis(mech.global_position) > floor_radius() + FALL_OUT:
 		respawn()
+	if stack != null:
+		_audio_check -= delta
+		if _audio_check <= 0.0:
+			_audio_check = 0.25
+			_follow_audio_decks()
+
+
+## Stack: each mech's footstep surfaces come from the deck it is on (MechAudio.city), switched when it changes deck.
+func _follow_audio_decks() -> void:
+	for p: int in mechs:
+		var m := mechs[p] as MechController
+		if m == null or not is_instance_valid(m):
+			continue
+		var k := stack.deck_at(m.global_position)
+		if int(_audio_deck.get(p, -1)) == k:
+			continue
+		_audio_deck[p] = k
+		var ma := m.get_node_or_null("Audio") as MechAudio
+		if ma != null:
+			ma.city = stack.decks[k]
 
 
 func _unhandled_input(e: InputEvent) -> void:

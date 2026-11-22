@@ -59,6 +59,9 @@ func bind(w: CombatWorld, r: WeaponRack = null, pr: Node = null, local_shooter_i
 				world.connect("impact_spawned", _on_impact_spawned)
 		elif not world.shake.is_connected(_on_shake_fallback):
 			world.shake.connect(_on_shake_fallback)
+		# W8 (Weapons, logged): repair drone launches (local and remote) are heard at the drone.
+		if not world.drone_launched.is_connected(_on_drone_launched):
+			world.drone_launched.connect(_on_drone_launched)
 		_sync_targets()
 	if rack != null:
 		if not rack.slot_changed.is_connected(_on_slot_changed):
@@ -74,6 +77,20 @@ func bind_props(pr: Node) -> void:
 	props = pr
 	if props.has_signal("prop_moved") and not props.is_connected("prop_moved", _on_prop_moved):
 		props.connect("prop_moved", _on_prop_moved)
+
+
+## W8 (Weapons, logged): in the city stack every deck has its own CityProps; `props` is only the entry deck's. Connect
+## prop_moved on every deck's props too (CombatWorld.city_stack / deck_props), re-checked on the 0.5 s scan.
+func _bind_deck_props() -> void:
+	if world == null or world.city_stack() == null:
+		return
+	var decks: Variant = world.city_stack().get("decks")
+	if not (decks is Array):
+		return
+	for k in (decks as Array).size():
+		var pr := world.deck_props(k)
+		if pr != null and pr.has_signal("prop_moved") and not pr.is_connected("prop_moved", _on_prop_moved):
+			pr.connect("prop_moved", _on_prop_moved)
 
 
 func bind_squad(sq: Node) -> void:
@@ -133,6 +150,7 @@ func step(delta: float) -> void:
 			bind_squad(get_tree().get_first_node_in_group("enemy_squad"))
 		if player_target == null:
 			bind_player_target(get_tree().get_first_node_in_group("player_target"))
+		_bind_deck_props()
 	if world != null:
 		_sync_targets()
 		_step_mortar_whistles(a)
@@ -365,6 +383,14 @@ func _check_target_transitions(a: AudioDirector, t: CombatTarget, hit: Hit) -> v
 			a.play_2d("combat.hit.weak", 1.0, 0.85, AudioDirector.BUS_SFX_PLAYER)
 	rec["hp"] = t.hp.duplicate()
 	rec["dead"] = now_dead
+
+
+## W8 (Weapons, logged): a repair drone launch, the launcher's own or a crew member's (CombatNet replays it here).
+func _on_drone_launched(_record: Dictionary, d: RepairDrone) -> void:
+	var a := _audio()
+	if a == null or d == null:
+		return
+	a.play_3d("mech.thrust.ignite", d.pos, 0.0, 1.35, "weapon", AudioDirector.BUS_SFX_WORLD)
 
 
 func _on_target_staggered(_src: String, t: CombatTarget) -> void:

@@ -66,6 +66,7 @@ func build_pieces() -> void:
 	add_piece("NeckLow", "", Vector3(0.0, 0.0, 0.08))
 	var k := kit()
 	k.loft([_ring(SECS[0]), _ring(SECS[1])], FUR, false, false)
+	add_neck_plug(k, _ring(SECS[0]))
 	add_mesh("NeckLow", k)
 
 	add_piece("NeckHigh", "NeckLow", Vector3(0.0, 0.3, 0.06))

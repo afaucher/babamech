@@ -84,6 +84,8 @@ Every scene with tunable params is registered in `LabRegistry.SUBJECTS` and impl
 - **Serial tests**: a test that measures wall-clock time (a frame budget) declares `const SERIAL := true`; the runner
   takes it out of the parallel batch and runs it last, alone (`tests/test_perf.gd`). Other tests must not time themselves
   against the wall clock.
+- **Ports**: the runner gives every net run a random free port (and retries a failed host bind); a single-process test
+  that opens a crew uses `test_port(fallback)`. Never hard-code a port in a test (`docs/testing.md` "Ports").
 - `.\build.ps1` runs the tests and exports.
 - In a worktree, set `$env:BABAMECH_GODOT` to the Godot console exe and copy `addons/godotsteam/win64/*.dll` from the
   main checkout (gitignored).

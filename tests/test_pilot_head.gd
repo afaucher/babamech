@@ -69,7 +69,9 @@ func _ch_diff(a: Dictionary, b: Dictionary) -> float:
 	return worst
 
 
-func _bounds(h: PilotHead) -> AABB:
+## The head's bounds in its own frame; `above_base` leaves out the collar plug under the neck base (the static heads
+## have none).
+func _bounds(h: PilotHead, above_base: bool = false) -> AABB:
 	var inv := h.global_transform.affine_inverse()
 	var box := AABB()
 	var first := true
@@ -78,6 +80,9 @@ func _bounds(h: PilotHead) -> AABB:
 		var b := (inv * m.global_transform) * m.get_aabb()
 		box = b if first else box.merge(b)
 		first = false
+	if above_base and box.position.y < 0.0:
+		box.size.y += box.position.y
+		box.position.y = 0.0
 	return box
 
 
@@ -88,9 +93,13 @@ func _check_build(id: String) -> void:
 		check(h.piece(n) != null, "%s has piece %s" % [id, n])
 	for n: String in h.face.flair_pieces:
 		check(h.piece(n) != null, "%s has flair piece %s" % [id, n])
-	var faces := h.face_count()
-	check(faces >= 150 and faces <= 210, "%s is in the face budget 150-210 (%d)" % [id, faces])
-	var bb := _bounds(h)
+	# The budget is for the head itself; the neck seal's collar plug (PilotFace.add_neck_plug) comes on top.
+	var faces := h.face_count() - PilotFace.PLUG_FACES
+	check(faces >= 150 and faces <= 210, "%s is in the face budget 150-210 (%d + %d for the neck seal)"
+		% [id, faces, PilotFace.PLUG_FACES])
+	var full := _bounds(h)
+	near(full.position.y, -PilotFace.PLUG_DEPTH, 0.005, "%s: only the collar plug reaches below the neck base (%s)" % [id, full])
+	var bb := _bounds(h, true)
 	check(bb.position.y > -0.01 and bb.end.y > 1.0, "%s stands on its neck base, top above 1.0 (%s)" % [id, bb])
 	if id in MechMeshes.HEADS:   # the stern rest pose is the static head
 		var sb := MechMeshes.build("head_" + id).get_aabb()

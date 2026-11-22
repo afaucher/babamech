@@ -113,6 +113,7 @@ func setup() -> void:
 
 	# 3. Test Drive rooftop vantage looking down the occupied avenue (matches user screenshot perspective).
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td.city_mode = TestDrive.MODE_DISTRICT   # the rooftop camera below sits at district arc coordinates (avenue at x = 0); W4 kept it
 	add_child(td)
 	await frames(12)
 	td.drive_override = true

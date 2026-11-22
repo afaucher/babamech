@@ -57,6 +57,7 @@ func build_pieces() -> void:
 	var k := kit()
 	k.loft([_ring(secs[0]), _ring(secs[1]), _ring(secs[2])], [MechHeadMeshes.DUCK_BROWN, MechHeadMeshes.DUCK_RING],
 		false, false)
+	add_neck_plug(k, _ring(secs[0]))
 	add_mesh("NeckLow", k)
 
 	# Upper neck: starts hidden inside the ring, so it can stretch up without a gap.
@@ -100,8 +101,7 @@ func pose_neck(neck: PilotNeck) -> void:
 	var slump := maxf(-neck.flair_level, 0.0)
 	var low := neck.low + Vector3(deg_to_rad(SLUMP_LOW) * slump, 0.0, 0.0)
 	var high := neck.high + Vector3(deg_to_rad(SLUMP_HIGH) * slump, 0.0, 0.0)
-	set_pose("NeckLow", Basis.from_euler(low), Vector3(0.0, -neck.shift.x - SLUMP_SINK * slump, -neck.shift.y))
-	set_pose("NeckHigh", Basis.from_euler(high), Vector3(0.0, NECK_TALL * tall, 0.0))
+	pose_neck_joints(low, high, neck.shift.x + SLUMP_SINK * slump, neck.shift.y, Vector3(0.0, NECK_TALL * tall, 0.0))
 	var sq := neck.squash
 	set_pose("Skull", Basis.from_scale(Vector3(1.0 + sq * squash_width, 1.0 - sq, 1.0 + sq * squash_width)))
 

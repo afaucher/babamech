@@ -17,6 +17,8 @@ const SEED := 7
 var crew_size := 2
 ## Index of the client that perturbs its checksum and must be sent out (-1 = none).
 var desync_index := -1
+## The city the host launches: the stack (the default) or one district (test_net_mission_desync keeps that path covered).
+var mission_mode := NetMission.MODE_STACK
 var td: TestDrive
 
 
@@ -31,7 +33,7 @@ func run_host() -> void:
 		return
 	var started := [false]
 	Session.mission_started.connect(func(_p: Dictionary) -> void: started[0] = true)
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.start_mission(SEED, mission_mode), "the host launches the mission (%s)" % mission_mode)
 	check(started[0], "mission_started fires on the host too")
 	check(not Session.start_mission(SEED + 1), "a second launch while one is under way is refused")
 	eq(Session.crew_state, "mission", "the crew is on a mission")
@@ -55,6 +57,7 @@ func run_host() -> void:
 	check(not td._held, "the host's mech is released after the barrier")
 	var mine := _summary()
 	eq(int(mine["seed"]), SEED, "the host built the mission seed")
+	eq(str(mine["mode"]), str(Session.mission_params().get("mode", "")), "the host built the launched city mode")
 	eq(str(mine["mechs"]), _expected_mechs(), "the host spawned one mech per crew member with its owner, head, accent and loadout")
 	check(bool(mine["local_driven"]), "the host drives its own mech")
 	if not check(await wait_reports("mission", expected - 1, 40.0), "every client reports its mission"):
@@ -63,6 +66,7 @@ func run_host() -> void:
 		var theirs: Dictionary = reported(p, "mission")
 		eq(int(theirs["seed"]), SEED, "peer %d built the mission seed" % p)
 		eq(str(theirs["checksum"]), str(mine["checksum"]), "peer %d has the host's city checksum" % p)
+		eq(str(theirs["mode"]), str(mine["mode"]), "peer %d built the same kind of city (%s)" % [p, str(mine["mode"])])
 		eq(str(theirs["crew_state"]), "mission", "peer %d knows the crew is on a mission" % p)
 		eq(str(theirs["mechs"]), str(mine["mechs"]), "peer %d has the same mechs (owners, heads, accents, loadouts)" % p)
 		check(bool(theirs["local_driven"]), "peer %d drives its own mech" % p)
@@ -90,6 +94,7 @@ func run_client() -> void:
 	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
 		return
 	eq(int(Session.mission_params()["seed"]), SEED, "the launch carries the seed")
+	eq(str(Session.mission_params()["mode"]), mission_mode, "the launch carries the city mode")
 	eq(Session.crew_state, "mission", "the crew is on a mission here too")
 	if index == desync_index:
 		Session.mission.checksum_salt = "-perturbed"
@@ -125,7 +130,7 @@ func _summary() -> Dictionary:
 		var m := td.mech_of(p)
 		var model := MechSpawn.rig_of(m).model
 		parts.append("%d:%d:%s:%s:%s" % [p, MechSpawn.owner_of(m), model.head_id, MechAccent.applied(model), loadout_signature(model.loadout)])
-	return {"seed": td.seed_value, "checksum": td.city.plan.checksum(), "crew_state": Session.crew_state, "mechs": ";".join(parts),
+	return {"seed": td.seed_value, "checksum": td.mission_checksum(), "mode": td.city_mode, "crew_state": Session.crew_state, "mechs": ";".join(parts),
 		"local_driven": td.mech != null and MechSpawn.owner_of(td.mech) == Session.local_id() and td.cam.target == td.mech,
 		"held": td._held}
 

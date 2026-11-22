@@ -442,6 +442,7 @@ func _place_leg(leg: Dictionary, hip: Vector3, knee: Vector3, ankle: Vector3, fo
 		(leg["knee"] as Node3D).transform = Transform3D(cap_basis, knee)
 		(leg["ankle"] as Node3D).transform = Transform3D(cap_basis, ankle)
 		(leg["foot"] as Node3D).transform = Transform3D(Basis(Vector3.UP, foot_yaw).scaled(Vector3.ONE * s), foot)
+		_seat_socket(leg, hip, knee, tw, s)
 		return
 	MechParts.span(leg["thigh"], hip, knee, 0.32 * s, 0.4 * s)
 	MechParts.span(leg["shin"], knee, ankle, 0.24 * s, 0.3 * s)
@@ -449,6 +450,28 @@ func _place_leg(leg: Dictionary, hip: Vector3, knee: Vector3, ankle: Vector3, fo
 	(leg["knee"] as Node3D).position = knee
 	(leg["ankle"] as Node3D).position = ankle
 	(leg["foot"] as Node3D).transform = Transform3D(Basis(Vector3.UP, foot_yaw), foot)
+
+
+## The hip socket's cup leans away from the thigh: SOCKET_TILT forward of upright in the standing pose (back with the
+## old knee-forward leg), plus SOCKET_FOLLOW of the thigh's fore-aft swing from there. A fixed tilt alone cannot clear
+## both ends of the swing (the thigh pod flares wide right under the ball, so swung fully back its upper end rises
+## into the back of the cup, swung forward into the front); riding along with a share of the swing clears both.
+## It pitches about the hip's own left-right axis: the pivot stays on the hip and the strut stays buried in the pelvis.
+const SOCKET_TILT := 0.5236     ## 30 degrees
+const SOCKET_FOLLOW := 0.6
+
+
+func _seat_socket(leg: Dictionary, hip: Vector3, knee: Vector3, tw: Basis, s: float) -> void:
+	if not leg.has("socket"):
+		return
+	var b := _bend()
+	var d := tw.inverse() * (_body.transform.basis.orthonormalized().inverse() * (knee - hip))
+	var pitch := atan2(d.z, -d.y)                                  # the thigh, + = back from straight down
+	var rest := -lerpf(0.3, 0.95, float(params["crouch"])) * b     # its standing pitch (pose()'s a_t)
+	var tilt := b * SOCKET_TILT - SOCKET_FOLLOW * (pitch - rest)   # about +X: negative leans the cup forward
+	var side := float(leg["side"])
+	(leg["socket"] as Node3D).transform = Transform3D(tw * Basis(Vector3.RIGHT, tilt) * Basis.from_scale(Vector3(side, 1, 1) * s),
+			tw * _hip_in_body(side))
 
 
 ## MechParts.aim with the leg's own right (the hip twist turns it): a low-poly segment from joint `a` down to `b`,
@@ -513,6 +536,7 @@ func lab_options() -> Array:
 	for hp: Dictionary in MechCatalog.chassis(chassis_id)["hardpoints"]:
 		var choices: Array = [""]
 		choices.append_array(MechCatalog.weapons_for(str(hp["mount"])))
+		choices.append_array(MechCatalog.equipment_for(str(hp["mount"])))   # back: repair_drone, radiator, ammo_bin
 		out.append({"id": "hp:" + str(hp["id"]), "label": str(hp["label"]), "choices": choices, "value": str(loadout.get(hp["id"], ""))})
 	return out
 

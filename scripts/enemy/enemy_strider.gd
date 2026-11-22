@@ -84,6 +84,14 @@ func _track_aim(target_pos: Vector3, dt: float) -> float:
 	return absf(want_yaw - _aim_yaw)
 
 
+func puppet_aim() -> Vector2:   # co-op puppet (W4)
+	return Vector2(_aim_yaw, 0.0)
+
+
+func set_puppet_aim(a: Vector2) -> void:
+	_aim_yaw = a.x
+
+
 func _update_visuals(dt: float) -> void:
 	super._update_visuals(dt)
 	if _chassis_pivot == null:

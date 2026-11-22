@@ -6,12 +6,13 @@ extends RefCounted
 ##
 ##   position   cubic Hermite on all three axes from the samples' positions AND velocities (the deck curves, so "up"
 ##              is not one axis); linear across a stall (samples more than LINEAR_GAP apart)
-##   velocity, leg_yaw, heat, aim, impact   linear
+##   velocity, leg_yaw, heat, aim, impact, mount aims   linear
 ##   yaw        the short way round
-##   flags      (grounded, thrust, emergency, shutdown, hover, designator) a step: the earlier sample's
+##   flags      (grounded, thrust, emergency, shutdown, hover, designator, disabled), component HP, disable cause: a
+##              step, the earlier sample's
 ##
-## Past the newest sample (a packet late or lost) the puppet extrapolates along the last velocity for up to EXTRAP_MAX,
-## then holds. A TELEPORT (the sample's counter changed: a respawn) empties the buffer, so the puppet jumps to the new
+## Past the newest sample (a packet late or lost) the puppet extrapolates along the last velocity and turn rate (yaw_rate)
+## for up to EXTRAP_MAX, then holds. A TELEPORT (the sample's counter changed: a respawn) empties the buffer, so the puppet jumps to the new
 ## spot and never slides across the gap (take_teleport tells the game to re-plant the feet).
 ##
 ## The delay adapts: the 90th percentile of how late samples arrive (arrival minus sample time) plus MARGIN, never below
@@ -114,7 +115,9 @@ func sample(t: float) -> NetMechState:
 	if t >= last.t:
 		starved += 1
 		var s := last.copy()
-		s.pos += last.vel * minf(t - last.t, EXTRAP_MAX)
+		var ahead := minf(t - last.t, EXTRAP_MAX)
+		s.pos += last.vel * ahead
+		s.yaw = wrapf(last.yaw + yaw_rate() * ahead, -PI, PI)
 		s.t = t
 		return s
 	var i := samples.size() - 2
@@ -137,7 +140,23 @@ func sample(t: float) -> NetMechState:
 	out.heat = lerpf(a.heat, b.heat, u)
 	out.last_impact = b.last_impact if u > 0.5 else a.last_impact
 	out.aim = a.aim.lerp(b.aim, u)
+	if a.mount_aim.size() == b.mount_aim.size():
+		for c in a.mount_aim.size():
+			out.mount_aim[c] = lerpf(a.mount_aim[c], b.mount_aim[c], u)
 	return out
+
+
+## The heading's turn rate (rad/s) between the two newest samples, the short way round (0 across a stall, LINEAR_GAP):
+## a late packet mid-turn keeps the puppet turning instead of freezing its heading while its position extrapolates.
+func yaw_rate() -> float:
+	if samples.size() < 2:
+		return 0.0
+	var a := samples[samples.size() - 2]
+	var b := samples[samples.size() - 1]
+	var h := b.t - a.t
+	if h <= 0.0001 or h > LINEAR_GAP:
+		return 0.0
+	return angle_difference(a.yaw, b.yaw) / h
 
 
 ## Cubic Hermite: positions p0 / p1, velocities v0 / v1 (per second), samples h seconds apart, u in 0..1.

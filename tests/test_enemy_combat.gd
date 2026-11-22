@@ -248,7 +248,7 @@ func _player_target_and_rack() -> void:
 	near(float(pt.component_fractions()["side_r"]), 0.0, 0.001, "component_fractions reports 0 for broken hardpoint")
 	check(pt.is_slot_destroyed("side_r"), "is_slot_destroyed true for side_r")
 	var sl2: Dictionary = rack.slots()[1]
-	eq(str(sl2["hold"]), "destroyed", "WeaponRack reports destroyed hold flag on broken slot")
+	eq(str(sl2["hold"]), "DESTROYED", "WeaponRack reports destroyed hold flag on broken slot")
 	var shots := [0]
 	rack.fired.connect(func(n: int) -> void:
 		if n == 2:

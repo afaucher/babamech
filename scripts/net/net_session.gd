@@ -30,8 +30,8 @@ extends Node
 ## interprets them. `loadout` ({hardpoint id: weapon id}) is the one exception: the host makes it valid for the entry's
 ## chassis on receipt (clean_loadout: MechCatalog.sanitize_loadout), so every machine builds the same weapons.
 ##
-## MISSION (co-op step 1, cast's M1): NetMission, child "Mission". The host's Launch is start_mission(seed): one reliable
-##   mission.launch {seed, start_t, crew} to the crew; every machine (the host too) gets mission_started(params), plays
+## MISSION (co-op step 1, cast's M1): NetMission, child "Mission". The host's Launch is start_mission(seed, mode): one
+##   reliable mission.launch {seed, mode, start_t, crew} to the crew (mode: "stack" or "district"); every machine (the host too) gets mission_started(params), plays
 ##   the bay alert until start_t on the shared clock, then loads the mission. Each machine reports its city checksum
 ##   (report_mission_built), the host compares them behind a load barrier (a mismatch is sent out with DESYNC), then
 ##   mission.go {start_at}: mission_go(elapsed) fires on every machine at start_at. See net_mission.gd.
@@ -39,6 +39,10 @@ extends Node
 ## MECH SNAPSHOTS (co-op step 2, cast's M2): NetMechStream, child "Mechs" (`mechs`). Each machine streams its own mech
 ##   on NetWire.T_SNAP (unreliable, 30 Hz, client -> host; the host forwards the others' to each client) and shows the
 ##   crew's as puppets interpolated ~100 ms behind host_time(). The game calls mechs.begin / feed / pose / end.
+##
+## ENEMIES (W4, cast's M3): NetEnemyStream, child "Enemies" (`enemies`). The host runs every enemy and streams them on
+##   NetWire.T_ENEMY (unreliable, ACTIVE_RATE / IDLE_RATE); clients show puppets ~100 ms behind host_time(). Spawns,
+##   telegraphs, destruction and enemy fire are reliable "enemy.*" events (scripts/game/enemy_sync.gd).
 ##
 ## LEAVING. A client leaves: the host drops it from the roster. The host leaves (or dies, or goes silent for HOST_SILENCE):
 ## every client's session ends with HOST_LEFT. No host migration. session_ended(reason) fires for every way a session (or
@@ -77,6 +81,9 @@ signal mission_go(elapsed: float)
 ## A client: the host ended the mission (mission.end). Back to the hangar. (Not emitted for this machine's own
 ## end_mission(), nor when the session itself ends: session_ended covers that.)
 signal mission_ended(reason: String)
+## A client: the host decided new mission progress (mission.state, MissionRules.state(): outcome, reason, done, left,
+## current). Not emitted on the host (it decided it).
+signal mission_state_changed(state: Dictionary)
 ## A non-system reliable event from a crew member (gameplay events, test probes).
 signal event_received(from: int, kind: String, data: Dictionary, stamp: float)
 ## A non-system unreliable packet that passed the sequence check.
@@ -110,6 +117,8 @@ const NO_ANSWER := "The crew never answered"
 const NO_CREWS := "No crews open right now"
 const STEAM_OFF := "Steam not running"
 const ON_MISSION := "That crew is on a mission"
+const RELAY := "net.relay"           ## broadcast_event, client -> host
+const RELAY_FWD := "net.relay_fwd"   ## broadcast_event, host -> the other clients
 const DESYNC := "Desync: different city"
 const LOAD_SLOW := "Didn't load the mission in time"
 
@@ -148,6 +157,8 @@ var wire: NetWire = null
 var mission: NetMission = null
 ## Mech snapshots (co-op step 2): the local mech streamed, the crew's shown as puppets. See net_mech_stream.gd.
 var mechs: NetMechStream = null
+## The host-owned enemies' stream (W4): child "Enemies" (scripts/net/net_enemy_stream.gd).
+var enemies: NetEnemyStream = null
 var lobby: SteamLobby = null
 var clock := NetClock.new()
 var telemetry: NetTelemetry = null
@@ -180,6 +191,9 @@ func _ready() -> void:
 	mechs = NetMechStream.new()
 	mechs.name = "Mechs"
 	add_child(mechs)
+	enemies = NetEnemyStream.new()
+	enemies.name = "Enemies"
+	add_child(enemies)
 	wire.event_received.connect(_on_event)
 	wire.packet_received.connect(_on_packet)
 	lobby = SteamLobby.new()
@@ -411,6 +425,19 @@ func send_event(to: int, kind: String, data: Dictionary = {}) -> void:
 		wire.send_event(1, kind, data)
 
 
+## Send a reliable event to EVERY other crew member, relayed by the host: a client sends it to the host, which hears it
+## (event_received(sender, kind, data, stamp)) and forwards it to the other clients, who hear it from the original sender
+## with the original stamp; the host's own goes straight to every client. The sender does not hear its own (apply it
+## locally). `kind` must not start with "sys.".
+func broadcast_event(kind: String, data: Dictionary = {}) -> void:
+	if state != State.ONLINE or kind.begins_with("sys."):
+		return
+	if hosting:
+		_to_crew(RELAY_FWD, {"from": 1, "kind": kind, "data": data, "t": host_time()})
+	else:
+		wire.send_event(1, RELAY, {"kind": kind, "data": data})
+
+
 ## Send an unreliable, sequence-numbered packet (NetWire.T_SNAP and up, or T_TEST) to one member, or the whole crew
 ## (to = 0: one send, and one sequence stream, per member). Returns the sequence number, or -1 offline.
 func send_packet(to: int, type: int, payload: PackedByteArray) -> int:
@@ -434,20 +461,33 @@ func set_crew_state(s: String) -> void:
 
 # --- Mission (NetMission does the work; these are the calls game and UI code make) ------------------
 
-## Host: launch a mission for the crew on `seed` (mission.launch, then mission_started on every machine). False on a
-## client, offline (solo play loads the test drive itself), or while a mission is already under way.
-func start_mission(seed_value: int) -> bool:
-	return mission.host_launch(seed_value)
+## Host: launch a mission for the crew on `seed`, built as `mode` (NetMission.MODE_STACK, the multi-deck section, or
+## MODE_DISTRICT) (mission.launch, then mission_started on every machine). False on a client, offline (solo play loads
+## the test drive itself), or while a mission is already under way.
+func start_mission(seed_value: int, mode: String = NetMission.MODE_STACK) -> bool:
+	return mission.host_launch(seed_value, mode)
 
 
-## The launched mission's params ({seed, start_t, crew}), {} when none (offline, or between missions).
+## The launched mission's params ({seed, mode, start_t, crew}), {} when none (offline, or between missions).
 func mission_params() -> Dictionary:
 	return mission.params
 
 
-## This machine built the mission behind the load barrier: `checksum` is its city checksum (CityPlan.checksum()).
+## This machine built the mission behind the load barrier: `checksum` is its city checksum (TestDrive.mission_checksum():
+## CityStack.checksum() for a stack, CityPlan.checksum() for a district).
 func report_mission_built(checksum: String) -> void:
 	mission.report_built(checksum)
+
+
+## Host: the mission's progress changed (MissionRules.state()): sent to the crew as a reliable mission.state, and in
+## mission.go for late members. Ignored on a client or offline.
+func send_mission_state(state_: Dictionary) -> void:
+	mission.host_state(state_)
+
+
+## The latest mission progress the host decided ({} before the first, or between missions).
+func mission_state() -> Dictionary:
+	return mission.state
 
 
 ## Leave the mission: the host ends it for the whole crew (mission.end), a client just for itself.
@@ -771,6 +811,23 @@ func _on_event(from: int, kind: String, data: Dictionary, stamp: float) -> void:
 			_client_sys(from, kind, data)
 		return
 	if state != State.ONLINE or (hosting and not roster.has(from)) or (not hosting and from != 1):
+		return
+	if kind == RELAY and hosting:   # a client's broadcast_event: hear it, then pass it on to the others
+		var k := str(data.get("kind", ""))
+		var d: Variant = data.get("data", {})
+		if k == "" or k.begins_with("sys.") or not d is Dictionary:
+			return
+		event_received.emit(from, k, d, stamp)
+		for p: int in roster:
+			if p != 1 and p != from:
+				wire.send_event(p, RELAY_FWD, {"from": from, "kind": k, "data": d, "t": stamp})
+		return
+	if kind == RELAY_FWD and not hosting:
+		var k2 := str(data.get("kind", ""))
+		var d2: Variant = data.get("data", {})
+		if k2 == "" or k2.begins_with("sys.") or not d2 is Dictionary:
+			return
+		event_received.emit(int(data.get("from", 1)), k2, d2, float(data.get("t", stamp)))
 		return
 	event_received.emit(from, kind, data, stamp)
 

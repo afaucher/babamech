@@ -111,7 +111,8 @@ func _audit_mech_meshes() -> void:
 		var m := MechMeshes.mesh(part)
 		var st := _check_mesh_winding(m, "MechMeshes.%s" % part)
 		if part in ["torso", "pelvis", "back_plate", "shoulder_pylon", "shoulder_pod", "side_mount",
-				"thigh", "shin", "tarsus", "hip_socket", "hip_cap", "knee_cap", "ankle_cap", "foot", "toe", "spur"]:
+				"thigh", "shin", "tarsus", "hip_socket", "hip_cap", "knee_cap", "ankle_cap", "foot", "toe", "spur"] \
+				or part.trim_prefix("weapon_") in MechMeshes.EQUIPMENT:
 			eq(int(st["open_edges"]), 0, "MechMeshes.%s: watertight (0 open edges)" % part)
 	# Hatch flat top rim at y = 0.1 must face strictly +Y (no coplanar-centroid flip).
 	var hatch := MechMeshes.mesh("hatch")

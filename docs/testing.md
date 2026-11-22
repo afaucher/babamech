@@ -8,11 +8,57 @@ the why and the survey behind the scene tests.
 | `.\test_runner.ps1 -TestAll` | every `tests\test_*.gd` except visual tests; net tests as N processes | none (`--headless`) |
 | `.\test_runner.ps1 -TestName test_layout` | one test (comma-separate several) | none |
 | `.\test_runner.ps1 -Visual` | every test with `const VISUAL := true`, one at a time; waits for the GPU lock | real renderer, window on a hidden desktop |
+| `.\test_runner.ps1 -Visual -TestName test_visual_coop` | a visual test that also has `const PEERS := N`: N windowed processes at once (host + clients) | N windows on the hidden desktop, one GPU lock |
 
 `-TestAll` runs ordinary tests in parallel (up to cores - 4 processes), then net tests, then **serial tests**: a test
 whose source declares `const SERIAL := true` runs last, one at a time, with no other test process going. Use it for
 wall-clock budgets: `tests/test_perf.gd` ("CombatWorld+AI under 4 ms/frame") measured 0.7 ms mean / 2.4 ms max alone but
 3.9-4.2 ms max inside the parallel batch.
+
+## Ports
+
+Several sessions run tests at once, so fixed ports (the old `28000 + 10 * slot`, or a test's own `const PORT`) collided
+and failed net tests at random. Now `test_runner.ps1` (`Get-FreePort`) gives every net run a random port in 20000-59999
+that a UDP bind probe finds free and that no other run of the same runner holds (24600, `run.ps1 -Crew`, is skipped).
+If the host still fails to bind (another process took the port between the probe and Godot's bind: its log shows
+"the host opens port"), the runner prints `RETRY` and reruns it on a new port, up to twice. Single-process tests get a
+free port as `--net-port P` too; a test that opens a crew reads it with `TestCase.test_port(fallback)` (`test_menu`,
+`test_perf_coop`). Never hard-code a port in a test.
+
+## Co-op end-to-end test
+
+`tests/test_net_coop_e2e.gd` (2 processes, links off + coast) and `test_net_coop_e2e_4.gd` (a full crew, off), scenario
+`tests/net_coop_case.gd` (W9 of `docs/coordination/integration-plan.md`), play one crew mission from launch to end. At
+every step each machine reports what it has and the host asserts they all agree: (a) launch + barrier (seed, crew,
+build checksum), (b) the city (the stack's checksum, or the district's plan + geometry + props layout; every crew mech
+spawned, puppets with PlayerTargets), (c) everyone walks at one shared-clock moment and every puppet stands within
+0.5 m of its owner's stop, (d) everyone fires every weapon and every machine receives exactly every other machine's
+fire records (CombatNet), (e) with W4's host-owned enemies (AI idled by the host) a client fires at an enemy and
+finishes it with a lethal hit: the host decides the kill and every machine shows the same enemies (ids, core HP, dead
+flags, the wreck, alive per deck), (f) a client knocks a lamp and every deck's props snapshot matches, (g) down +
+revive (skipped: deferred by user decision), (x) W6's win: the crew kills every remaining enemy with real
+attacker-decided hits, the last client's mech goes into the extraction zone, the host decides won, and every machine
+went through the same `mission.state` sequence (`clear_0,extract,/won`) and shows MISSION COMPLETE, (h) the mission ends (after a win, the host's MissionFlow ends it: every client hears "Mission complete") and every machine is back in the lobby with the snapshot stream off.
+A step whose co-op API is not in yet is detected at runtime and skipped with a `TODO W9 skip <step>: <missing> (owner:
+<owner>)` line; the host ends with `[W9] summary: done [...] skipped [...]` (grep the `.host.log`). Nothing is faked:
+no machine writes another's state, nothing local-only is asserted as synced. When a missing API appears, the step says
+it is not written yet (owner: headless-tests) instead of passing silently.
+
+`tests/test_perf_coop.gd` (SERIAL) is the crew's frame budget in one process: the host opens a session alone, launches a
+real crew mission, adds three puppet mechs through `CrewSync.setup` and feeds each a synthetic 30 Hz snapshot stream into
+`Session.mechs.buffer(peer)` (only the wire and codec are not exercised). It measures a warm-up (discarded), the drive
+solo, then with the puppets: crew p95 under 11 ms and the 3 puppets under 4.5 ms per frame on average (the header has
+the measured numbers and why).
+
+## Test drive hooks (city mode, offline crew)
+- `td.city_mode = TestDrive.MODE_DISTRICT` (or `MODE_STACK`) on the instantiated scene, before `add_child`, forces the
+  city: the stack (multi-deck section, the default) or the single district. Tests whose numbers are tuned to the
+  district's avenue encounters (`test_enemy_effectiveness`, `test_weapon_rack`, `test_visual_enemies`) set district.
+  Command line: `--stack` / `--district`, `--seed N`.
+- `TestDrive.offline_crew = N` (static, set before the scene enters the tree; reset it after) or `--offline-crew N`: a
+  solo test drive with N mechs and no session, for headless perf runs. Mechs 2..N are idle puppets (`puppet` on, no
+  MechPuppet, no input or physics) with fake owner peers `TestDrive.OFFLINE_PEER + seat`, placed in the crew slots
+  (`TestDrive.entry_spawn` / `spawn_point`); their rigs, gait, FX and audio run. `test_stack_drive` checks it.
 
 ## Why scene tests
 
@@ -63,6 +109,25 @@ b, what)`. `tests/test_visual.gd` shoots the three menu screens and every lab su
 view each show detail. Checks are coarse on purpose: no golden images while the art changes daily; look at the shots.
 **Proof:** with the anchor fix reverted it fails 9 checks (`menu main mech preview is not blank (luminance std 0.000,
 1 colours)`).
+
+**Co-op visual tests (VISUAL + PEERS).** A visual test that also declares `const PEERS := N` runs under `-Visual` as N
+real windowed processes on the hidden desktop at once, like a net run: the host (`--net-role host`) first, the clients
+400 ms later, a port from `Get-FreePort`, `--max-fps 60`, and each process writes `--log-file
+test_logs\<name>.<role>.log` (`.host.log`, `.c1.log`, ...; `<name>.<link>.<role>.log` when it runs under several links).
+The runner holds ONE GPU lock for the whole batch and starts the windows with `Start-HiddenDesktop`
+(`hidden_desktop.ps1`, non-blocking: returns a handle with `.Wait(ms)` / `.ExitCode` / `.Kill()` / `.Close()`, takes no
+lock of its own; `Invoke-HiddenDesktop` still takes it per run). Judged like a net run: every exit code 0, the PASS marker
+from the host, no SCRIPT ERROR in any log; a host that could not bind is retried on a new port; at least 150 s before the
+windows are killed. `-TestAll` still skips it (it is VISUAL); `-TestName` alone runs it headless, where it passes with a
+note. `tests/test_visual_coop.gd` (2 peers, link off, about 25 s): the host launches a stack mission, both walk forward at
+one shared-clock moment, then each machine aims its own chase camera at the teammate (test code: `look_dir` / `pitch`,
+smoothing off, a 22 m boom, offsets until the teammate is on screen, in line of sight and not covered by its own mech)
+and grabs `coop_<host|client>_1` (the teammate), `_2` / `_3` (mid-burst: every weapon held, the teammate's shots arriving
+through CombatNet) and `_4` (a live enemy, with the teammate in the same look). The client reports its facts per shot and
+the host judges both machines: image not blank; teammate puppet in the frustum, on screen, in sight, its pilot head node
+on screen, roster head and accent (plus accent-hued pixels in its screen box); the HUD crew panel shows exactly the
+teammate's card (`LayoutCheck.on_screen`, head, accent, drawn pixels); the teammate's records fired here and its effects
+in view; the enemy alive here and on the host, in the frustum, on screen and in sight.
 
 Why not simpler tricks: an off-screen `--position -20000,-20000` window did render here (2026-11-21), but flap found
 Windows can clamp it back onto the screen, and a minimized window stops Godot drawing (flap `test_lib.ps1` header). The

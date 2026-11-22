@@ -15,7 +15,11 @@ All numbers are first-pass and tunable in the lab (`weapon_range` subject). The 
 | City prop hooks (`CityProps.first_hit` / `apply_impulse` / `blast`) | built |
 | Ambient-life hooks (`life.sweep` / `life.blast`, [ambient-life.md](ambient-life.md) §6) | built (`tests/test_combat_life.gd`, stub node) |
 | Readability check at 50 / 100 m (`tests/test_visual_weapon_distance.gd`) | built |
-| Network wiring of hits (`CombatWorld.remote_hit`) | not yet: slice milestone S7 |
+| Combat across machines (co-op step 3, §5 "As built"): fire records as scheduled effects, shared clock, victim decides, host-owned hits to the host, remote missile guidance, railgun charge telegraph | built (`scripts/combat/combat_net.gd`; `tests/test_combat_net.gd`, `tests/test_net_combat.gd` (2), `tests/test_net_combat_3.gd` (3)); gaps listed in §5 |
+| Back-mount equipment ([back-equipment.md](back-equipment.md)): `repair_drone` (active, key 5; scheduled effect over `combat.drone`), `radiator` (+3 /s cooling), `ammo_bin` (+50 % ammo, whole salvos); `CombatTarget.heal` verb | built (`scripts/combat/repair_drone.gd`; `tests/test_back_equipment.gd`, `tests/test_net_drone.gd` (2), `tests/test_visual_weapon_repair_drone.gd`); hangar entry, HUD row and meshes wait on Engine / Mech |
+| Enemy fire across machines (W4, §5.1): carried by Engine's `EnemySync` ("fire" items in `enemy.ev`); CombatNet guards it on clients (`CombatWorld.fire_gate`: duplicates dropped, no locally simulated enemy record); victim decides | built (`tests/test_net_enemy_fire.gd` (2)) |
+| Unusable slots (rack): a destroyed hardpoint or 0 ammo deselects the slot automatically; its key / a double tap on it can't select it; no fire, no heat (active or passive), off the guided track, no charge glow; usable again (refill / repair) it stays deselected until pressed. HUD: `slots()` `usable` (new), `hold` "DESTROYED" / "EMPTY", `enabled` false | built (`tests/test_weapon_rack.gd` `_unusable`) |
+| Shots ignore mech capsules (CombatWorld `shot_ray`: registered targets' bodies excluded from shot / impact rays) | built (`tests/test_combat_capsule.gd`) |
 
 ## 1. Direction
 
@@ -78,7 +82,7 @@ range over the same cycle; for explosive weapons it counts direct + splash damag
 | `swivel` | Swivel Boom | side | twin slugs | 12 | 4 /s (alternating barrels) | 75 m/s | 160 m (100% to 80 → 50%) | 0.8° fixed | **1.6** | – | ∞ | 4 | 0.3 | 1.0 / shot | 4.0 | 48 | 1.0 m |
 | `rockets` | Rocket Pod | shoulder | dumb-fire salvo | 26 | 6 rockets 0.1 s apart, 4 s reload (4.6 s cycle) | 45 m/s | 250 m (no falloff) | 3.5° + wobble | 0.4 | 18 dmg / 4 m | **36** (6 salvos) | 6 | 0.2 | 10 / salvo | 2.2 | 57 | 2.5 m |
 | `missiles` | Guided Missiles | shoulder | crosshair-guided | 30 | 3 missiles 0.3 s apart, 5 s reload (5.9 s cycle) | 35 → 55 m/s | 350 m (9 s life) | none | 0.6 | 12 dmg / 5 m | **18** (6 salvos) | 7 | 0.4 | 8 / salvo | 1.4 | 21 | 3.0 m |
-| `mortar` | Back Mortar | back | arcing shell | 80 | 1 per 3.5 s | ballistic (2.0–4.5 s flight) | 30–250 m (min range!) | 0–3 m scatter with range | 4.0 radial + 3.0 lift | 50 dmg / 8 m | 12 | 9 | 0.4 | 18 / shell | 5.1 | 37 | 6.0 m |
+| `mortar` | Back Mortar | back | arcing shell | 80 | 1 per 3.5 s | ballistic (2.0–4.5 s flight) | 30–250 m (min range!) | 0–3 m scatter with range | 4.0 radial + 3.0 lift | 50 dmg / 8 m | 3 | 9 | 0.4 | 18 / shell | 5.1 | 37 | 6.0 m |
 | `railgun` | Coil Railgun | shoulder (one per mech) | charged slug | 200 | 1.0 s charge, 4 s cycle | 200 m/s | 400 m (no falloff) | none | **14.0** | – (pierces 3 targets, −25% each) | ∞ | 14 | 1.0 | 30 / shot (10 on an early release) | 7.5 | 50 | 3.5 m |
 | `flamer` | Flamer | side, shoulder | focused flame jet | 1.5 / chunk | 10 chunks /s | 32 m/s | **45 m** (no falloff) | 5° cone | 0 | **+2.2 target heat / chunk** | ∞ | 3 | 1.0 | 0.6 / chunk | 6.0 | 15 (+22 heat/s) | – |
 
@@ -319,11 +323,79 @@ Shapes from the net contract (rule 6):
   (as for props); `src` = the record's `peer`, or -1 when the record is enemy fire (`"enemy": true` or team `"enemy"`).
   The returned kill counts are ignored: civilians never stop or change a shot. No node, no calls.
 
+### 5.1 As built (co-op step 3, 2026-11-22)
+`CombatNet` (`scripts/combat/combat_net.gd`, child "CombatNet" of `TestDriveCombat` in a crew mission only; solo, the
+lab and single-process tests are unchanged). It sends nothing itself: it uses Session's existing reliable events
+(`send_event` / `event_received`); no change in `scripts/net/`.
+- **Clock.** In a crew mission `CombatWorld.set_clock(CombatNet.session_clock)`: `advance` sets `now` from
+  `Session.host_time()` (never backwards; while the session is gone it counts deltas again). Records' `t` are the same
+  moment everywhere. Without a clock (`clock` invalid, the default) `now` counts deltas exactly as before.
+- **Fire records.** Every record the local rack fires (`peer` = local, `shooter` = `player<peer>`) is queued and sent as
+  `combat.fire {r: [[hardpoint, weapon, origin, dir, target, t, shot_index, spread], ...]}` at most 30 times a second
+  (the first after a pause at once). A client sends to the host, which relays it with `{o: origin peer}` to every other
+  client (clients only talk to the host). Receivers take `shooter` / `peer` from the sender, validate types / finite
+  numbers / a player weapon id, drop a repeated shot key, and call `CombatWorld.fire`: a late record fast-forwards.
+  Records hold nothing else (every weapon checked by `test_combat_net`: the swivel's and pivots' `shape_record` only
+  rewrite origin / dir / target), so spread, rocket wobble, mortar scatter and flame jitter reproduce from
+  `Combat.shot_rng`. The design table's "batched within a 33 ms tick" is this 30 Hz flush.
+- **Per-weapon event rate** (records/s, trigger held): laser 0.8 (one per pulse), autocannon 2.5, gatling 12 (the 0.6 s
+  spin-up is in the first record's `t`; there is no barrel-spin visual to send), swivel 4, rockets 6 in 0.5 s then a 4 s
+  reload, missiles 3 in 0.6 s then 5 s, mortar 0.29, railgun 0.25 plus one `combat.charge` per charge and per cancel,
+  flamer 10 (one per chunk; each remote chunk keeps that mount's `FlamerFx` lit). Events per shooter: at most 30/s.
+- **Who decides** (unchanged `CombatWorld.decides`, now reachable): a mech hit is decided **only by its owner**, from
+  the replicated shot simulated against its own mech (the victim's view; A and C show the impact on the puppet and
+  build no Hit), so no hit message crosses for mechs and double application is impossible (one simulation per shot
+  per machine, duplicate shot keys dropped). Host-owned targets (`owner_peer` 0: enemies, dummies) are decided by the
+  shooter's machine; a client's `remote_hit` goes to the host as `combat.hit {id, dmg, imp, heat, pt, n, comp, w, sh,
+  shot}`; the host checks `sh` is the sender, drops a repeat of (shot, target) and applies it to the target it owns by
+  id. Props and ambient life keep their own host paths (`prop.req`, `life.req`).
+- **The deck stack** (integration W3, 2026-11-22). In the mission city (`CityStack`, one `CityProps` per deck, prop ids
+  per deck) `TestDriveCombat.rebuild_encounters` sets `world.stack = td.stack` (null in district mode; a scene with a
+  node in group `city_stack` and no injection has it adopted by the props scan). `first_hit` asks the props of every
+  deck the swept sphere can touch (`CombatWorld.deck_span(a, b, r)`: `stack.deck_at` of the segment point nearest the
+  shared axis, moved r toward it, and of the farther end, moved r away; one deck for almost every chord, two when a shot
+  crosses a ceiling opening), and a prop hit carries `"prop_node"` (that deck's `CityProps`) so `hit_prop` calls the
+  right deck's `apply_impulse`; `splash` calls `blast` on every deck within the splash radius of the point. The verbs'
+  signatures are unchanged: each `CityProps` puts its own `deck` on its `prop.req` / `prop.ev` / `prop.sync` events.
+  `ring_at(p)` (= `stack.ring_at`, the deck under p, for the no-physics `surface_below` height) and `up_at(p)`
+  (= `stack.ring()`, the shared axis, for impact alignment) replace `ring` when there is a stack. Ambient life is one
+  `AmbientLife` for the whole stack that routes per deck itself, so `life()` is unchanged. Per call: no allocation,
+  no group scan (deck props are read from `stack.decks[k].props`, right after a rebuild). No stack: the single
+  `city_props` node and `ring`, exactly as before. Tested by `test_combat_props` (fake two-deck stack + a real one).
+- **Missiles.** Before each `advance`, each puppet's track is mirrored into `world.designators["player<peer>"]` from its
+  owner's newest snapshot (aim point, designator flag), so a remote missile steers toward the shooter's streamed aim
+  point and the laser line shows. Measured (`test_net_combat`, aim sweeping 87 m sideways): remote path within 1.5 m of
+  the shooter's at 3 s (link off), 2.2 m (coast). The shooter's own behaviour is unchanged.
+- **Live muzzles.** Each puppet's hardpoints are registered as CombatWorld muzzles (its model's `HP_<id>` node), so
+  remote beams, flamer streams, missile lines and charge glows start at the puppet's weapons.
+- **Railgun charge** (`stats.charge >= 0.3 s`): `combat.charge {hp, t, on}` at charge start and on a cancel; receivers draw
+  a stepped `ChargeGlow` from `t` until the shot's record or the cancel arrives. The laser's 0.15 s charge sends nothing.
+- **Enemy fire** (W4, 2026-11-22). The host's `EnemySync` (Engine, `scripts/game/enemy_sync.gd`) sends each enemy fire
+  record (peer 1, `enemy` true, team `enemy`) as a "fire" item of its ordered per-frame `enemy.ev` batch; clients take it
+  from the host only and fire it with `CombatWorld.fire` (fast-forwarded). CombatNet does NOT send enemy records (that
+  would double them). On a client CombatNet sets `CombatWorld.fire_gate`: a repeated enemy shot key is dropped and an
+  enemy record fired while the world steps the targets this machine owns (a locally simulated enemy; enemies tick only
+  where owned, so never on a client) is refused. Who is hurt is plain `CombatWorld`: peer 1 = the victim decides about
+  its own mech (the host builds no Hit on a client's puppet), the host decides props / ambient life (`decides_shot`).
+  Remote look: enemy weapons are all projectiles, so muzzle flash and flight start at the record's origin (the host's
+  `muzzle_world`). Rate: about 0.6 records/s per bolter turret, 1.1 per pulse skirmisher, 0.25 siege, 0.15 mortar while
+  firing (bursts + cooldown + telegraph); with every enemy of an encounter firing, under ~10 records/s, all inside the
+  host's one `enemy.ev` per physics frame.
+- **Mech capsules.** Shots meet targets only through their hit spheres: `CombatWorld.shot_ray` (first_hit, ground_below,
+  surface_below) excludes every registered target's physics body (a PlayerTarget's MechController capsule, local or
+  puppet; enemies have no bodies) from world-geometry rays, with one reused query object.
+- **Not covered yet:** player shots still skip teammates entirely (same team, friendly fire open §7.3); a remote shot starts
+  at the shooter's true muzzle while its puppet is drawn ~100-200 ms behind; no muzzle flash for a remote record
+  arriving later than `MuzzleFlash.LIFE`; remote weapon models are not turned (`aim_yaw` / `aim_pitch` not streamed);
+  mech HP / components are not streamed (crew panel hp stays 1); a missile's detonation is not an event (each machine
+  shows its own copy's); the laser's charge glow is not shown remotely.
+
 ## 6. Code map
 
 - `scripts/combat/combat.gd` `Combat`: shared rule numbers, the fire record, shot RNG, spread, growth, falloff, mass
   classes, fixed arcs. `combat_world.gd` `CombatWorld`: the combat clock, targets, effects, `fire`, `first_hit`,
-  `resolve_hit` / `deliver`, splash, props, impacts, designators, muzzles. `combat_target.gd` `CombatTarget` (verbs,
+  `resolve_hit` / `deliver`, splash, props (per deck with a `stack`: `deck_props`, `props_at`, `deck_span`), the ring
+  per point (`ring_at`, `up_at`), impacts, designators, muzzles. `combat_target.gd` `CombatTarget` (verbs,
   hit spheres, mass class), `hit.gd` `Hit`, `heat.gd` `Heat`, `knockback.gd` (kinematic Δv, hit-slide, stagger, wall
   slam), `combat_effect.gd` (base of everything on the clock).
 - Firing: `weapon_mount.gd` `WeaponMount` (one mounted weapon's owner state; trigger → fire records),
@@ -335,6 +407,7 @@ Shapes from the net contract (rule 6):
 - Looks: `impact_fx.gd`, `muzzle_flash.gd`, `charge_glow.gd`, `combat_meshes.gd`; flames from
   `scripts/fx/low_poly_flame.gd`.
 - Targets in the lab: `target_dummy.gd`; the player: `player_target.gd`. Lab subject: `weapon_range_lab.gd`.
+- Crew missions: `combat_net.gd` `CombatNet` (fire records / hits / charges across machines, §5.1).
 - Data: `MechCatalog.WEAPONS` / `WEAPON_ORDER` / `WEAPON_STATS`; `sanitize_loadout` honours `max_per_mech`.
 - Tests: `tests/test_combat*.gd`, `tests/test_weapon_<id>.gd`, `tests/test_weapon_rack.gd`, `tests/test_flame_stream.gd`,
   visual `tests/test_visual_weapon_*.gd` (one per weapon, the range, and the 50 / 100 m readability set).

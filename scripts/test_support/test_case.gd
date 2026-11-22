@@ -55,6 +55,13 @@ func _fail(msg: String) -> void:
 	printerr("ASSERT FAILED [%s]: %s" % [name, msg])
 
 
+## The port a single-process test should open a crew on: test_runner passes a free random one as `--net-port`
+## (docs/testing.md "Ports"); `fallback` when run some other way.
+func test_port(fallback: int) -> int:
+	var v := Boot.arg_value(OS.get_cmdline_user_args(), "--net-port")
+	return int(v) if v.is_valid_int() else fallback
+
+
 ## Wait n physics frames.
 func frames(n: int) -> void:
 	for i in n:

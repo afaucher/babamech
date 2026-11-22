@@ -133,3 +133,82 @@ touching the rim; no change was needed there. Plan data and checksums are unchan
 Hooks for others: the test drive can use `CityStack.build(section)`, `ring()`, `entry_transform()`, `follow(mech)`; with
 a stack in the scene, combat and audio should ask `CityStack.props_at(pos)` (group `city_stack`) instead of taking the
 first node in group `city_props`.
+
+## 8. In the game (2026-11-22)
+
+The test drive builds the stack (Engine: `scripts/game/test_drive.gd`, `SectionPlan.make({"seed": seed})`,
+`CityStack.build`, the entry deck's floor through the world origin: `stack.position = -section.deck_offset(entry deck)`).
+The city side of that switch:
+
+**Frames.** The stack may be translated, never rotated. Deck k's arc coordinates are its own ring on deck-local
+positions: `decks[k].ring.world_to_arc(decks[k].to_local(p))`. `decks[k].ring` on WORLD positions is right only for the
+deck at the origin. `ring()` is now `deck_ring(lowest)`, a ring that works in world positions (it follows the deck
+node), so its up / basis are right anywhere in the stack, and its height is above the lowest floor.
+
+**Helpers for code written for one district** (`CityStack`): `district_at(p) -> CityDistrict`, `plan_at(p) -> CityPlan`,
+`deck_ring(k) -> RingFrame` and `ring_at(p)` (deck k's arc coordinates, world positions: give these to EnemySpawner,
+EnemySquad, BotNavigator, CombatWorld), `to_deck_arc(p) -> {deck, x, s, h}`, `from_deck_arc(deck, x, s, h) -> Vector3`,
+`height_above_bottom(p)`, `fell_out(p, below = 25.0)`, `spawn_transforms(n) -> Array[Transform3D]` (alone: the entry
+transform; a crew: one column on each carriageway of the 18 m avenue lane, `CARRIAGE` = 5.25 m either side of its 3 m
+median, rows 8 m apart going in, facing in, 0.3 m above the road; tested clear of walls, the median, props and each
+other).
+
+**Spawn inset (2026-11-22).** `entry_transform()` (where the first mech stands) is `ENTRY_INSET` = 26 m in from the
+entry road along the avenue (chase boom 16 m + capsule 2.2 m + 6 m margin), on the left-hand carriageway, plus
+`entry_slide()`: the whole formation moves in 2 m steps (up to 30 m) until all four slots are clear of props, floor cuts,
+kept-clear ground, checkpoint / cordon lines and the first junction (plan data only; 0 m for seeds 1-20);
+`entry_gate_transform()` is the old point on the entry road. On the entry road itself (6 m inside the wall) the chase
+camera sat 10 m behind the wall's inner face, in the gate's portal recess, and the recess's flat dark-teal top with the
+tan portal frame filled the top quarter of the view (`docs/design/city-shots/chase_before.png` / `chase_after.png`).
+The outside of a wall is not drawn (inward faces only), so a camera outside it sees through it.
+
+**Lighting.** `CityLightRig.ALWAYS` = layer 1 + layer 20 (the local pilot head, `ChaseCamera.FP_HIDDEN_LAYER`): every
+fill and the daylight (light and shadow casters) include it on every deck; the single-district rig lights all layers.
+
+**A real mech on the stack** (`tests/test_city_stack_walk.gd`, section seed 4, MechSpawn's mech, walk speed): down and
+up both ramps (about 330-360 m of walking from road to road, 27-30 s each way) with `deck_at` changing exactly once, never under the ramp's surface,
+never stuck, `follow()` switching the active deck at the end; across the cross-road bridge over the ramp lane's hole;
+over the 0.5 m curb into an open-air shaft, a 48 m drop caught by the emergency burn (landing at 9.8 m/s, soft), standing
+on the deck below. Found and fixed: the legs step up 1.25 m, so the 1 m parapets were stepped over by a mech strafing
+into them and it fell off the ramp's side. Parapet collision is now `CityStreets.PARAPET_GUARD` = 2.5 m (the drawn
+parapet stays 1 m; the 1.5 m above it is invisible). Seen, not fixed (controller): walking DOWN a ramp the mech is
+"not grounded" in about 63% of frames (contact flicker, never more than 12 frames, at most 0.16 m off the slope);
+walking up it is grounded.
+
+**Props on decks.** Prop ids repeat on every deck and every deck's `CityProps` hears every prop event, so
+`CityProps.deck` (set by `build_deck`, -1 stand-alone) goes into every `prop.req` / `prop.ev` / `prop.sync`, and props
+ignore events for another deck (a missing deck counts as -1). Tests: `test_city_props` (`_decks`), `test_net_props_stack`.
+
+**Cost** (RTX 3080, 1600x900, forward+, vsync off; `tools/city_perf/run_city_perf.ps1`, hidden desktop):
+
+| view | avg ms | p95 | worst | GPU ms | draws | primitives |
+|---|---|---|---|---|---|---|
+| stand-alone district (today's test drive), chase view | 5.08 | 6.37 | 6.59 | 4.58 | 213 | 0.27 M |
+| stack seed 4, deck 0 avenue | 5.01 | 5.74 | 10.02 | 4.46 | 182 | 1.77 M |
+| stack deck 1 avenue | 5.11 | 5.85 | 10.34 | 4.60 | 187 | 1.85 M |
+| stack deck 2 avenue | 4.95 | 5.47 | 11.19 | 4.41 | 175 | 1.63 M |
+| stack shaft (deck 0) | 4.13 | 4.69 | 8.85 | 3.65 | 151 | 1.61 M |
+| deck 0, other decks hidden | 4.55 | 5.15 | 8.98 | 4.04 | 115 | 0.90 M |
+| deck 0, daylight shadows off | 4.63 | 5.20 | 10.06 | 4.12 | 103 | 1.29 M |
+| deck 0, fill lights off | 4.92 | 5.48 | 9.79 | 4.38 | 182 | 1.77 M |
+
+Rendering is inside the 16.7 ms frame: the other decks cost about 0.45 ms of GPU (0.9 M primitives), daylight shadows
+about 0.4 ms, fills almost nothing. The stack builds in 1.3-1.8 s (1.31 M triangles, 5,355 collision shapes, 3,402
+props), about +30 MB static memory and 1.1 GB video memory in use. Physics: `MechController.step` 0.14 ms (0.10 in the
+district); a ray costs about 10.5 us (3.5 us in the district).
+
+Props were the cost that grew with the stack, fixed in a second pass (`CityProps`):
+- `_push` looped over every prop of its deck for every moving body (2.2-2.4 ms per tick summed over three decks while a
+  mech walks). It now asks `push_candidates(here, radius)`: the rest-position grid (`ARC_CELL` 8 m, cells within the
+  body's radius + the largest prop radius) plus every prop that has moved, ascending, the same set the old loop let
+  through its distance test; and a body below this deck's floor or above its ceiling returns at once. 0.07 ms per tick.
+  `test_city_props._grid_matches_brute_force` drives a scripted mech (furnishing bands there and back, a roof, the deck
+  above) through a grid instance and a `brute_force` one on seeds 1-3 and a stack deck: the same requests every tick.
+- The body scan (every 1 s per deck, when nobody registered pushers) walked the whole tree, the decks' 5,355 collision
+  shapes included: 4.15 ms per round. It skips static bodies now (`_bodies_under`, same order): 0.73 ms.
+- The headless test drive (`run_city_perf.ps1 -Headless -Drive`, walking and strafing, no firing): district p95
+  4.4-4.7 ms, stack 4.7-5.0 ms; the three decks' `CityProps.step` 0.05 ms per tick. `test_perf` (with combat) after the
+  fix: p95 8.77 / 10.05 / 7.87 ms in three runs on a machine shared with other sessions' Godot processes.
+
+Not built: hiding decks that cannot be seen from the active deck (about 0.45 ms of GPU, and a risk of popping when
+`follow()` switches decks 0.25 s late on a ramp); a shorter daylight shadow distance.

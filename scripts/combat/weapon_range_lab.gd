@@ -11,6 +11,14 @@ extends Node3D
 ## telegraph (ChargeGlow) at the muzzle, and the laser beam follows the live muzzle (CombatWorld.set_muzzle).
 ## Direct-fire weapons pivot at the mount toward the aim point and the model turns with them (WeaponPose); "Aim at"
 ## ground_10m picks a point on the ground close ahead, so a shoulder weapon visibly pitches down to it.
+## BACK EQUIPMENT (docs/design/back-equipment.md) is in the Weapon list too; it works only on the back hardpoint. The
+## repair drone launches by fire mode ("hold": whenever none is out; "single": on each tap with none out; "off": never;
+## unlimited charges, 15 heat each) and repairs a PlayerTarget on the lab mech plus a repair dummy at REPAIR_DUMMY beside
+## the stand (both exist only while the drone is selected); option "Repair demo" = "damaged" knocks them to about half
+## HP on every change and again whenever both are full, "full" leaves them whole. Radiator: the lab heat gauge cools
+## +3 /s, and a demo heat load (RADIATOR_DEMO_HEAT /s in "hold", RADIATOR_DEMO_TAP per tap in "single") makes it climb so
+## the fins glow (EquipmentLook: the lab mech's radiator follows the lab gauge; the drone's cradle shows empty while the
+## drone is out). Ammo bin: shown in the readout (it applies to the limited-ammo weapons of a whole loadout, not to this one).
 
 const MECH_SCALE := 2.0
 const SHOOTER := "range_mech"
@@ -25,6 +33,10 @@ const FIRE_MODES := ["off", "single", "hold"]
 const GROUND_AIM := "ground_10m"
 const GROUND_POINT := Vector3(1.5, 0.05, -10.0)
 const DESIGNATOR_MODES := ["off", "hold", "drop"]
+const REPAIR_MODES := ["damaged", "full"]
+const REPAIR_DUMMY := Vector3(10.0, 0.0, -6.0)   ## within the drone's 15 m, clear of the firing lines
+const RADIATOR_DEMO_HEAT := 14.0  ## heat/s the radiator demo adds in "hold" (more than the 9 /s it sheds: it climbs)
+const RADIATOR_DEMO_TAP := 25.0   ## heat the radiator demo adds per tap in "single"
 ## Slider id (a catalog stat), label, min, max.
 const PARAMS := [
 	["speed", "Projectile speed (m/s)", 5.0, 300.0],
@@ -43,6 +55,10 @@ var fire_mode := "hold"
 var aim := "dummy_50"
 var designator := "off"
 var _designator_auto := true      ## the designator follows the weapon's default (missiles: "hold") until picked by hand
+var repair := "damaged"
+var drone: RepairDrone            ## the lab drone while one is out
+var lab_target: PlayerTarget      ## the lab mech as a repairable target (repair drone selected only)
+var repair_dummy: TargetDummy     ## a damaged dummy next to the stand (repair drone selected only)
 
 var world: CombatWorld
 var mech: MechModel
@@ -147,7 +163,15 @@ func _rebuild() -> void:
 		return
 	mech.configure("chicken", "strider", {hardpoint: weapon})
 	var c := MechCatalog.chassis("strider")
-	heat = Heat.new(float(c["heat_cap"]), float(c["cooling"]), float(MechCatalog.weapon(weapon).get("passive_heat", 0.0)))
+	var eq := equipped()
+	var cool := float(c["cooling"]) + (float(world.stats(eq).get("cooling_bonus", 0.0)) if eq != "" else 0.0)
+	heat = Heat.new(float(c["heat_cap"]), cool, float(MechCatalog.weapon(weapon).get("passive_heat", 0.0)))
+	world.set_anchor(SHOOTER, _lab_anchor)
+	world.equipment_look.watch(SHOOTER, _lab_anchor, _lab_heat, _lab_charges)
+	if drone != null and is_instance_valid(drone):
+		world.remove_effect(drone)
+	drone = null
+	_setup_repair(eq == "repair_drone")
 	mount = WeaponMount.new()
 	mount.setup(weapon, hardpoint, SHOOTER, 1, world.stats(weapon))
 	world.muzzles.clear()
@@ -157,6 +181,83 @@ func _rebuild() -> void:
 	for d in dummies:
 		d.mass_class = mass
 		d.reset_dummy()
+
+
+func _lab_anchor() -> Node3D:
+	return mech
+
+
+func _lab_heat() -> float:
+	return heat.fraction() if heat != null else 0.0
+
+
+func _lab_charges() -> int:
+	return 1      # the lab's drone has unlimited charges: the cradle docks again whenever none is out
+
+
+## The equipment in use: `weapon` when it is back-mount equipment on a hardpoint that takes it, else "".
+func equipped() -> String:
+	if not MechCatalog.is_equipment(weapon):
+		return ""
+	for hp: Dictionary in MechCatalog.chassis("strider")["hardpoints"]:
+		if hp["id"] == hardpoint and str(hp["mount"]) in (MechCatalog.weapon(weapon)["mounts"] as Array):
+			return weapon
+	return ""
+
+
+## The repair demo's targets: made (and damaged, in "damaged") while the drone is selected, removed otherwise.
+func _setup_repair(on: bool) -> void:
+	if not on:
+		for t: CombatTarget in [lab_target, repair_dummy]:
+			if t != null and is_instance_valid(t):
+				world.unregister(t)
+				t.queue_free()
+		lab_target = null
+		repair_dummy = null
+		return
+	if lab_target == null:
+		lab_target = PlayerTarget.new()
+		lab_target.name = "LabMechTarget"
+		lab_target.auto_respawn_delay = -1.0
+		add_child(lab_target)
+		lab_target.position = mech.position
+		lab_target.bind(world, null, mech, SHOOTER, 1)
+		world.register(lab_target)
+	if repair_dummy == null:
+		repair_dummy = TargetDummy.new()
+		repair_dummy.name = "repair_dummy"
+		repair_dummy.target_id = "repair_dummy"
+		repair_dummy.position = REPAIR_DUMMY
+		add_child(repair_dummy)
+		world.register(repair_dummy)
+	lab_target.repair_all()
+	repair_dummy.reset_dummy()
+	if repair == "damaged":
+		_damage_demo()
+
+
+## Knock the demo targets to about half HP (their owner's verbs: this machine owns both).
+func _damage_demo() -> void:
+	if lab_target != null:
+		lab_target.apply_damage(200.0, "torso", "lab")
+		lab_target.apply_damage(90.0, "leg_l", "lab")
+	if repair_dummy != null:
+		repair_dummy.apply_damage(TargetDummy.HP * 0.5, "body", "lab")
+
+
+## The repair drone, each step: launch by fire mode, and keep the "damaged" demo going.
+func _step_drone(tap: bool) -> void:
+	if drone != null and (not is_instance_valid(drone) or drone.finished()):
+		drone = null
+	var out := drone != null and drone.active()
+	if not out and (fire_mode == "hold" or (fire_mode == "single" and tap)) and heat.can_act():
+		heat.add(float(world.stats("repair_drone").get("active_heat", 0.0)))
+		drone = world.launch_drone({"shooter": SHOOTER, "peer": 1, "hardpoint": hardpoint, "weapon": "repair_drone",
+			"t": world.now})
+	if repair != "damaged" or lab_target == null or repair_dummy == null:
+		return
+	if lab_target.total_hp() >= lab_target.total_max_hp() - 1e-3 and repair_dummy.total_hp() >= TargetDummy.HP - 1e-3:
+		_damage_demo()
 
 
 func aim_dummy() -> TargetDummy:
@@ -208,7 +309,15 @@ func step(dt: float) -> void:
 		return
 	var prev := _t
 	_t += dt
-	if fire_mode == "single" and not _single_hold and (floor(_t / TAP_EVERY) > floor(prev / TAP_EVERY) or prev == 0.0):
+	var tap: bool = floorf(_t / TAP_EVERY) > floorf(prev / TAP_EVERY) or prev == 0.0
+	if equipped() == "repair_drone":
+		_step_drone(tap)
+	elif equipped() == "radiator" and heat.can_act():
+		if fire_mode == "hold":
+			heat.add(RADIATOR_DEMO_HEAT * dt)
+		elif fire_mode == "single" and tap:
+			heat.add(RADIATOR_DEMO_TAP)
+	if fire_mode == "single" and not _single_hold and tap:
 		_single_hold = true
 		_hold_from = mount.shot_index
 	heat.tick(dt)
@@ -238,6 +347,22 @@ func step(dt: float) -> void:
 		"  SHUTDOWN" if heat.shutdown else "", "" if mount.built() else "\n(not built yet: doesn't fire)"]
 	if mount.ammo >= 0:     # ammo weapons (rockets): count, DRY when empty; any option change refills (_rebuild)
 		_heat_label.text += "\nAMMO %d / %d%s" % [mount.ammo, int(mount.stats.get("ammo", 0)), "  DRY" if mount.ammo == 0 else ""]
+	var eq := equipped()
+	if eq != "":
+		_heat_label.text = "%s  %s\nHEAT %3d / %d   cooling %.0f/s%s" % [eq, hardpoint, int(heat.value), int(heat.cap),
+			heat.cooling, "  SHUTDOWN" if heat.shutdown else ""]
+		if eq == "repair_drone":
+			var live := drone != null and is_instance_valid(drone) and drone.active()
+			_heat_label.text += "\nDRONE " + ("%.0f s left, repaired %.0f HP" % [drone.time_left(), drone.healed_total] if live else "docked")
+		elif eq == "radiator":
+			_heat_label.text += "
+fins glow with heat (demo load %s)" % ("%.0f/s" % RADIATOR_DEMO_HEAT if fire_mode == "hold"
+				else ("%.0f per tap" % RADIATOR_DEMO_TAP if fire_mode == "single" else "off"))
+		elif eq == "ammo_bin":
+			_heat_label.text += "\n+50%% ammo on limited-ammo weapons (rockets %d, missiles %d, mortar %d)" % [
+				WeaponRack.bonus_ammo(36, 6, 0.5), WeaponRack.bonus_ammo(18, 3, 0.5), WeaponRack.bonus_ammo(3, 1, 0.5)]
+	elif MechCatalog.is_equipment(weapon):
+		_heat_label.text += "\n(equipment: back hardpoint only)"
 	if mount.hold_reason != "":     # a weapon holding fire says why (the mortar: inside its minimum range / out of range)
 		_heat_label.text += "\nHOLD: " + mount.hold_reason
 
@@ -282,6 +407,7 @@ func lab_options() -> Array:
 		{"id": "aim", "label": "Aim at", "choices": aims, "value": aim},
 		{"id": "designator", "label": "Designator", "choices": DESIGNATOR_MODES, "value": designator},
 		{"id": "arcs", "label": "Fixed arcs", "choices": ["off", "on"], "value": "on" if Combat.FIXED_ARC_ENABLED else "off"},
+		{"id": "repair", "label": "Repair demo (drone)", "choices": REPAIR_MODES, "value": repair},
 	]
 
 
@@ -314,6 +440,7 @@ func set_lab_option(id: String, v: String) -> void:
 			designator = v if v in DESIGNATOR_MODES else "off"
 			_designator_auto = false      # an explicit pick sticks across weapon changes
 		"arcs": Combat.FIXED_ARC_ENABLED = v == "on"     # the global switch (weapons.md §4.4), default off
+		"repair": repair = v if v in REPAIR_MODES else "damaged"
 	_rebuild()
 	_refresh_panel()
 
@@ -329,6 +456,12 @@ func _refresh_panel() -> void:
 
 
 func lab_focus() -> Vector3:
+	if equipped() == "repair_drone":
+		return Vector3(3.0, 6.0, -3.0)   # the stand, the drone above it and the repair dummy
+	if equipped() != "":
+		var hp := mech.find_child("HP_" + hardpoint, true, false) as Node3D if mech != null else null
+		if hp != null and hp.is_inside_tree():
+			return hp.global_position     # the radiator / ammo bin on the back mount
 	return Vector3(6.0, 3.0, -21.0)   # off centre: the lab panel covers the left of the view
 
 

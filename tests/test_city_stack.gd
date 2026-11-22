@@ -14,6 +14,8 @@ func setup() -> void:
 		_plans(seed_)
 	for seed_: int in SEEDS:
 		await _stack(seed_)
+	await _moved_stack()
+	await _district_lights_layer_20()
 	await _props_moved()
 	await _roof_props_stack()
 	await _lab()
@@ -133,6 +135,7 @@ func _stack(seed_: int) -> void:
 		if sec.connectors[ci]["kind"] == "ramp":
 			_walk(stack, ci, "%s ramp %d" % [what, ci])
 	_queries(stack, what)
+	_helpers(stack, what)
 	_lighting(stack, what)
 	stack.queue_free()
 	await frames(1)
@@ -172,11 +175,12 @@ func _walk(stack: CityStack, ci: int, what: String) -> void:
 		last = at
 	eq(gaps, 0, "%s: no gap under the ramp's centre line" % what)
 	check(worst <= 0.8, "%s: no step over 0.8 m (worst %.2f)" % [what, worst])
-	# Parapets: a ray down each parapet line lands on its top.
+	# Parapets: a ray down each parapet line lands on its collision top (PARAPET_GUARD, over the drawn 1 m: a mech's
+	# step-up would clear 1 m).
 	for px: float in [x0 + CityStreets.PARAPET_W * 0.5, x1 - CityStreets.PARAPET_W * 0.5]:
 		for t: float in [0.1, 0.35, 0.6, 0.85]:
 			var th := lerpf(th0, th1, t)
-			var r := r_low - pitch * (1.0 - t) - CityStreets.PARAPET_H
+			var r := r_low - pitch * (1.0 - t) - CityStreets.PARAPET_GUARD
 			var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(sec.polar_to_world(px, th, r - 2.0), sec.polar_to_world(px, th, r + 0.5)))
 			check(not hit.is_empty() and absf(axis.dist_to_axis(hit["position"]) - r) < 0.15, "%s: the parapet at x=%.2f t=%.2f is solid" % [what, px, t])
 	# Underside: from the lower deck's road straight up where the ramp is 15 m up (beside the piers).
@@ -311,6 +315,140 @@ func _queries(stack: CityStack, what: String) -> void:
 	check(ahead * (1.0 if int(sec.entry["j"]) == 0 else -1.0) > 4.0, "%s: the entry faces into the map" % what)
 	var down := stack.get_world_3d().direct_space_state.intersect_ray(PhysicsRayQueryParameters3D.create(xf.origin, xf.origin - xf.basis.y * 2.0))
 	check(not down.is_empty(), "%s: solid ground under the entry" % what)
+	# The gate transform is on the entry road; the first mech stands ENTRY_INSET further in, so the chase camera (its boom
+	# behind the mech, plus the capsule and a margin) starts inside the entry wall, not in the gate's recess.
+	var into := 1.0 if int(sec.entry["j"]) == 0 else -1.0
+	var gate := d0.ring.world_to_arc(d0.to_local(stack.entry_gate_transform().origin))
+	near(gate.y, sec.line_s(k0, int(sec.entry["j"])), 0.01, "%s: entry_gate_transform is on the entry road" % what)
+	var slide := stack.entry_slide()
+	check(slide >= 0.0 and slide <= CityStack.SLIDE_MAX and is_equal_approx(fposmod(slide, CityStack.SLIDE_STEP), 0.0),
+			"%s: the formation slides in whole steps, at most SLIDE_MAX (%.1f m)" % [what, slide])
+	near((d0.ring.world_to_arc(local).y - gate.y) * into, CityStack.ENTRY_INSET + slide, 0.01,
+			"%s: the entry is ENTRY_INSET + its slide (%.0f m) in from the gate" % [what, slide])
+	var cam := ChaseCamera.new()
+	var boom := cam.distance
+	cam.free()
+	var wall := sec.boundary_rect(k0, "s0" if into > 0.0 else "s1")
+	var wall_in := wall.end.y if into > 0.0 else wall.position.y
+	var clear := (d0.ring.world_to_arc(local).y - wall_in) * into
+	check(clear >= boom + 2.2 + 6.0, "%s: the entry is %.1f m inside the entry wall (chase boom %.0f m + capsule + 6 m)" % [what, clear, boom])
+
+
+## The helpers for callers written for one district: district_at / plan_at, deck arc coordinates both ways,
+## deck_ring (world positions, deck arc coordinates), the fall-out height, and the crew spawn.
+func _helpers(stack: CityStack, what: String) -> void:
+	var sec := stack.section
+	var last := sec.deck_count - 1
+	for k in stack.decks.size():
+		var d := stack.decks[k]
+		var s := sec.line_s(k, 2) + 20.0
+		var p := stack.from_deck_arc(k, -100.0, s, 3.0)
+		check(p.is_equal_approx(d.to_global(d.ring.arc_to_world(-100.0, s, 3.0))), "%s: from_deck_arc places on deck %d" % [what, k])
+		check(stack.district_at(p) == d and stack.plan_at(p) == d.plan, "%s: district_at / plan_at on deck %d" % [what, k])
+		var a := stack.to_deck_arc(p)
+		check(int(a["deck"]) == k and absf(float(a["x"]) + 100.0) < 0.01 and absf(float(a["s"]) - s) < 0.01 and absf(float(a["h"]) - 3.0) < 0.01,
+				"%s: to_deck_arc inverts from_deck_arc on deck %d (%s)" % [what, k, str(a)])
+		var r := stack.deck_ring(k)
+		check(r.arc_to_world(-100.0, s, 3.0).is_equal_approx(p), "%s: deck_ring(%d) places in world positions" % [what, k])
+		var ra := r.world_to_arc(p)
+		check(absf(ra.y - s) < 0.01 and absf(ra.z - 3.0) < 0.01, "%s: deck_ring(%d).world_to_arc is deck %d's arc" % [what, k, k])
+		check(r.up_at(p).is_equal_approx(stack.ring().up_at(p)), "%s: deck_ring(%d) agrees on up with ring()" % [what, k])
+		check(r.basis_at_arc(s).is_equal_approx(d.ring.basis_at_arc(s)), "%s: deck_ring(%d) basis_at_arc is the deck's (no rotation)" % [what, k])
+		check(stack.ring_at(p) == r, "%s: ring_at picks deck %d's ring" % [what, k])
+		near(stack.height_above_bottom(stack.from_deck_arc(k, 0.0, s, 0.0)), sec.radius_of(last) - sec.radius_of(k), 0.01,
+				"%s: deck %d's floor is its offset above the bottom" % [what, k])
+	check(not stack.fell_out(stack.from_deck_arc(last, 0.0, 0.0, -5.0)) and stack.fell_out(stack.from_deck_arc(last, 0.0, 0.0, -30.0)),
+			"%s: fell_out is 25 m under the lowest floor" % what)
+	var space := stack.get_world_3d().direct_space_state
+	var k0 := int(sec.entry["deck"])
+	var d0 := stack.decks[k0]
+	var av := sec.lane_x("avenue")
+	var into := 1.0 if int(sec.entry["j"]) == 0 else -1.0
+	check(stack.spawn_transforms(1)[0].is_equal_approx(stack.entry_transform()), "%s: one mech spawns at the entry" % what)
+	for n in range(1, 5):
+		var xfs := stack.spawn_transforms(n)
+		eq(xfs.size(), n, "%s: %d spawn transforms" % [what, n])
+		for i in n:
+			var xf := xfs[i]
+			var tag := "%s: spawn %d of %d" % [what, i, n]
+			eq(stack.deck_at(xf.origin), k0, "%s is on the entry deck" % tag)
+			var local := d0.ring.world_to_arc(d0.to_local(xf.origin))
+			near(local.z, 0.3, 0.01, "%s is 0.3 m above the floor" % tag)
+			check(local.x - 2.2 > av.x + 1.0 and local.x + 2.2 < av.y - 1.0, "%s: the capsule is on the avenue lane (x %.2f)" % [tag, local.x])
+			check(absf(local.x - (av.x + av.y) * 0.5) - 2.2 > 1.5, "%s: the capsule is clear of the avenue's median (x %.2f)" % [tag, local.x])
+			var ahead := d0.ring.world_to_arc(d0.to_local(xf.origin - xf.basis.z * 5.0)).y - local.y
+			check(ahead * into > 4.0, "%s faces into the map" % tag)
+			var next_line := sec.line_s(k0, int(sec.entry["j"]) + int(into))
+			check((next_line - local.y) * into > SectionPlan.ARTERIAL_W * 0.5 + 2.2,
+					"%s is short of the first cross street's junction (%.1f m before its centre line)" % [tag, (next_line - local.y) * into])
+			check(xf.basis.y.dot(stack.ring().up_at(xf.origin)) > 0.999, "%s stands upright" % tag)
+			var down := space.intersect_ray(PhysicsRayQueryParameters3D.create(xf.origin + xf.basis.y, xf.origin - xf.basis.y * 1.0))
+			check(not down.is_empty() and absf(d0.ring.height(d0.to_local(down["position"]))) < 0.05, "%s: road under it" % tag)
+			var q := PhysicsShapeQueryParameters3D.new()
+			var cap := CapsuleShape3D.new()
+			cap.radius = 2.2
+			cap.height = 8.8
+			q.shape = cap
+			q.transform = Transform3D(xf.basis, xf.origin + xf.basis.y * (4.4 + 0.05))
+			eq(space.intersect_shape(q, 4).size(), 0, "%s: nothing solid inside its capsule" % tag)
+			var close := 99.0
+			for it: Dictionary in d0.props.items:
+				var dp := Vector2(float(it["x"]) - local.x, float(it["s"]) - local.y).length() - float(CityPropSim.TYPES[it["type"]]["radius"])
+				close = minf(close, dp)
+			check(close > 2.2 + 0.5, "%s: no prop within the capsule (nearest %.1f m)" % [tag, close])
+			for i2 in i:
+				check(xfs[i2].origin.distance_to(xf.origin) >= CityStack.CREW_GAP - 0.01, "%s: %.1f m from spawn %d" % [tag, xfs[i2].origin.distance_to(xf.origin), i2])
+
+
+## The stack placed as the test drive places it (entry deck's floor through the world origin): every helper still
+## answers in world positions; the entry deck's own ring is then right on world positions too.
+func _moved_stack() -> void:
+	var sec := SectionPlan.make({"seed": 4})
+	var stack := CityStack.new()
+	add_child(stack)
+	stack.build(sec)
+	var k0 := int(sec.entry["deck"])
+	stack.position = -sec.deck_offset(k0)
+	await frames(2)
+	var last := sec.deck_count - 1
+	var what := "moved stack"
+	for k in stack.decks.size():
+		var d := stack.decks[k]
+		var s := sec.line_s(k, 2) + 20.0
+		var p := stack.from_deck_arc(k, -100.0, s, 3.0)
+		check(p.is_equal_approx(d.to_global(d.ring.arc_to_world(-100.0, s, 3.0))), "%s: from_deck_arc on deck %d" % [what, k])
+		eq(stack.deck_at(p), k, "%s: deck_at on deck %d" % [what, k])
+		var a := stack.to_deck_arc(p)
+		check(absf(float(a["s"]) - s) < 0.01 and absf(float(a["h"]) - 3.0) < 0.01, "%s: to_deck_arc on deck %d" % [what, k])
+		check(stack.deck_ring(k).arc_to_world(-100.0, s, 3.0).is_equal_approx(p), "%s: deck_ring(%d) follows the move" % [what, k])
+		check(stack.ring().up_at(p).is_equal_approx(d.global_transform.basis * d.ring.up_at(d.to_local(p))), "%s: ring() up on deck %d" % [what, k])
+		check(stack.ring().up_at(p).is_equal_approx(stack.decks[k0].ring.up_at(p)), "%s: the entry deck's ring gives the same up on deck %d" % [what, k])
+		near(stack.height_above_bottom(stack.from_deck_arc(k, 0.0, s, 0.0)), sec.radius_of(last) - sec.radius_of(k), 0.01, "%s: height above the bottom on deck %d" % [what, k])
+	var e := stack.entry_transform()
+	check(e.origin.length() < 400.0 and absf(stack.decks[k0].ring.height(e.origin) - 0.3) < 0.01, "%s: the entry deck's ring works on world positions" % what)
+	for xf in stack.spawn_transforms(4):
+		var down := stack.get_world_3d().direct_space_state.intersect_ray(PhysicsRayQueryParameters3D.create(xf.origin + xf.basis.y, xf.origin - xf.basis.y))
+		check(not down.is_empty(), "%s: road under every crew spawn" % what)
+	stack.queue_free()
+	await frames(1)
+
+
+## The single-district rig (the test drive today) lights every layer, the pilot head's layer 20 included.
+func _district_lights_layer_20() -> void:
+	var d := CityDistrict.new()
+	add_child(d)
+	d.build({"seed": 2, "size_x": 100.0, "size_s": 110.0})
+	var bit := 1 << 19
+	check(d.rig != null and d.rig.sun.light_cull_mask & bit != 0 and d.rig.sun.shadow_caster_mask & bit != 0,
+			"the single-district daylight lights and shadows layer 20")
+	var dark := 0
+	for l: OmniLight3D in d.rig.get_node("Fills").get_children():
+		if l.light_cull_mask & bit == 0:
+			dark += 1
+	eq(dark, 0, "every single-district fill lights layer 20")
+	check(CityLightRig.ALWAYS & bit != 0 and CityLightRig.ALWAYS & 1 != 0, "ALWAYS holds layers 1 and 20")
+	d.queue_free()
+	await frames(1)
 
 
 func _lighting(stack: CityStack, what: String) -> void:
@@ -327,7 +465,7 @@ func _lighting(stack: CityStack, what: String) -> void:
 	for l: OmniLight3D in stack.rig.get_node("Fills").get_children():
 		var k := -1
 		for j in stack.decks.size():
-			if l.light_cull_mask == 1 | CityStack.deck_layer(j):
+			if l.light_cull_mask == CityLightRig.ALWAYS | CityStack.deck_layer(j):
 				k = j
 		if not check(k >= 0, "%s: a fill light lights one deck's layer" % what):
 			continue
@@ -340,8 +478,8 @@ func _lighting(stack: CityStack, what: String) -> void:
 		for id in CityLightRig.preset_ids():
 			stack.set_active_deck(k)
 			stack.rig.apply(id)
-			eq(stack.rig.sun.light_cull_mask, 1 | CityStack.deck_layer(k), "%s: the daylight lights layer 1 and deck %d" % [what, k])
-			eq(stack.rig.sun.shadow_caster_mask, 1 | CityStack.deck_layer(k), "%s: and takes shadows from them only" % what)
+			eq(stack.rig.sun.light_cull_mask, CityLightRig.ALWAYS | CityStack.deck_layer(k), "%s: the daylight lights layers 1, 20 and deck %d" % [what, k])
+			eq(stack.rig.sun.shadow_caster_mask, CityLightRig.ALWAYS | CityStack.deck_layer(k), "%s: and takes shadows from them only" % what)
 	for k in stack.decks.size():
 		eq(stack.decks[k].geometry_digest(), digests[k], "%s: relighting leaves deck %d's geometry alone" % [what, k])
 

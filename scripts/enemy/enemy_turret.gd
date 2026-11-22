@@ -76,6 +76,15 @@ func _track_aim(target_pos: Vector3, dt: float) -> float:
 	return absf(wrapf(want_yaw - _yaw, -PI, PI)) + absf(want_pitch - _pitch)
 
 
+func puppet_aim() -> Vector2:   # co-op puppet (W4)
+	return Vector2(_yaw, _pitch)
+
+
+func set_puppet_aim(a: Vector2) -> void:
+	_yaw = a.x
+	_pitch = a.y
+
+
 func _update_visuals(dt: float) -> void:
 	super._update_visuals(dt)
 	_apply_turret_pose()

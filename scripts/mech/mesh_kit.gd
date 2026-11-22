@@ -3,8 +3,9 @@ extends RefCounted
 ## A flat-shaded low-poly mesh builder: every triangle gets its own three vertices, one face normal and one flat colour
 ## (vertex colours), so facets stay visible and no texture is needed. Up to three surfaces: matte (lit), glow (unshaded:
 ## lights and lenses, filled while `glow` is true) and accent (lit, the recolourable trim: faces whose colour matches
-## `accent_key`, stored white so the accent material's albedo gives the hue). `commit` adds only non-empty surfaces and
-## names each one ("matte", "glow", "accent"), so look surfaces up by name, not index.
+## `accent_key`, stored white so the accent material's albedo gives the hue), plus an optional fourth, heat (lit, filled
+## while `heat` is true: the radiator's fins, which the game gives an emissive override by surface name). `commit` adds
+## only non-empty surfaces and names each one ("matte", "glow", "accent", "heat"), so look surfaces up by name, not index.
 ##
 ## Shapes are added in the current transform (push / pop). Faces are wound to point away from a reference point (the
 ## shape's own centre for the convex primitives), so mirrored transforms are safe.
@@ -17,14 +18,16 @@ var glow := false
 var shade := 0.035
 ## Faces of this colour (a Color, or null for none) go to the accent surface. Not applied while `glow`.
 var accent_key: Variant = null
+## Faces go to the heat surface while true (lit like matte; never accent). Ignored while `glow`.
+var heat := false
 
 var _xf := Transform3D.IDENTITY
 var _stack: Array[Transform3D] = []
-const SURFACES := ["matte", "glow", "accent"]
+const SURFACES := ["matte", "glow", "accent", "heat"]
 
-var _v: Array[PackedVector3Array] = [PackedVector3Array(), PackedVector3Array(), PackedVector3Array()]
-var _n: Array[PackedVector3Array] = [PackedVector3Array(), PackedVector3Array(), PackedVector3Array()]
-var _c: Array[PackedColorArray] = [PackedColorArray(), PackedColorArray(), PackedColorArray()]
+var _v: Array[PackedVector3Array] = [PackedVector3Array(), PackedVector3Array(), PackedVector3Array(), PackedVector3Array()]
+var _n: Array[PackedVector3Array] = [PackedVector3Array(), PackedVector3Array(), PackedVector3Array(), PackedVector3Array()]
+var _c: Array[PackedColorArray] = [PackedColorArray(), PackedColorArray(), PackedColorArray(), PackedColorArray()]
 
 
 static func xf(pos: Vector3, rot_deg: Vector3 = Vector3.ZERO, scl: Vector3 = Vector3.ONE) -> Transform3D:
@@ -41,7 +44,7 @@ func pop() -> void:
 
 
 func tri_count() -> int:
-	return (_v[0].size() + _v[1].size() + _v[2].size()) / 3
+	return (_v[0].size() + _v[1].size() + _v[2].size() + _v[3].size()) / 3
 
 
 ## One triangle. With `away` (a point in the current transform's space) the face is wound to point away from it;
@@ -67,7 +70,9 @@ func tri(a: Vector3, b: Vector3, c: Vector3, col: Variant, away: Variant = null)
 		n = -n
 	var color: Color = col.call(centre, n) if col is Callable else col
 	var s := 1 if glow else 0
-	if not glow and accent_key != null and color.is_equal_approx(accent_key as Color):
+	if not glow and heat:
+		s = 3
+	elif not glow and accent_key != null and color.is_equal_approx(accent_key as Color):
 		s = 2
 		color = Color.WHITE   # the accent material's albedo supplies the hue; the shade jitter below still varies facets
 	if not glow and shade > 0.0:
@@ -197,11 +202,11 @@ func ico(centre: Vector3, radius: Vector3, col: Variant) -> void:
 		tri(p[f[0]], p[f[1]], p[f[2]], col, centre)
 
 
-## The mesh: the matte, glow and accent surfaces that have faces, in that order, each named after its kind.
-## `mats` = [matte, glow, accent] materials.
+## The mesh: the matte, glow, accent and heat surfaces that have faces, in that order, each named after its kind.
+## `mats` = [matte, glow, accent(, heat)] materials (heat falls back to matte when only three are given).
 func commit(mats: Array) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
-	for s in 3:
+	for s in SURFACES.size():
 		if _v[s].is_empty():
 			continue
 		var arrays := []
@@ -211,6 +216,6 @@ func commit(mats: Array) -> ArrayMesh:
 		arrays[Mesh.ARRAY_COLOR] = _c[s]
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		var i := mesh.get_surface_count() - 1
-		mesh.surface_set_material(i, mats[s])
+		mesh.surface_set_material(i, mats[s] if s < mats.size() else mats[0])
 		mesh.surface_set_name(i, SURFACES[s])
 	return mesh

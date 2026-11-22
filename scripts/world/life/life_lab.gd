@@ -17,6 +17,14 @@ extends Node3D
 ## meant with the junction camera; "wreck" a blast beside the pod nearest the focus 1 s in (the camera then frames it),
 ## then a mech-foot pusher walks into the wreck and shoves it.
 ## The life clock starts at START_T (a time on the timetable, so people are already mid-trip in the first frame).
+## Site (phase 3): "alone" (the district above), "section" (one whole deck of the mission section planned from the same
+## seed: CityDistrict.build_deck, its own rig; slider "deck") or "stack" (every deck at once: CityStack, one AmbientLife
+## for all of them via setup_stack; the deck slider picks the deck on view, which the daylight lights). In section and
+## stack the life is evaluated and drawn near a viewer node standing on the focus point (and the camera).
+## Section cameras: "station" looks along the rail lane at a tram stopped at a station (the clock is moved on to a dwell);
+## "tram" stands close beside that tram's middle car; "checkpoint" frames a heavy checkpoint with a pod stopped at it (the
+## clock is moved on to such a stop).
+##   --life site=stack,seed=4,camera=station
 
 const PARAMS := [
 	{"id": "seed", "label": "Seed", "min": 1.0, "max": 200.0},
@@ -24,18 +32,25 @@ const PARAMS := [
 	{"id": "pods", "label": "Pods (-1 = default for the area)", "min": -1.0, "max": 12.0},
 	{"id": "carts", "label": "Service carts (-1 = default)", "min": -1.0, "max": 4.0},
 	{"id": "time_scale", "label": "Life clock speed", "min": 0.0, "max": 8.0},
+	{"id": "deck", "label": "Section deck (site: section / stack)", "min": 0.0, "max": 4.0},
 ]
-const CAMERAS := ["lab", "street", "sidewalk", "crowd", "junction", "pod"]
+const CAMERAS := ["lab", "street", "sidewalk", "crowd", "junction", "pod", "station", "tram", "checkpoint"]
+const SITES := ["alone", "section", "stack"]
 const DEMOS := ["calm", "panic", "fire", "traffic", "wreck", "riders"]
 const START_T := 900.0
 const PANIC_EVERY := 20.0
 const SETTLE_FRAMES := 8
 
 var time_scale := 1.0
-var params := {"seed": 1.0, "people": 0.0, "pods": -1.0, "carts": -1.0, "time_scale": 1.0}
-var options := {"camera": "lab", "demo": "calm", "lighting": "day"}
-var district: CityDistrict
-var life: AmbientLife
+var params := {"seed": 1.0, "people": 0.0, "pods": -1.0, "carts": -1.0, "time_scale": 1.0, "deck": 0.0}
+var options := {"camera": "lab", "demo": "calm", "lighting": "day", "site": "alone"}
+var district: CityDistrict      ## the district on view (on its own, the section deck, or the stack's deck on view)
+var life: AmbientLife           ## the life on view: root itself, or root's unit for the deck on view
+var root: AmbientLife           ## the scene's AmbientLife (group "ambient_life")
+var stack: CityStack
+
+var _alone: CityDistrict
+var _eye: Node3D                ## section / stack: a viewer standing on the focus
 
 var _cam: Camera3D
 var _dirty := -1
@@ -72,24 +87,68 @@ func _ready() -> void:
 
 func rebuild() -> void:
 	_dirty = -1
-	if district == null:
-		district = CityDistrict.new()
-		district.name = "District"
-		add_child(district)
-	district.build({"seed": params["seed"], "walls": 1.0})
-	district.rig.apply(str(options["lighting"]))
-	if life == null:
-		life = AmbientLife.new()
-		add_child(life)
-	life.setup(district, int(params["people"]) if params["people"] >= 1.0 else -1, int(params["pods"]), int(params["carts"]))
-	life.bind_props(district.props)
-	life.advance_to(START_T)
+	var site := str(options["site"])
+	var people_n := int(params["people"]) if params["people"] >= 1.0 else -1
+	if root == null:
+		root = AmbientLife.new()
+		add_child(root)
+	if site == "stack":
+		if _alone != null:
+			remove_child(_alone)
+			_alone.queue_free()
+			_alone = null
+		if stack == null:
+			stack = CityStack.new()
+			stack.name = "Stack"
+			add_child(stack)
+		stack.build(SectionPlan.make({"seed": params["seed"]}))
+		var k := clampi(int(params["deck"]), 0, stack.decks.size() - 1)
+		district = stack.decks[k]
+		stack.set_active_deck(k)
+		stack.rig.apply(str(options["lighting"]))
+		root.setup_stack(stack, people_n, int(params["pods"]), int(params["carts"]))
+		life = root.unit(k)
+	else:
+		if stack != null:
+			remove_child(stack)
+			stack.queue_free()
+			stack = null
+		if _alone == null:
+			_alone = CityDistrict.new()
+			_alone.name = "District"
+			add_child(_alone)
+		district = _alone
+		if site == "section":
+			var sec := SectionPlan.make({"seed": params["seed"]})
+			district.build_deck(sec, clampi(int(params["deck"]), 0, sec.deck_count - 1))
+		else:
+			district.build({"seed": params["seed"], "walls": 1.0})
+		district.rig.apply(str(options["lighting"]))
+		root.setup(district, people_n, int(params["pods"]), int(params["carts"]))
+		root.bind_props(district.props)
+		life = root
+	if _eye != null:
+		root.remove_viewer(_eye)
+		root.remove_viewer(_cam)
+	if site != "alone":
+		if _eye == null:
+			_eye = Node3D.new()
+			_eye.name = "LifeViewer"
+			add_child(_eye)
+		root.add_viewer(_eye)
+		root.add_viewer(_cam)
+	root.advance_to(START_T)
 	_pick_crowd()
 	_start_demo()
 	_apply_view()
-	print("[life] seed %d  people %d  vehicles %d  plan %s  traffic %s  doors %d  benches %d" % [int(params["seed"]),
-			life.plan.count, life.vehicle_count(), life.plan.checksum(), life.traffic.checksum(), life.plan.doors.size(),
-			life.plan.benches.size()])
+	print("[life] site %s seed %d deck %d  people %d  vehicles %d  plan %s  traffic %s  doors %d  benches %d%s" % [site,
+			int(params["seed"]), int(params["deck"]), life.plan.count, life.vehicle_count(), life.plan.checksum(),
+			life.traffic.checksum(), life.plan.doors.size(), life.plan.benches.size(),
+			("  tram period %.0f s" % life.tram.period) if life.tram != null else ""])
+
+
+func _rig() -> CityLightRig:
+	return stack.rig if stack != null else district.rig
 
 
 func _process(_delta: float) -> void:
@@ -98,9 +157,9 @@ func _process(_delta: float) -> void:
 		if _dirty < 0:
 			rebuild()
 		return
-	if life == null:
+	if root == null or life == null:
 		return
-	life.time_scale = time_scale * float(params["time_scale"])
+	root.time_scale = time_scale * float(params["time_scale"])
 	_demo()
 
 
@@ -131,6 +190,15 @@ func set_lab_param(id: String, value: float) -> void:
 	if is_equal_approx(float(params[id]), value):
 		return
 	params[id] = value
+	if id == "deck" and stack != null and not stack.decks.is_empty():
+		var k := clampi(int(value), 0, stack.decks.size() - 1)     # every deck is built: only the view moves
+		district = stack.decks[k]
+		stack.set_active_deck(k)
+		life = root.unit(k)
+		_pick_crowd()
+		_start_demo()
+		_apply_view()
+		return
 	if id != "time_scale":
 		_dirty = SETTLE_FRAMES
 
@@ -140,6 +208,7 @@ func lab_options() -> Array:
 		{"id": "camera", "label": "Camera", "choices": CAMERAS, "value": options["camera"]},
 		{"id": "demo", "label": "Demo", "choices": DEMOS, "value": options["demo"]},
 		{"id": "lighting", "label": "Lighting", "choices": CityLightRig.preset_ids(), "value": options["lighting"]},
+		{"id": "site", "label": "Site", "choices": SITES, "value": options["site"]},
 	]
 
 
@@ -150,9 +219,10 @@ func set_lab_option(id: String, value: String) -> void:
 	if district == null or life == null:
 		return
 	match id:
-		"lighting": district.rig.apply(value)
+		"lighting": _rig().apply(value)
+		"site": _dirty = SETTLE_FRAMES
 		"demo":
-			life.restore(PackedByteArray())
+			root.restore(PackedByteArray())
 			_start_demo()
 			_apply_view()
 		_:
@@ -175,7 +245,7 @@ func lab_radius() -> float:
 ## each vehicle within 30 m counts as two people, so the spot shows both).
 func _pick_crowd() -> void:
 	var cars: Array[Vector2] = []
-	if options["demo"] == "panic":
+	if options["demo"] == "panic" or options["site"] != "alone":
 		for v in life.vehicle_count():
 			var q := life.fleet.pose(v, life.now)
 			cars.append(Vector2(q["x"], q["s"]))
@@ -192,7 +262,7 @@ func _pick_crowd() -> void:
 				n += 1
 		for c in cars:
 			if c.distance_to(q) < 30.0:
-				n += 2
+				n += 2 if options["demo"] == "panic" else 1
 		if n > best_n and _block_of(q) >= 0:
 			best_n = n
 			_crowd_at = q
@@ -299,6 +369,46 @@ func _pod_near(at: Vector2) -> int:
 
 # --- Demos -----------------------------------------------------------------------------------------------
 
+## Section: moves the clock on to the tram dwelling at a station (1.5 s into the dwell); the stop (arc).
+func _station_stop() -> Vector2:
+	var tr := life.tram
+	if tr == null:
+		return _crowd_at
+	var t := life.now
+	for i in 2400:
+		var p := tr.pose(t)
+		if p["mode"] == "dwell":
+			for sp: Dictionary in tr.stops:
+				if sp["kind"] == "station" and absf(float(sp["s"]) - float(p["s"])) < 0.05:
+					root.advance_to(t + 1.5)
+					return Vector2(tr.x, float(p["s"]))
+		t += 0.5
+	return Vector2(tr.x, float(tr.pose(life.now)["s"]))
+
+
+## Section: moves the clock on to a pod standing at a heavy checkpoint's stop; that pod's position (arc), _target = it.
+func _checkpoint_stop() -> Vector2:
+	var tr := life.traffic
+	var want: Array = []        # [loop, u]
+	for li in tr.loops.size():
+		for m: Dictionary in tr.loops[li]["marks"]:
+			if m.has("check"):
+				want.append([li, float(m["u"])])
+	if want.is_empty():
+		return _crowd_at
+	var t := life.now
+	for i in 2400:
+		for w: Array in want:
+			for vid in tr.loop_vehicles(int(w[0])):
+				var b := tr.base_pose(vid, t)
+				if b["mode"] == "dwell" and absf(float(b["u"]) - float(w[1])) < 0.1:
+					root.advance_to(t + 0.3)
+					_target = vid
+					return Vector2(b["x"], b["s"])
+		t += 0.5
+	return _crowd_at
+
+
 func _start_demo() -> void:
 	_demo_t0 = life.now
 	_demo_step = 0
@@ -309,6 +419,8 @@ func _start_demo() -> void:
 		_pusher = null
 	match str(options["camera"]):
 		"junction": _focus = _busy_junction()
+		"station", "tram": _focus = _station_stop()
+		"checkpoint": _focus = _checkpoint_stop()
 		"pod":
 			var v := _docked_pod()
 			_focus = Vector2(life.fleet.pose(v, life.now)["x"], life.fleet.pose(v, life.now)["s"]) if v >= 0 else _crowd_at
@@ -319,7 +431,7 @@ func _start_demo() -> void:
 			_target = _rider_pod(4 if options["demo"] == "panic" and i < 200 else 0)
 			if _target >= 0:
 				break
-			life.advance_to(life.now + 0.5)
+			root.advance_to(life.now + 0.5)
 		_demo_t0 = life.now
 		if _target >= 0:
 			var q := life.fleet.pose(_target, life.now)
@@ -406,6 +518,9 @@ func _demo() -> void:
 				life.raise_threat(xf.origin, 80.0, 3)
 				print("[life] wreck demo: a blast beside pod %d hits %d" % [_target, hits])
 				_demo_step = 1
+				var w := life.fleet.pose(_target, life.now + 0.8)
+				_focus = Vector2(w["x"], w["s"])
+				_apply_view()          # frame it from the side it rolls toward
 			elif _demo_step == 1 and t >= 2.5:
 				_pusher = Node3D.new()
 				_pusher.name = "DemoFoot"
@@ -432,6 +547,8 @@ func _apply_view() -> void:
 	var inside: bool = options["camera"] != "lab"
 	district.set_ceiling_visible(inside)
 	district.set_backdrop_visible(inside)
+	if _eye != null:
+		_eye.global_position = district.global_transform * district.ring.arc_to_world(_focus.x, _focus.y, 1.0)
 	if not inside:
 		_cam.clear_current(true)
 		return
@@ -442,6 +559,12 @@ func _apply_view() -> void:
 	var target := Vector3(_focus.x, _focus.y, 0.8)
 	var turn := -0.18          # turned a little, so what it looks at sits right of centre, clear of the lab's panel
 	match str(options["camera"]):
+		"street" when options["site"] != "alone":
+			# section decks: a mech's eye (9 m) out over the street, 16 m off the busiest sidewalk and 12 m back along it
+			var along := Vector2(_crowd_n.y, -_crowd_n.x)
+			var at := _focus + _crowd_n * 16.0 - along * 12.0
+			eye = Vector3(at.x, at.y, 9.0)
+			target = Vector3(_focus.x, _focus.y, 1.0)
 		"street":
 			var back := -1.0 if _focus.y > (e.position.y + e.end.y) * 0.5 else 1.0
 			var s0 := clampf(_focus.y + back * 22.0, e.position.y + 5.0, e.end.y - 5.0)
@@ -507,6 +630,40 @@ func _apply_view() -> void:
 				eye = Vector3(at.x, at.y, 2.0)
 				var aim := Vector2(p["x"], p["s"]) + fwd * 8.0
 				target = Vector3(aim.x, aim.y, 0.8)
+	match str(options["camera"]):
+		"station", "tram":
+			if life.tram != null:
+				var x := life.tram.x
+				var s := _focus.y
+				var back := -1.0 if s > (e.position.y + e.end.y) * 0.5 else 1.0      # stand on the deck's longer side
+				if options["camera"] == "station":
+					eye = Vector3(x - 9.0 * back, s + back * 46.0, 6.0)     # the tram right of the lab's panel
+					target = Vector3(x, s, 2.0)
+				else:
+					eye = Vector3(x - 7.0 * back, s + back * 7.0, 2.4)
+					target = Vector3(x, s - back * 6.0, 1.9)
+					turn = -0.1
+		"checkpoint":
+			var bar := Vector2(_focus.x, _focus.y)
+			for it: Dictionary in LifeBarriers.items(district.plan):
+				if it["kind"] == "heavy":
+					bar = Vector2((float(it["a"]) + float(it["b"])) * 0.5, float(it["s"]))
+					break
+			if _target >= 0:
+				var q := life.fleet.pose(_target, life.now)
+				var c := Vector2(q["x"], q["s"])
+				var fwd := (bar - c).normalized()
+				var right := Vector2(-fwd.y, fwd.x)
+				var at := c - fwd * 16.0 - right * 7.0
+				eye = Vector3(at.x, at.y, 4.5)
+				var mid := c.lerp(bar, 0.45)
+				target = Vector3(mid.x, mid.y, 1.0)
+				turn = -0.08
+			else:
+				eye = Vector3(bar.x - 8.0, bar.y - 30.0, 7.0)
+				target = Vector3(bar.x, bar.y, 1.0)
+	if _eye != null:
+		_eye.global_position = district.global_transform * district.ring.arc_to_world(target.x, target.y, 1.0)
 	var ring := district.ring
 	var p0 := district.global_transform * ring.arc_to_world(eye.x, eye.y, eye.z)
 	var q0 := district.global_transform * ring.arc_to_world(target.x, target.y, target.z)

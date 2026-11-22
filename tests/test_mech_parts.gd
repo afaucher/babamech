@@ -83,6 +83,17 @@ func setup() -> void:
 		var hp := m2.find_child("HP_" + slot, true, false)
 		var gun := hp.find_child("Weapon_" + id, true, false) if hp != null else null
 		check(gun != null and gun.get_child_count() == 1 and gun.get_child(0) is MeshInstance3D, "%s mounts its art mesh on %s" % [id, slot])
+	# Back-mount equipment shows its mesh on the back hardpoint too, and the lab's Back option offers it.
+	for id: String in MechCatalog.EQUIPMENT_ORDER:
+		check(id in MechMeshes.EQUIPMENT, "catalog equipment %s has a mesh" % id)
+		m2.configure("chicken", "strider", {"back": id})
+		var hp := m2.find_child("HP_back", true, false)
+		var eq_node := hp.find_child("Weapon_" + id, true, false) if hp != null else null
+		check(eq_node != null and eq_node.get_child_count() == 1 and eq_node.get_child(0) is MeshInstance3D, "%s mounts its art mesh on back" % id)
+	for o: Dictionary in m2.lab_options():
+		if o["id"] == "hp:back":
+			for id: String in MechCatalog.EQUIPMENT_ORDER:
+				check(id in (o["choices"] as Array), "the lab's Back option lists %s" % id)
 	# Accent: none by default, a tinted material after set_accent, kept through a rebuild, cleared by the orange.
 	var blue := Color(0.16, 0.42, 0.85)
 	m2.configure("chicken", "strider", {})
@@ -110,7 +121,59 @@ func setup() -> void:
 	check(m2.find_child("foot_l", true, false) != null and m2.find_child("Head_chicken", true, false) != null, "with its feet and head")
 	m2.queue_free()
 	_body_detail()
+	_equipment()
 	finish()
+
+
+## The back-mount equipment meshes (docs/design/back-equipment.md): on the back mount like the mortar, inside an envelope
+## that keeps them off the back plate (rear face at z -0.375), the shoulder weapons (inner faces at |x| 0.51) and no
+## taller than the mortar; the docked drone is the cradle plus the flying drone at DRONE_DOCK, its skids on the pad; only
+## the radiator has the "heat" surface (its fins).
+func _equipment() -> void:
+	var mortar := MechMeshes.mesh("weapon_mortar").get_aabb()
+	for id: String in MechMeshes.EQUIPMENT:
+		var m := MechMeshes.mesh("weapon_" + id)
+		var n := _faces(m)
+		check(n >= 250 and n <= 1100, "weapon_%s: low poly (%d faces)" % [id, n])
+		for s in m.get_surface_count():
+			check(m.surface_get_name(s) in MeshKit.SURFACES, "weapon_%s: surface %s is a known kind" % [id, m.surface_get_name(s)])
+		check(_surface_names(m).has("accent"), "weapon_%s: it carries the player's accent" % id)
+		eq(_surface_names(m).has("heat"), id == "radiator", "weapon_%s: only the radiator has a heat surface" % id)
+		if id == "repair_drone_flying":
+			continue
+		var bb := m.get_aabb()
+		check(bb.grow(0.05).has_point(Vector3.ZERO), "weapon_%s sits on the back mount point" % id)
+		check(maxf(-bb.position.x, bb.end.x) <= 0.45, "weapon_%s: clear of the shoulder weapons (|x| %.2f <= 0.45)" % [id, maxf(-bb.position.x, bb.end.x)])
+		check(bb.end.y <= mortar.end.y, "weapon_%s: no taller than the mortar (%.2f <= %.2f)" % [id, bb.end.y, mortar.end.y])
+		check(bb.position.y >= -0.45 and bb.end.z <= 0.4, "weapon_%s: stays on the rear deck (y %.2f, z %.2f)" % [id, bb.position.y, bb.end.z])
+		# Only the radiator's coolant pipes reach the back plate (into its rear face); nothing else comes near it.
+		var front := -0.49 if id == "radiator" else -0.36
+		check(bb.position.z >= front, "weapon_%s: clear of the back plate (front z %.2f >= %.2f)" % [id, bb.position.z, front])
+	for p: String in MechMeshes.all_parts():
+		if p != "weapon_radiator":
+			check(not _surface_names(MechMeshes.mesh(p)).has("heat"), "%s has no heat surface" % p)
+	# The docked drone = the empty cradle + the flying drone at DRONE_DOCK, resting its skids on the pad (top y 0.165).
+	var docked := MechMeshes.mesh("weapon_repair_drone")
+	var cradle := MechMeshes.mesh("weapon_repair_drone_cradle")
+	var flying := MechMeshes.mesh("weapon_repair_drone_flying")
+	eq(_faces(docked), _faces(cradle) + _faces(flying), "repair_drone: docked = cradle + flying drone (faces)")
+	var fb := flying.get_aabb()
+	var merged := cradle.get_aabb().merge(AABB(fb.position + MechMeshes.DRONE_DOCK, fb.size))
+	check(docked.get_aabb().is_equal_approx(merged), "repair_drone: docked = cradle + flying drone at DRONE_DOCK (bounds)")
+	near(MechMeshes.DRONE_DOCK.y + fb.position.y, 0.165, 0.01, "repair_drone: the skids rest on the pad")
+	near(fb.get_center().x, 0.0, 0.01, "repair_drone_flying: centred across")
+	near(fb.get_center().z, 0.0, 0.03, "repair_drone_flying: centred fore-aft")
+	check(absf(fb.get_center().y) < 0.05, "repair_drone_flying: origin at its centre (%.3f)" % fb.get_center().y)
+	# The radiator's fins: the heat surface lies inside the fin stack.
+	var rad := MechMeshes.mesh("weapon_radiator")
+	for s in rad.get_surface_count():
+		if rad.surface_get_name(s) == "heat":
+			var v: PackedVector3Array = rad.surface_get_arrays(s)[Mesh.ARRAY_VERTEX]
+			var hb := AABB(v[0], Vector3.ZERO)
+			for p in v:
+				hb = hb.expand(p)
+			check(hb.position.y >= 0.2 and hb.end.y <= 0.9 and maxf(-hb.position.x, hb.end.x) <= 0.26,
+				"radiator: the heat surface is the fin stack (%s)" % str(hb))
 
 
 ## The detailed chassis parts (docs/design/body-detail/, B adopted for every part): the weapons still sit where they

@@ -237,6 +237,11 @@ static func _soffits(geo: CityGeo, cuts: Array[Rect2], slab: float) -> void:
 
 const RAMP_THICK := 1.0
 const PARAPET_H := 1.0
+## Collision height of a ramp parapet above the ribbon. The drawn parapet is PARAPET_H, but a mech's legs step onto any
+## edge up to MechRig.max_step() (1.25 m with the current legs), so a 1 m collision box was stepped over and the mech fell
+## off the ramp's side (tests/test_city_stack_walk.gd). Above PARAPET_H the box is invisible; 2.5 m keeps a margin for
+## longer legs (the capsule touches it at 2.2 m, its radius, well over any step).
+const PARAPET_GUARD := 2.5
 const PARAPET_W := 0.5
 const PIER_PITCH := 24.0
 const PIER_MIN := 3.0        ## lower than this the ribbon stands on a solid embankment instead of piers

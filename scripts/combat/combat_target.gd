@@ -10,6 +10,7 @@ extends Node3D
 ##   apply_impulse(dv, src)                 dv = the weapon's Δv (m/s) BEFORE the mass class; this multiplies it
 ##   apply_heat(amount, src)
 ##   apply_hit(hit)                         all three from one Hit record
+##   heal(amount, src) -> float             repair, most damaged component first (never a destroyed one)
 ## `src` is who did it (a shooter id, "wall" for a slam): for signals / logs, never for authority.
 ##
 ## AUTHORITY: `owner_peer` 0 = a host-owned world object (dummy, turret, enemy), > 0 = the player peer whose machine owns
@@ -23,6 +24,7 @@ extends Node3D
 signal damaged(amount: float, component: String, src: String)
 signal staggered_by(src: String)
 signal slammed(speed: float, damage: float)
+signal healed(amount: float, component: String, src: String)
 
 var target_id := ""
 var owner_peer := 0
@@ -128,6 +130,37 @@ func apply_impulse(dv: Vector3, src: String) -> void:
 func apply_heat(amount: float, src: String) -> void:
 	if amount > 0.0:
 		heat.add(amount)
+
+
+## Repair `amount` HP (back-equipment.md: the repair drone), spent on the most damaged component first (lowest HP
+## fraction), spilling to the next; a destroyed component (hp 0) is never restored, and nothing happens to a target that
+## is destroyed or not hittable (a downed PlayerTarget: `disabled`; a wreck). Returns the HP actually restored. The
+## OWNER calls it on its own target only (the drone heals only targets CombatWorld.owns), like every verb.
+## PlayerTarget needs no override: its component HP lives in hp / max_hp and is_hittable() is false while disabled.
+func heal(amount: float, src: String) -> float:
+	if amount <= 0.0 or hp.is_empty() or destroyed() or not is_hittable():
+		return 0.0
+	var left := amount
+	var done := 0.0
+	while left > 1e-9:
+		var best := ""
+		var best_f := 2.0
+		for c: String in hp:
+			var cap := float(max_hp.get(c, 0.0))
+			var v := float(hp[c])
+			if v <= 0.0 or cap <= 0.0 or v >= cap:
+				continue
+			if v / cap < best_f:
+				best_f = v / cap
+				best = c
+		if best == "":
+			break
+		var add := minf(left, float(max_hp[best]) - float(hp[best]))
+		hp[best] = float(hp[best]) + add
+		left -= add
+		done += add
+		healed.emit(add, best, src)
+	return done
 
 
 func apply_hit(h: Hit) -> void:

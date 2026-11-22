@@ -45,11 +45,21 @@ var benches: Array = []
 var junctions: Array = []
 var people: Array = []
 var riders: Array = []        ## pod passengers (see _build_people)
+## Section mode only (phase 3): the deck's tram (its timetable decides when people may cross the rail lane) and the
+## crossings over the spine. A spine crossing runs along a cross street's line (not the zebra beside the junction, which
+## would cross the ramp-lane floor cuts and the rail lane away from a cross street) in three pieces: the ramp_a lane
+## (junction -1: no signal, no traffic), the avenue (the spine junction's walk signal) and the rail + ramp_b lanes
+## (junction -1, an entry in rail_edges: started only when the tram's timetable keeps it 40 m clear for the whole piece).
+var tram: LifeTram
+var rail_edges: Dictionary = {}   ## edge index -> s of its cross line
 
 var _edge_at: Dictionary = {}     ## Vector2i(min node, max node) -> edge index
 var _trees: Dictionary = {}       ## root node -> [dist PackedFloat32Array, prev PackedInt32Array] (memo)
 var _trips: Dictionary = {}       ## Vector2i(id, slot) -> trip (memo)
 var _block_rects: Array[Rect2] = []
+var _cuts: Array[Rect2] = []      ## section mode: the floor cuts, grown by the curb and a person (nobody walks in one)
+var _split: Dictionary = {}       ## section mode: Vector2i(corner a, corner b) of a cross-street crossing -> the node the
+                                  ## spine crossing leaves it from
 
 
 func net_fields() -> Dictionary:
@@ -57,8 +67,9 @@ func net_fields() -> Dictionary:
 		"plan": Net.SPAWN, "seed": Net.SPAWN, "count": Net.SPAWN,     # the mission seed and the people param
 		# derived from the plan on every machine, verified by checksum()
 		"nodes": Net.LOCAL, "edges": Net.LOCAL, "adj": Net.LOCAL, "doors": Net.LOCAL, "benches": Net.LOCAL,
-		"junctions": Net.LOCAL, "people": Net.LOCAL, "riders": Net.LOCAL,
-		"_edge_at": Net.LOCAL, "_trees": Net.LOCAL, "_trips": Net.LOCAL, "_block_rects": Net.LOCAL,
+		"junctions": Net.LOCAL, "people": Net.LOCAL, "riders": Net.LOCAL, "tram": Net.LOCAL, "rail_edges": Net.LOCAL,
+		"_edge_at": Net.LOCAL, "_trees": Net.LOCAL, "_trips": Net.LOCAL, "_block_rects": Net.LOCAL, "_cuts": Net.LOCAL,
+		"_split": Net.LOCAL,
 	}
 
 
@@ -89,8 +100,16 @@ func build(p: CityPlan, people_count: int = -1) -> void:
 	_trees.clear()
 	_trips.clear()
 	_block_rects.clear()
+	rail_edges.clear()
+	_cuts.clear()
+	_split.clear()
+	tram = null
 	for b: Dictionary in p.blocks:
 		_block_rects.append(b["rect"])
+	if p.section != null:
+		tram = LifeTram.make(p, h(9100, p.deck))
+		for o in p.floor_cuts():
+			_cuts.append(o.grow(CityStreets.HOLE_CURB + 0.4))
 	_build_junctions()
 	_build_graph()
 	_build_people()
@@ -177,11 +196,24 @@ func _add_edge(a: int, b: int, kind: int, junction: int = -1, axis: int = -1) ->
 	var key := Vector2i(mini(a, b), maxi(a, b))
 	if _edge_at.has(key):
 		return
+	if not _cuts.is_empty() and _hits(_cuts, nodes[a], nodes[b]):
+		return          # section mode: no way across a floor cut (a ramp's hole, a shaft)
 	var e := edges.size()
 	edges.append([a, b, kind, junction, axis, nodes[a].distance_to(nodes[b])])
 	_edge_at[key] = e
 	(adj[a] as Array).append(e)
 	(adj[b] as Array).append(e)
+
+
+## Whether the segment a -> b passes through any of the rects (sampled every 0.5 m).
+static func _hits(rects: Array[Rect2], a: Vector2, b: Vector2) -> bool:
+	var n := maxi(int(ceil(a.distance_to(b) / 0.5)), 1)
+	for k in n + 1:
+		var p := a.lerp(b, float(k) / float(n))
+		for r in rects:
+			if r.has_point(p):
+				return true
+	return false
 
 
 ## The edge between two nodes, or -1.
@@ -288,12 +320,18 @@ func _build_graph() -> void:
 				_add_edge(prev, int(q[1]), WALK)
 				prev = int(q[1])
 			_add_edge(prev, int(ends[side][1]), WALK)
+	# Section mode: the crossings over the spine, along the cross streets (they split the cross-street crossings next to
+	# the spine, below).
+	var spine_line := -1
+	if plan.section != null:
+		spine_line = plan.section.spine_line
+		_spine_crossings(by_cell, corners)
 	# Zebra crossings between facing corners of neighbouring blocks.
 	for bi in plan.blocks.size():
 		var b: Dictionary = plan.blocks[bi]
 		var cell := Vector2i(int(b["ix"]), int(b["is"]))
 		var c: Array = corners[bi]
-		if by_cell.has(cell + Vector2i(1, 0)):
+		if by_cell.has(cell + Vector2i(1, 0)) and cell.x != spine_line - 1:     # (not across the spine: see above)
 			var o: Array = corners[int(by_cell[cell + Vector2i(1, 0)])]
 			_crossing(int(c[1]), int(o[0]), 0)
 			_crossing(int(c[2]), int(o[3]), 0)
@@ -358,7 +396,7 @@ func _plaza_way(li: int, bi: int, at: Vector2, side_pts: Array) -> int:
 		if not (lot["faces"] as Array)[side]:
 			continue
 		var on := _on_side(lane, side, at)
-		if _segment_hits(planter, on, at):
+		if _segment_hits(planter, on, at) or (not _cuts.is_empty() and _hits(_cuts, on, at)):
 			continue
 		var blocked := false
 		for b: Dictionary in plan.buildings:
@@ -384,7 +422,74 @@ static func _segment_hits(r: Rect2, a: Vector2, b: Vector2) -> bool:
 	return false
 
 
+## Section mode: for every inner cross line, a way over the spine along that line (at the line, or a quarter of the
+## street's width either side of it when that misses a floor cut or kept-clear ground that the line hits), from the
+## middle of the cross-street crossing beside the spine on one side to the one on the other. Pieces: ramp_a (free),
+## avenue (walk signal), rail + ramp_b (the tram rule). None at a line where all three tries hit something.
+func _spine_crossings(by_cell: Dictionary, corners: Array) -> void:
+	var sec := plan.section
+	var sl := sec.spine_line
+	if sl <= 0 or sl >= plan.roads_x.size() - 1:
+		return
+	var av := plan.avenue_x()
+	var avoid: Array[Rect2] = _cuts.duplicate()
+	for k in plan.site.keep_clear:
+		avoid.append((k as Rect2).grow(0.4))
+	var ns := plan.roads_s.size()
+	for j in range(1, ns - 1):
+		var cells := [Vector2i(sl - 1, j), Vector2i(sl - 1, j - 1), Vector2i(sl, j), Vector2i(sl, j - 1)]
+		var ok := true
+		for cl: Vector2i in cells:
+			ok = ok and by_cell.has(cl)
+		if not ok:
+			continue
+		var a_bi := int(by_cell[cells[0]])
+		var b_bi := int(by_cell[cells[2]])
+		var road: Dictionary = plan.roads_s[j]
+		var w := float(road["b"]) - float(road["a"])
+		var c := (float(road["a"]) + float(road["b"])) * 0.5
+		var xa := lane_rect(plan.blocks[a_bi]["rect"]).end.x
+		var xb := lane_rect(plan.blocks[b_bi]["rect"]).position.x
+		var sc := INF
+		var offs := [0.0, w * 0.25, -w * 0.25]
+		for hk: Dictionary in sec.hooks:      # a heavy checkpoint's barrier stands on the line: cross beside it
+			if hk["kind"] == "checkpoint" and hk.get("size", "") == "heavy" and int(hk["deck"]) == plan.deck \
+					and absf(float(hk["s"]) - c) < w * 0.5:
+				offs = [w * 0.25, -w * 0.25]
+		for off: float in offs:
+			if not _hits(avoid, Vector2(xa, c + off), Vector2(xb, c + off)):
+				sc = c + off
+				break
+		if sc == INF:
+			continue
+		var m_a := _add_node(Vector2(xa, sc))
+		var p1 := _add_node(Vector2(av.x, sc))
+		var p2 := _add_node(Vector2(av.y, sc))
+		var m_b := _add_node(Vector2(xb, sc))
+		var ca: Array = corners[int(by_cell[cells[1]])]
+		var cb: Array = corners[int(by_cell[cells[3]])]
+		_split[Vector2i(mini(int(ca[2]), int(corners[a_bi][1])), maxi(int(ca[2]), int(corners[a_bi][1])))] = m_a
+		_split[Vector2i(mini(int(cb[3]), int(corners[b_bi][0])), maxi(int(cb[3]), int(corners[b_bi][0])))] = m_b
+		_add_edge(m_a, p1, CROSS, -1, 0)
+		_add_edge(p1, p2, CROSS, sl * ns + j, 0)
+		_add_edge(p2, m_b, CROSS, -1, 0)
+		var e := edge_between(p2, m_b)
+		if e >= 0:
+			rail_edges[e] = sc
+
+
 func _crossing(a: int, b: int, axis: int) -> void:
+	var m := int(_split.get(Vector2i(mini(a, b), maxi(a, b)), -1))
+	if m >= 0:
+		var j := _crossing_junction(a, b, axis)
+		_add_edge(a, m, CROSS, j, axis)
+		_add_edge(m, b, CROSS, j, axis)
+		return
+	_add_edge(a, b, CROSS, _crossing_junction(a, b, axis), axis)
+
+
+## The junction a crossing between nodes a and b belongs to.
+func _crossing_junction(a: int, b: int, axis: int) -> int:
 	var mid := (nodes[a] + nodes[b]) * 0.5
 	# The junction this crossing belongs to: on the road it crosses, at the cross road nearest to it.
 	var j := -1
@@ -411,7 +516,7 @@ func _crossing(a: int, b: int, axis: int) -> void:
 				j = best * ns + k
 	if j < 0:
 		j = _junction_near(mid)
-	_add_edge(a, b, CROSS, j, axis)
+	return j
 
 
 static func _along(lane: Rect2, side: int, on: Vector2) -> float:
@@ -707,7 +812,11 @@ func _walk_chain(out: Array, st: Array, ch: PackedInt32Array, speed: float) -> b
 		var ed: Array = edges[e]
 		if int(ed[2]) == CROSS:
 			var dur := float(ed[5]) / speed
-			var go := next_green(int(ed[3]), int(ed[4]), float(st[0]), dur)
+			var go := float(st[0])
+			if rail_edges.has(e):
+				go = tram.next_clear(float(rail_edges[e]), go, dur)
+			elif int(ed[3]) >= 0:
+				go = next_green(int(ed[3]), int(ed[4]), go, dur)
 			if go > float(st[0]) + 1e-6:
 				var dir := nodes[v] - nodes[u]
 				_hold(out, st, nodes[u], go - float(st[0]), WAIT, atan2(dir.x, dir.y), u)
@@ -889,6 +998,12 @@ func checksum() -> String:
 	for pp: Dictionary in people:
 		for key: String in ["period", "phase", "speed"]:
 			buf.put_32(int(round(float(pp[key]) * 1000.0)))
+	if tram != null:          # section mode only (the stand-alone checksum is unchanged)
+		buf.put_utf8_string(tram.checksum())
+		var keys := rail_edges.keys()
+		keys.sort()
+		for e: int in keys:
+			buf.put_32(e)
 	var ctx := HashingContext.new()
 	ctx.start(HashingContext.HASH_SHA256)
 	ctx.update(buf.data_array)

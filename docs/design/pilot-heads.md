@@ -4,7 +4,12 @@
 > and the mech seats a `PilotHead` (`MechModel.pilot`) fed by `MechRig` (movement, turning, landing, effort, footfall).
 > In the test drive `PilotCombatLink` (`scripts/pilot/pilot_combat_link.gd`) adds heat, shutdown, hull / head HP,
 > disabled, hits (direction + amount), component loss, reboot / respawn, firing, aim look and kill smirks, for the local
-> mech only. Not wired yet: remote puppets (section 7), teammate down / alert, objective smirks.
+> mech only. Teammates' puppets have `PilotPuppetLink` (`scripts/pilot/pilot_puppet_link.gd`, section 7): streamed heat,
+> shutdown, thrust, designator, their fire records (aim look), shots seen striking them, reboot, and (since the snapshot
+> carries component HP and `disabled`) hull / head HP (afraid), a part lost (pain), downed (dazed), revived, and hits
+> from the streamed HP drops (flinch with the real amount toward the struck part's side, even for shots this machine
+> never draws; deduped against a seen impact). Not wired yet: the attacker's true direction for a hit not drawn here,
+> enemy shots drawn on machines other than the host's, teammate down / alert, objective smirks.
 > Open with the user: keep effects? keep / soften the colour flush? smirk for victory; pickle flair. Known weak spots:
 > smirk is subtle, pale flush is subtle, chips are white-on-white on the chicken.
 
@@ -57,6 +62,17 @@ Per-character flair (the long-range signal, each a damped spring so it also trai
 
 Face budget: the static heads are 142-182 faces. Lids, mouth interior and the split mouth add about 25-40, so rigged
 heads land at **about 180-210 faces** (question 1).
+
+**Neck seal (2026-11-22, user bug "you can see up the head's neck in some poses, it separates from the mech").** The
+neck's base sits in the hatch below its dark floor; the lean, the push and the squash used to lift its open bottom ring
+up to the floor or rim (0.14 above the floor on the chicken) and slide it across the opening (up to 0.08). Now:
+(1) every `NeckLow` closes with a collar plug (`PilotFace.add_neck_plug`: a dark `COLLAR` frustum `PLUG_DEPTH` 0.18
+below the base, capped, 14 faces on top of the head's budget), so there is no open edge to look into and the neck runs
+down past the floor in every pose; standalone (lab, crew panel) it reads as a dark collar under the neck; (2) the push
+(focused, effort, peck...) no longer slides `NeckLow`: it leans it about its base and `NeckHigh` turns back by the same
+angle (`PilotFace.pose_neck_joints`); `NeckLow` tilt is capped at 24 degrees, the rest bends higher. The sink still slides
+it (down into the hatch). Guarded by `tests/test_pilot_neck_seal.gd` (every head on a real mech, worst poses: the plug's
+bottom stays 0.02 below the hatch floor and inside the hull); shots `tests/test_pilot_neck_visual.gd`.
 
 ## 3. Expressions
 
@@ -163,10 +179,11 @@ new on the wire for expressions, and no head state is ever read by gameplay.
 
 | Head input | Source | Exists? |
 | --- | --- | --- |
-| velocity, facing, grounded | owner's mech stream | controller has them; stream not built yet |
-| aim point, firing | owner's mech stream | weapons session |
-| heat fraction, HP fractions, shutdown, disabled | owner state | not built |
-| hit (direction, amount, part) | result of the `apply_damage` verb | **needs to be observable on every machine**, not only the victim's: the owner's damage result should carry direction and amount so puppets flinch too |
+| velocity, facing, grounded | owner's mech stream | built (mech snapshots) |
+| aim point, firing | owner's mech stream, replicated fire records | built (snapshot aim, CombatNet) |
+| heat fraction, shutdown | owner's mech stream | built |
+| HP fractions, disabled | owner's mech stream (`NetMechState.comp`, `disabled`, `disable_cause`) | built |
+| hit (direction, amount, part) | result of the `apply_damage` verb | amount and part: built, read from the streamed HP drops on every machine; direction: from the impact when drawn here, else only the struck part's side (the attacker never crosses) |
 | kill / objective credit, revived, teammate down | events | to exist with combat; all are edges of synced state or existing broadcasts |
 
 Until those exist, the lab's scripted driver and the menu feed the head directly.
@@ -174,8 +191,32 @@ Until those exist, the lab's scripted driver and the menu feed the head directly
 **Today (2026-11-22)** `PilotCombatLink` runs on the owner's machine only: it reads `MechController` (heat, shutdown,
 thrusting, `rebooted`), `PlayerTarget` (`component_fractions`, `disabled`, `damaged(amount, component, src)`, component
 destroyed), `WeaponRack` (`trigger`, `fired`, `aim_point`, camera zoom) and `CombatWorld.hit_landed` (kills), and the hit
-direction comes from looking `src` up in `CombatWorld.targets`. A remote player's puppet has none of these: it will need
-the streamed heat / HP / disabled / trigger / aim point, and a damage result carrying direction and amount (still open).
+direction comes from looking `src` up in `CombatWorld.targets`.
+
+**Puppets (2026-11-22, integration plan W7)**: `PilotPuppetLink` (a `PilotCombatLink` subclass, all `Net.LOCAL`), child
+"PilotLink" of every remote crew mech, made by `CrewSync.setup` next to its `MechPuppet` (a 5-line additive hook). It runs
+at physics priority 7 (after `MechPuppet` writes the snapshot at 5, before `MechRig` feeds the head at 10). `MechRig`
+poses the puppet like any mech, so velocity, turning, landings, footfalls, running effort and idle already reach the head.
+
+| Head input on a teammate's puppet | Read from | State |
+| --- | --- | --- |
+| heat, shutdown (strained / overheated / dazed, red flush), effort | puppet `MechController` (`MechPuppet.apply` from the snapshot) | works |
+| firing, aim look | `CombatWorld.fired` records with shooter `player<peer>` (CombatNet replays remote records through `world.fire`); look at `MechPuppet.aim_point` while firing and 1.5 s after | works |
+| aiming | streamed `designator` flag | works |
+| hit (flinch + look toward, pain when large) | `CombatWorld.impact_spawned` within 0.6 m of the puppet's hit spheres (blasts: within their radius, falling off): the shot as this machine shows it; direction = outward from the struck sphere | works for every shot shown here; amount is a guess from the impact radius |
+| hit with the real amount (the hit signal) | streamed HP drops: `PilotPuppetLink` pools each `MechPuppet.components` fraction's drop since the previous frame (rises / repairs take back, never below 0; a component first seen, the first frame after bind, is a baseline). When the largest pooled component drop reaches `STREAM_MIN` 0.01 (2.5 x the 1/255 step): a seen flinch (impact / damage event) within `HIT_DEDUPE` 0.3 s + the puppet's interpolation delay (`Session.mechs.delay_of`) + one send interval -> pain part only, with the real amount; else, if a stream flinch was less than `STREAM_GAP` 0.5 s ago, keep pooling (burn / rapid fire: at most 2 flinches per s, with the pooled amount); else `react_hit(side, largest pooled drop)`. Side = the struck part's side of the mech (`*_l` left, `*_r` right, `back` behind, torso / head front) | works (2026-11-22, tested offline and over 2 peers), also for hits this machine never draws (host-only enemy shots). Direction is the struck part's side, not the attacker's; two parts struck in one frame flinch toward the worse one |
+| hit events on the puppet target | `PlayerTarget.damaged` on the puppet target, `CombatWorld.remote_hit` naming it (deduped against the impact flinch) | wired, never fires: the victim alone decides and applies hits on its mech, nothing crosses |
+| hp (afraid), disabled (dazed) | the puppet `PlayerTarget`, which `MechPuppet` mirrors every frame from the owner's streamed component fractions and downed flag (`fear_hp` = min torso / head) | works (2026-11-22, tested offline and over 2 peers) |
+| component destroyed (pain) | `PilotPuppetLink` compares `MechPuppet.components` with the previous frame: a fraction going from > 0 to 0 -> `react("pain", 1)`. The puppet target's hp is written directly, so `player_component_destroyed` never fires on it; a part first seen at 0 (first snapshot, rebind, late join) does not hurt | works |
+| revived | shutdown true -> false; streamed disabled true -> false | works |
+| kill smirk | `CombatWorld.hit_landed` with the teammate as shooter (host: hits from clients on host-owned enemies) | host only |
+| head id, accent | roster profile via `MechSpawn.make(..., peer, accent)` in `TestDrive._spawn_crew` | works (tested) |
+
+Still needed from the net side: (optional) an "owner applied damage" event carrying the source, so a teammate's flinch
+for a hit this machine doesn't draw looks toward the attacker (today: the size is real from the HP drop, the direction
+is the struck part's side; a heal and a hit in the same frame on one part cancel out). Enemy fire records are
+not broadcast (CombatNet sends only the local player's records; enemies run on the host), so on a client the host's
+enemies' shots striking a teammate are not seen (W4).
 
 ## 8. Code shape
 

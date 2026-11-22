@@ -10,6 +10,8 @@ extends Node3D
 ##   rig.apply("dusk")
 ## A stack of decks (CityStack) shares one rig: setup_decks() hangs every deck's fills with a cull mask of that deck's
 ## render layer, and light_layers() limits the daylight (light and shadow casters) to the deck being looked at.
+## Layers in ALWAYS (layer 1: mechs and everything that is not a deck; layer 20: the local pilot head, which the
+## first-person camera hides, ChaseCamera.FP_HIDDEN_LAYER) are lit by every fill and by the daylight on every deck.
 
 const PRESETS := {
 	# Locked look: bright warm artificial daylight, soft blue haze (docs/design/game-design.md 11).
@@ -37,6 +39,11 @@ const PRESETS := {
 const FILL_PITCH_S := 36.0       ## spacing of fill lights along the arc (m)
 const MAX_FILLS := 48            ## per deck
 const ALL_LAYERS := 0xFFFFFFFF
+## Render layers every light of the rig lights and the daylight takes shadows from, on every deck: layer 1 (mechs,
+## enemies, effects: everything not on a deck layer) and layer 20 (the local pilot head, ChaseCamera.FP_HIDDEN_LAYER,
+## so it stays lit in third person and in other views while the first-person camera culls it). Deck layers are bits
+## 1..deck_count, far below bit 19.
+const ALWAYS := 1 | (1 << 19)
 
 var preset := "day"
 var env: Environment
@@ -98,14 +105,14 @@ func setup(ring: RingFrame, area: Rect2, ceiling: float, strip_x: PackedFloat32A
 func setup_decks(list: Array) -> void:
 	_clear_fills()
 	for d: Dictionary in list:
-		_hang(d["ring"], d["offset"], d["area"], d["ceiling"], d["strip_x"], d["reach"], 1 | int(d["layer"]))
+		_hang(d["ring"], d["offset"], d["area"], d["ceiling"], d["strip_x"], d["reach"], ALWAYS | int(d["layer"]))
 	apply(preset)
 
 
-## The render layers the daylight lights and takes shadows from.
+## The render layers the daylight lights and takes shadows from (the ALWAYS layers are always added).
 func light_layers(mask: int) -> void:
-	sun.light_cull_mask = mask
-	sun.shadow_caster_mask = mask
+	sun.light_cull_mask = mask | ALWAYS
+	sun.shadow_caster_mask = mask | ALWAYS
 
 
 func _clear_fills() -> void:

@@ -1,8 +1,8 @@
 extends SceneTree
 ## Regenerate the mech's low-poly part files from the builders in scripts/mech/mech_meshes.gd:
 ##   .\tools\models\gen_mech_meshes.ps1
-## Writes res://assets/models/mech/<part>.res (one ArrayMesh per part) and the three shared materials
-## (mech_matte.tres, mech_glow.tres, mech_accent.tres). tests/test_mech_parts.gd fails when the saved files lag the builders.
+## Writes res://assets/models/mech/<part>.res (one ArrayMesh per part) and the shared materials
+## (mech_matte.tres, mech_glow.tres, mech_accent.tres, mech_heat.tres). tests/test_mech_parts.gd fails when the saved files lag the builders.
 
 
 func _init() -> void:

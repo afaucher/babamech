@@ -1,8 +1,8 @@
 class_name MechDiagram
 extends Control
 ## The HUD's mech damage diagram, drawn from the REAL mech (docs/design/hud.md; options round
-## docs/design/hud/grid_hud_diagram_r1.png). Not adopted yet: MechHud still draws its own stick figure until the user
-## picks one of the nine `view` x `style` options.
+## docs/design/hud/grid_hud_diagram_r1.png). The HUD uses pick 3, view "front" / style "schematic" (MechHud.status_diagram);
+## the other views and styles stay for the options grid and tests.
 ##
 ##   view   "front"  head-on, a little from above, mirrored so the mech's left is on the left (the pilot's frame, like
 ##                   the weapon rows' L / R)
@@ -12,7 +12,7 @@ extends Control
 ##          "traced"     the silhouette of every component: the union of the convex hulls of its actual meshes
 ##          "schematic"  traced outline plus every mesh's plate seams, joint markers, the body axis and slot numbers
 ##
-## Geometry: a MechModel (low-poly art, chicken head, strider) is built off-tree once per view and loadout, every mesh's
+## Geometry: a MechModel (low-poly art, the given pilot head, strider) is built off-tree once per view and loadout, every mesh's
 ## vertices are projected into 2D and grouped by component (head, torso, leg_l, leg_r, one per hardpoint id), then cached.
 ## Each component is a separate zone tinted by its health (cyan > 2/3, amber > 1/3, red, destroyed = grey with a red
 ## cross). Everything stays inside the heat arc and above the panel's state text (`area()`).
@@ -61,6 +61,11 @@ var health: Dictionary = {}:
 	set(v):
 		health = v
 		queue_redraw()
+var head := HEAD:                  ## the pilot head id (traced from its mesh)
+	set(v):
+		head = v if MechCatalog.HEADS.has(v) else HEAD
+		queue_redraw()
+var slot_of: Dictionary = {}       ## {hardpoint id: slot number} for the badges (the weapon rows' numbers)
 
 static var _lay := {}       ## layout() results by view, style, loadout and panel size
 static var _geo := {}       ## "view|loadout" -> projected geometry (model units, y down), see _build()
@@ -73,7 +78,7 @@ func _init() -> void:
 
 
 func _draw() -> void:
-	paint(self, size, view, style, mounted, health)
+	paint(self, size, view, style, mounted, health, head, slot_of)
 
 
 # --- Layout --------------------------------------------------------------------------------------------------------
@@ -103,8 +108,8 @@ static func component_ids(_loadout: Dictionary = {}) -> Array[String]:
 
 
 ## The zones in panel pixels: {component id: Array[PackedVector2Array]} (what takes that component's colour).
-static func zones(view_: String, style_: String, loadout: Dictionary, panel: Vector2) -> Dictionary:
-	var lay := layout(view_, style_, loadout, panel)
+static func zones(view_: String, style_: String, loadout: Dictionary, panel: Vector2, head_: String = HEAD) -> Dictionary:
+	var lay := layout(view_, style_, loadout, panel, head_)
 	var out := {}
 	for it: Dictionary in lay["items"]:
 		var id := str(it["id"])
@@ -116,15 +121,15 @@ static func zones(view_: String, style_: String, loadout: Dictionary, panel: Vec
 
 ## The drawable items, fitted into the panel: {items: [{id, polys, seams, depth}], joints: [{id, pos}], axis: [a, b],
 ## ground: y, tags: {hardpoint id: pos}, xf: Transform2D}.
-static func layout(view_: String, style_: String, loadout: Dictionary, panel: Vector2) -> Dictionary:
-	var key := "%s|%s|%s|%s" % [view_, style_, str(MechCatalog.sanitize_loadout(CHASSIS, loadout)), str(panel)]
+static func layout(view_: String, style_: String, loadout: Dictionary, panel: Vector2, head_: String = HEAD) -> Dictionary:
+	var key := "%s|%s|%s|%s|%s" % [view_, style_, str(MechCatalog.sanitize_loadout(CHASSIS, loadout)), str(panel), head_]
 	if not _lay.has(key):
-		_lay[key] = _layout(view_, style_, loadout, panel)
+		_lay[key] = _layout(view_, style_, loadout, panel, head_)
 	return _lay[key]
 
 
-static func _layout(view_: String, style_: String, loadout: Dictionary, panel: Vector2) -> Dictionary:
-	var g := geometry(view_, loadout)
+static func _layout(view_: String, style_: String, loadout: Dictionary, panel: Vector2, head_: String) -> Dictionary:
+	var g := geometry(view_, loadout, head_)
 	var items: Array = []
 	match style_:
 		"geometric":
@@ -136,7 +141,8 @@ static func _layout(view_: String, style_: String, loadout: Dictionary, panel: V
 					"weapon": grp["weapon"]})
 		_:
 			for comp: Dictionary in g["comps"]:
-				items.append({"id": comp["id"], "polys": comp["union"], "seams": comp["hulls"] if style_ == "schematic" else [],
+				var seams: Array = comp["hulls"] if style_ == "schematic" and comp["id"] != "head" else []
+				items.append({"id": comp["id"], "polys": comp["union"], "seams": seams,
 					"depth": comp["depth"], "weapon": true})
 	items.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["depth"]) > float(b["depth"]))
 	# Fit: the bounding box into area(), then shrink until every point is inside the arc's inner circle.
@@ -176,8 +182,54 @@ static func _layout(view_: String, style_: String, loadout: Dictionary, panel: V
 	var tags := {}
 	for k: String in g["tags"]:
 		tags[k] = xf * (g["tags"][k] as Vector2)
+	var eyes: Array = []
+	for e: Vector2 in g["eyes"]:
+		eyes.append(xf * e)
+	var badges := _badges(out_items, tags, [xf * (g["axis"][0] as Vector2), xf * (g["axis"][1] as Vector2)], a["centre"], ri,
+		area(panel).end.y)
 	return {"items": out_items, "joints": joints, "axis": [xf * (g["axis"][0] as Vector2), xf * (g["axis"][1] as Vector2)],
-		"ground": (xf * Vector2(0, float(g["ground"]))).y, "tags": tags, "xf": xf, "scale": s, "ghosts": _ghosts(out_items)}
+		"ground": (xf * Vector2(0, float(g["ground"]))).y, "tags": tags, "xf": xf, "scale": s, "ghosts": _ghosts(out_items), "eyes": eyes, "badges": badges,
+		"area": area(panel), "arc_c": a["centre"], "arc_ri": ri}
+
+
+## Where each hardpoint's slot badge goes: out from the body axis past its mount, clear of the pilot's head, the other
+## badges and the heat arc (the first free spot of a small fan of candidates). {hardpoint id: centre}.
+static func _badges(items: Array, tags: Dictionary, axis: Array, arc_c: Vector2, ri: float, bottom: float) -> Dictionary:
+	const R := 6.0
+	var head: Array = []
+	for it: Dictionary in items:
+		if it["id"] == "head":
+			head.append_array(it["polys"])
+	var out := {}
+	var placed: Array = []
+	for hid: String in tags:
+		var tp: Vector2 = tags[hid]
+		var dir := (tp - (axis[0] as Vector2).lerp(axis[1], 0.45)).normalized()
+		if dir == Vector2.ZERO:
+			dir = Vector2.UP
+		var best := tp + dir * 13.0
+		var found := false
+		for dist: float in [13.0, 17.0, 22.0, 28.0]:
+			for deg: float in [0.0, 30.0, -30.0, 60.0, -60.0, 90.0, -90.0]:
+				var p := tp + dir.rotated(deg_to_rad(deg)) * dist
+				if p.distance_to(arc_c) > ri - R - 1.0 or p.y > bottom - R:
+					continue
+				var ok := true
+				for q: Vector2 in placed:
+					ok = ok and p.distance_to(q) > R * 2.2
+				for hp_: PackedVector2Array in head:
+					for k in 9:
+						var probe := p if k == 8 else p + Vector2.RIGHT.rotated(TAU * k / 8.0) * (R + 1.0)
+						ok = ok and not Geometry2D.is_point_in_polygon(probe, hp_)
+				if ok:
+					best = p
+					found = true
+					break
+			if found:
+				break
+		out[hid] = best
+		placed.append(best)
+	return out
 
 
 ## Hardpoints that nearer parts hide for the most part (the back mortar seen from the front, a far-side weapon seen
@@ -223,10 +275,10 @@ static func _signed_area(p: PackedVector2Array) -> float:
 ##   groups: [{id, name, hull, depth, minor, weapon}]   one per part (a mesh or a small subtree: a foot, a weapon)
 ##   comps:  [{id, union: [poly], hulls: [poly], depth}] per component: the union of its meshes' hulls, and the hulls
 ##   joints: [{id, kind, pos}]  hip / knee / ankle / foot per leg;  axis: [top, bottom];  ground: y;  tags: {hp: pos}
-static func geometry(view_: String, loadout: Dictionary) -> Dictionary:
-	var key := "%s|%s" % [view_, str(MechCatalog.sanitize_loadout(CHASSIS, loadout))]
+static func geometry(view_: String, loadout: Dictionary, head_: String = HEAD) -> Dictionary:
+	var key := "%s|%s|%s" % [view_, str(MechCatalog.sanitize_loadout(CHASSIS, loadout)), head_]
 	if not _geo.has(key):
-		_geo[key] = _build(view_, loadout)
+		_geo[key] = _build(view_, loadout, head_)
 	return _geo[key]
 
 
@@ -244,10 +296,10 @@ static func _basis(view_: String) -> Array:
 	return [r, u, f]
 
 
-static func _build(view_: String, loadout: Dictionary) -> Dictionary:
+static func _build(view_: String, loadout: Dictionary, head_: String) -> Dictionary:
 	var m := MechModel.new()
 	m.art = "lowpoly"
-	m.configure(HEAD, CHASSIS, loadout)
+	m.configure(head_, CHASSIS, loadout)
 	if bool((CAMS.get(view_, CAMS["front"]) as Dictionary)["stride"]):
 		m.params["gait"] = 1.0
 		m._process(0.25)   # a quarter cycle: one leg forward, the other back, neither lifted
@@ -287,7 +339,7 @@ static func _build(view_: String, loadout: Dictionary) -> Dictionary:
 		if hull.size() < 3:
 			continue
 		var nm := str(grp["name"])
-		var minor := nm.begins_with("hip_") or nm.begins_with("knee_") or nm.begins_with("ankle_") \
+		var minor := nm == "eye" or nm.begins_with("hip_") or nm.begins_with("knee_") or nm.begins_with("ankle_") \
 			or nm.begins_with("socket_") or nm == "Pelvis" or nm == "Hatch"
 		out_groups.append({"id": grp["id"], "name": nm, "hull": hull, "depth": float(grp["dsum"]) / int(grp["n"]),
 			"minor": minor, "weapon": not nm.ends_with(":mount")})
@@ -336,8 +388,15 @@ static func _build(view_: String, loadout: Dictionary) -> Dictionary:
 			for p in pts:
 				bb = bb.expand(p)
 			tags[hid] = bb.get_center()
+	var eyes: Array = []   # the pilot's pupils: a face cue on the head's clean silhouette
+	for me: Dictionary in meshes:
+		if me["group"] == "eye":
+			var cen := Vector2.ZERO
+			for q: Vector2 in me["pts"]:
+				cen += q
+			eyes.append(cen / (me["pts"] as PackedVector2Array).size())
 	m.free()
-	return {"groups": out_groups, "comps": out_comps, "joints": joints,
+	return {"eyes": eyes, "groups": out_groups, "comps": out_comps, "joints": joints,
 		"axis": [proj.call(Vector3(0, top, 0)), proj.call(Vector3.ZERO)], "ground": proj.call(Vector3.ZERO).y, "tags": tags}
 
 
@@ -353,6 +412,8 @@ static func _walk(n: Node, xf: Transform3D, comp: String, group: String, out: Ar
 	if nm.begins_with("Head_"):
 		comp = "head"
 		group = "head"
+	elif comp == "head" and nm.begins_with("Pupil"):
+		group = "eye"
 	elif nm.begins_with("HP_"):
 		comp = nm.substr(3)
 		group = comp
@@ -452,10 +513,13 @@ static func hp_col(v: float) -> Color:
 
 
 ## Draw the diagram into canvas item `c` for a status panel of `panel` size.
-static func paint(c: CanvasItem, panel: Vector2, view_: String, style_: String, loadout: Dictionary, hp: Dictionary) -> void:
+## `head_`: the pilot head id (its silhouette is traced); `slot_of`: {hardpoint id: slot number} for the badges (the
+## weapon rows' numbers; default: the chassis' hardpoint order, 1-5).
+static func paint(c: CanvasItem, panel: Vector2, view_: String, style_: String, loadout: Dictionary, hp: Dictionary,
+		head_: String = HEAD, slot_of: Dictionary = {}) -> void:
 	if _font == null:
 		_font = ThemeDB.fallback_font
-	var lay := layout(view_, style_, loadout, panel)
+	var lay := layout(view_, style_, loadout, panel, head_)
 	var schematic := style_ == "schematic"
 	var geometric := style_ == "geometric"
 	# Ground line and body axis (schematic: dashed construction lines; others: a faint ground tick).
@@ -495,14 +559,34 @@ static func paint(c: CanvasItem, panel: Vector2, view_: String, style_: String, 
 			if p.size() >= 3:
 				_outline(c, p, Color(BASE, 1.0), w + 2.5)   # a dark gap where this part covers the one behind it
 				_outline(c, p, MechHud.RED if v <= 0.0 else col, w)
-	# Hidden hardpoints: their outline again on top, dashed, so the zone reads through what covers it.
+	# Hidden hardpoints: their outline again on top, dashed, so the zone reads through what covers it (never across the
+	# pilot's head: the head reads first).
+	var head_polys: Array = []
+	for it: Dictionary in lay["items"]:
+		if it["id"] == "head":
+			head_polys.append_array(it["polys"])
 	for it: Dictionary in lay["items"]:
 		var gid := str(it["id"])
 		if not (lay["ghosts"] as Dictionary).has(gid) or str(loadout.get(gid, "")) == "":
 			continue
-		var gv := float(hp.get(gid, 1.0))
+		var gcol := Color(MechHud.RED if float(hp.get(gid, 1.0)) <= 0.0 else hp_col(float(hp.get(gid, 1.0))), 0.8)
 		for p: PackedVector2Array in it["polys"]:
-			_outline(c, p, Color(MechHud.RED if gv <= 0.0 else hp_col(gv), 0.8), 1.0, true)
+			var line := p.duplicate()
+			line.append(p[0])
+			var parts: Array = [line]
+			for hpoly: PackedVector2Array in head_polys:
+				var nxt: Array = []
+				for l: PackedVector2Array in parts:
+					nxt.append_array(Geometry2D.clip_polyline_with_polygon(l, hpoly))
+				parts = nxt
+			for l: PackedVector2Array in parts:
+				for i in l.size() - 1:
+					c.draw_dashed_line(l[i], l[i + 1], gcol, 1.0, 2.0)
+	# The pilot's eyes on the head (schematic and traced): the face cue that makes it read as a head, not a turret.
+	if not geometric:
+		var hc := hp_col(float(hp.get("head", 1.0)))
+		for e: Vector2 in lay["eyes"]:
+			c.draw_circle(e, 1.7, hc)
 	# Destroyed components: a red cross over the zone (drawn on top of everything).
 	var zs := {}
 	for it: Dictionary in lay["items"]:
@@ -531,15 +615,18 @@ static func paint(c: CanvasItem, panel: Vector2, view_: String, style_: String, 
 		var slot := 1
 		for hpd: Dictionary in MechCatalog.chassis(CHASSIS)["hardpoints"]:
 			var hid := str(hpd["id"])
-			if (lay["tags"] as Dictionary).has(hid):
+			var num := int(slot_of.get(hid, slot))
+			if (lay["badges"] as Dictionary).has(hid):
 				var tp: Vector2 = lay["tags"][hid]
-				var dir := (tp - (lay["axis"][0] as Vector2).lerp(lay["axis"][1], 0.45))
-				var lp := tp + dir.normalized() * 13.0
+				var lp: Vector2 = lay["badges"][hid]
+				if (lay["ghosts"] as Dictionary).has(hid) and lp.distance_to(tp) > 9.0:   # a leader to a hidden mount
+					c.draw_dashed_line(tp + (lp - tp).normalized() * 2.0, lp - (lp - tp).normalized() * 6.0,
+						Color(MechHud.CYAN, 0.45), 1.0, 2.0)
 				var hv := float(hp.get(hid, 1.0))
 				var tc := (MechHud.RED if hv <= 0.0 else hp_col(hv)) if str(loadout.get(hid, "")) != "" else MechHud.DIM
 				c.draw_circle(lp, 6.0, Color(BASE, 1.0))
 				c.draw_arc(lp, 6.0, 0.0, TAU, 16, Color(tc, 0.8), 1.0, true)
-				c.draw_string(_font, lp + Vector2(-6, 3.5), str(slot), HORIZONTAL_ALIGNMENT_CENTER, 12, 10, tc)
+				c.draw_string(_font, lp + Vector2(-6, 3.5), str(num), HORIZONTAL_ALIGNMENT_CENTER, 12, 10, tc)
 			slot += 1
 
 
@@ -593,4 +680,4 @@ static func paint_frame(c: CanvasItem, panel: Vector2, heat_f: float, heat_cap: 
 	c.draw_string(_font, Vector2(0, panel.y - 13), "%d / %d" % [roundi(heat_f * heat_cap), roundi(heat_cap)],
 		HORIZONTAL_ALIGNMENT_CENTER, panel.x, 11, MechHud.DIM)
 	if state != "":
-		c.draw_string(_font, Vector2(0, panel.y - 50), state, HORIZONTAL_ALIGNMENT_CENTER, pa
+		c.draw_string(_font, Vector2(0, panel.y - 50), state, HORIZONTAL_ALIGNMENT_CENTER, panel.x, 13, MechHud.CYAN)

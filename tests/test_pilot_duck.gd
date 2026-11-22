@@ -53,6 +53,8 @@ func setup() -> void:
 	h.set_process(false)
 	eq(h.head_id, "duck", "the duck builds its own rig")
 	var rb := _bounds(h)
+	rb.size.y += minf(rb.position.y, 0.0)   # leave out the neck seal's collar plug under the base (the static duck has none)
+	rb.position.y = maxf(rb.position.y, 0.0)
 	check(rb.position.distance_to(sb.position) < 0.1 and rb.end.distance_to(sb.end) < 0.1,
 		"rig at rest matches the static duck's bounds (%s vs %s)" % [rb, sb])
 	h.queue_free()

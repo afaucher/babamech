@@ -76,6 +76,7 @@ func _build(t0: int, new_plan: CityPlan) -> void:
 			tris += _add(per_block[i], "Block%d" % i, holder)
 
 	props = CityProps.new()
+	props.deck = plan.deck if plan.section != null else -1   # stack decks tag their prop events (CityProps.deck)
 	props.setup(plan, ring)
 	var furn := CityGeo.new(ring)
 	CityStreets.furniture(furn, plan, props.items)
@@ -317,7 +318,7 @@ static func ring_points(col: Dictionary) -> PackedVector3Array:
 
 
 ## A ramp part a mech can walk: per facet piece one box tilted to the slope with its top face on the ribbon (reaching
-## down to the floor along the embankment), one per parapet and one per edge beam, so neighbouring pieces meet with no
+## down to the floor along the embankment), one per parapet (PARAPET_GUARD tall, over the drawn 1 m) and one per edge beam, so neighbouring pieces meet with no
 ## step; the parapets' end blocks; per pier its plinth, shaft, cross-head and cross beam.
 func _ramp_collision(body: StaticBody3D, geo: CityGeo, r: Dictionary) -> int:
 	var span := CityStreets.ramp_span(r, plan.site.slab)
@@ -345,8 +346,9 @@ func _ramp_collision(body: StaticBody3D, geo: CityGeo, r: Dictionary) -> int:
 			thick = maxf(ha, hb) + 0.5
 		_shape(body, xf, Vector3(0, -thick * 0.5, 0), Vector3(x1 - x0, thick, length))
 		for side: float in [-1.0, 1.0]:
-			_shape(body, xf, Vector3(side * ((x1 - x0) - CityStreets.PARAPET_W) * 0.5, CityStreets.PARAPET_H * 0.5, 0),
-					Vector3(CityStreets.PARAPET_W, CityStreets.PARAPET_H, length))
+			# Taller than drawn (PARAPET_GUARD): a mech would step over the 1 m parapet.
+			_shape(body, xf, Vector3(side * ((x1 - x0) - CityStreets.PARAPET_W) * 0.5, CityStreets.PARAPET_GUARD * 0.5, 0),
+					Vector3(CityStreets.PARAPET_W, CityStreets.PARAPET_GUARD, length))
 			if not on_bank:      # the edge beam under the soffit
 				_shape(body, xf, Vector3(side * ((x1 - x0) - CityStreets.BEAM_W) * 0.5, -CityStreets.RAMP_THICK - CityStreets.BEAM_D * 0.5, 0),
 						Vector3(CityStreets.BEAM_W, CityStreets.BEAM_D, length))

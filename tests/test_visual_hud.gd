@@ -1,7 +1,8 @@
 extends TestCase
 ## VISUAL: the mech HUD draws. Two shots in test_logs/shots/: `hud_demo` (fixed sample data over a plain backdrop:
-## every state at once, including the crew panel's three demo teammates) and `hud_drive` (the live test drive: your
-## mech, its weapon rack and heat).
+## every state at once, including the crew panel's three demo teammates and the mission layer's objective line and
+## extraction waypoint), `hud_demo_banner` (the same plus the MISSION COMPLETE end banner) and `hud_drive` (the live test
+## drive: your mech, its weapon rack and heat, the objective line).
 ## Runs only under `.\test_runner.ps1 -Visual` (hidden desktop, takes the GPU lock).
 
 const VISUAL := true
@@ -28,6 +29,11 @@ func setup() -> void:
 	sc.not_blank(img, Rect2(0.72, 0.6, 0.28, 0.4), "HUD weapon rows")
 	check(hud.crew_panel.visible and hud.crew_panel.cards.size() == 3, "demo crew panel shows three teammates")
 	sc.not_blank(img, Rect2(0.0, 0.38, 0.21, 0.28), "HUD crew panel (above the status corner)")
+	sc.not_blank(img, Rect2(0.33, 0.04, 0.34, 0.05), "HUD objective line (top centre)")
+	hud.mission_hud.demo_banner = true
+	await frames(4)
+	var img2 := await sc.grab("hud_demo_banner")
+	sc.not_blank(img2, Rect2(0.32, 0.29, 0.36, 0.11), "HUD end banner")
 	hud.queue_free()
 	bg.queue_free()
 	await frames(2)
@@ -38,6 +44,7 @@ func setup() -> void:
 	img = await sc.grab("hud_drive")
 	sc.not_blank(img, Rect2(0.0, 0.6, 0.22, 0.4), "drive HUD status corner")
 	sc.not_blank(img, Rect2(0.72, 0.6, 0.28, 0.4), "drive HUD weapon rows")
+	check(td.mission != null and str(td.mission.hud_state()["objective"]) != "", "the drive has an objective line")
 	td.queue_free()
 	await frames(2)
 	finish()

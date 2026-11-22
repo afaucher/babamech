@@ -12,6 +12,9 @@ extends TestCase
 ##    regex can't pass silently.
 ## 4. Carriers (cast's section 4, for mech snapshots): every var NetMechCodec.MECH_FIELDS streams is OWNER on its class (a
 ##    codec must never stream SPAWN / PRIVATE / LOCAL state), and every OWNER var of those classes is carried.
+##    NetMechCodec.PARTIAL_FIELDS (PlayerTarget's damage state, WeaponMount's barrel pose) get only the first half: what
+##    they carry must be OWNER; their other OWNER state stays with the owner (reasons written in the codec).
+##    The same first half for the host's enemy stream (W4): every var NetEnemyCodec.ENEMY_FIELDS carries is OWNER.
 
 ## Gameplay classes that must declare net_fields() even before they define it (none yet: mechs, enemies and pickups go here
 ## when they exist, unless they define net_fields() themselves).
@@ -105,6 +108,16 @@ func _check_script(path: String) -> void:
 const CARRIER_SCRIPTS := {
 	"MechController": "res://scripts/mech/mech_controller.gd",
 	"MechRig": "res://scripts/mech/mech_rig.gd",
+	"PlayerTarget": "res://scripts/combat/player_target.gd",
+	"WeaponMount": "res://scripts/combat/weapon_mount.gd",
+}
+
+## Enemy classes the host's stream carries state of (W4): each var NetEnemyCodec.ENEMY_FIELDS names must be OWNER.
+const ENEMY_SCRIPTS := {
+	"EnemyBase": "res://scripts/enemy/enemy_base.gd",
+	"EnemyTurret": "res://scripts/enemy/enemy_turret.gd",
+	"EnemyTank": "res://scripts/enemy/enemy_tank.gd",
+	"EnemyStrider": "res://scripts/enemy/enemy_strider.gd",
 }
 
 
@@ -120,6 +133,25 @@ func _check_carriers() -> void:
 		for v: String in fields:
 			if fields[v] == Net.OWNER:
 				check(carried.has(v), "%s.%s is Net.OWNER but no snapshot carries it (NetMechCodec.MECH_FIELDS)" % [cls, v])
+		_free(obj)
+
+
+	for cls: String in NetEnemyCodec.ENEMY_FIELDS:
+		if not check(ENEMY_SCRIPTS.has(cls), "NetEnemyCodec.ENEMY_FIELDS names %s: add its script to ENEMY_SCRIPTS" % cls):
+			continue
+		var eobj: Object = (load(ENEMY_SCRIPTS[cls]) as GDScript).new()
+		var efields: Dictionary = eobj.net_fields()
+		for v: String in NetEnemyCodec.ENEMY_FIELDS[cls]:
+			check(efields.get(v, -1) == Net.OWNER, "%s.%s is streamed by NetEnemyCodec but is not Net.OWNER" % [cls, v])
+		_free(eobj)
+
+	for cls: String in NetMechCodec.PARTIAL_FIELDS:
+		if not check(CARRIER_SCRIPTS.has(cls), "NetMechCodec.PARTIAL_FIELDS names %s: add its script to CARRIER_SCRIPTS" % cls):
+			continue
+		var obj: Object = (load(CARRIER_SCRIPTS[cls]) as GDScript).new()
+		var fields: Dictionary = obj.net_fields()
+		for v: String in NetMechCodec.PARTIAL_FIELDS[cls]:
+			check(fields.get(v, -1) == Net.OWNER, "%s.%s is streamed by NetMechCodec but is not Net.OWNER" % [cls, v])
 		_free(obj)
 
 

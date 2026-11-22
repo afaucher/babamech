@@ -10,6 +10,13 @@
 # The program has no console there: have it write a log (Godot: --log-file <path>). BABAMECH_SHOW_WINDOWS=1 runs it on
 # your own desktop instead, to watch.
 # It still uses the GPU: each run takes the shared GPU lock (godot_env.ps1, Enter-BabamechGpu) and waits its turn.
+#
+# Several processes at once (test_runner.ps1 -Visual for a test with both VISUAL and PEERS): Start-HiddenDesktop returns
+# at once with a handle (.Pid, .Wait(ms), .HasExited, .ExitCode, .Kill(), .Close()). It does NOT take the GPU lock: the
+# caller holds one lock (Enter-BabamechGpu / Exit-BabamechGpu) around the whole run, and Closes every handle.
+#
+#   $p = Start-HiddenDesktop -Exe $godot -Arguments "--path . --log-file x.log -- --run-test y"
+#   if (-not $p.Wait(90000)) { $p.Kill() }; $code = $p.ExitCode; $p.Close()
 if (-not (Get-Command Enter-BabamechGpu -ErrorAction SilentlyContinue)) { . "$PSScriptRoot\godot_env.ps1" }
 if (-not ("BabamechHiddenDesktop" -as [type])) {
     Add-Type @"
@@ -50,6 +57,38 @@ public static class BabamechHiddenDesktop {
       } finally { CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
     } finally { if (d != IntPtr.Zero) CloseDesktop(d); }
   }
+  // Non-blocking: starts `exe args` on `desktop` (null: the user's own) and returns at once. The Proc keeps the process
+  // and desktop handles open (the desktop lives while one is open) until Close().
+  public static Proc Start(string desktop, string exe, string args, string dir) {
+    IntPtr d = IntPtr.Zero;
+    if (desktop != null) {
+      d = CreateDesktop(desktop, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /*GENERIC_ALL*/, IntPtr.Zero);
+      if (d == IntPtr.Zero) throw new Exception("CreateDesktop failed: " + Marshal.GetLastWin32Error());
+    }
+    var si = new STARTUPINFO(); si.cb = Marshal.SizeOf(typeof(STARTUPINFO)); si.lpDesktop = desktop;
+    PROCESS_INFORMATION pi;
+    string cmd = "\"" + exe + "\" " + args;
+    if (!CreateProcess(null, cmd, IntPtr.Zero, IntPtr.Zero, false, 0x08000000 /*CREATE_NO_WINDOW*/, IntPtr.Zero, dir, ref si, out pi)) {
+      int err = Marshal.GetLastWin32Error();
+      if (d != IntPtr.Zero) CloseDesktop(d);
+      throw new Exception("CreateProcess failed: " + err);
+    }
+    CloseHandle(pi.hThread);
+    return new Proc(pi.hProcess, d, pi.dwProcessId);
+  }
+  // A process started by Start: Wait(ms) (true once it exited), HasExited, ExitCode (259 while running), Kill(), Close().
+  public class Proc {
+    IntPtr h, desk; public readonly int Pid;
+    public Proc(IntPtr process, IntPtr desktop, int pid) { h = process; desk = desktop; Pid = pid; }
+    public bool Wait(int ms) { return h == IntPtr.Zero || WaitForSingleObject(h, (uint)Math.Max(ms, 0)) == 0; }
+    public bool HasExited { get { return Wait(0); } }
+    public int ExitCode { get { uint c = 259; if (h != IntPtr.Zero) GetExitCodeProcess(h, out c); return (int)c; } }
+    public void Kill() { if (h != IntPtr.Zero && !Wait(0)) { TerminateProcess(h, 124); WaitForSingleObject(h, 5000); } }
+    public void Close() {
+      if (h != IntPtr.Zero) { CloseHandle(h); h = IntPtr.Zero; }
+      if (desk != IntPtr.Zero) { CloseDesktop(desk); desk = IntPtr.Zero; }
+    }
+  }
 }
 "@
 }
@@ -58,4 +97,10 @@ function Invoke-HiddenDesktop([string]$Exe, [string]$Arguments = "", [string]$Wo
     $desk = if ($env:BABAMECH_SHOW_WINDOWS -eq "1") { $null } else { "BabamechHidden" }
     if (-not (Enter-BabamechGpu "hidden-desktop run")) { throw "GPU busy: gave up waiting for the GPU lock (see above)." }
     try { return [BabamechHiddenDesktop]::Run($desk, $Exe, $Arguments, $WorkDir, $TimeoutSec * 1000) } finally { Exit-BabamechGpu }
+}
+
+# Non-blocking start on the hidden desktop (no GPU lock: the caller holds it for the whole multi-process run).
+function Start-HiddenDesktop([string]$Exe, [string]$Arguments = "", [string]$WorkDir = $PSScriptRoot) {
+    $desk = if ($env:BABAMECH_SHOW_WINDOWS -eq "1") { $null } else { "BabamechHidden" }
+    return [BabamechHiddenDesktop]::Start($desk, $Exe, $Arguments, $WorkDir)
 }

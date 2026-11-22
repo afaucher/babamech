@@ -8,7 +8,10 @@ extends Node
 ##   --menu-shot <png>     save a screenshot of the menu after --menu-after seconds (default 1.5) and quit
 ##   --menu-screen <s>     open the menu on main | settings | hangar
 ##   --crew-shot <png>     (run.ps1 -Crew -ShotDir) save a screenshot once --crew-size players are in, then quit
-##   --seed <N>            the mission seed: the test drive's city (solo), and the host's Launch in a crew (default 1)
+##   --seed <N>            the mission seed: the test drive's city (solo, default 1), and the Launch (host or solo; without
+##                         it the Launch rolls a fresh random seed and broadcasts it)
+##   --stack / --district  the mission's city: the multi-deck section stack (the default) or one city district (the
+##                         pre-stack test drive); the host's Launch sends it with the seed (TestDrive.launch_mode)
 ##   --net-host, --net-join <ip[:port]>, --net-port <P>, --net-link <preset>, --net-name <name>
 ##                         online dev flags (NetSession); the menu opens on the hangar once the crew is up.
 

@@ -50,6 +50,16 @@ const TINT_LIGHT := 0.7
 
 const STANDARD: Array[String] = ["NeckLow", "NeckHigh", "Skull", "BrowL", "BrowR", "LidL", "LidR", "PupilL", "PupilR",
 	"Jaw"]
+## The neck seal (docs/design/pilot-heads.md section 4): every NeckLow continues below the neck base as a tapered, capped
+## collar plug PLUG_DEPTH deep (head-rest units), so in the cockpit the neck's bottom never shows, however the rig leans
+## (tests/test_pilot_neck_seal.gd). Standalone it reads as a dark collar under the neck.
+const PLUG_DEPTH := 0.18
+const PLUG_TAPER := 0.72
+const COLLAR := Color(0.21, 0.22, 0.24)
+const PLUG_FACES := 14
+## The push lean's lever (NeckHigh's joint height, at least this) and NeckLow's tilt cap (pose_neck_joints).
+const PUSH_LEVER_MIN := 0.25
+const LOW_TILT_MAX := deg_to_rad(24.0)
 
 # --- Set by the definition in _init() ---
 var id := ""
@@ -110,6 +120,27 @@ func kit() -> MeshKit:
 	var k := MeshKit.new()
 	k.push(MeshKit.xf(Vector3.ZERO, Vector3.ZERO, girth))
 	return k
+
+
+## The collar plug under NeckLow's open base ring `base` (an 8-point ring, head-rest space before girth, the first ring
+## of NeckLow's loft) into `k` (NeckLow's kit): a COLLAR-coloured frustum down to a 4-point ring PLUG_DEPTH lower and
+## PLUG_TAPER as wide, capped, sharing the base ring's vertices so the neck is closed (PLUG_FACES triangles).
+func add_neck_plug(k: MeshKit, base: PackedVector3Array) -> void:
+	var n := base.size()
+	var c := MeshKit.centroid(base)
+	var inner := c + Vector3(0.0, -PLUG_DEPTH * 0.5, 0.0)
+	var q := PackedVector3Array()
+	for j in n / 2:
+		q.append(c + (base[j * 2] - c) * Vector3(PLUG_TAPER, 0.0, PLUG_TAPER) + Vector3(0.0, -PLUG_DEPTH, 0.0))
+	var m := q.size()
+	for j in m:
+		var b0 := base[j * 2]
+		var b1 := base[j * 2 + 1]
+		var b2 := base[(j * 2 + 2) % n]
+		k.tri(b0, b1, q[j], COLLAR, inner)
+		k.tri(b1, q[(j + 1) % m], q[j], COLLAR, inner)
+		k.tri(b1, b2, q[(j + 1) % m], COLLAR, inner)
+	k.poly(q, COLLAR, inner)
 
 
 ## A pivot node named `piece_name` under `parent` ("" = the head root) at `pivot` (head-rest space, before girth).
@@ -235,12 +266,26 @@ func pose(ch: Dictionary, neck: PilotNeck, extra: Dictionary) -> void:
 	_pose_flush(float(ch["flush"]))
 
 
-## The standard neck: two joints, the sink / push shift on the lower one, the skull squash.
+## The standard neck: two joints (pose_neck_joints: the sink / push shift, sealed), the skull squash.
 func pose_neck(neck: PilotNeck) -> void:
-	set_pose("NeckLow", Basis.from_euler(neck.low), Vector3(0.0, -neck.shift.x, -neck.shift.y))
-	set_pose("NeckHigh", Basis.from_euler(neck.high))
+	pose_neck_joints(neck.low, neck.high, neck.shift.x, neck.shift.y)
 	var sq := neck.squash
 	set_pose("Skull", Basis.from_scale(Vector3(1.0 + sq * squash_width, 1.0 - sq, 1.0 + sq * squash_width)))
+
+
+## NeckLow and NeckHigh with the neck seal (docs/design/pilot-heads.md section 4): NeckLow's base stays anchored in the
+## hatch. `sink` (+ = down) slides it along its axis (the collar plug covers the rise); `push` (+ = forward) is not a
+## slide but a lean about the base, by the angle that carries NeckHigh's joint forward by `push`, and NeckHigh turns back
+## by the same angle so the head keeps its attitude. NeckLow's pitch / roll are capped at LOW_TILT_MAX; the excess moves up
+## to NeckHigh (same total, the bend just sits higher). `low` / `high` (pitch, yaw, roll) rad; `high_offset` an extra
+## NeckHigh slide (the duck's stretch).
+func pose_neck_joints(low: Vector3, high: Vector3, sink: float, push: float, high_offset: Vector3 = Vector3.ZERO) -> void:
+	var lever := maxf(float((_pivots.get("NeckHigh", Vector3.UP * 0.3) as Vector3).y), PUSH_LEVER_MIN)
+	var lean := atan(push / lever)
+	var want := low + Vector3(-lean, 0.0, 0.0)
+	var capped := Vector3(clampf(want.x, -LOW_TILT_MAX, LOW_TILT_MAX), want.y, clampf(want.z, -LOW_TILT_MAX, LOW_TILT_MAX))
+	set_pose("NeckLow", Basis.from_euler(capped), Vector3(0.0, -sink, 0.0))
+	set_pose("NeckHigh", Basis.from_euler(high + Vector3(lean, 0.0, 0.0) + (want - capped)), high_offset)
 
 
 ## Override: flair pieces.

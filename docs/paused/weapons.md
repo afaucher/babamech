@@ -6,11 +6,16 @@ Updated 2026-11-22 by the weapons session. **Nothing is paused any more.** The f
 Design, numbers and a code map: [../design/weapons.md](../design/weapons.md).
 
 ## Known gaps
-- Network wiring of hits: `CombatWorld.remote_hit` is only a signal; sending hits is slice milestone S7.
+- Combat across machines (co-op step 3) is built (`CombatNet`, design §5.1), with enemy fire (Engine's EnemySync +
+  CombatNet's client gate). Downed / revive (W6) is parked on the user's decision (not built). Still open: player
+  shots skip teammates (friendly fire undecided); no dedicated sound for the drone launch (the existing
+  `mech.thrust.ignite` cue is reused); remote shots start at the true muzzle while the puppet is drawn ~100-200 ms behind; no muzzle flash
+  for remote records later than 0.06 s; mech HP is not streamed; missile detonations are not events; the laser's
+  0.15 s charge glow is not shown remotely.
 - Damaged-weapon penalties and ammo cook-off (design §4.6): after the slice.
 - Friendly fire (design §4.6): not built.
-- Remote machines posing the swivel boom from the streamed `aim_yaw` / `aim_pitch` (`WeaponMount`, `OWNER`): not wired;
-  only the owner's machine poses it today.
+- Remote machines posing the weapon models (swivel boom, pivots) from `aim_yaw` / `aim_pitch` (`WeaponMount`, `OWNER`):
+  not streamed by the mech snapshot, so only the owner's machine turns them.
 
 ## Open design questions for the user
 Kept in sync with [weapons.md §7](../design/weapons.md#7-open-questions).

@@ -267,3 +267,46 @@ Answered by the user (2026-11-22):
 
 Open: nothing waiting on the user. Still to settle by playtest: section size (item 1); still undefined: what finishing the
 mission means (item 2).
+
+## 14. Demo objective and end conditions (co-op demo, 2026-11-22)
+
+> **Revive and the crew-wipe loss are deferred** (user, 2026-11-22: "Don't do revive yet"). The win side below stands. The
+> loss rule is built in `MissionRules` but **off by default** (`make(sec, {"wipe": true})` turns it on): until revive
+> exists a disabled mech still respawns on its own, and the mission cannot be lost. The loss text below describes what
+> switches on with revive.
+
+The smallest mission that uses the section: **clear every deck, then reach the extraction portal.** It stands in for
+"finish the mission" (§13 item 2) until real objectives are designed (game design §8).
+
+**Objectives**, in order, derived from the plan on every machine (nothing is sent):
+
+| id | Done when | |
+|---|---|---|
+| `clear_k` (one per deck) | No enemy that spawned on deck k is alive | Latches: stays done |
+| `extract` | Every `clear_k` is done and a standing crew mech is inside the extraction zone | The zone is the spine's width, 40 m deep, at the extraction portal on the lowest deck. Optional (`extract: false` makes the win "all enemies down") |
+
+**Won**: every objective done. **Lost**: every crew mech still in the mission is downed at the same time (solo: downed is
+lost at once). A downed mech stays down until a teammate revives it: no respawn, no bleed-out. The outcome latches; a win
+is checked before a loss.
+
+The loss has a **1 s grace** (`wipe_grace`): everyone must stay downed for that long on the shared clock. The host reads
+other machines' downed flags with link delay, so a revive that lands as the last teammate falls must not end the mission.
+
+**Who does what** (the fourth shape of AGENTS.md rule 6: host-arbitrated world state):
+
+- `MissionRules` (`scripts/world/section/mission_rules.gd`) is a pure evaluator: no nodes, no network, no randomness.
+  `MissionRules.make(section, overrides)` builds the objective list.
+- The **host** feeds it facts a few times a second: `evaluate({"t": shared-clock seconds, "enemies": [alive per deck], "crew": [{peer,
+  downed, deck, x, s}]})`. When it returns true the host broadcasts `state()` (`{outcome, reason, done, left, current}`) as one reliable
+  event; clients call `apply_state(d)`. On `won` / `lost` the mission flow ends the mission and returns to the hangar.
+- The HUD reads `text()` ("Clear deck 2: 5 hostiles left", "Reach the extraction portal") and `marker()` (`{deck, x, s}`
+  of the extraction zone once the decks are clear).
+- "Downed" is the mech's own decision: `PlayerTarget.disabled`, set by its owner and mirrored to the host's puppets by
+  the mech stream. The revive verb belongs to combat (`docs/design/weapons.md`; starting numbers: within 12 m, a 4 s hold,
+  back at half HP on every component, cold heat), applied by the downed mech's owner. The evaluator only reads the flag.
+
+Agreed with Engine (wiring, HUD, `mission.state` event, extract on for the first demo, each enemy carries its
+`spawn_deck`) and Weapons (downed flag, no auto-respawn in crew missions, the grace) on 2026-11-22.
+
+Enemies stay on the deck they spawn on in the demo, so "spawn deck" and "where it is" are the same thing; if that changes,
+the count still goes by spawn deck.

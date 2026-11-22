@@ -32,6 +32,7 @@ const AMBER := Color(1.0, 0.74, 0.22)
 const TEAL := Color(0.25, 0.95, 0.85)
 const MISSILE_RED := Color(0.8, 0.16, 0.13)
 const TANK := Color(0.8, 0.24, 0.1)   ## the flamer fuel tanks
+const REPAIR_GREEN := Color(0.25, 1.0, 0.45)   ## the repair drone's eye and pad lights (RepairDrone.GREEN, its beams)
 
 ## Player accent colours (cosmetic): the faces built in ORANGE go to each mesh's "accent" surface, which takes the colour
 ## through `apply_accent` / MechModel.set_accent. Heads never take the accent. Ids in display order in ACCENT_ORDER.
@@ -49,6 +50,12 @@ const BODY_PARTS := ["torso", "nose", "hatch", "back_plate", "pelvis", "shoulder
 const LEG_PARTS := ["thigh", "shin", "tarsus", "hip_socket", "hip_cap", "knee_cap", "ankle_cap", "foot", "toe", "spur"]
 ## Weapon looks from the concept art. The catalog (MechCatalog.WEAPONS) decides which ones the game uses.
 const WEAPONS := ["laser", "autocannon", "rockets", "missiles", "flamer", "mortar", "railgun", "gatling", "swivel"]
+## Back-mount equipment looks (docs/design/back-equipment.md; MechCatalog.EQUIPMENT_ORDER), built and named like the
+## weapons ("weapon_<id>", origin at the back mount): the docked drone in its cradle, the empty cradle (shown while the
+## drone is out) and the flying drone alone (origin at its centre; it sits at DRONE_DOCK in the docked mesh).
+const EQUIPMENT := ["repair_drone", "repair_drone_cradle", "repair_drone_flying", "radiator", "ammo_bin"]
+## Where the drone's centre sits on its cradle, from the back mount (model units, before BODY_SCALE).
+const DRONE_DOCK := Vector3(0, 0.31, 0.02)
 const HEADS := ["chicken", "pickle", "corn", "dog", "duck"]
 
 ## Leg segment lengths the meshes are authored at (MechModel's default leg params).
@@ -89,6 +96,8 @@ static func all_parts() -> Array[String]:
 	out.append_array(LEG_PARTS)
 	for w: String in WEAPONS:
 		out.append("weapon_" + w)
+	for e: String in EQUIPMENT:
+		out.append("weapon_" + e)
 	for h: String in HEADS:
 		out.append("head_" + h)
 	return out
@@ -133,7 +142,8 @@ static func materials() -> Array:
 	return _mats
 
 
-## A shared material: kind "matte" | "glow" | "accent".
+## A shared material: kind "matte" | "glow" | "accent" | "heat" (lit like matte; the radiator's fins, which the game
+## overrides with an emissive copy by surface name to show heat).
 static func make_material(kind: String) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.vertex_color_use_as_albedo = true
@@ -216,7 +226,7 @@ static func build(part: String) -> ArrayMesh:
 ## when the hip twist turns them), so the lower quarters are cut back to give them room, most over the middle and the
 ## rear, where the underside rises toward the tail.
 const TORSO := [[-1.04, 0.3, 0.26, 0.22, 0.76, 0.0], [-0.97, 0.58, 0.6, 0.44, 0.79, 0.15], [-0.8, 0.81, 0.82, 0.62, 0.83, 0.45],
-	[-0.5, 0.93, 0.9, 0.75, 0.87, 1.0], [-0.1, 0.96, 0.95, 0.79, 0.89, 0.75], [0.32, 0.92, 0.9, 0.75, 0.9, 1.0],
+	[-0.5, 0.93, 0.9, 0.75, 0.87, 1.0], [-0.1, 0.96, 0.95, 0.79, 0.89, 1.0], [0.32, 0.92, 0.9, 0.75, 0.9, 1.0],
 	[0.68, 0.77, 0.74, 0.6, 0.9, 1.0], [0.9, 0.52, 0.48, 0.4, 0.88, 0.3], [0.98, 0.26, 0.24, 0.2, 0.86, 0.0]]
 const TORSO_SIDES := 14
 const TORSO_POWER := 2.2
@@ -249,8 +259,14 @@ static func _torso_ring(s: Array) -> PackedVector3Array:
 
 
 ## A point on the torso's faceted skin and its outward normal: [point, normal], at `z` and `angle` degrees around Z
-## from up toward +X (negative = the left side). Used to seat the lights on the facets.
+## from up toward +X (negative = the left side). Used to seat the lights on the facets. The left side is the mirror of
+## the right, so a point exactly on a facet crease takes the same facet's normal on both sides (with the hard chine
+## under the waist the two facets' normals differ a lot, and a plate section there would otherwise fold over).
 static func _torso_at(z: float, angle: float) -> Array:
+	var am := fposmod(angle, 360.0)
+	if am > 180.0:
+		var r := _torso_at(z, 360.0 - am)
+		return [(r[0] as Vector3) * Vector3(-1, 1, 1), (r[1] as Vector3) * Vector3(-1, 1, 1)]
 	var i := 0
 	while i < TORSO.size() - 2 and z > float(TORSO[i + 1][0]):
 		i += 1
@@ -322,7 +338,32 @@ static func _torso_plate(k: MeshKit, z0: float, z1: float, a0: float, a1: float,
 		var p1 := _torso_at(z1, a)
 		ring.append((p1[0] as Vector3) - (p1[1] as Vector3) * 0.05)
 		secs.append(ring)
-	k.loft(secs, col)
+	# Skinned by hand rather than with k.loft: over the tucked belly a long plate's sections are no longer convex, so
+	# every face is turned away from a point inside the slab level with it (halfway between the raised face and the
+	# sunk inner edge, on both neighbouring sections) rather than from the middle of the whole plate, and the end caps
+	# fan from their centres.
+	var inset := minf(0.02, (z1 - z0) * 0.4)
+	for i in secs.size() - 1:
+		var sa: PackedVector3Array = secs[i]
+		var sb: PackedVector3Array = secs[i + 1]
+		for j in sa.size():
+			var j2 := (j + 1) % sa.size()
+			for t: Array in [[sa[j], sa[j2], sb[j2]], [sa[j], sb[j2], sb[j]]]:
+				var zc := clampf(((t[0] as Vector3).z + (t[1] as Vector3).z + (t[2] as Vector3).z) / 3.0, z0 + inset, z1 - inset)
+				var u := (zc - z0) / (z1 - z0)
+				var inner := Vector3.ZERO
+				for s: PackedVector3Array in [sa, sb]:
+					var a: float = angs[i] if s == sa else angs[i + 1]
+					var pn := _torso_at(zc, a)
+					var top := (pn[0] as Vector3) + (pn[1] as Vector3) * lift
+					inner += (top + s[0].lerp(s[s.size() - 1], u)) * 0.25
+				k.tri(t[0], t[1], t[2], col, inner)
+	for e: int in [0, secs.size() - 1]:
+		var cap: PackedVector3Array = secs[e]
+		var c := MeshKit.centroid(cap)
+		var inner := MeshKit.centroid(secs[1 if e == 0 else secs.size() - 2])
+		for j in cap.size():
+			k.tri(c, cap[j], cap[(j + 1) % cap.size()], col, inner)
 
 
 ## A box seated on the torso skin at (z, angle), `lift` out along the facet normal (local -Z = out, local Y ~ up).
@@ -389,9 +430,9 @@ static func _torso(k: MeshKit) -> void:
 			(c2[0] as Vector3) + (c2[1] as Vector3) * 0.03]
 		for i in pts.size() - 1:
 			k.tube(pts[i], pts[i + 1], 0.035, 6, BLACK)
-	# A vent grille under the rear belly, between the thighs: a dark panel with three grey slats across it. It sits on the
-	# centre line (162-198 degrees) because the flipped legs swing the thigh pods up against the belly's lower rear
-	# quarters (about 120-160 degrees each side), where a grille would be cut through mid-stride.
+	# A vent grille under the rear belly, between the thighs: a dark panel with three grey slats across it, on the keel's
+	# flat bottom (162-198 degrees), where the thigh pods pass beside it, and ending ahead of z 0.7, where they swing in
+	# behind the pelvis.
 	_torso_plate(k, 0.34, 0.68, 162.0, 198.0, 0.02, DARK)
 	for z: float in [0.41, 0.5, 0.59]:
 		_torso_plate(k, z, z + 0.045, 165.0, 195.0, 0.045, GREY)
@@ -914,6 +955,15 @@ static func _weapon(k: MeshKit, id: String) -> void:
 		"railgun": _weapon_railgun(k)
 		"gatling": _weapon_gatling(k)
 		"swivel": _weapon_swivel(k)
+		"repair_drone":
+			_drone_cradle(k)
+			k.push(MeshKit.xf(DRONE_DOCK))
+			_drone(k)
+			k.pop()
+		"repair_drone_cradle": _drone_cradle(k)
+		"repair_drone_flying": _drone(k)
+		"radiator": _equip_radiator(k)
+		"ammo_bin": _equip_ammo_bin(k)
 
 
 static func _weapon_autocannon(k: MeshKit) -> void:
@@ -1152,3 +1202,190 @@ static func _weapon_swivel(k: MeshKit) -> void:
 			k.box(Vector3(0.02, 0.03, 0.18), BLACK, Vector3(s * 0.104, -0.04 - float(i) * 0.07, -0.72))
 		k.tube(Vector3(s * 0.05, -0.08, -0.91), Vector3(s * 0.05, -0.08, -1.0), 0.05, 6, GUN)
 	k.box(Vector3(0.21, 0.21, 0.03), DARK, Vector3(0, -0.08, -0.9))
+
+
+# --- Back-mount equipment -------------------------------------------------------------------------------
+# docs/design/back-equipment.md. Origin at MOUNTS["back"], like the mortar. The rear deck under the mount slopes down
+# toward the tail (about 0.15 above the mount 0.2 ahead of it, 0.3 below it 0.2 behind it), so every item stands on the
+# mortar's base plate with two braces down to the deck behind. Kept inside |x| < 0.45 (the shoulder weapons' inner
+# faces are at 0.51), behind z -0.33 (the back plate's rear face is at -0.375) and lower than the mortar's muzzle.
+
+## The shared base plate (the mortar's footprint) on a wedge that fills the gap down to the falling deck behind it.
+static func _back_base(k: MeshKit, bolts: bool) -> void:
+	k.box(Vector3(0.5, 0.12, 0.44), DARK, Vector3(0, 0.02, 0.04))
+	var prof := [Vector2(-0.06, -0.03), Vector2(0.25, -0.03), Vector2(0.25, -0.4), Vector2(0.2, -0.42), Vector2(0.04, -0.19)]
+	var rings: Array = []
+	for s: float in [-1.0, 1.0]:
+		var r := PackedVector3Array()
+		for p: Vector2 in prof:
+			r.append(Vector3(s * 0.19, p.y, p.x))
+		rings.append(r)
+	k.loft(rings, GUN)
+	for s: float in [-1.0, 1.0]:
+		k.box(Vector3(0.02, 0.16, 0.12), DARK, Vector3(s * 0.195, -0.14, 0.18))
+		k.box(Vector3(0.03, 0.04, 0.04), STEEL, Vector3(s * 0.2, -0.06, 0.18))
+	if bolts:
+		for sx: float in [-1.0, 1.0]:
+			for sz: float in [-1.0, 1.0]:
+				k.box(Vector3(0.045, 0.035, 0.045), STEEL, Vector3(sx * 0.2, 0.09, 0.04 + sz * 0.17))
+
+
+## A closed flat ring (a rotor guard): outer and inner walls, top and bottom faces, around Y at `c`, from y0 to y1.
+static func _band(k: MeshKit, c: Vector3, r_out: float, r_in: float, y0: float, y1: float, n: int, col: Color) -> void:
+	var ob := MeshKit.ring(c + Vector3(0, y0, 0), r_out, r_out, n)
+	var ot := MeshKit.ring(c + Vector3(0, y1, 0), r_out, r_out, n)
+	var ib := MeshKit.ring(c + Vector3(0, y0, 0), r_in, r_in, n)
+	var it := MeshKit.ring(c + Vector3(0, y1, 0), r_in, r_in, n)
+	var mid := c + Vector3(0, (y0 + y1) * 0.5, 0)
+	for i in n:
+		var j := (i + 1) % n
+		k.quad(ob[i], ob[j], ot[j], ot[i], col, mid)
+		var out := (ib[i] + ib[j]) * 0.5 - c
+		out.y = 0.0
+		k.quad(ib[i], ib[j], it[j], it[i], col, (ib[i] + it[j]) * 0.5 + out.normalized())
+		k.quad(ot[i], ot[j], it[j], it[i], col, mid - Vector3(0, 1, 0))
+		k.quad(ob[i], ob[j], ib[j], ib[i], col, mid + Vector3(0, 1, 0))
+
+
+## The repair drone alone, origin at its centre, facing -Z: a boxy hull in the accent colour with a white top deck and a
+## green repair cross on it, a green sensor eye in a bezel on the nose, four diagonal arms out to motors with dark rotor
+## discs (a blade across each) inside white guard rings, and two landing skids (their soles at y -0.145).
+static func _drone(k: MeshKit) -> void:
+	k.box(Vector3(0.28, 0.11, 0.34), ORANGE)
+	k.box(Vector3(0.22, 0.04, 0.26), WHITE, Vector3(0, 0.07, 0.02))
+	k.box(Vector3(0.22, 0.05, 0.28), DARK, Vector3(0, -0.07, 0.0))
+	# The nose: a dark visor block, a bezel and the green eye.
+	k.box(Vector3(0.18, 0.08, 0.04), DARK, Vector3(0, 0.0, -0.18))
+	k.tube(Vector3(0, 0, -0.19), Vector3(0, 0, -0.215), 0.05, 6, GUN)
+	k.glow = true
+	k.tube(Vector3(0, 0, -0.213), Vector3(0, 0, -0.223), 0.034, 6, REPAIR_GREEN)
+	# The repair cross on the top deck, and a tail light.
+	k.box(Vector3(0.13, 0.012, 0.04), REPAIR_GREEN, Vector3(0, 0.095, 0.03))
+	k.box(Vector3(0.04, 0.012, 0.13), REPAIR_GREEN, Vector3(0, 0.095, 0.03))
+	k.box(Vector3(0.08, 0.025, 0.012), REPAIR_GREEN, Vector3(0, 0.0, 0.175))
+	k.glow = false
+	# Arms, motors, rotors, guards.
+	for sx: float in [-1.0, 1.0]:
+		for sz: float in [-1.0, 1.0]:
+			var hub := Vector3(sx * 0.23, 0.0, sz * 0.23)
+			var dir := Vector3(sx, 0, sz).normalized()
+			k.seg(Vector3(sx * 0.1, 0.0, sz * 0.1), hub + dir * 0.135, Vector2(0.026, 0.02), Vector2(0.022, 0.018), 4, GREY, MeshKit.SQUARE)
+			k.tube(hub - Vector3(0, 0.035, 0), hub + Vector3(0, 0.04, 0), 0.038, 6, DARK)
+			k.tube(hub + Vector3(0, 0.04, 0), hub + Vector3(0, 0.048, 0), 0.112, 8, GUN)
+			k.push(MeshKit.xf(hub + Vector3(0, 0.054, 0), Vector3(0, 45.0 * sx * sz, 0)))
+			k.box(Vector3(0.21, 0.01, 0.03), BLACK)
+			k.pop()
+			_band(k, hub, 0.135, 0.12, 0.012, 0.062, 8, WHITE)
+	# Skids: two deep rails under the belly.
+	for sx: float in [-1.0, 1.0]:
+		k.box(Vector3(0.024, 0.05, 0.3), STEEL, Vector3(sx * 0.1, -0.12, 0.0))
+
+
+## The drone's launch cradle on the back mount (the docked mesh without the drone): the base plate, a pedestal and a pad
+## (top at y 0.165, where the skids land) with an H mark, two clamp jaws that grip the hull's sides, an accent lip with
+## two green status lights on the rear edge, and a cable from the pad down into the deck.
+static func _drone_cradle(k: MeshKit) -> void:
+	_back_base(k, false)
+	k.box(Vector3(0.3, 0.06, 0.3), GUN, Vector3(0, 0.1, 0.02))
+	k.box(Vector3(0.56, 0.05, 0.56), GREY, Vector3(0, 0.14, 0.02))
+	# The H on the pad.
+	for s: float in [-1.0, 1.0]:
+		k.box(Vector3(0.035, 0.008, 0.2), WHITE, Vector3(s * 0.07, 0.168, 0.02))
+	k.box(Vector3(0.105, 0.008, 0.035), WHITE, Vector3(0, 0.168, 0.02))
+	# Clamp jaws on both sides: an upright, a jaw reaching in over the hull's side, a hinge pin.
+	for s: float in [-1.0, 1.0]:
+		k.box(Vector3(0.04, 0.17, 0.09), STEEL, Vector3(s * 0.215, 0.245, 0.02))
+		k.box(Vector3(0.09, 0.045, 0.09), DARK, Vector3(s * 0.175, 0.31, 0.02))
+		k.tube(Vector3(s * 0.215, 0.2, -0.04), Vector3(s * 0.215, 0.2, 0.08), 0.022, 6, DARK)
+	# The rear lip in the accent colour, with two green status lights.
+	k.box(Vector3(0.5, 0.06, 0.035), ORANGE, Vector3(0, 0.15, 0.315))
+	k.glow = true
+	for s: float in [-1.0, 1.0]:
+		k.box(Vector3(0.05, 0.025, 0.012), REPAIR_GREEN, Vector3(s * 0.17, 0.155, 0.337))
+	k.glow = false
+	# The charge cable from under the pad down into the deck.
+	var cable := [Vector3(0.2, 0.12, 0.24), Vector3(0.24, 0.02, 0.3), Vector3(0.22, -0.3, 0.27)]
+	for i in cable.size() - 1:
+		k.tube(cable[i], cable[i + 1], 0.024, 6, BLACK)
+
+
+## Radiator fins: seven tall flat fins across the mount (on the "heat" surface, which the game makes glow with heat;
+## edge on to the camera behind, broadside from the sides) on a header box, a manifold pipe through them with accent end
+## caps, two tie bars through their rear halves, and two coolant pipes forward into the back plate's rear face.
+static func _equip_radiator(k: MeshKit) -> void:
+	_back_base(k, true)
+	for s: float in [-1.0, 1.0]:
+		k.box(Vector3(0.1, 0.05, 0.2), DARK, Vector3(s * 0.15, 0.1, 0.02))
+	k.box(Vector3(0.6, 0.1, 0.34), GUN, Vector3(0, 0.17, 0.02))
+	# The fins: chamfered plates stepping down and in toward the sides, so the side view shows their nested edges.
+	k.heat = true
+	for i in 7:
+		var x := (float(i) - 3.0) * 0.08
+		var a := absf(float(i) - 3.0) / 3.0
+		var top := 0.86 - 0.3 * a
+		var zf := -0.17 + 0.12 * a
+		var zb := 0.21 - 0.1 * a
+		var prof := [Vector2(zf, 0.22), Vector2(zb, 0.22), Vector2(zb, top - 0.1), Vector2(zb - 0.08, top), Vector2(zf + 0.08, top),
+			Vector2(zf, top - 0.08)]
+		var rings: Array = []
+		for side: float in [-1.0, 1.0]:
+			var r := PackedVector3Array()
+			for p: Vector2 in prof:
+				r.append(Vector3(x + side * 0.011, p.y, p.x))
+			rings.append(r)
+		k.loft(rings, STEEL)
+	k.heat = false
+	# The manifold through the fins with accent end caps, two tie bars through the rear halves.
+	k.tube(Vector3(-0.3, 0.5, 0.03), Vector3(0.3, 0.5, 0.03), 0.045, 8, GUN)
+	for s: float in [-1.0, 1.0]:
+		k.tube(Vector3(s * 0.29, 0.5, 0.03), Vector3(s * 0.33, 0.5, 0.03), 0.065, 8, ORANGE)
+	for y: float in [0.34, 0.47]:
+		k.box(Vector3(0.5, 0.035, 0.035), GREY, Vector3(0, y, 0.08))
+	# Coolant pipes from the header's sides forward into the back plate, with collars where they enter.
+	for s: float in [-1.0, 1.0]:
+		var pts := [Vector3(s * 0.27, 0.17, -0.08), Vector3(s * 0.33, 0.23, -0.2), Vector3(s * 0.33, 0.3, -0.45)]
+		for i in pts.size() - 1:
+			k.tube(pts[i], pts[i + 1], 0.032, 6, STEEL)
+		k.tube(Vector3(s * 0.33, 0.29, -0.36), Vector3(s * 0.33, 0.3, -0.41), 0.05, 6, DARK)
+	# A heat gauge (amber) in a dark frame and an accent plate on the header's rear face.
+	k.box(Vector3(0.1, 0.06, 0.02), DARK, Vector3(0.16, 0.17, 0.195))
+	k.glow = true
+	k.box(Vector3(0.07, 0.03, 0.012), AMBER, Vector3(0.16, 0.17, 0.207))
+	k.glow = false
+	k.box(Vector3(0.2, 0.05, 0.02), ORANGE, Vector3(-0.12, 0.17, 0.195))
+
+
+## Ammo bin: a ribbed magazine crate with a lid and a carry handle, two latches and a hazard stripe (accent with black
+## slats) on the rear face, accent unit plates on the sides, and a segmented feed chute from its right side curving down
+## into the deck toward the body.
+static func _equip_ammo_bin(k: MeshKit) -> void:
+	_back_base(k, false)
+	k.box(Vector3(0.58, 0.42, 0.48), GUN, Vector3(0, 0.31, 0.04))
+	for z: float in [-0.14, 0.04, 0.22]:
+		k.box(Vector3(0.62, 0.44, 0.04), GREY, Vector3(0, 0.31, z))
+	k.box(Vector3(0.6, 0.05, 0.5), DARK, Vector3(0, 0.545, 0.04))
+	# The carry handle on the lid.
+	k.box(Vector3(0.22, 0.025, 0.04), STEEL, Vector3(0, 0.615, 0.1))
+	for s: float in [-1.0, 1.0]:
+		k.box(Vector3(0.025, 0.05, 0.025), STEEL, Vector3(s * 0.1, 0.59, 0.1))
+	# Latches over the lid's rear edge.
+	for s: float in [-1.0, 1.0]:
+		k.box(Vector3(0.07, 0.12, 0.03), STEEL, Vector3(s * 0.17, 0.49, 0.295))
+		k.box(Vector3(0.05, 0.03, 0.04), DARK, Vector3(s * 0.17, 0.455, 0.315))
+	# The hazard stripe: an accent band with four black diagonal slats.
+	k.box(Vector3(0.5, 0.09, 0.02), ORANGE, Vector3(0, 0.2, 0.29))
+	for i in 4:
+		k.push(MeshKit.xf(Vector3(-0.18 + float(i) * 0.12, 0.2, 0.302), Vector3(0, 0, 45.0)))
+		k.box(Vector3(0.026, 0.095, 0.012), BLACK)
+		k.pop()
+	# Accent unit plates on both sides, between the rear ribs.
+	for s: float in [-1.0, 1.0]:
+		k.box(Vector3(0.02, 0.12, 0.12), ORANGE, Vector3(s * 0.295, 0.38, 0.13))
+	# The feed chute: an outlet on the right side, three square segments curving down into the deck, steel collars.
+	k.box(Vector3(0.05, 0.14, 0.16), DARK, Vector3(0.31, 0.3, -0.06))
+	var pts := [Vector3(0.3, 0.3, -0.06), Vector3(0.35, 0.27, -0.08), Vector3(0.375, 0.16, -0.1), Vector3(0.375, -0.02, -0.12)]
+	for i in pts.size() - 1:
+		k.seg(pts[i], pts[i + 1], Vector2(0.04, 0.055), Vector2(0.04, 0.055), 4, DARK, MeshKit.SQUARE)
+	for i: int in [1, 2]:
+		var d: Vector3 = ((pts[i + 1] as Vector3) - (pts[i - 1] as Vector3)).normalized()
+		k.seg((pts[i] as Vector3) - d * 0.02, (pts[i] as Vector3) + d * 0.02, Vector2(0.05, 0.066), Vector2(0.05, 0.066), 4, STEEL, MeshKit.SQUARE)

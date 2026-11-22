@@ -12,6 +12,7 @@ const LOADOUT := {"side_l": "laser", "side_r": "autocannon", "shoulder_l": "rock
 func setup() -> void:
 	await _rack_logic()
 	await _guided_track()
+	await _unusable()
 	await _test_drive()
 	_playable_loadout()
 	await _paused_drive()
@@ -265,6 +266,125 @@ func _guided_track() -> void:
 	await frames(1)
 
 
+## Unusable slots: a destroyed hardpoint and an empty magazine each deselect the slot, block its key and a double tap on
+## it (soloing another slot still works), stop its fire and its heat (active and passive), clear the guided track, show
+## no aim pip (MechHud.aim_pip_slots) and report hold DESTROYED / EMPTY + usable false. Refilled / repaired, it is usable
+## again but stays deselected until its key. With every weapon unusable the trigger does nothing. Equipment rules hold.
+func _unusable() -> void:
+	var world := CombatWorld.new()
+	add_child(world)
+	var model := MechModel.new()
+	add_child(model)
+	model.configure("chicken", "strider", {"side_l": "autocannon", "side_r": "laser", "shoulder_l": "missiles",
+		"shoulder_r": "rockets", "back": "ammo_bin"})
+	var mech := MechController.new()     # not in the tree: exact heat sums
+	var rack := WeaponRack.new()
+	rack.auto_step = false
+	rack.manual_aim = true
+	var broken := {}
+	rack.slot_disabled = func(h: String) -> bool: return broken.has(h)
+	add_child(rack)
+	rack.bind(world, mech, model, null, "unus", 1)
+	rack.aim_point = Vector3(0, 3, -60)
+	await frames(2)
+	var shots := {}
+	rack.fired.connect(func(n: int) -> void: shots[n] = int(shots.get(n, 0)) + 1)
+	var changed: Array[int] = []
+	rack.slot_changed.connect(func(n: int) -> void: changed.append(n))
+	for s: Dictionary in rack.slots():
+		check(s.has("usable"), "slots() has `usable` (slot %d)" % int(s["slot"]))
+	check(bool(rack.slots()[0]["usable"]) and bool(rack.slots()[4]["usable"]), "an intact weapon / equipment is usable")
+	# (a) Destroyed hardpoint: slot 1 (autocannon).
+	broken["side_l"] = true
+	var s1: Dictionary = rack.slots()[0]
+	check(not bool(s1["usable"]) and not bool(s1["enabled"]), "destroyed: usable false, enabled false in slots() at once")
+	eq(str(s1["hold"]), "DESTROYED", "destroyed: hold DESTROYED")
+	rack.step(DT)
+	check(not rack.enabled[0], "destroyed: deselected")
+	check(changed.has(1), "slot_changed fired for the deselect")
+	rack.press_slot(1, 10.0)
+	check(not rack.enabled[0], "its key can't select it")
+	rack.press_slot(1, 20.0)
+	rack.press_slot(1, 20.1)
+	eq(rack.enabled, [false, true, true, true, true] as Array[bool], "a double tap on it solos nothing")
+	rack.set_enabled(1, true)
+	check(not rack.enabled[0], "set_enabled can't select it either")
+	var pip_slots: Array = MechHud.aim_pip_slots(rack.slots()).map(func(s: Dictionary) -> int: return int(s["slot"]))
+	check(not 1 in pip_slots and 2 in pip_slots, "no aim pip for the destroyed slot (%s)" % str(pip_slots))
+	# Fire and heat: the others fire; slot 1 neither fires nor heats.
+	var passive := 0.0
+	for w: String in ["laser", "missiles", "rockets"]:
+		passive += float(MechCatalog.weapon(w).get("passive_heat", 0.0))
+	for n in [2, 3, 4]:
+		rack.set_enabled(n, false)
+	var h0 := mech.heat
+	rack.set_trigger(true)
+	for i in 60:
+		rack.step(DT)
+		world.advance(DT)
+	rack.set_trigger(false)
+	eq(shots.size(), 0, "nothing fires (slot 1 destroyed, the rest deselected)")
+	near(mech.heat - h0, passive * 60 * DT, 0.01,
+		"heat = the usable weapons' passive heat only: none from the destroyed autocannon")
+	# (b) Out of ammo: slot 3 (missiles) runs dry; the guided track drops.
+	for n in [2, 3, 4]:
+		rack.set_enabled(n, true)
+	rack.step(DT)
+	check(rack.designator_on(), "missiles selected: the track is on")
+	rack.mounts[2].ammo = 0
+	rack.step(DT)
+	var s3: Dictionary = rack.slots()[2]
+	check(not rack.enabled[2] and not bool(s3["enabled"]), "dry: deselected")
+	check(not bool(s3["usable"]), "dry: usable false")
+	eq(str(s3["hold"]), "EMPTY", "dry: hold EMPTY")
+	check(not rack.designator_on() and not bool(world.designators["unus"]["on"]), "dry missiles: the guided track is off")
+	check(not bool(s3["designating"]), "dry missiles: not designating")
+	rack.press_slot(3, 30.0)
+	check(not rack.enabled[2], "dry: the key can't select it")
+	# Soloing another slot still works (and keeps the unusable ones off).
+	rack.press_slot(2, 40.0)
+	rack.press_slot(2, 40.1)
+	eq(rack.enabled, [false, true, false, false, true] as Array[bool], "soloing the laser still works")
+	# Refill: usable again, still deselected until its key.
+	rack.mounts[2].ammo = 27
+	rack.step(DT)
+	check(bool(rack.slots()[2]["usable"]) and not rack.enabled[2], "refilled: usable, still deselected")
+	eq(str(rack.slots()[2]["hold"]), "", "refilled: no hold")
+	check(not rack.designator_on(), "refilled but deselected: no track")
+	rack.press_slot(3, 50.0)
+	rack.step(DT)
+	check(rack.enabled[2] and rack.designator_on(), "its key selects it again; the track is back")
+	# Repaired hardpoint: usable, still deselected until pressed.
+	broken.erase("side_l")
+	rack.step(DT)
+	check(bool(rack.slots()[0]["usable"]) and not rack.enabled[0], "repaired: usable, still deselected")
+	rack.press_slot(1, 60.0)
+	check(rack.enabled[0], "its key selects it again")
+	# Every weapon unusable: the trigger does nothing, nothing breaks.
+	for h: String in ["side_l", "side_r", "shoulder_l", "shoulder_r"]:
+		broken[h] = true
+	shots.clear()
+	rack.set_trigger(true)
+	for i in 30:
+		rack.step(DT)
+		world.advance(DT)
+	rack.set_trigger(false)
+	eq(shots.size(), 0, "every weapon unusable: LMB fires nothing")
+	eq(rack.enabled.slice(0, 4), [false, false, false, false], "all four deselected")
+	check(not rack.designator_on(), "no track")
+	# Equipment rules unchanged: the ammo bin stays enabled; destroyed it reports DESTROYED / unusable.
+	check(rack.enabled[4] and bool(rack.slots()[4]["enabled"]), "the equipment slot stays enabled")
+	broken["back"] = true
+	var s5: Dictionary = rack.slots()[4]
+	eq(str(s5["hold"]), "DESTROYED", "destroyed equipment: hold DESTROYED")
+	check(not bool(s5["usable"]), "destroyed equipment: usable false")
+	rack.queue_free()
+	model.queue_free()
+	world.queue_free()
+	mech.free()
+	await frames(1)
+
+
 func _test_drive() -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	add_child(td)
@@ -277,8 +397,16 @@ func _test_drive() -> void:
 	check(td.combat.enemies.size() >= 3, "test drive spawns seeded enemies (%d)" % td.combat.enemies.size())
 	check(td.combat.player_target != null and td.combat.squad != null, "test drive binds player_target and enemy squad")
 	var ring := td.city.ring
-	var e := td.combat.enemies[0]
-	check(absf(ring.height(e.global_position)) < 1.5, "%s stands on the avenue ahead (h %.2f)" % [e.name, ring.height(e.global_position)])
+	check(absf(ring.height(td.combat.enemies[0].global_position)) < 1.5, "%s stands on the avenue ahead (h %.2f)"
+		% [td.combat.enemies[0].name, ring.height(td.combat.enemies[0].global_position)])
+	# The target: the nearest enemy the laser's muzzle really sees (CombatWorld.first_hit meets that enemy first) within
+	# the laser's range. Not blindly enemies[0]: in the stack (the default city since W2) the first spawn can be a deck
+	# below, behind the deck floor (2026-11-22: strider_01 77 m away, 27 m down, a StaticBody between), and the test must
+	# not depend on spawn order.
+	var e := _visible_enemy(td, rack)
+	if not check(e != null, "an enemy in line of sight of the rack within laser range"):
+		td.queue_free()
+		return
 	td.drive_override = true
 	td.mech.move_input = Vector2.ZERO
 	var built := false
@@ -305,3 +433,22 @@ func _test_drive() -> void:
 	check(peak > heat0 + 5.0, "firing heated the mech (peak %.1f)" % peak)
 	td.queue_free()
 	await frames(1)
+
+
+## The nearest enemy whose first hit point from slot 1's muzzle (the laser) is the enemy itself, within the laser's range.
+func _visible_enemy(td: TestDrive, rack: WeaponRack) -> CombatTarget:
+	var from := rack.muzzle(1)
+	var best: CombatTarget = null
+	var best_d := float(MechCatalog.weapon("laser")["range"])
+	for en: CombatTarget in td.combat.enemies:
+		if not is_instance_valid(en) or en.destroyed():
+			continue
+		var c: Vector3 = en.world_spheres()[0]["center"]
+		var d := from.distance_to(c)
+		if d > best_d:
+			continue
+		var h := td.combat.world.first_hit(from, c, 0.0, rack.shooter, [td.combat.player_target.target_id])
+		if not h.is_empty() and h.get("target") == en:
+			best = en
+			best_d = d
+	return best

@@ -108,7 +108,8 @@ func sync() -> void:
 			_hide_slot(pips, xm)
 			continue
 		var s: Dictionary = slots[i]
-		if str(s["weapon"]) == "" or not bool(s["enabled"]) or not bool(s.get("built", true)) or not s.has("muzzle"):
+		if str(s["weapon"]) == "" or not bool(s["enabled"]) or not bool(s.get("built", true)) or not s.has("muzzle") \
+				or bool(s.get("equipment", false)):   # back-mount equipment: no aim, no pips
 			_hide_slot(pips, xm)
 			continue
 		var from: Vector3 = s["muzzle"]

@@ -1,0 +1,533 @@
+class_name CombatNet
+extends Node
+## Combat across machines (co-op step 3, docs/design/weapons.md §5): the crew mission's bridge between the local
+## CombatWorld and the crew. Built by TestDriveCombat in a crew mission (child "CombatNet"). It never touches the wire
+## itself: it only talks to the Session autoload through its existing reliable-event API (send_event / event_received).
+##
+## FIRE RECORDS are SCHEDULED EFFECTS. Every record this machine's own WeaponRack fires (CombatWorld.fired with
+## peer == local peer and shooter == "player<local peer>") is queued and sent as one reliable event
+##   "combat.fire" {"r": [encode(record), ...]}            at most every FLUSH_INTERVAL (30 Hz); the first after a pause
+##                                                       goes out at once
+## A client sends it to the host; the HOST RELAYS it unchanged to every other client with {"o": origin peer} added (a
+## client only ever talks to the host). Receivers rebuild each record with `peer` and `shooter` taken from the SENDER
+## (never from the payload) and call CombatWorld.fire: a record older than the clock is fast-forwarded by now - t
+## (CombatWorld.fire / CombatEffect.advance_to). Duplicates (same Combat.shot_key) are dropped.
+##
+## HITS. The receiving machine simulates the shot like any local one, so CombatWorld.decides applies as built:
+##   - a player's mech: ONLY its owner decides (victim decides). B simulates A's broadcast shot against B's own mech and
+##     applies damage / impulse / heat through PlayerTarget's verbs once; A and C show the impact cosmetically (they
+##     never build a Hit on a puppet). No hit event crosses for mechs, so a hit can't be applied twice.
+##   - host-owned targets (enemies, dummies; owner_peer 0): the SHOOTER's machine decides. On a client, CombatWorld
+##     emits remote_hit; this sends "combat.hit" {id, hit fields} to the host, which checks the hit's shooter is the
+##     sender, drops a repeat of (shot, target), finds the target it owns by id and applies the Hit (hit_landed fires).
+##     City props and ambient life have their own host-arbitrated paths (CityProps "prop.req", AmbientLife "life.req").
+##
+## GUIDED MISSILES: before each CombatWorld.advance, every puppet's guided track is mirrored into
+## world.designators["player<peer>"] = {on, dot} from that owner's NEWEST mech snapshot (Session.mechs.newest: aim
+## point + designator flag), falling back to MechPuppet's interpolated aim. So a remote missile steers toward its
+## shooter's streamed aim point, and the MissileLaser line shows on every machine.
+## LIVE MUZZLES: each puppet's hardpoints are registered as CombatWorld muzzles (its model's HP_<id> node, `muzzle` m
+## ahead), so remote laser beams, flamer streams, missile lines and charge glows start at the puppet's weapons.
+## CHARGE: weapons with stats.charge >= CHARGE_EVENT_MIN (the railgun's 1 s) send "combat.charge" {hp, t, on} when a
+## charge starts and when it is cancelled (released early); receivers draw a ChargeGlow at the puppet's muzzle from t
+## on the shared clock until the shot's record or the cancel arrives. The laser's 0.15 s charge is shorter than an
+## event's trip, so it sends none (the beam itself is the record).
+##
+## REPAIR DRONE (docs/design/back-equipment.md): a scheduled effect. When this machine's own rack launches one
+## (CombatWorld.drone_launched with this machine's peer / shooter) it sends ONE reliable event
+##   "combat.drone" {"t": launch time on the shared clock, "hp": hardpoint}
+## relayed by the host like "combat.fire" (shooter / peer from the sender, duplicates dropped by (origin, t)). Each
+## receiver calls CombatWorld.launch_drone, so the drone flies from the launcher's PUPPET (an anchor this registers for
+## every puppet) on the shared clock; a launch older than the drone's life is dropped, a late one fast-forwards. Nothing
+## else crosses: each machine heals only its own mech (RepairDrone), so no heal message exists.
+##
+## ENEMY FIRE (W4) is NOT carried here: the host's EnemySync (scripts/game/enemy_sync.gd) sends every enemy fire record in
+## its ordered "enemy.ev" stream (host only, sender-checked there) and each client fires it through CombatWorld.fire with
+## peer 1. This node guards it on clients through CombatWorld.fire_gate (_gate): a duplicate enemy record (same shot key)
+## is dropped, and an enemy record fired on a client while its CombatWorld is stepping targets (only a locally simulated
+## enemy could do that: enemies tick only where owned, i.e. on the host) is refused. Who is hurt follows CombatWorld:
+## peer 1 = the victim decides about its own mech, the host about props / life / host-owned targets.
+##
+## Event rates (records per second while the trigger is held; one record per shot / pulse / chunk): laser 0.8,
+## autocannon 2.5, gatling 12 (after its 0.6 s spin-up, which the first record's t already carries), swivel 4, rockets 6
+## in 0.5 s then 4 s reload, missiles 3 in 0.6 s then 5 s, mortar 0.29, railgun 0.25 (+ one charge event per shot,
+## + one per cancel), flamer 10. Batching caps one shooter at 30 "combat.fire" events a second whatever is held.
+
+signal remote_fired(record: Dictionary, effect: CombatEffect)
+signal host_hit_applied(target_id: String, hit: Hit)
+signal remote_drone(record: Dictionary, drone: RepairDrone)
+
+const FIRE := "combat.fire"
+const HIT := "combat.hit"
+const CHARGE := "combat.charge"
+const DRONE := "combat.drone"
+const DRONE_AHEAD := 5.0          ## s: a drone launch stamped further ahead of the clock than this is refused
+const FLUSH_INTERVAL := 1.0 / 30.0
+const CHARGE_EVENT_MIN := 0.3     ## s: a charge at least this long is announced (the railgun)
+const CHARGE_TIMEOUT := 8.0       ## s past full charge a remote glow with no shot / cancel is dropped
+const SEEN_MAX := 2048            ## shot keys remembered for duplicate drops
+const MAX_RECORDS := 64           ## records accepted per event
+## The fire record's fields as encode() packs them (plus shooter + peer, which come from the sender).
+const RECORD_KEYS := ["hardpoint", "weapon", "origin", "dir", "target", "t", "shot_index", "spread"]
+
+var world: CombatWorld
+var rack: WeaponRack
+var drive: Node                   ## the TestDrive (its crew_sync is read lazily: it is built after combat)
+var local_peer := 0
+var local_shooter := ""
+## Counters for tests and diagnostics.
+var stats := {"sent_events": 0, "sent_records": 0, "recv_records": 0, "dup": 0, "refused": 0, "relayed": 0,
+	"hits_sent": 0, "hits_applied": 0, "hits_dup": 0, "hits_missing": 0, "charges_sent": 0,
+	"drones_sent": 0, "drones_recv": 0, "drones_dup": 0, "drones_expired": 0,
+	"enemy_dup": 0, "enemy_local_refused": 0}
+
+var _queue: Array = []
+var _next_flush := -INF
+var _seen: Dictionary = {}        ## shot key -> true
+var _seen_order: Array[String] = []
+var _hits_seen: Dictionary = {}   ## host: "shot|target" -> true
+var _hits_order: Array[String] = []
+var _charges: Dictionary = {}     ## "shooter/hardpoint" -> {"t", "need", "steps", "glow"}
+var _prev_charge: Array[float] = []
+var _fired_slots: Dictionary = {} ## slot index -> true: fired during this step
+var _muzzled: Dictionary = {}     ## puppet peer -> true once its muzzles are registered
+var _hp_nodes: Dictionary = {}    ## "shooter/hardpoint" -> Node3D
+var _anchored: Dictionary = {}    ## puppet peer -> true once its CombatWorld anchor is registered
+
+
+func net_fields() -> Dictionary:
+	return {"world": Net.LOCAL, "rack": Net.LOCAL, "drive": Net.LOCAL, "local_peer": Net.SPAWN, "local_shooter": Net.SPAWN,
+		"stats": Net.LOCAL, "_queue": Net.PRIVATE, "_next_flush": Net.PRIVATE, "_seen": Net.LOCAL, "_seen_order": Net.LOCAL,
+		"_hits_seen": Net.LOCAL, "_hits_order": Net.LOCAL, "_charges": Net.LOCAL, "_prev_charge": Net.PRIVATE,
+		"_fired_slots": Net.PRIVATE, "_muzzled": Net.LOCAL, "_hp_nodes": Net.LOCAL,
+		"_anchored": Net.LOCAL}
+
+
+## The shared clock for CombatWorld.set_clock: Session.host_time() in a session, -1 when there is none.
+static func session_clock() -> float:
+	var s := Net.session()
+	return s.host_time() if s != null and s.online() else -1.0
+
+
+func bind(w: CombatWorld, r: WeaponRack, td: Node) -> void:
+	world = w
+	rack = r
+	drive = td
+	local_peer = CombatWorld.local_peer()
+	local_shooter = "player%d" % local_peer
+	world.fired.connect(_on_fired)
+	world.remote_hit.connect(_on_remote_hit)
+	world.drone_launched.connect(_on_drone_launched)
+	world.fire_gate = _gate
+	if rack != null:
+		rack.fired.connect(func(slot: int) -> void: _fired_slots[slot - 1] = true)
+	var s := Net.session()
+	if s != null and not s.event_received.is_connected(_on_event):
+		s.event_received.connect(_on_event)
+
+
+func _exit_tree() -> void:
+	if world != null and is_instance_valid(world) and world.fire_gate == Callable(self, "_gate"):
+		world.fire_gate = Callable()
+	var s := Net.session()
+	if s != null and s.event_received.is_connected(_on_event):
+		s.event_received.disconnect(_on_event)
+
+
+func _online() -> bool:
+	var s := Net.session()
+	return s != null and s.online()
+
+
+# --- Records on the wire ---------------------------------------------------------------------------------
+
+## A fire record as plain data: [hardpoint, weapon, origin, dir, target, t, shot_index, spread].
+static func encode(rec: Dictionary) -> Array:
+	return [str(rec["hardpoint"]), str(rec["weapon"]), rec["origin"] as Vector3, rec["dir"] as Vector3,
+		rec["target"] as Vector3, float(rec["t"]), int(rec["shot_index"]), float(rec.get("spread", 0.0))]
+
+
+## The record encode() packed, fired by `peer` (shooter "player<peer>"), or {} when anything is malformed or the weapon
+## is not a player weapon.
+static func decode(a: Variant, peer: int) -> Dictionary:
+	if not (a is Array) or (a as Array).size() != RECORD_KEYS.size() or peer <= 0:
+		return {}
+	var v := a as Array
+	if not (v[0] is String and v[1] is String and v[2] is Vector3 and v[3] is Vector3 and v[4] is Vector3):
+		return {}
+	if not ((v[5] is float or v[5] is int) and v[6] is int and (v[7] is float or v[7] is int)):
+		return {}
+	var weapon := str(v[1])
+	if not MechCatalog.WEAPONS.has(weapon) or MechCatalog.is_equipment(weapon) or str(v[0]).length() > 24:
+		return {}
+	var o: Vector3 = v[2]
+	var d: Vector3 = v[3]
+	var tg: Vector3 = v[4]
+	if not (o.is_finite() and d.is_finite() and tg.is_finite() and is_finite(float(v[5])) and is_finite(float(v[7]))):
+		return {}
+	if d.length_squared() < 1e-8:
+		return {}
+	return {"shooter": "player%d" % peer, "peer": peer, "hardpoint": str(v[0]), "weapon": weapon, "origin": o,
+		"dir": d.normalized(), "target": tg, "t": float(v[5]), "shot_index": int(v[6]), "spread": clampf(float(v[7]), 0.0, 45.0)}
+
+
+static func encode_hit(target_id: String, h: Hit) -> Dictionary:
+	return {"id": target_id, "dmg": h.damage, "imp": h.impulse, "heat": h.heat, "pt": h.point, "n": h.normal,
+		"comp": h.component, "w": h.weapon, "sh": h.shooter, "shot": h.shot}
+
+
+static func decode_hit(d: Dictionary) -> Hit:
+	if not (d.get("imp") is Vector3 and d.get("pt") is Vector3 and d.get("n") is Vector3):
+		return null
+	var h := Hit.new()
+	h.damage = clampf(float(d.get("dmg", 0.0)), 0.0, 10000.0)
+	h.impulse = d["imp"]
+	h.heat = clampf(float(d.get("heat", 0.0)), 0.0, 1000.0)
+	h.point = d["pt"]
+	h.normal = d["n"]
+	h.component = str(d.get("comp", "")).left(32)
+	h.weapon = str(d.get("w", "")).left(32)
+	h.shooter = str(d.get("sh", "")).left(32)
+	h.shot = str(d.get("shot", "")).left(96)
+	if not (h.impulse.is_finite() and h.point.is_finite() and is_finite(h.damage) and is_finite(h.heat)):
+		return null
+	return h
+
+
+# --- Out ---------------------------------------------------------------------------------------------------
+
+func _on_fired(rec: Dictionary) -> void:
+	if int(rec.get("peer", 0)) != local_peer or str(rec.get("shooter", "")) != local_shooter or not _online():
+		return
+	if not MechCatalog.WEAPONS.has(str(rec.get("weapon", ""))):
+		return
+	_mark_seen(Combat.shot_key(rec))
+	_queue.append(encode(rec))
+
+
+## This machine's own drone launch: one reliable event (records already queued go first).
+func _on_drone_launched(rec: Dictionary, _d: RepairDrone) -> void:
+	if int(rec.get("peer", 0)) != local_peer or str(rec.get("shooter", "")) != local_shooter or not _online():
+		return
+	_mark_seen(_drone_key(local_peer, float(rec.get("t", 0.0))))
+	flush(true)
+	Net.session().send_event(0, DRONE, {"t": float(rec.get("t", world.now)), "hp": str(rec.get("hardpoint", "back"))})
+	stats["drones_sent"] = int(stats["drones_sent"]) + 1
+
+
+static func _drone_key(peer: int, t: float) -> String:
+	return "drone|%d|%.4f" % [peer, t]
+
+
+## CombatWorld.fire_gate: on a client in a crew mission, enemy records are the host's (EnemySync relays them). Refuse a
+## duplicate (same shot key) and one fired while the world steps its targets (a locally simulated enemy: never valid on
+## a client). Everything else (player records, the host, offline) passes.
+func _gate(rec: Dictionary) -> bool:
+	if not (bool(rec.get("enemy", false)) or str(rec.get("team", "")) == "enemy"):
+		return true
+	var s := Net.session()
+	if s == null or not s.online() or s.hosting:
+		return true
+	if world.stepping_targets:
+		stats["enemy_local_refused"] = int(stats["enemy_local_refused"]) + 1
+		return false
+	var key := "e|" + Combat.shot_key(rec)
+	if _seen.has(key):
+		stats["enemy_dup"] = int(stats["enemy_dup"]) + 1
+		return false
+	_mark_seen(key)
+	return true
+
+
+## A shot this machine decided on a target another machine owns: a host-owned target hit from a client goes to the host.
+func _on_remote_hit(target_id: String, h: Hit) -> void:
+	var s := Net.session()
+	if s == null or not s.online() or s.hosting:
+		return
+	s.send_event(1, HIT, encode_hit(target_id, h))
+	stats["hits_sent"] = int(stats["hits_sent"]) + 1
+
+
+## Send what is queued now (at most every FLUSH_INTERVAL unless `force`).
+func flush(force: bool = false) -> void:
+	if _queue.is_empty():
+		return
+	var s := Net.session()
+	if s == null or not s.online():
+		_queue.clear()
+		return
+	var now := world.now
+	if not force and now < _next_flush:
+		return
+	s.send_event(0, FIRE, {"r": _queue})
+	stats["sent_events"] = int(stats["sent_events"]) + 1
+	stats["sent_records"] = int(stats["sent_records"]) + _queue.size()
+	_queue = []
+	_next_flush = now + FLUSH_INTERVAL
+
+
+# --- Per step (TestDriveCombat calls these around CombatWorld.advance) --------------------------------------
+
+## Before the world advances: mirror every puppet's guided track into world.designators, register its muzzles.
+func pre_advance() -> void:
+	var cs: Variant = drive.get("crew_sync") if drive != null else null
+	if cs == null or not is_instance_valid(cs):
+		return
+	var s := Net.session()
+	var puppets: Dictionary = (cs as CrewSync).puppets
+	for p: int in puppets:
+		var pp := puppets[p] as MechPuppet
+		if pp == null or not is_instance_valid(pp):
+			continue
+		var on := pp.designator
+		var dot := pp.aim_point
+		var st: NetMechState = s.mechs.newest(p) if s != null and s.mechs != null else null
+		if st != null:
+			on = st.designator
+			dot = st.aim
+		var key := "player%d" % p
+		if not _anchored.has(p):
+			_register_anchor(p)
+		var d: Variant = world.designators.get(key)
+		if d is Dictionary:
+			(d as Dictionary)["on"] = on and pp.shown != null
+			(d as Dictionary)["dot"] = dot
+		else:
+			world.designators[key] = {"on": on and pp.shown != null, "dot": dot}
+		if not _muzzled.has(p) and pp.rig != null and pp.rig.model != null:
+			_muzzled[p] = true
+			var model := pp.rig.model
+			for hp: Variant in model.loadout:
+				var w := str(model.loadout[hp])
+				if w != "":
+					world.set_muzzle(key, str(hp), _puppet_muzzle.bind(model, key, str(hp), float(MechCatalog.weapon(w).get("muzzle", 0.0))))
+
+
+## Register puppet `p`'s mech as the CombatWorld anchor of "player<p>" (a remote repair drone follows it).
+func _register_anchor(p: int) -> void:
+	var cs: Variant = drive.get("crew_sync") if drive != null else null
+	if cs == null or not is_instance_valid(cs):
+		return
+	var pp := (cs as CrewSync).puppets.get(p) as MechPuppet
+	if pp == null or not is_instance_valid(pp) or pp.mech == null:
+		return
+	_anchored[p] = true
+	world.set_anchor("player%d" % p, _puppet_anchor.bind(pp))
+
+
+func _puppet_anchor(pp: MechPuppet) -> Node3D:
+	return pp.mech if is_instance_valid(pp) and pp.mech != null and is_instance_valid(pp.mech) else null
+
+
+## A puppet's hardpoint muzzle now: `ahead` m ahead of its HP_<id> node (its weapon models are not turned remotely).
+func _puppet_muzzle(model: MechModel, key: String, hp: String, ahead: float) -> Vector3:
+	var k := key + "/" + hp
+	var n: Variant = _hp_nodes.get(k)
+	if n == null or not is_instance_valid(n) or not (n as Node3D).is_inside_tree():
+		n = null
+		if is_instance_valid(model):
+			n = model.find_child("HP_" + hp, true, false)
+		_hp_nodes[k] = n
+	if n == null:
+		return model.global_position if is_instance_valid(model) and model.is_inside_tree() else Vector3.ZERO
+	return (n as Node3D).global_transform * Vector3(0, 0, -ahead)
+
+
+## After the world advanced: announce charges, send the queued records, draw remote charge glows.
+func post_step(dt: float) -> void:
+	_watch_charges()
+	flush()
+	_fired_slots.clear()
+	_draw_charges(dt)
+
+
+func _watch_charges() -> void:
+	if rack == null:
+		return
+	_prev_charge.resize(rack.slot_count())
+	for i in rack.slot_count():
+		var m: WeaponMount = rack.mounts[i]
+		var cur := m.charge if m != null else 0.0
+		var prev := _prev_charge[i]
+		_prev_charge[i] = cur
+		if m == null or float(m.stats.get("charge", 0.0)) < CHARGE_EVENT_MIN:
+			continue
+		if prev <= 0.0 and cur > 0.0:
+			_send_charge({"hp": rack.hardpoints[i], "t": world.now - cur, "on": true})
+		elif prev > 0.0 and cur <= 0.0 and not _fired_slots.has(i):
+			_send_charge({"hp": rack.hardpoints[i], "on": false})
+
+
+func _send_charge(d: Dictionary) -> void:
+	var s := Net.session()
+	if s == null or not s.online():
+		return
+	flush(true)                       # keep the order: records already fired go first
+	s.send_event(0, CHARGE, d)
+	stats["charges_sent"] = int(stats["charges_sent"]) + 1
+
+
+func _draw_charges(dt: float) -> void:
+	for k: String in _charges.keys():
+		var c: Dictionary = _charges[k]
+		var need := float(c["need"])
+		var e := world.now - float(c["t"])
+		var glow := c["glow"] as ChargeGlow
+		if e > need + CHARGE_TIMEOUT or not is_instance_valid(glow):
+			_drop_charge(k)
+			continue
+		var f := clampf(e / maxf(need, 1e-3), 0.0, 1.0)
+		var steps := int(c["steps"])
+		if steps > 0 and f > 0.0:
+			f = maxf(floorf(f * float(steps)), 1.0) / float(steps)
+		var parts := k.split("/")
+		var m := world.muzzle_of({"shooter": parts[0], "hardpoint": parts[1] if parts.size() > 1 else ""})
+		glow.show_charge(m.call() if m.is_valid() else Vector3.ZERO, f if m.is_valid() else 0.0, dt)
+
+
+func _drop_charge(k: String) -> void:
+	var c: Dictionary = _charges.get(k, {})
+	var g: Variant = c.get("glow")
+	if g != null and is_instance_valid(g):
+		(g as Node).queue_free()
+	_charges.erase(k)
+
+
+## Remote charge glows in flight (tests).
+func remote_charges() -> Array:
+	return _charges.keys()
+
+
+# --- In ----------------------------------------------------------------------------------------------------
+
+func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void:
+	if kind != FIRE and kind != HIT and kind != CHARGE and kind != DRONE:
+		return
+	var s := Net.session()
+	if s == null or not s.online() or world == null:
+		return
+	if kind == HIT:
+		if s.hosting:
+			_host_hit(from, data)
+		return
+	# The origin: a client's event reaches only the host (from = the client); the host's relay says who fired ("o").
+	var origin := from
+	if not s.hosting and from == 1:
+		origin = int(data.get("o", 1))
+	if origin <= 0 or origin == local_peer or not s.roster.has(origin):
+		return
+	if s.hosting and from != 1:
+		var fwd := data.duplicate()
+		fwd["o"] = from
+		for p: int in s.roster:
+			if p != 1 and p != from:
+				s.send_event(p, kind, fwd)
+				stats["relayed"] = int(stats["relayed"]) + 1
+	if kind == FIRE:
+		var recs: Variant = data.get("r")
+		if not (recs is Array):
+			return
+		var n := 0
+		for a: Variant in recs:
+			n += 1
+			if n > MAX_RECORDS:
+				break
+			_apply_record(decode(a, origin))
+	elif kind == DRONE:
+		_remote_drone(origin, data)
+	else:
+		_remote_charge(origin, data)
+
+
+func _apply_record(rec: Dictionary) -> void:
+	if rec.is_empty():
+		stats["refused"] = int(stats["refused"]) + 1
+		return
+	var key := Combat.shot_key(rec)
+	if _seen.has(key):
+		stats["dup"] = int(stats["dup"]) + 1
+		return
+	_mark_seen(key)
+	stats["recv_records"] = int(stats["recv_records"]) + 1
+	_drop_charge("%s/%s" % [rec["shooter"], rec["hardpoint"]])
+	var e := world.fire(rec)
+	remote_fired.emit(rec, e)
+
+
+## Another crew member's drone launch: validated, duplicates dropped, expired ones ignored, then launched here from
+## that member's puppet on the shared clock (CombatWorld.launch_drone fast-forwards a late one).
+func _remote_drone(origin: int, data: Dictionary) -> void:
+	var tv: Variant = data.get("t")
+	if not (tv is float or tv is int) or not is_finite(float(tv)) or float(tv) > world.now + DRONE_AHEAD:
+		stats["refused"] = int(stats["refused"]) + 1
+		return
+	var t := float(tv)
+	var key := _drone_key(origin, t)
+	if _seen.has(key):
+		stats["drones_dup"] = int(stats["drones_dup"]) + 1
+		return
+	_mark_seen(key)
+	if world.now - t >= float(world.stats("repair_drone").get("life", 60.0)):
+		stats["drones_expired"] = int(stats["drones_expired"]) + 1
+		return
+	if not _anchored.has(origin):
+		_register_anchor(origin)
+	var rec := {"shooter": "player%d" % origin, "peer": origin, "hardpoint": str(data.get("hp", "back")).left(24),
+		"weapon": "repair_drone", "t": t}
+	var d := world.launch_drone(rec)
+	stats["drones_recv"] = int(stats["drones_recv"]) + 1
+	remote_drone.emit(rec, d)
+
+
+func _remote_charge(origin: int, data: Dictionary) -> void:
+	var hp := str(data.get("hp", "")).left(24)
+	var k := "player%d/%s" % [origin, hp]
+	_drop_charge(k)
+	if not bool(data.get("on", false)):
+		return
+	var w := ""
+	var cs: Variant = drive.get("crew_sync") if drive != null else null
+	if cs != null and is_instance_valid(cs):
+		var pp := (cs as CrewSync).puppets.get(origin) as MechPuppet
+		if pp != null and pp.rig != null and pp.rig.model != null:
+			w = str(pp.rig.model.loadout.get(hp, ""))
+	var st := world.stats(w) if w != "" else {}
+	var need := float(st.get("charge", 0.0))
+	if need <= 0.0:
+		return
+	var g := ChargeGlow.new()
+	add_child(g)
+	_charges[k] = {"t": float(data.get("t", world.now)), "need": need, "steps": int(st.get("charge_steps", 0)), "glow": g}
+
+
+func _host_hit(from: int, data: Dictionary) -> void:
+	var h := decode_hit(data)
+	var id := str(data.get("id", "")).left(64)
+	if h == null or id == "" or h.shooter != "player%d" % from:
+		stats["refused"] = int(stats["refused"]) + 1
+		return
+	var k := "%s|%s" % [h.shot, id]
+	if _hits_seen.has(k):
+		stats["hits_dup"] = int(stats["hits_dup"]) + 1
+		return
+	_hits_seen[k] = true
+	_hits_order.append(k)
+	if _hits_order.size() > SEEN_MAX:
+		_hits_seen.erase(_hits_order.pop_front())
+	for t in world.targets:
+		if is_instance_valid(t) and t.target_id == id and t.owner_peer <= 0 and world.owns(t):
+			t.apply_hit(h)
+			world.hit_landed.emit(t, h)
+			stats["hits_applied"] = int(stats["hits_applied"]) + 1
+			host_hit_applied.emit(id, h)
+			return
+	stats["hits_missing"] = int(stats["hits_missing"]) + 1
+
+
+func _mark_seen(key: String) -> void:
+	if _seen.has(key):
+		return
+	_seen[key] = true
+	_seen_order.append(key)
+	if _seen_order.size() > SEEN_MAX:
+		_seen.erase(_seen_order.pop_front())

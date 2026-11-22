@@ -6,24 +6,31 @@ extends Node
 ## end_mission and listen to Session.mission_started / mission_go / mission_ended. Events ride Session's reliable events,
 ## kinds "mission.*".
 ##
-##   LAUNCH   The host's Launch: mission.launch {seed, start_t, crew} to the crew (start_t = host_time() + LAUNCH_LEAD on
-##            the shared clock; crew = the roster by seat, each {peer, seat, name, head, chassis, accent, loadout}).
+##   LAUNCH   The host's Launch: mission.launch {seed, mode, start_t, crew} to the crew (start_t = host_time() + LAUNCH_LEAD
+##            on the shared clock; mode = what the seed builds, MODE_STACK (the multi-deck section) or MODE_DISTRICT (one
+##            city district); crew = the roster by seat, each {peer, seat, name, head, chassis, accent, loadout}).
 ##            Every machine, the host included, gets mission_started(params), plays the bay alert and loads the mission
 ##            when the shared clock reaches start_t. The crew goes to "mission" (lobby data; joiners are refused with
 ##            ON_MISSION until it ends).
-##   LOADING  Each machine builds the mission from params.seed, holds its mech still and reports its city checksum
-##            (report_built: the host keeps its own, a client sends mission.ready {sum}). The host compares each with
+##   LOADING  Each machine builds the mission from params.seed + mode, holds its mech still and reports its checksum (the
+##            stack's CityStack.checksum(), or the district plan's; report_built: the host keeps its own, a client sends
+##            mission.ready {sum}). The host compares each with
 ##            its own: a different one is a DESYNC (printed, noted in telemetry, kept in `desyncs`), and that pilot is
 ##            sent out (Session.kick, reason DESYNC). A member that has not reported LOAD_TIMEOUT after start_t is sent
 ##            out with LOAD_SLOW. A member that leaves just stops being waited for.
 ##   PENDING  Every remaining member reported the host's checksum: mission.go {start_at} (START_LEAD ahead on the shared
 ##            clock, so every machine has it in time).
 ##   RUNNING  start_at reached: mission_go(elapsed) on every machine; the mechs are released.
+##   STATE    The mission's progress (MissionRules.state(), W6; scripts/game/mission_flow.gd): the host evaluates the rules and
+##            sends each change as a reliable mission.state {state} to the crew (host_state); clients keep the latest
+##            (`state`) and get mission_state_changed(state). mission.go carries the latest state too, so a member that
+##            (re)joins the barrier late starts from it. An outcome (won / lost) is followed, END_HOLD later, by the
+##            host's mission.end with the outcome's reason.
 ##   END      The host leaving the mission (Esc in the test drive) sends mission.end {reason}: every client gets
 ##            mission_ended(reason) and goes back to the hangar; the crew is back in "lobby". A client leaving the
 ##            mission only leaves it on its own machine (the host's mission goes on without its mech moving).
 ##
-## Offline (solo) none of this runs: the hangar loads the test drive itself, which takes its seed from --seed.
+## Offline (solo) none of this runs: the hangar hands its seed + mode to the test drive itself (TestDrive.solo_launch).
 
 const IDLE := "idle"
 const LAUNCH := "launch"
@@ -35,9 +42,11 @@ const LAUNCH_LEAD := 2.5     ## seconds of bay alert between Launch and the load
 const START_LEAD := 0.5      ## seconds between mission.go and the start
 const LOAD_TIMEOUT := 45.0   ## host: a member that hasn't reported this long after start_t is sent out
 const HOST_ENDED := "The host ended the mission"
+const MODE_STACK := "stack"          ## the multi-deck mission section (CityStack): the default
+const MODE_DISTRICT := "district"    ## one city district (the pre-stack test drive)
 
 var phase := IDLE
-## {seed, start_t, crew} of the launched mission ({} = none).
+## {seed, mode, start_t, crew} of the launched mission ({} = none).
 var params: Dictionary = {}
 ## Shared-clock time the mission starts at (after mission.go).
 var start_at := 0.0
@@ -49,6 +58,8 @@ var checksum_salt := ""
 var desyncs: Array = []
 ## Host: every member sent out for not loading in time, [peer].
 var slow: Array = []
+## The mission's progress as last decided by the host (MissionRules.state()), {} before the first decision.
+var state: Dictionary = {}
 
 var _sums: Dictionary = {}   ## host: peer -> reported checksum
 var _started := false
@@ -73,6 +84,7 @@ func reset() -> void:
 	params = {}
 	start_at = 0.0
 	local_sum = ""
+	state = {}
 	_sums = {}
 	_started = false
 
@@ -90,8 +102,8 @@ func seconds_to_load() -> float:
 	return maxf(float(params.get("start_t", 0.0)) - s.host_time(), 0.0)
 
 
-## Host: launch a mission on `seed_value` for the crew as it is now.
-func host_launch(seed_value: int) -> bool:
+## Host: launch a mission on `seed_value` (built as `mode`: MODE_STACK or MODE_DISTRICT) for the crew as it is now.
+func host_launch(seed_value: int, mode: String = MODE_STACK) -> bool:
 	var s := _s()
 	if s == null or not s.online() or not s.hosting or phase != IDLE:
 		return false
@@ -101,11 +113,11 @@ func host_launch(seed_value: int) -> bool:
 	reset()
 	desyncs.clear()
 	slow.clear()
-	params = {"seed": seed_value, "start_t": s.host_time() + LAUNCH_LEAD, "crew": crew}
+	params = {"seed": seed_value, "mode": clean_mode(mode), "start_t": s.host_time() + LAUNCH_LEAD, "crew": crew}
 	phase = LAUNCH
 	s.set_crew_state("mission")
 	s.send_event(0, "mission.launch", params)
-	_note("mission launch: seed %d, crew %d, loads at %.3f" % [seed_value, crew.size(), float(params["start_t"])])
+	_note("mission launch: seed %d, %s, crew %d, loads at %.3f" % [seed_value, params["mode"], crew.size(), float(params["start_t"])])
 	s.mission_started.emit(params)
 	return true
 
@@ -136,6 +148,22 @@ func end(reason: String = "") -> void:
 	if s != null:
 		s.set_crew_state("lobby")
 	reset()
+
+
+## Host: the mission's progress changed (MissionRules.state()): keep it and send it to the crew (reliable mission.state).
+func host_state(d: Dictionary) -> void:
+	var s := _s()
+	if s == null or not s.online() or not s.hosting or phase == IDLE:
+		return
+	state = d.duplicate(true)
+	s.send_event(0, "mission.state", {"state": state})
+	if str(state.get("outcome", "")) != "":
+		_note("mission outcome: %s (%s)" % [state["outcome"], state.get("reason", "")])
+
+
+## A known mission mode (anything else builds the stack).
+static func clean_mode(mode: String) -> String:
+	return MODE_DISTRICT if mode == MODE_DISTRICT else MODE_STACK
 
 
 ## Crew members of the launched mission still in the roster, host first.
@@ -169,22 +197,35 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 			for e: Variant in data.get("crew", []) as Array:
 				if e is Dictionary:
 					crew.append((e as Dictionary).duplicate(true))
-			params = {"seed": int(data.get("seed", 1)), "start_t": float(data.get("start_t", 0.0)), "crew": crew}
+			params = {"seed": int(data.get("seed", 1)), "mode": clean_mode(str(data.get("mode", MODE_DISTRICT))),
+				"start_t": float(data.get("start_t", 0.0)), "crew": crew}
 			phase = LAUNCH
 			s.set_crew_state("mission")
-			_note("mission launch heard: seed %d, crew %d, loads at %.3f" % [int(params["seed"]), crew.size(), float(params["start_t"])])
+			_note("mission launch heard: seed %d, %s, crew %d, loads at %.3f" % [int(params["seed"]), params["mode"], crew.size(), float(params["start_t"])])
 			s.mission_started.emit(params)
 		"mission.go":
 			if phase == LAUNCH or phase == LOADING:
 				start_at = float(data.get("start_at", 0.0))
 				phase = PENDING
 				_started = false
+				if data.get("state") is Dictionary and not (data["state"] as Dictionary).is_empty():
+					_take_state(data["state"])
+		"mission.state":
+			if phase != IDLE and data.get("state") is Dictionary:
+				_take_state(data["state"])
 		"mission.end":
 			if phase != IDLE:
 				var why := str(data.get("reason", HOST_ENDED))
 				s.set_crew_state("lobby")
 				reset()
 				s.mission_ended.emit(why)
+
+
+func _take_state(d: Dictionary) -> void:
+	state = d.duplicate(true)
+	if str(state.get("outcome", "")) != "":
+		_note("mission outcome heard: %s (%s)" % [state["outcome"], state.get("reason", "")])
+	_s().mission_state_changed.emit(state)
 
 
 func _on_roster_changed() -> void:
@@ -229,7 +270,10 @@ func _send_go() -> void:
 	_started = false
 	for p: int in members():
 		if p != 1:
-			s.send_event(p, "mission.go", {"start_at": start_at})
+			var go := {"start_at": start_at}
+			if not state.is_empty():
+				go["state"] = state   # a member reaching the barrier late starts from the latest progress
+			s.send_event(p, "mission.go", go)
 	_note("mission go: %d at the barrier, starts at %.3f" % [members().size(), start_at])
 
 

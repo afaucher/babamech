@@ -1,11 +1,16 @@
 class_name MechHud
 extends CanvasLayer
 ## The in-game mech HUD (docs/design/hud.md; picked layout "corners / holo" from docs/design/hud/grid_hud_r1.png):
-##   bottom-left   the mech diagram (head, torso, legs, each mounted weapon, tinted by component health) inside the
-##                 heat arc, with the overheat / shutdown / reboot and thrust states
+##   bottom-left   the mech damage diagram (MechDiagram, front / schematic: the real mech's outline, a zone per head,
+##                 torso, leg and hardpoint tinted by component health, slot badges 1-5) inside the heat arc, with the
+##                 overheat / shutdown / reboot and thrust states
 ##   bottom-right  the weapons, one row per hardpoint, numbered 1-5 like the keys: enabled, name, mount, ammo (or inf),
-##                 ready / reload bar, heat per shot, and NO LOS / RANGE / HOLD / LOCK / OFFLINE flags
+##                 ready / reload bar, heat per shot, and NO LOS / RANGE / HOLD / LOCK / OFFLINE flags; a back-mount
+##                 equipment slot (docs/design/back-equipment.md) shows drones left, the drone's time left (green bar +
+##                 seconds) and DRONE OUT / EMPTY, or a dim PASSIVE (_draw_equipment_row); it never gets aim pips
 ##   left column   above the status panel, the crew panel (CrewPanel: one card per teammate; `crew_panel`)
+##   top centre    the mission layer (MissionHud, `mission_hud`): the objective line, the extraction waypoint and the end
+##                 banner, fed by the drive's MissionFlow (`mission.hud_state`)
 ##   centre        the crosshair, the aim point, and from each enabled weapon's muzzle a line of pips toward the aim
 ##                 point (lit by its ready fraction; amber when its line of sight is blocked)
 ## Read-only: polls WeaponRack (its HUD contract), MechController and the camera every frame. Never writes them, so it
@@ -32,6 +37,8 @@ const ROW_GAP := 6.0
 const CREW_GAP := 8.0               ## between the crew panel's last card and the status panel
 const MOUNT_SHORT := {"side_l": "L SIDE", "side_r": "R SIDE", "shoulder_l": "L SHLDR", "shoulder_r": "R SHLDR", "back": "BACK"}
 const PIPS := 4
+const DIAGRAM_VIEW := "front"       ## the damage diagram (docs/design/hud/grid_hud_diagram_r1.png, pick 3)
+const DIAGRAM_STYLE := "schematic"
 
 var mech: MechController
 var rack: WeaponRack
@@ -44,8 +51,10 @@ var root: Control
 var aim_view: Control               ## screen-centre look reticle (full screen; 3D tracking dots live in WorldAimMarkers)
 var world_aim: WorldAimMarkers      ## depth-tested 3D aim ring & per-weapon tracking dots in world space
 var status_panel: Control           ## bottom-left: diagram + heat arc
+var status_diagram: MechDiagram     ## the damage diagram in it (pick 3: front / schematic, from the real mech's meshes)
 var weapon_panel: Control           ## bottom-right: the rows
 var crew_panel: CrewPanel           ## bottom-left, stacked above status_panel: one card per teammate (reads Session)
+var mission_hud: MissionHud         ## objective line, extraction waypoint, end banner (reads the drive's MissionFlow)
 var rows: Array[Control] = []
 
 var _t := 0.0
@@ -86,10 +95,19 @@ func _ready() -> void:
 	status_panel.offset_right = MARGIN + STATUS_SIZE.x
 	status_panel.offset_top = -MARGIN - STATUS_SIZE.y
 	status_panel.offset_bottom = -MARGIN
+	status_diagram = MechDiagram.new()
+	status_diagram.view = DIAGRAM_VIEW
+	status_diagram.style = DIAGRAM_STYLE
+	status_panel.add_child(status_diagram)
+	status_diagram.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_sync_diagram()
 	crew_panel = CrewPanel.new()
 	crew_panel.demo = demo
 	crew_panel.bottom_gap = MARGIN + STATUS_SIZE.y + CREW_GAP
 	root.add_child(crew_panel)
+	mission_hud = MissionHud.new()
+	mission_hud.demo = demo
+	root.add_child(mission_hud)
 	weapon_panel = Control.new()
 	weapon_panel.name = "Weapons"
 	weapon_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -138,10 +156,31 @@ func _process(delta: float) -> void:
 	if n != rows.size() and n > 0:
 		_layout_rows(n)
 	crew_panel.demo = demo
+	mission_hud.demo = demo
 	aim_view.queue_redraw()
 	status_panel.queue_redraw()
+	_sync_diagram()
 	for r in rows:
 		r.queue_redraw()
+
+
+## Feed the damage diagram: the bound mech's pilot head and loadout (its layout is cached per head + loadout, so a change
+## rebuilds it), the slot numbers of the weapon rows and the component health.
+func _sync_diagram() -> void:
+	if status_diagram == null:
+		return
+	var hd := pilot_head()
+	if status_diagram.head != hd:
+		status_diagram.head = hd
+	var l := diagram_loadout()
+	if status_diagram.mounted != l:
+		status_diagram.mounted = l
+	var so := {}
+	for s: Dictionary in slots():
+		so[str(s["hardpoint"])] = int(s["slot"])
+	if status_diagram.slot_of != so:
+		status_diagram.slot_of = so
+	status_diagram.health = components()
 
 
 func _sync_world_aim() -> void:
@@ -168,6 +207,10 @@ func _find_sources() -> void:
 		camera = drive.get("cam")
 	if rack == null and "combat" in drive and drive.get("combat") != null:
 		rack = drive.get("combat").get("rack")
+	if not mission_hud.source.is_valid() and "mission" in drive and drive.get("mission") != null:
+		mission_hud.source = Callable(drive.get("mission"), "hud_state")
+	if mission_hud.from == null and mech != null:
+		mission_hud.from = mech
 
 
 # --- Data (read-only) ---------------------------------------------------------------------------------------------
@@ -201,6 +244,32 @@ func mech_state() -> String:
 	return "THRUST" if mech.thrusting else ""
 
 
+## The mech's model (MechSpawn's MechRig child), or null.
+func _model() -> MechModel:
+	if mech == null:
+		return null
+	var rig := mech.get_node_or_null("Rig")
+	if rig != null and "model" in rig:
+		return rig.get("model") as MechModel
+	return null
+
+
+## The pilot head id the diagram traces: the bound mech's (chicken in the demo or before a mech is bound).
+func pilot_head() -> String:
+	var m := _model()
+	return m.head_id if (not demo and m != null) else MechDiagram.HEAD
+
+
+## {hardpoint id: weapon id ("" = empty)} for the diagram: the weapon rows' slots, else the model's loadout.
+func diagram_loadout() -> Dictionary:
+	var out := {}
+	for s: Dictionary in slots():
+		out[str(s["hardpoint"])] = str(s["weapon"])
+	if out.is_empty() and _model() != null:
+		out = _model().loadout.duplicate()
+	return out
+
+
 ## Component health {id: 0..1}: head, torso, leg_l, leg_r and each hardpoint id. Stub until S5.
 func components() -> Dictionary:
 	var out := {"head": 1.0, "torso": 1.0, "leg_l": 1.0, "leg_r": 1.0}
@@ -210,7 +279,7 @@ func components() -> Dictionary:
 	if component_source.is_valid():
 		src = component_source.call()
 	elif demo:
-		src = {"leg_l": 0.45, "shoulder_r": 0.0, "side_r": 0.8}
+		src = {"leg_l": 0.45, "shoulder_l": 0.25, "shoulder_r": 0.0, "side_r": 0.8}
 	elif mech != null and "components" in mech:
 		src = mech.get("components")
 	if src is Dictionary:
@@ -244,6 +313,12 @@ func _muzzle_screen(s: Dictionary) -> Variant:
 	return cam.unproject_position(p)
 
 
+## The slots that get aim pips: built, enabled weapons. Back-mount equipment has no aim and no muzzle: never.
+static func aim_pip_slots(all: Array) -> Array:
+	return all.filter(func(s: Dictionary) -> bool:
+		return str(s["weapon"]) != "" and bool(s["enabled"]) and bool(s.get("built", true)) and not bool(s.get("equipment", false)))
+
+
 func _camera() -> Camera3D:
 	if camera != null and camera.is_inside_tree():
 		return camera
@@ -271,9 +346,7 @@ func _draw_aim(c: Control) -> void:
 		return
 	var a: Vector2 = aim
 	# Per-weapon pips: from each enabled weapon's muzzle toward the aim point, lit by its ready fraction.
-	for s: Dictionary in slots():
-		if str(s["weapon"]) == "" or not bool(s["enabled"]) or not bool(s.get("built", true)):
-			continue
+	for s: Dictionary in aim_pip_slots(slots()):
 		var m: Variant = _muzzle_screen(s)
 		if m == null:
 			continue
@@ -322,55 +395,10 @@ func _draw_status(c: Control) -> void:
 		c.draw_line(centre + dir * (r + 7.0), centre + dir * (r + 11.0 + (3.0 if k % 5 == 0 else 0.0)), Color(CYAN, 0.6), 1.2)
 	_text(c, Vector2(0, sz.y - 30), sz.x, "HEAT %d%%" % roundi(f * 100.0), 16, hc if f >= 0.6 or shut else WHITE)
 	_text(c, Vector2(0, sz.y - 13), sz.x, "%d / %d" % [roundi(float(h["heat"])), roundi(float(h["cap"]))], 11, DIM)
-	_draw_mech(c, centre + Vector2(0, 8), 1.05)
 	var st := mech_state()
 	if st != "":
 		var sc := RED if st == "SHUTDOWN" else (AMBER if st in ["REBOOTING", "EMERGENCY BURN"] else CYAN)
 		_text(c, Vector2(0, sz.y - 50), sz.x, st, 13, sc)
-
-
-## The damage diagram: chassis seen from the front, every part tinted by its health.
-func _draw_mech(c: Control, o: Vector2, s: float) -> void:
-	var hp := components()
-	var mounted := {}
-	for sl: Dictionary in slots():
-		if str(sl["weapon"]) != "":
-			mounted[str(sl["hardpoint"])] = true
-	# Legs: reverse-jointed (thigh back, shin forward), seen a little from the side so the joint reads.
-	for side: float in [-1.0, 1.0]:
-		var id := "leg_l" if side < 0.0 else "leg_r"
-		var pts := PackedVector2Array([o + Vector2(side * 14, 14) * s, o + Vector2(side * 22, 38) * s,
-			o + Vector2(side * 12, 62) * s, o + Vector2(side * 22, 70) * s])
-		c.draw_polyline(pts, _hp_col(float(hp[id])), 4.0 * s, true)
-		c.draw_line(o + Vector2(side * 22, 70) * s, o + Vector2(side * 6, 72) * s, _hp_col(float(hp[id])), 3.0 * s, true)
-	# Torso: a rounded body with the nose cockpit.
-	var tc := _hp_col(float(hp["torso"]))
-	var body := PackedVector2Array()
-	for k in 14:
-		var ang := TAU * float(k) / 14.0
-		body.append(o + Vector2(cos(ang) * 32.0, sin(ang) * 24.0 - 14.0) * s)
-	body.append(body[0])
-	c.draw_colored_polygon(body.slice(0, 14), Color(tc, 0.18))
-	c.draw_polyline(body, tc, 2.0, true)
-	c.draw_rect(Rect2(o + Vector2(-9, -12) * s, Vector2(18, 12) * s), Color(tc, 0.6), false, 1.5)
-	# Head: the pilot sticking out of the hatch.
-	var hc := _hp_col(float(hp["head"]))
-	c.draw_circle(o + Vector2(0, -48) * s, 11.0 * s, Color(hc, 0.18))
-	c.draw_arc(o + Vector2(0, -48) * s, 11.0 * s, 0.0, TAU, 20, hc, 2.0, true)
-	# Weapons at their hardpoints (shoulders raised above the head, sides at the hips, the mortar behind).
-	var boxes := {"side_l": Rect2(-50, -20, 13, 22), "side_r": Rect2(37, -20, 13, 22),
-		"shoulder_l": Rect2(-44, -74, 18, 14), "shoulder_r": Rect2(26, -74, 18, 14), "back": Rect2(-7, -84, 14, 10)}
-	for id: String in boxes:
-		if not mounted.has(id):
-			continue
-		var b: Rect2 = boxes[id]
-		var rr := Rect2(o + b.position * s, b.size * s)
-		var v := float(hp.get(id, 1.0))
-		c.draw_rect(rr, Color(_hp_col(v), 0.2), true)
-		c.draw_rect(rr, _hp_col(v), false, 1.5)
-		if v <= 0.0:
-			c.draw_line(rr.position, rr.end, RED, 1.5, true)
-			c.draw_line(Vector2(rr.end.x, rr.position.y), Vector2(rr.position.x, rr.end.y), RED, 1.5, true)
 
 
 func _draw_row(c: Control, i: int) -> void:
@@ -380,9 +408,12 @@ func _draw_row(c: Control, i: int) -> void:
 	var s: Dictionary = all[i]
 	var sz := c.size
 	var empty := str(s["weapon"]) == ""
-	var on := bool(s["enabled"]) and not empty
+	var equip := bool(s.get("equipment", false)) and not empty
+	var passive := equip and bool(s.get("passive", false))
+	# Equipment: the key is lit while it can be used (active: a drone ready to launch); a passive is never "on".
+	var on := (bool(s["enabled"]) and not empty) if not equip else (not passive and float(s.get("ready", 0.0)) >= 1.0)
 	var built := bool(s.get("built", true))
-	var a := 1.0 if on else 0.38
+	var a := 1.0 if (on or (equip and not passive)) else (0.6 if passive else 0.38)
 	_glass(c, Rect2(Vector2.ZERO, sz), a)
 	# The key number.
 	var key := Rect2(8, 8, sz.y - 16, sz.y - 16)
@@ -399,6 +430,9 @@ func _draw_row(c: Control, i: int) -> void:
 		return
 	_text(c, Vector2(x, 20), 190, str(s["name"]).to_upper(), 14, Color(WHITE, a), HORIZONTAL_ALIGNMENT_LEFT)
 	_text(c, Vector2(x + 150, 20), 60, mount, 10, Color(DIM, a), HORIZONTAL_ALIGNMENT_LEFT)
+	if equip:
+		_draw_equipment_row(c, s, x, a, passive)
+		return
 	# Ready / reload bar.
 	var bar := Rect2(x, 29, 200, 7)
 	var ready := clampf(float(s.get("ready", 1.0)), 0.0, 1.0)
@@ -422,9 +456,14 @@ func _draw_row(c: Control, i: int) -> void:
 	# The one flag that matters most right now.
 	var flag := ""
 	var fc := AMBER
+	var hold := str(s.get("hold", "")).to_upper()
 	if not built:
 		flag = "OFFLINE"
 		fc = GREY
+	elif hold == "DESTROYED" or hold == "EMPTY" or not bool(s.get("usable", true)):
+		# Unusable (rack: destroyed / out of ammo): the row is already dimmed (enabled false); the flag says why, in red.
+		flag = hold if hold != "" else "OFFLINE"
+		fc = RED
 	elif reloading:
 		flag = "RELOAD"
 	elif str(s.get("hold", "")) != "":
@@ -439,6 +478,45 @@ func _draw_row(c: Control, i: int) -> void:
 		fc = GREEN
 	if flag != "":
 		_text(c, Vector2(x + 210, 37), 80, flag, 10, Color(fc, a), HORIZONTAL_ALIGNMENT_LEFT)
+
+
+## The rest of a back-mount equipment row (docs/design/back-equipment.md), after the key and the name:
+## passive: a dim "PASSIVE" and nothing else. Active (repair drone): a bar that is the ready bar while a drone can
+## launch and the drone's time left (green, with seconds) while one is out; drones left as ammo / ammo_max; the heat a
+## launch costs (hidden while a drone is out); the hold flag (DRONE OUT / EMPTY / destroyed).
+func _draw_equipment_row(c: Control, s: Dictionary, x: float, a: float, passive: bool) -> void:
+	var sz := c.size
+	var hold := str(s.get("hold", "")).to_upper()
+	if passive:
+		var pc := RED if hold == "DESTROYED" else DIM
+		_text(c, Vector2(x, 37), 200, "DESTROYED" if hold == "DESTROYED" else "PASSIVE", 10, Color(pc, a), HORIZONTAL_ALIGNMENT_LEFT)
+		return
+	var bar := Rect2(x, 29, 200, 7)
+	var left := float(s.get("active_left", 0.0))
+	var life := float(MechCatalog.weapon(str(s["weapon"])).get("life", 60.0))
+	c.draw_rect(bar, Color(CYAN, 0.15 * a), true)
+	if left > 0.0:
+		var f := clampf(left / maxf(life, 0.001), 0.0, 1.0)
+		c.draw_rect(Rect2(bar.position, Vector2(bar.size.x * f, bar.size.y)), Color(GREEN, a), true)
+	elif float(s.get("ready", 0.0)) >= 1.0:
+		c.draw_rect(bar, Color(CYAN, a), true)
+	c.draw_rect(bar, Color(CYAN, 0.5 * a), false, 1.0)
+	var ammo := int(s.get("ammo", -1))
+	var ammo_max := int(s.get("ammo_max", -1))
+	var ammo_txt := ("%d/%d" % [ammo, ammo_max]) if ammo_max > 0 else str(maxi(ammo, 0))
+	_text(c, Vector2(sz.x - 96, 21), 84, ammo_txt, 15, Color(RED if ammo == 0 else WHITE, a), HORIZONTAL_ALIGNMENT_RIGHT)
+	if left <= 0.0:   # the launch cost; while a drone is out its countdown needs the room
+		_text(c, Vector2(sz.x - 96, 37), 84, "+%s HEAT" % _num(float(s.get("heat_per_shot", 0.0))), 10, Color(AMBER, 0.85 * a),
+			HORIZONTAL_ALIGNMENT_RIGHT)
+	var flag := hold
+	var fc := AMBER
+	if left > 0.0:
+		flag = "%s %ds" % [hold if hold != "" else "DRONE OUT", ceili(left)]
+		fc = GREEN
+	elif hold == "EMPTY" or hold == "DESTROYED":
+		fc = RED
+	if flag != "":
+		_text(c, Vector2(x + 210, 37), 90, flag, 10, Color(fc, a), HORIZONTAL_ALIGNMENT_LEFT)
 
 
 func _glass(c: Control, r: Rect2, a: float = 1.0) -> void:
@@ -462,16 +540,6 @@ func _text(c: Control, pos: Vector2, width: float, t: String, size_: int, col: C
 	c.draw_string(_font, pos, t, align, width, size_, col)
 
 
-func _hp_col(v: float) -> Color:
-	if v <= 0.0:
-		return GREY
-	if v < 0.34:
-		return RED
-	if v < 0.67:
-		return AMBER
-	return CYAN
-
-
 static func _num(v: float) -> String:
 	return str(roundi(v)) if absf(v - roundf(v)) < 0.05 else "%.1f" % v
 
@@ -491,9 +559,10 @@ const DEMO_SLOTS := [
 	{"slot": 4, "hardpoint": "shoulder_r", "weapon": "", "name": "", "enabled": true, "ammo": -1, "ammo_max": -1,
 		"ready": 0.0, "reloading": false, "heat_per_shot": 0.0, "blocked": false, "in_range": true, "hold": "", "built": false,
 		"designating": false},
-	{"slot": 5, "hardpoint": "back", "weapon": "mortar", "name": "Mortar", "enabled": false, "ammo": 6, "ammo_max": 8,
-		"ready": 1.0, "reloading": false, "heat_per_shot": 18.0, "blocked": false, "in_range": false, "hold": "min range",
-		"built": true, "designating": false},
+	# Back-mount equipment (docs/design/back-equipment.md): the repair drone with one drone out, 42 s left.
+	{"slot": 5, "hardpoint": "back", "weapon": "repair_drone", "name": "Repair Drone", "enabled": true, "ammo": 1, "ammo_max": 2,
+		"ready": 0.0, "reloading": false, "heat_per_shot": 15.0, "blocked": false, "in_range": false, "hold": "DRONE OUT",
+		"built": true, "designating": false, "on_target": false, "equipment": true, "passive": false, "active_left": 42.0},
 ]
 ## Demo muzzle positions in screen space, relative to the centre (at 1600x900): the mech below the crosshair.
 const DEMO_MUZZLES := [Vector2(-70, 210), Vector2(70, 210), Vector2(-55, 120), Vector2(55, 120), Vector2(0, 110)]

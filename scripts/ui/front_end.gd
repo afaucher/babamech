@@ -108,6 +108,9 @@ func _ready() -> void:
 		_shot_path = Boot.arg_value(args, "--crew-shot")
 		_crew_shot_size = maxi(int(Boot.arg_value(args, "--crew-size")), 1)
 	var first := Boot.arg_value(args, "--menu-screen")
+	if next_screen != "":   # a solo mission that ended asked to come back to the hangar
+		first = next_screen
+		next_screen = ""
 	if Session.online():
 		first = "hangar"
 	elif Session.busy():
@@ -234,6 +237,7 @@ func _build_hangar() -> void:
 	for hp: Dictionary in MechCatalog.chassis(str(settings["chassis"]))["hardpoints"]:
 		var ids: Array = [""]
 		ids.append_array(MechCatalog.weapons_for(str(hp["mount"])))
+		ids.append_array(MechCatalog.equipment_for(str(hp["mount"])))   # back-mount equipment (docs/design/back-equipment.md)
 		var labels: Array = ids.map(func(w: String) -> String: return "(empty)" if w == "" else _weapon_label(w))
 		var hp_id := str(hp["id"])
 		var pick := _option(labels, ids.find(str(loadout.get(hp_id, ""))), func(i: int) -> void:
@@ -301,23 +305,32 @@ func _on_lab() -> void:
 	get_tree().change_scene_to_file(LAB_SCENE)
 
 
-## Launch. In a crew only the host's counts: Session.start_mission sends the seed to the crew and every machine (this one
-## too) hears mission_started, plays the bay alert and loads the mission at the same moment on the shared clock. Solo
-## (offline) this machine just plays the alert and loads the test drive. No mission yet: the test drive is it.
+## Launch. In a crew only the host's counts: Session.start_mission sends the seed and the city mode to the crew and every
+## machine (this one too) hears mission_started, plays the bay alert and loads the mission at the same moment on the
+## shared clock. Solo (offline) this machine plays the alert and loads the test drive with the same seed + mode
+## (TestDrive.solo_launch). No mission yet: the test drive is it.
 func _on_launch() -> void:
 	if launching:
 		return
+	var args := OS.get_cmdline_user_args()
 	if Session.online():
 		if Session.hosting:
-			Session.start_mission(_mission_seed())
+			Session.start_mission(mission_seed(args), TestDrive.launch_mode(args))
 		return
+	TestDrive.solo_launch = {"seed": mission_seed(args), "mode": TestDrive.launch_mode(args)}
 	_play_launch(LAUNCH_ALERT_TIME)
 
 
-## The mission seed: --seed for this run, else 1 (the test drive's own default).
-static func _mission_seed() -> int:
-	var s := Boot.arg_value(OS.get_cmdline_user_args(), "--seed")
-	return int(s) if s.is_valid_int() else 1
+## The mission seed: --seed for this run, else a fresh random one. The roll is a launch-only generator seeded from the
+## clock (not a gameplay roll: AGENTS.md rule 4); the seed is then broadcast in the launch, so every machine builds
+## from the same number.
+static func mission_seed(args: PackedStringArray) -> int:
+	var s := Boot.arg_value(args, "--seed")
+	if s.is_valid_int():
+		return int(s)
+	var pick := RandomNumberGenerator.new()
+	pick.seed = Time.get_ticks_usec() ^ int(Time.get_unix_time_from_system() * 1000.0)
+	return pick.randi_range(1, 999999)
 
 
 func _on_mission_started(_params: Dictionary) -> void:
@@ -441,15 +454,32 @@ func _loadout() -> Dictionary:
 	return MechCatalog.sanitize_loadout(str(settings["chassis"]), settings["loadout"] as Dictionary)
 
 
-func _weapon_label(w: String) -> String:
+static func _weapon_label(w: String) -> String:
 	var d := MechCatalog.weapon(w)
+	if MechCatalog.is_equipment(w):
+		if str(d.get("equipment", "")) == "passive":
+			return "%s  (%.0ft, passive: %s)" % [d["name"], d["weight"], str(d.get("note", "")).trim_prefix("Passive: ").trim_suffix(".")]
+		return "%s  (%.0ft, key 5, %.0f heat per use, %d per mission)" % [d["name"], d["weight"], d["active_heat"], int(d.get("charges", 0))]
 	return "%s  (%.0ft, %.1f heat/s, %.0f per shot)" % [d["name"], d["weight"], d["passive_heat"], d["active_heat"]]
+
+
+## loadout_stats plus the back-mount equipment's cooling bonus (the radiator): MechCatalog.loadout_stats counts weight
+## and heat only, WeaponRack adds `cooling_bonus` in play, so the hangar adds it here to show the same cooling.
+static func hangar_stats(chassis_id: String, loadout: Dictionary) -> Dictionary:
+	var st := MechCatalog.loadout_stats(chassis_id, loadout)
+	var bonus := 0.0
+	for w: Variant in loadout.values():
+		bonus += float(MechCatalog.weapon(str(w)).get("cooling_bonus", 0.0))
+	st["cooling"] = float(st["cooling"]) + bonus
+	st["net_cooling"] = float(st["net_cooling"]) + bonus
+	st["cooling_bonus"] = bonus
+	return st
 
 
 func _update_stats() -> void:
 	if stats_label == null:
 		return
-	var st := MechCatalog.loadout_stats(str(settings["chassis"]), _loadout())
+	var st := hangar_stats(str(settings["chassis"]), _loadout())
 	stats_label.text = "Weapons %d   Weight %.0f / %.0f t%s\nPassive heat %.1f/s vs cooling %.1f/s (net %+.1f)\nHottest shot %.0f of %.0f heat capacity" % [
 		st["weapons"], st["weight"], st["max_weight"], "  OVERWEIGHT" if st["overweight"] else "",
 		st["passive_heat"], st["cooling"], st["net_cooling"], st["peak_heat"], st["heat_cap"]]
@@ -598,6 +628,9 @@ func _check(on: bool, cb: Callable) -> CheckBox:
 	return c
 
 
+## The screen the next menu opens on ("" = the usual: hangar online, else main). A solo mission that ended (TestDrive,
+## MissionFlow) sets "hangar"; consumed by _ready.
+static var next_screen := ""
 static var _box_icons: Dictionary = {}
 
 

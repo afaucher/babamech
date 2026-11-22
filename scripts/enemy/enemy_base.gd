@@ -51,6 +51,12 @@ var speed_scale := 1.0
 var telegraph_scale := 1.0
 var sight_range := 140.0
 var auto_remove_wreck := false   ## true in Test Drive to clean wrecks after WRECK_LINGER; false in lab/tests
+## Co-op (W4, scripts/game/enemy_sync.gd): the enemy's number in the host's manifest (NetEnemyCodec entries name it), the
+## deck it spawned on (MissionRules counts alive enemies per deck), and `puppet`: a crew client's copy of a host enemy (no
+## AI: CombatWorld never ticks it there; EnemySync shows it from the host's stream through the PUPPET API at the end).
+var net_id := 0
+var spawn_deck := 0
+var puppet := false
 
 # Owner gameplay state
 var ai_state := STATE_IDLE
@@ -128,6 +134,7 @@ func net_fields() -> Dictionary:
 		"enemy_type": Net.SPAWN, "world": Net.LOCAL, "squad": Net.LOCAL, "ring": Net.SPAWN,
 		"ai_mode": Net.SPAWN, "hp_scale": Net.SPAWN, "speed_scale": Net.SPAWN, "telegraph_scale": Net.SPAWN,
 		"sight_range": Net.SPAWN, "auto_remove_wreck": Net.SPAWN,
+		"net_id": Net.SPAWN, "spawn_deck": Net.SPAWN, "puppet": Net.SPAWN,
 		"ai_state": Net.OWNER, "_dead": Net.OWNER, "_dead_time": Net.PRIVATE,
 		"_primary_disabled": Net.OWNER, "_speed_mult": Net.OWNER, "_shot_index": Net.OWNER,
 		"_target_id": Net.OWNER, "_aim_point": Net.OWNER, "_locked_aim": Net.OWNER,
@@ -347,7 +354,7 @@ func _on_component_broken(c: String, meta: Dictionary) -> void:
 	if world != null:
 		world.spawn_impact(pos + up * probe_height, up, 2.4, EnemyMeshes.CHARRED, true)
 	var shock := float(meta.get("shock_to_core", 0.0))
-	if shock > 0.0:
+	if shock > 0.0 and not puppet:   # a puppet's core HP comes from the host's stream
 		_damage_core_directly(shock, "shock")
 
 
@@ -447,7 +454,7 @@ func _pop_part(part: String, xf: Transform3D, up_min: float, up_max: float, rad_
 			horiz = (horiz * 0.55 + flat_hit.normalized() * 0.45).normalized()
 	var vel := up * rng.randf_range(up_min, up_max) + horiz * rng.randf_range(rad_min, rad_max)
 	var ang_vel := Vector3(rng.randf_range(-spin_max, spin_max), rng.randf_range(-spin_max, spin_max), rng.randf_range(-spin_max, spin_max))
-	return df.spawn_chunk(part, xf, vel, ang_vel, charred, mesh_scale)
+	return df.spawn_chunk(part, xf, vel, ang_vel, charred, mesh_scale, ring)
 
 
 func _pop_plates(origin_world: Vector3, count: int, up_min: float = 6.0, up_max: float = 11.0,
@@ -744,6 +751,9 @@ func _on_damaged_alert(src: String) -> void:
 # --- Tick (Host-owned simulation + local presentation) ----------------------------------------------------
 
 func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
+	if puppet:   # co-op (W4): a client's copy has no AI; it is only shown
+		puppet_tick(dt)
+		return
 	if _dead:
 		if not _flash_timers.is_empty():
 			_tick_flashes(dt)
@@ -763,6 +773,8 @@ func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
 			_tick_wreck_fx(dt)
 		return
 	_tick_flashes(dt)
+	if squad != null and squad.has_method("deck_awake") and not squad.deck_awake(spawn_deck):
+		return   # stack (W4): no crew mech on this enemy's deck: it sleeps
 
 	# Update curved-deck local frame & ground plane BEFORE knockback step so rooftop shoves fall naturally!
 	var pos := _world_pos()
@@ -1076,7 +1088,7 @@ func _step_firing(dt: float) -> void:
 
 
 func _fire_one_round(st: Dictionary) -> void:
-	if world == null:
+	if world == null or puppet or not Net.is_host():   # co-op (W4): only the host's enemies fire
 		return
 	var muz := muzzle_world(_active_weapon)
 	var aim := _locked_aim
@@ -1144,6 +1156,8 @@ func _acquire_target(space: PhysicsDirectSpaceState3D) -> CombatTarget:
 		var d := eye.distance_to(tp)
 		if d > eff_range:
 			continue
+		if squad != null and squad.has_method("on_deck") and not squad.on_deck(t.global_position, spawn_deck):
+			continue   # stack (W4): only targets on this enemy's own deck
 		var in_fov := is_alerted() or ai_mode == "telegraph_loop" or fwd.dot((tp - eye).normalized()) >= fov_cos
 		var los := in_fov and _check_los(eye, tp, space)
 		if los and (not best_los or d < best_d):
@@ -1166,7 +1180,7 @@ func _acquire_target(space: PhysicsDirectSpaceState3D) -> CombatTarget:
 
 func _board_entry() -> Dictionary:
 	if squad != null and squad.has_method("best_known_target"):
-		return squad.best_known_target(_world_pos())
+		return squad.best_known_target(_world_pos(), spawn_deck)
 	return {}
 
 
@@ -1254,7 +1268,7 @@ func _move_along_plan(goal_w: Vector3, spd: float, dt: float, space: PhysicsDire
 	_path_timer -= dt
 	if _path_timer <= 0.0 and squad != null and squad.has_method("find_arc_path"):
 		_path_timer = 1.0
-		_path_points = squad.find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(goal_w))
+		_path_points = squad.find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(goal_w), spawn_deck)
 	var steer_goal := goal_w
 	while not _path_points.is_empty():
 		var wp := _arc_to_world_pos(_path_points[0])
@@ -1442,3 +1456,117 @@ func reset_enemy() -> void:
 
 func _on_reset_visual() -> void:
 	pass
+
+
+# --- Co-op PUPPET (W4; scripts/game/enemy_sync.gd) ---------------------------------------------------------------
+# The host reads puppet_state() from its real enemy; a crew client writes it into its copy (`puppet` true) with
+# puppet_apply(), replays discrete changes with puppet_telegraph / puppet_break / puppet_kill, and runs the
+# presentation with puppet_tick() (hit flashes, telegraph, status bar, stride, wreck fx). No AI, no verbs.
+
+## The enemy's OWNER state the puppets need: {state, aim (Vector2: subclass turret / torso yaw, pitch), heat (0..1),
+## shutdown, stagger, kick (aim_kick deg), lock (the locked aim point, world), dead, hp (PackedFloat32Array: each
+## component's fraction, comp_order() order)}.
+func puppet_state() -> Dictionary:
+	var fr := PackedFloat32Array()
+	for c in comp_order():
+		fr.append(clampf(float(hp.get(c, 0.0)) / maxf(float(max_hp.get(c, 1.0)), 0.001), 0.0, 1.0))
+	return {"state": ai_state, "aim": puppet_aim(), "heat": heat.fraction(), "shutdown": heat.shutdown,
+		"stagger": knock.staggered(), "kick": aim_kick, "lock": _locked_aim, "dead": _dead, "hp": fr}
+
+
+## Component ids in catalog order (the order puppet_state's hp fractions use).
+func comp_order() -> Array[String]:
+	var out: Array[String] = []
+	for c: Dictionary in _cfg.get("components", []):
+		out.append(str(c["id"]))
+	if out.is_empty():
+		out.append_array(hp.keys())
+	return out
+
+
+## Subclasses: the aim pose (turret yaw / pitch, torso yaw) as a Vector2, and setting it on a puppet.
+func puppet_aim() -> Vector2:
+	return Vector2.ZERO
+
+
+func set_puppet_aim(_a: Vector2) -> void:
+	pass
+
+
+## Puppet: the host's streamed state (puppet_state's keys; "move" / "slew" are derived by the caller from the motion).
+## A component whose HP went down flashes.
+func puppet_apply(st: Dictionary) -> void:
+	if _dead:
+		return
+	ai_state = str(st.get("state", ai_state))
+	set_puppet_aim(st.get("aim", Vector2.ZERO) as Vector2)
+	heat.value = float(st.get("heat", 0.0)) * heat.cap
+	heat.shutdown = bool(st.get("shutdown", false))
+	heat_ratio = float(st.get("heat", 0.0))
+	knock.stagger_left = 0.2 if bool(st.get("stagger", false)) else 0.0
+	aim_kick = float(st.get("kick", 0.0))
+	move_speed_ratio = float(st.get("move", 0.0))
+	turret_slew_speed = float(st.get("slew", 0.0))
+	if st.has("lock"):
+		_locked_aim = st["lock"] as Vector3
+	var fr: PackedFloat32Array = st.get("hp", PackedFloat32Array())
+	var order := comp_order()
+	for i in mini(fr.size(), order.size()):
+		var c := order[i]
+		var v := fr[i] * float(max_hp.get(c, 0.0))
+		if v < float(hp.get(c, 0.0)) - 0.01:
+			_trigger_hit_flash(c)
+		hp[c] = v
+
+
+## Puppet: a telegraph of `weapon_id` running for `elapsed` of its `dur` s (the host's start on the shared clock),
+## toward `lock` (world). puppet_telegraph_end() stops showing it (fired, or cancelled).
+func puppet_telegraph(weapon_id: String, elapsed: float, dur: float, lock: Vector3) -> void:
+	if _dead:
+		return
+	_active_weapon = weapon_id
+	_telegraph_dur = maxf(dur, 0.01)
+	_telegraph_t = clampf(elapsed, 0.0, _telegraph_dur)
+	_locked_aim = lock
+	ai_state = STATE_TELEGRAPH
+
+
+func puppet_telegraph_end() -> void:
+	_telegraph_t = 0.0
+	_telegraph_dur = 0.0
+	if ai_state == STATE_TELEGRAPH:
+		ai_state = STATE_ENGAGE
+	if _telegraph_fx != null:
+		_telegraph_fx.hide_telegraph()
+
+
+## Puppet: the host's component `c` broke: the same pop-off debris, flame, impact and signals (a core / critical break
+## kills it here too, as on the host).
+func puppet_break(c: String) -> void:
+	if _dead or not hp.has(c):
+		return
+	hp[c] = 0.0
+	_on_component_broken(c, _comp_meta.get(c, {}))
+
+
+## Puppet: the host's enemy was destroyed: the same explosion, debris (looks generator) and wreck.
+func puppet_kill(cause: String) -> void:
+	_kill(cause)
+
+
+## Puppet presentation step (instead of tick(), which only the host runs).
+func puppet_tick(dt: float) -> void:
+	_tick_flashes(dt)
+	if _dead:
+		if _wreck_cooled:
+			return
+		_dead_time += dt
+		if _telegraph_fx != null:
+			_telegraph_fx.tick_only(dt)
+		_tick_wreck_fx(dt)
+		return
+	if ring != null:
+		up = ring.up_at(_world_pos())
+	_update_visuals(dt)
+	if not _flame_entries.is_empty():
+		_tick_flames(dt)

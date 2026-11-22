@@ -12,9 +12,16 @@ extends Node
 ## SLOTS: one per chassis hardpoint, in MechCatalog chassis order. Strider: 1 side_l, 2 side_r, 3 shoulder_l,
 ## 4 shoulder_r, 5 back. An empty hardpoint is an empty slot (pressing its number does nothing). All start enabled.
 ##   number key      toggle that slot          same number again within DOUBLE_TAP s: solo it (only it enabled)
+##                   (an equipment slot: activate it instead, see EQUIPMENT)
 ##   left mouse      held: fire every enabled weapon
 ## The left button only counts while the mouse is captured (the first click just captures it). The rack never reads the
 ## right button: that is the chase camera's zoom (test_drive.gd).
+## UNUSABLE SLOTS: a weapon whose hardpoint component is destroyed (`slot_disabled`, PlayerTarget.is_slot_destroyed) or
+## whose limited ammo is 0 is deselected automatically (enabled false, slot_changed), and its key can't select it again:
+## a press or a double tap on it does nothing (soloing another slot still works, and still deselects it). It never fires,
+## costs no heat (active or passive), drops out of the guided track, and shows no charge glow. When it becomes usable
+## again (ammo refilled; a destroyed hardpoint restored) it stays deselected until its key is pressed. slots(): `usable`
+## false, `hold` "DESTROYED" / "EMPTY", `enabled` false.
 ##
 ## GUIDED TRACK (automatic, no button): guided missiles steer toward the shooter's live crosshair aim point for their
 ## whole flight. Each step the rack writes world.designators[shooter] = {on, dot}: dot = this step's aim point, on = the
@@ -30,13 +37,22 @@ extends Node
 ##     heat_per_shot: float  (active heat per trigger cycle: per shot, per salvo for salvo weapons)
 ##     blocked: bool      (line of sight hardpoint -> aim point is obstructed; it still fires, into the obstacle)
 ##     in_range: bool     (aim point within the weapon's range, and past its min_range if it has one)
-##     hold: String       (why the weapon holds fire right now, "" = it doesn't: e.g. the mortar's min range, "OUT OF ARC")
+##     hold: String       (why the weapon holds fire right now, "" = it doesn't: e.g. the mortar's min range, "OUT OF ARC";
+##                        "DESTROYED" = its hardpoint is destroyed, "EMPTY" = out of ammo; those two win)
+##     usable: bool       (false: destroyed or out of ammo, or an empty slot; it can't be selected; see UNUSABLE SLOTS)
 ##     built: bool        (false: the weapon has no behaviour yet and never fires)
 ##     muzzle: Vector3    (world space: where this slot's shots leave, the turned barrel's muzzle; for an empty slot
 ##                        the hardpoint node's position)
 ##     designating: bool  (an enabled, intact guided weapon on a mech that can act: its missiles track the aim point)
 ##     on_target: bool    (the barrel points within Combat.ON_TARGET_DEG of the aim point: false while it is still
 ##                        slewing or parked at its pivot limit; always true for the mortar, false for an empty slot)
+##     equipment: bool    (back-mount equipment, docs/design/back-equipment.md: never fires on the trigger; false for
+##                        weapons and empty slots)   passive: bool (passive equipment: radiator, ammo bin)
+##     active_left: float (s the slot's repair drone has left, 0 when none is out)
+##   For equipment: built true, enabled always true (its key activates, it doesn't toggle), ammo / ammo_max = drones left
+##   / charges (-1 for passives), ready 1 = can launch now (0 while a drone is out, when none are left, or shut down;
+##   passives 1), hold "DESTROYED" / "DRONE OUT" / "EMPTY" / "PASSIVE" / "", in_range false, blocked false, designating /
+##   on_target false, muzzle = the hardpoint node, usable = not destroyed (and, active, a charge left).
 ##   heat_state() -> {heat: float, cap: float, fraction: float 0..1, shutdown: bool}   (the MechController's gauge)
 ##   designator_on() -> bool  (the guided track is on, see above)   aim() -> Vector3 (this step's aim point)
 ##   substitutions() -> Array[String]  paused weapons swapped for the slot default ("LEFT SIDE: Flamer offline, using
@@ -45,7 +61,14 @@ extends Node
 ##   signal fired(slot: int)          one shot left that slot (once per fire record: a rocket salvo emits six)
 ## ----------------------------------------------------------------------------------------------------------------------
 ##
-## Control (tests / AI): press_slot(n, t = now), set_trigger(bool), set_enabled(n, bool), step(dt)
+## EQUIPMENT (back slot only; MechCatalog.is_equipment): the slot's number key ACTIVATES active equipment (activate(n):
+## the repair drone launches if a charge is left, none of this rack's drones is out and the mech can act; it pays the
+## catalog active_heat and calls CombatWorld.launch_drone, which CombatNet broadcasts). Passives ignore the key. The key
+## never toggles or solos, and a double tap elsewhere never disables an equipment slot. Passives apply here: the
+## radiator's cooling_bonus heat/s is shed from the mech's gauge each step; the ammo bin's ammo_bonus (+50 %) is added
+## to every limited-ammo weapon when the loadout is built (bonus_ammo: rounded up to a whole salvo).
+##
+## Control (tests / AI): press_slot(n, t = now), set_trigger(bool), set_enabled(n, bool), activate(n), step(dt)
 ## (called by _physics_process while `auto_step`; a scene that must order it before CombatWorld.advance sets auto_step
 ## false and calls step itself).
 ##
@@ -85,6 +108,10 @@ var heat_bridge: MechHeat
 var slot_disabled: Callable               ## optional: (hardpoint_id: String) -> bool (destroyed weapon hardpoint)
 var _substitutions: Array[String] = []
 var _glows: Array = []                    ## per slot: ChargeGlow for a charging weapon, else null
+var charges: Array[int] = []              ## per slot: launches left of active equipment (-1 = not equipment)
+var ammo_max: Array[int] = []             ## per slot: the weapon's full ammo with the ammo bin (-1 = unlimited)
+var cooling_bonus := 0.0                  ## heat/s the mounted equipment sheds (radiator)
+var drone: RepairDrone                    ## this rack's repair drone while it is out, else null
 
 var _chassis := ""
 var _loadout: Dictionary = {}
@@ -107,6 +134,11 @@ class MechHeat extends RefCounted:
 		if mech != null and amount > 0.0:
 			mech.add_heat(amount)
 
+	## Shed `amount` heat (the radiator's extra cooling): never below 0, never triggers an overheat.
+	func cool(amount: float) -> void:
+		if mech != null and amount > 0.0:
+			mech.add_heat(-minf(amount, mech.heat))
+
 
 func net_fields() -> Dictionary:
 	return {"world": Net.LOCAL, "mech": Net.LOCAL, "model": Net.LOCAL, "camera": Net.LOCAL, "shooter": Net.SPAWN,
@@ -115,7 +147,8 @@ func net_fields() -> Dictionary:
 		"trigger": Net.OWNER, "aim_point": Net.OWNER, "heat_bridge": Net.LOCAL,
 		"slot_disabled": Net.LOCAL,
 		"_chassis": Net.LOCAL, "_loadout": Net.LOCAL, "_last_slot": Net.PRIVATE, "_last_press": Net.PRIVATE,
-		"_hp_nodes": Net.LOCAL, "_substitutions": Net.LOCAL, "_glows": Net.LOCAL}
+		"_hp_nodes": Net.LOCAL, "_substitutions": Net.LOCAL, "_glows": Net.LOCAL,
+		"charges": Net.OWNER, "ammo_max": Net.SPAWN, "cooling_bonus": Net.SPAWN, "drone": Net.LOCAL}
 
 
 func bind(w: CombatWorld, m: MechController, mm: MechModel, cam: ChaseCamera = null, shooter_id: String = "player",
@@ -143,6 +176,14 @@ func rebuild() -> void:
 		if g != null and is_instance_valid(g):
 			(g as Node).queue_free()
 	_glows.clear()
+	charges.clear()
+	ammo_max.clear()
+	cooling_bonus = 0.0
+	var ammo_bonus := 0.0
+	for w: Variant in _loadout.values():
+		if MechCatalog.is_equipment(str(w)):
+			cooling_bonus += float(_stats(str(w)).get("cooling_bonus", 0.0))
+			ammo_bonus += float(_stats(str(w)).get("ammo_bonus", 0.0))
 	for hp: Dictionary in MechCatalog.chassis(_chassis)["hardpoints"]:
 		var id := str(hp["id"])
 		var w := str(_loadout.get(id, ""))
@@ -152,9 +193,14 @@ func rebuild() -> void:
 		_hp_nodes.append(null)
 		var mount: WeaponMount = null
 		var glow: ChargeGlow = null
-		if w != "":
+		var equip := MechCatalog.is_equipment(w)
+		charges.append(int(_stats(w).get("charges", 0)) if equip and _active(w) else -1)
+		ammo_max.append(-1)
+		if w != "" and not equip:
 			mount = WeaponMount.new()
 			mount.setup(w, id, shooter, peer, _stats(w))
+			mount.ammo = bonus_ammo(mount.ammo, int(mount.stats.get("salvo", 1)), ammo_bonus)
+			ammo_max[ammo_max.size() - 1] = mount.ammo
 			if float(mount.stats.get("charge", 0.0)) > 0.0:
 				glow = ChargeGlow.new()
 				add_child(glow)
@@ -165,6 +211,54 @@ func rebuild() -> void:
 	while enabled.size() < hardpoints.size():
 		enabled.append(true)
 	enabled.resize(hardpoints.size())
+	for i in slot_count():
+		if MechCatalog.is_equipment(weapons[i]):
+			enabled[i] = true
+	if world != null:
+		world.set_anchor(shooter, _anchor)
+		# The mech's equipment looks (cradle swap, radiator glow) read this rack's model, gauge and drones left.
+		world.equipment_look.watch(shooter, _look_model, _look_heat, _look_charges)
+		world.equipment_look.reset(shooter)
+
+
+func _look_model() -> MechModel:
+	return model if model != null and is_instance_valid(model) else null
+
+
+func _look_heat() -> float:
+	return float(heat_state()["fraction"]) if mech != null and is_instance_valid(mech) else 0.0
+
+
+## Repair drones this rack has left (0 when it carries none).
+func _look_charges() -> int:
+	for i in slot_count():
+		if charges[i] >= 0:
+			return charges[i]
+	return 0
+
+
+## Full ammo of a limited-ammo weapon carrying `bonus` extra (the ammo bin's 0.5), rounded UP to a whole salvo of
+## `salvo` shots: rockets 36 -> 54, missiles 18 -> 27, mortar 3 -> 5. Unlimited (-1) stays unlimited; bonus 0 = base.
+static func bonus_ammo(base: int, salvo: int, bonus: float) -> int:
+	if base < 0 or bonus <= 0.0:
+		return base
+	var per := maxi(salvo, 1)
+	return int(ceil(float(base) * (1.0 + bonus) / float(per) - 1e-6)) * per
+
+
+## The launcher this rack's drone follows on this machine: the mech (its model when there is none).
+func _anchor() -> Node3D:
+	if mech != null and is_instance_valid(mech):
+		return mech
+	return model if model != null and is_instance_valid(model) else null
+
+
+func _active(w: String) -> bool:
+	return str(MechCatalog.weapon(w).get("equipment", "")) == "active"
+
+
+func _is_equipment(i: int) -> bool:
+	return i >= 0 and i < weapons.size() and MechCatalog.is_equipment(weapons[i])
 
 
 func substitutions() -> Array[String]:
@@ -189,6 +283,13 @@ func press_slot(n: int, t: float = NAN) -> void:
 	var i := n - 1
 	if i < 0 or i >= slot_count() or weapons[i] == "":
 		return
+	if _is_equipment(i):           # activates (passives: nothing); never toggles, and breaks a pending double tap
+		activate(n)
+		_last_slot = 0
+		_last_press = -INF
+		return
+	if not usable(n):              # destroyed / out of ammo: the key does nothing (no toggle, no solo)
+		return
 	var now := t if not is_nan(t) else Time.get_ticks_msec() / 1000.0
 	if n == _last_slot and now - _last_press <= DOUBLE_TAP:
 		for j in slot_count():
@@ -203,10 +304,70 @@ func press_slot(n: int, t: float = NAN) -> void:
 
 func set_enabled(n: int, on: bool) -> void:
 	var i := n - 1
-	if i < 0 or i >= slot_count() or enabled[i] == on:
+	if i < 0 or i >= slot_count() or enabled[i] == on or _is_equipment(i):   # equipment stays enabled
+		return
+	if on and weapons[i] != "" and not usable(n):   # a destroyed / dry weapon can't be selected (empty slots: as before)
 		return
 	enabled[i] = on
 	slot_changed.emit(n)
+
+
+## Slot `n` (1-based) holds a weapon that can fire at all: not an empty slot, its hardpoint not destroyed, ammo left
+## (unlimited counts). Equipment: not destroyed and, active, a charge left.
+func usable(n: int) -> bool:
+	var i := n - 1
+	if i < 0 or i >= slot_count() or weapons[i] == "":
+		return false
+	if _slot_broken(hardpoints[i]):
+		return false
+	if _is_equipment(i):
+		return not _active(weapons[i]) or charges[i] > 0
+	var m: WeaponMount = mounts[i]
+	return m != null and m.ammo != 0
+
+
+## Why slot index `i` is unusable for the HUD: "DESTROYED", "EMPTY", or "".
+func _unusable_reason(i: int) -> String:
+	if _slot_broken(hardpoints[i]):
+		return "DESTROYED"
+	var m: WeaponMount = mounts[i]
+	return "EMPTY" if m != null and m.ammo == 0 else ""
+
+
+## Use slot `n`'s active equipment now (the repair drone): a charge left, no drone of this rack out, the mech can act.
+## Pays the catalog active_heat on the mech's gauge, spends a charge and launches (CombatWorld.launch_drone; CombatNet
+## sends it to the crew). False when it can't (passives, weapons, empty slots never activate).
+func activate(n: int) -> bool:
+	var i := n - 1
+	if not _is_equipment(i) or not _active(weapons[i]) or world == null:
+		return false
+	if charges[i] <= 0 or drone_out() or heat_bridge == null or not heat_bridge.can_act() or _slot_broken(hardpoints[i]):
+		return false
+	var st := _stats(weapons[i])
+	heat_bridge.add(float(st.get("active_heat", 0.0)))
+	charges[i] -= 1
+	drone = world.launch_drone({"shooter": shooter, "peer": peer, "hardpoint": hardpoints[i], "weapon": weapons[i],
+		"t": world.now})
+	slot_changed.emit(n)
+	return drone != null
+
+
+## Extra cooling (heat/s) from intact equipment now: the radiator's cooling_bonus unless its hardpoint is destroyed.
+func _cooling_now() -> float:
+	if cooling_bonus <= 0.0:
+		return 0.0
+	var c := 0.0
+	for i in slot_count():
+		if _is_equipment(i) and not _slot_broken(hardpoints[i]):
+			c += float(_stats(weapons[i]).get("cooling_bonus", 0.0))
+	return c
+
+
+## This rack's repair drone is out (launched, not yet gone).
+func drone_out() -> bool:
+	if drone != null and (not is_instance_valid(drone) or drone.finished()):
+		drone = null
+	return drone != null and drone.active()
 
 
 func set_trigger(on: bool) -> void:
@@ -224,7 +385,8 @@ func designator_on() -> bool:
 ## Slot index `i` is an enabled, intact guided weapon on a mech that can act.
 func _guiding(i: int) -> bool:
 	var m: WeaponMount = mounts[i]
-	return m != null and enabled[i] and m.stats.has("designator_heat") and not _slot_broken(hardpoints[i]) 			and heat_bridge != null and heat_bridge.can_act()
+	return m != null and enabled[i] and m.stats.has("designator_heat") and usable(i + 1) and heat_bridge != null \
+		and heat_bridge.can_act()
 
 
 func aim() -> Vector3:
@@ -253,8 +415,12 @@ func step(dt: float) -> void:
 		if m == null:
 			continue
 		m.stats = _stats(weapons[i])
-		passive += float(m.stats.get("passive_heat", 0.0))
-		var intact := not _slot_broken(hardpoints[i])
+		var intact := usable(i + 1)                 # destroyed / dry: deselected, no fire, no heat, no glow
+		if not intact and enabled[i]:
+			enabled[i] = false
+			slot_changed.emit(i + 1)
+		if intact:
+			passive += float(m.stats.get("passive_heat", 0.0))
 		var rest := _rest_muzzle(i)                # the unturned muzzle: the mount derives its pivot from it
 		var hp_node := _hp_node(i)
 		if hp_node != null:
@@ -269,6 +435,10 @@ func step(dt: float) -> void:
 		if _glows[i] != null:
 			(_glows[i] as ChargeGlow).show_charge(from, ChargeGlow.fraction(m) if intact else 0.0, dt)
 	heat_bridge.add(passive * dt)
+	var cool := _cooling_now()
+	if cool > 0.0:
+		heat_bridge.cool(cool * dt)                 # the radiator: extra cooling on the mech's own gauge
+	drone_out()                                     # drop the reference once the drone is gone
 	world.designators[shooter] = {"on": designator_on(), "dot": aim_point}
 
 
@@ -350,18 +520,48 @@ func slots() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	for i in slot_count():
 		var w := weapons[i]
+		if _is_equipment(i):
+			out.append(_equipment_slot(i))
+			continue
 		var m: WeaponMount = mounts[i]
 		var st: Dictionary = m.stats if m != null else {}
 		var broken := _slot_broken(hardpoints[i])
 		var d := {"slot": i + 1, "hardpoint": hardpoints[i], "weapon": w, "name": str(st.get("name", "")),
-			"enabled": enabled[i], "ammo": m.ammo if m != null else -1, "ammo_max": int(st.get("ammo", -1)),
+			"enabled": enabled[i] and usable(i + 1), "ammo": m.ammo if m != null else -1, "ammo_max": ammo_max[i] if m != null else -1,
 			"ready": 0.0 if broken else _ready_of(m), "reloading": not broken and _reloading(m),
 			"heat_per_shot": float(st.get("active_heat", 0.0)), "blocked": blocked[i], "in_range": _in_range(i, st),
-			"hold": "destroyed" if broken else (m.hold_reason if m != null else ""),
+			"hold": _unusable_reason(i) if not usable(i + 1) and m != null else (m.hold_reason if m != null else ""),
 			"built": m != null and m.built(), "muzzle": muzzle(i + 1),
-			"designating": _guiding(i), "on_target": m != null and m.on_target()}
+			"designating": _guiding(i), "on_target": m != null and m.on_target(),
+			"equipment": false, "passive": false, "active_left": 0.0, "usable": usable(i + 1)}
 		out.append(d)
 	return out
+
+
+## The HUD row of an equipment slot (see the contract above).
+func _equipment_slot(i: int) -> Dictionary:
+	var w := weapons[i]
+	var st := _stats(w)
+	var broken := _slot_broken(hardpoints[i])
+	var active := _active(w)
+	var out_now := active and drone_out()
+	var can := active and not broken and charges[i] > 0 and not out_now and heat_bridge != null and heat_bridge.can_act()
+	var hold := ""
+	if broken:
+		hold = "DESTROYED"
+	elif not active:
+		hold = "PASSIVE"
+	elif out_now:
+		hold = "DRONE OUT"
+	elif charges[i] <= 0:
+		hold = "EMPTY"
+	return {"slot": i + 1, "hardpoint": hardpoints[i], "weapon": w, "name": str(st.get("name", w)), "enabled": true,
+		"ammo": charges[i] if active else -1, "ammo_max": int(st.get("charges", -1)) if active else -1,
+		"ready": (1.0 if can else 0.0) if active else (0.0 if broken else 1.0), "reloading": false,
+		"heat_per_shot": float(st.get("active_heat", 0.0)), "blocked": false, "in_range": false, "hold": hold,
+		"built": true, "muzzle": muzzle(i + 1), "designating": false, "on_target": false,
+		"equipment": true, "passive": not active, "active_left": drone.time_left() if out_now else 0.0,
+		"usable": usable(i + 1)}
 
 
 func heat_state() -> Dictionary:

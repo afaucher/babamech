@@ -23,6 +23,13 @@ var emergency := false              ## the thrust is the automatic burn
 var shutdown := false               ## overheated (no control until reboot)
 var hover := false                  ## thrusting in the air with little vertical speed (derived by the owner; HUD / FX)
 var designator := false             ## the guided-missile track is on (WeaponRack.designator_on): a step-3 hook
+## PlayerTarget component HP, 0..1 of each one's max, in NetMechCodec.COMPONENTS order (torso = the hull); -1 = the mech
+## has no such component (an empty hardpoint).
+var comp := PackedFloat32Array()
+var disabled := false               ## PlayerTarget.disabled: downed (a core component destroyed), needs a revive
+var disable_cause := ""             ## PlayerTarget.disable_cause: the component that downed it ("" = none)
+## WeaponMount.aim_yaw, aim_pitch (deg, body frame) per hardpoint in NetMechCodec.MOUNTS order: 10 values.
+var mount_aim := PackedFloat32Array()
 
 
 func copy() -> NetMechState:
@@ -43,4 +50,8 @@ func copy() -> NetMechState:
 	s.shutdown = shutdown
 	s.hover = hover
 	s.designator = designator
+	s.comp = comp.duplicate()
+	s.disabled = disabled
+	s.disable_cause = disable_cause
+	s.mount_aim = mount_aim.duplicate()
 	return s

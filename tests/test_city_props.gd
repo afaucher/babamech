@@ -22,8 +22,151 @@ func setup() -> void:
 	_snapshot()
 	_weapons()
 	_pusher()
+	_decks()
+	await _grid_matches_brute_force()
 	await _roof()
 	finish()
+
+
+## The pusher's grid query (push_candidates) knocks exactly what the old loop over every prop knocked, tick by tick: a
+## scripted mech walks the furnishing bands of several blocks and back (topples, then shoves), crosses a roof with roof
+## units, and (on a stack deck) walks the deck above: stand-alone seeds 1-3 and deck 1 of a section.
+func _grid_matches_brute_force() -> void:
+	for seed_: int in [1, 2, 3]:
+		var d := CityDistrict.new()
+		d.with_rig = false
+		add_child(d)
+		d.build({"seed": seed_, "size_x": 140.0, "size_s": 150.0})
+		_compare_push(d, null, "seed %d" % seed_)
+		d.queue_free()
+	var stack := CityStack.new()
+	add_child(stack)
+	stack.build(SectionPlan.make({"seed": 2}))
+	_compare_push(stack.decks[1], stack.decks[0], "stack deck 1")
+	stack.queue_free()
+	await frames(1)
+
+
+func _compare_push(d: CityDistrict, above: CityDistrict, what: String) -> void:
+	var grid := d.props
+	grid.set_physics_process(false)
+	var brute := CityProps.new()
+	brute.deck = grid.deck
+	brute.brute_force = true
+	brute.setup(d.plan, d.ring)
+	d.add_child(brute)
+	brute.set_physics_process(false)
+	var body := CharacterBody3D.new()
+	add_child(body)
+	grid.add_pusher(body, 2.2)
+	brute.add_pusher(body, 2.2)
+	# The path in this deck's arc coordinates (x, s, h) or world points (Vector3 in a 1-element array: another deck).
+	var path: Array = []
+	var nb := mini(d.plan.blocks.size(), 6 if above == null else 3)
+	for bi in nb:
+		var r: Rect2 = d.plan.blocks[bi]["rect"]
+		var x := r.position.x + 1.2
+		path.append(Vector3(x, r.position.y - 4.0, CityPlan.CURB_H))
+		path.append(Vector3(x, r.end.y + 4.0, CityPlan.CURB_H))
+		path.append(Vector3(x + 0.6, r.position.y - 4.0, CityPlan.CURB_H))   # back along it: shoves what lies there
+	var roof := -1
+	for it: Dictionary in grid.items:
+		if CityPropSim.is_roof(it) and roof < 0:
+			roof = int(it["id"])
+	var points: Array[Vector3] = []
+	for q: Vector3 in path:
+		points.append(d.to_global(d.ring.arc_to_world(q.x, q.y, q.z)))
+	if roof >= 0:
+		var it: Dictionary = grid.items[roof]
+		var bxf := d.building_frame(int(it["building"]))
+		points.append(d.to_global(bxf * Vector3(float(it["lx"]) - 8.0, float(it["ly"]), float(it["lz"]))))
+		points.append(d.to_global(bxf * Vector3(float(it["lx"]) + 8.0, float(it["ly"]), float(it["lz"]))))
+	var upper_from := points.size()
+	if above != null:     # the deck above, right over this deck's first block: nothing here may react
+		var r0: Rect2 = d.plan.blocks[0]["rect"]
+		var s_up := r0.position.y * above.plan.section.radius_of(above.plan.deck) / d.plan.section.radius_of(d.plan.deck)
+		points.append(above.to_global(above.ring.arc_to_world(r0.position.x + 1.2, s_up, CityPlan.CURB_H)))
+		points.append(above.to_global(above.ring.arc_to_world(r0.position.x + 1.2, s_up + 60.0, CityPlan.CURB_H)))
+	var dt := 1.0 / 60.0
+	var speed := 12.0       # walk speed
+	var ticks := 0
+	var differ := 0
+	var before_upper := PackedByteArray()
+	var asked_before := 0
+	for i in points.size() - 1:
+		if i == upper_from:
+			before_upper = grid.snapshot()
+			asked_before = grid._asked.size()
+		var a := points[i]
+		var b := points[i + 1]
+		var n := maxi(int(ceil(a.distance_to(b) / (speed * dt))), 1)
+		for k in n:
+			var at := a.lerp(b, float(k) / float(n))
+			body.global_position = at
+			body.velocity = (b - a) / (float(n) * dt)
+			grid.step(dt)
+			brute.step(dt)
+			ticks += 1
+			# Same requests this tick (ids and times); the whole snapshot every 20 ticks.
+			if grid._asked != brute._asked or (ticks % 20 == 0 and grid.snapshot() != brute.snapshot()):
+				differ += 1
+	if grid.snapshot() != brute.snapshot():
+		differ += 1
+	if above != null:
+		check(grid.snapshot() == before_upper and grid._asked.size() == asked_before, "%s: a mech walking the deck above touches nothing here" % what)
+	var knocked := grid.snapshot().size()
+	print("%s: %d ticks, %d props moved, %d asked" % [what, ticks, grid._ev.size(), grid._asked.size()])
+	eq(differ, 0, "%s: the grid query knocks the same props at the same tick as the loop over every prop (%d ticks)" % [what, ticks])
+	check(grid._ev.size() >= 3 and knocked > 4, "%s: the path knocks props over (%d)" % [what, grid._ev.size()])
+	if roof >= 0:
+		check(grid._ev.has(roof), "%s: including the roof unit" % what)
+	body.queue_free()
+	brute.queue_free()
+
+
+## Stack decks: every deck's props hear every prop event; only the deck named in it acts (a missing deck is -1, a
+## district on its own). Prop ids repeat across decks, so without this a knock on deck 1 would knock deck 0 too.
+func _decks() -> void:
+	var d0 := _props()
+	var d1 := _props()
+	var alone := _props()
+	d0.deck = 0
+	d1.deck = 1
+	var id := _first(d0, "lamp")
+	var ev := {"id": id, "kind": CityProps.TOPPLE, "dir": Vector2(1, 0), "t0": d0.now, "deck": 1}
+	for p: CityProps in [d0, d1, alone]:
+		p.receive("prop.ev", ev, false, true)
+	eq(d1.state_of(id), CityProps.FALLING, "decks: a prop.ev for deck 1 topples deck 1's prop")
+	eq(d0.state_of(id), CityProps.STANDING, "decks: and not deck 0's prop with the same id")
+	eq(alone.state_of(id), CityProps.STANDING, "decks: nor a stand-alone district's")
+	var old := ev.duplicate()
+	old.erase("deck")
+	var id2 := _first(d0, "tree")
+	old["id"] = id2
+	for p: CityProps in [d0, d1, alone]:
+		p.receive("prop.ev", old, false, true)
+	eq(alone.state_of(id2), CityProps.FALLING, "decks: an event with no deck is for a stand-alone district (as before)")
+	check(d0.state_of(id2) == CityProps.STANDING and d1.state_of(id2) == CityProps.STANDING, "decks: and for no stack deck")
+	# Host: a request for deck 1 is decided by deck 1 only.
+	var id3 := _first(d0, "bench")
+	if id3 < 0:
+		id3 = id2 + 1
+	for p: CityProps in [d0, d1]:
+		p.receive("prop.req", {"id": id3, "kind": CityProps.TOPPLE, "dir": Vector2(0, 1), "v0": 0.0, "deck": 1}, true, false)
+	check(d1.state_of(id3) != CityProps.STANDING and d0.state_of(id3) == CityProps.STANDING, "decks: the host decides deck 1's request on deck 1 only")
+	# Sync: deck 1's snapshot restores into deck 1 only.
+	var snap := d1.snapshot()
+	check(snap.size() > 4, "decks: deck 1 has props down")
+	var fresh1 := _props()
+	fresh1.deck = 1
+	var before0 := d0.snapshot()
+	for p: CityProps in [d0, fresh1]:
+		p.receive("prop.sync", {"bytes": snap, "deck": 1}, false, true)
+	eq(fresh1.snapshot(), snap, "decks: deck 1's sync restores deck 1")
+	eq(d0.snapshot(), before0, "decks: and leaves deck 0 as it was")
+	check(d1.for_me({"deck": 1}) and not d0.for_me({"deck": 1}) and alone.for_me({}), "decks: for_me")
+	for p: CityProps in [d0, d1, alone, fresh1]:
+		p.queue_free()
 
 
 func _props() -> CityProps:

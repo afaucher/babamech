@@ -34,8 +34,10 @@ func _spawn_calmness_and_pocket_isolation() -> void:
 		td.combat.world.advance(DT)
 	eq(enemy_shots[0], 0, "standing at Test Drive spawn for 3 s draws 0 enemy shots")
 	near(td.combat.player_target.total_hp(), hp0, 0.01, "player takes 0 damage on spawn")
-	check(td.combat.enemies.size() >= 4 and td.combat.enemies.size() <= 5,
-		"Test Drive district spawns 4-5 spaced enemies (%d)" % td.combat.enemies.size())
+	var entry_k := int(td.stack.section.entry["deck"]) if td.stack != null else 0
+	var on_entry := td.combat.enemies.filter(func(e: EnemyBase) -> bool: return e.spawn_deck == entry_k)
+	check(on_entry.size() >= 4 and on_entry.size() <= 5,
+		"Test Drive spawns 4-5 spaced enemies on the entry deck (%d; every deck has its own encounter)" % on_entry.size())
 
 	# Alerting the avenue scout (enemies[0]) must NOT pull distant pockets (> 80 m away).
 	var scout := td.combat.enemies[0]

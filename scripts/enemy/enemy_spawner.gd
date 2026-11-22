@@ -3,6 +3,9 @@ extends RefCounted
 ## Deterministic seeded enemy encounter placement on a CityPlan + RingFrame (docs/design/enemies.md §6).
 ## Every spawn is validated against SPAWN_SAFE_RADIUS and CityPlan building tiers/pillars/columns (`clear_of_buildings`).
 ## No global randomness (AGENTS.md rule 4).
+## "Ahead" is +s from `player_spawn` and "the avenue" is the plan's avenue lane (`plan.avenue_x()`: x = 0 in a lone
+## district, the spine's avenue lane on a stack deck, where the section's entry is), so the encounter lands in front of
+## the entry on any plan (W4); spots over a floor hole (shafts, ramp lanes: `plan.floor_cuts()`) are refused.
 
 const SPAWN_SAFE_RADIUS := 48.0    ## m around player spawn kept clear so you aren't ambushed on frame 0
 const MIN_ROOF_SPAN := 7.0         ## m minimum roof tier width/length for a 4.8 m Enforcer Turret
@@ -22,27 +25,29 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 	var p2 := Vector2(p_arc.x, p_arc.y)
 	var used_spots: Array[Vector2] = [p2]
 	var next_id := [1]
+	var lane := _lane_x(plan)
 
 	# 1. Avenue Scout (1 Hound Skirmisher ~54 m ahead, patrolling AWAY/ACROSS the avenue so it doesn't shoot on frame 0).
 	var s_skirm := clampf(p_arc.y + 54.0, plan.extent.position.y + 18.0, plan.extent.end.y - 22.0)
-	var x_skirm := -4.0 if rng.randi() % 2 == 0 else 4.0
+	var x_off := -4.0 if rng.randi() % 2 == 0 else 4.0
+	var x_skirm := lane + x_off
 	var sk_pt := _find_clear_ground(plan, Vector2(x_skirm, s_skirm), STRIDER_CLEAR, used_spots, 12.0, p2)
 	if not is_nan(sk_pt.x):
-		var p_a := Vector2(-5.5, minf(sk_pt.y + 14.0, plan.extent.end.y - 14.0))
-		var p_b := Vector2(5.5, minf(sk_pt.y + 14.0, plan.extent.end.y - 14.0))
-		var p_c := Vector2(5.5, sk_pt.y)
+		var p_a := Vector2(lane - 5.5, minf(sk_pt.y + 14.0, plan.extent.end.y - 14.0))
+		var p_b := Vector2(lane + 5.5, minf(sk_pt.y + 14.0, plan.extent.end.y - 14.0))
+		var p_c := Vector2(lane + 5.5, sk_pt.y)
 		# Face away down +s (yaw 0.0) so the player sees it first and chooses when to engage.
 		out.append(_spec(next_id, "strider", sk_pt.x, sk_pt.y, 0.0, 0.0, "vanguard", [p_a, p_b, p_c]))
 		used_spots.append(sk_pt)
 
 	# 2. Mid-District Rooftop Turret (1 Enforcer Turret overlooking a mid-avenue / park sector, facing perpendicular/away).
-	var roof_cands := _rooftop_candidates(plan)
+	var roof_cands := _rooftop_candidates(plan, lane)
 	var ave_roof := _pick_roof(plan, roof_cands, used_spots, p2, 62.0, 110.0, true, rng)
 	if ave_roof.is_empty():
 		ave_roof = _pick_roof(plan, roof_cands, used_spots, p2, SPAWN_SAFE_RADIUS, 130.0, false, rng)
 	if not ave_roof.is_empty():
 		var rp := Vector2(float(ave_roof["x"]), float(ave_roof["s"]))
-		var away_yaw := _yaw_toward(p2, rp) + (PI * 0.35 if rp.x >= 0.0 else -PI * 0.35)
+		var away_yaw := _yaw_toward(p2, rp) + (PI * 0.35 if rp.x >= lane else -PI * 0.35)
 		var sp := _spec(next_id, "turret", rp.x, rp.y, float(ave_roof["h"]), away_yaw, "vanguard_roof")
 		sp["b_center"] = ave_roof["b_center"]
 		sp["t_off"] = ave_roof["t_off"]
@@ -52,7 +57,7 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 
 	# 3. Far Avenue Siege Tank (1 Bastion Siege Tank anchoring a distant avenue intersection ~96 m ahead, outside patrol sight).
 	var s_tank := clampf(p_arc.y + 96.0, plan.extent.position.y + 24.0, plan.extent.end.y - 20.0)
-	var raw_tank := _nearest_avenue_crossing(plan, s_tank, p2)
+	var raw_tank := _nearest_avenue_crossing(plan, s_tank, p2, lane)
 	var tank_pt := _find_clear_ground(plan, raw_tank, TANK_CLEAR, used_spots, 22.0, p2)
 	if not is_nan(tank_pt.x):
 		out.append(_spec(next_id, "tank", tank_pt.x, tank_pt.y, 0.0, PI * 0.5, "vanguard_tank", [
@@ -87,7 +92,7 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 	var crew := clampi(crew_size, 1, 4)
 	if crew >= 2:
 		# Extra mid-district flanking Skirmisher + second rooftop Turret.
-		var extra_sk := _find_clear_ground(plan, Vector2(-x_skirm * 2.0, clampf(p_arc.y + 68.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)), STRIDER_CLEAR, used_spots, 16.0, p2)
+		var extra_sk := _find_clear_ground(plan, Vector2(lane - x_off * 2.0, clampf(p_arc.y + 68.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)), STRIDER_CLEAR, used_spots, 16.0, p2)
 		if not is_nan(extra_sk.x):
 			var pa := extra_sk + Vector2(-8.0, 8.0)
 			var pb := extra_sk + Vector2(8.0, 8.0)
@@ -106,17 +111,17 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 		# Second Bastion Siege Tank anchoring a side/far avenue sector + escort Skirmisher.
 		var s_t2 := clampf(p_arc.y + 78.0, plan.extent.position.y + 24.0, plan.extent.end.y - 24.0)
 		var side_x := 36.0 if rng.randi() % 2 == 0 else -36.0
-		var t2_pt := _find_clear_ground(plan, Vector2(side_x, s_t2), TANK_CLEAR, used_spots, 22.0, p2)
+		var t2_pt := _find_clear_ground(plan, Vector2(lane + side_x, s_t2), TANK_CLEAR, used_spots, 22.0, p2)
 		if is_nan(t2_pt.x):
-			t2_pt = _find_clear_ground(plan, Vector2(-side_x, s_t2), TANK_CLEAR, used_spots, 22.0, p2)
+			t2_pt = _find_clear_ground(plan, Vector2(lane - side_x, s_t2), TANK_CLEAR, used_spots, 22.0, p2)
 		if is_nan(t2_pt.x):
-			t2_pt = _find_clear_ground(plan, Vector2(0.0, clampf(p_arc.y + 124.0, plan.extent.position.y + 24.0, plan.extent.end.y - 20.0)), TANK_CLEAR, used_spots, 22.0, p2)
+			t2_pt = _find_clear_ground(plan, Vector2(lane, clampf(p_arc.y + 124.0, plan.extent.position.y + 24.0, plan.extent.end.y - 20.0)), TANK_CLEAR, used_spots, 22.0, p2)
 		if not is_nan(t2_pt.x):
 			out.append(_spec(next_id, "tank", t2_pt.x, t2_pt.y, 0.0, _yaw_toward(p2, t2_pt), "coop_tank", [
 				t2_pt, Vector2(t2_pt.x, clampf(t2_pt.y - 12.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)),
 			]))
 			used_spots.append(t2_pt)
-		var esc_pt := _find_clear_ground(plan, Vector2(-side_x * 0.6, clampf(p_arc.y + 84.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)), STRIDER_CLEAR, used_spots, 16.0, p2)
+		var esc_pt := _find_clear_ground(plan, Vector2(lane - side_x * 0.6, clampf(p_arc.y + 84.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)), STRIDER_CLEAR, used_spots, 16.0, p2)
 		if not is_nan(esc_pt.x):
 			out.append(_spec(next_id, "strider", esc_pt.x, esc_pt.y, 0.0, _yaw_toward(p2, esc_pt), "coop_escort", [
 				esc_pt + Vector2(-7.0, 0.0), esc_pt + Vector2(7.0, 0.0),
@@ -137,14 +142,18 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 	return out
 
 
-## Instantiate a concrete EnemyBase subclass and attach it to `squad` + `world` at its curved-deck transform.
+## Instantiate a concrete EnemyBase subclass and attach it to `squad` + `world` at its curved-deck transform. On a stack
+## deck (W4) pass that deck's plan, its world-space ring (CityStack.deck_ring(k)), `deck` = k and an `id_prefix` that
+## keeps target ids unique across decks.
 static func spawn_all(plan: CityPlan, ring: RingFrame, player_spawn: Vector3, world: CombatWorld,
-		squad: EnemySquad, mission_seed: int, auto_remove_wreck: bool = false, crew_size: int = 1) -> Array[EnemyBase]:
+		squad: EnemySquad, mission_seed: int, auto_remove_wreck: bool = false, crew_size: int = 1,
+		id_prefix: String = "", deck: int = 0) -> Array[EnemyBase]:
 	var specs := plan_encounters(plan, ring, player_spawn, crew_size)
 	var spawned: Array[EnemyBase] = []
 	for sp: Dictionary in specs:
 		var e := make_enemy(str(sp["type"]))
-		e.configure(str(sp["type"]), str(sp["id"]), world, squad, ring, mission_seed)
+		e.configure(str(sp["type"]), id_prefix + str(sp["id"]), world, squad, ring, mission_seed)
+		e.spawn_deck = deck   # stack (W4): ids stay unique across decks through id_prefix
 		e.auto_remove_wreck = auto_remove_wreck
 		var x := float(sp["x"])
 		var s := float(sp["s"])
@@ -204,7 +213,17 @@ static func clear_of_buildings(plan: CityPlan, pt: Vector2, radius: float, heigh
 		var ch := float(col["half"]) + radius
 		if absf(pt.x - cc.x) < ch and absf(pt.y - cc.y) < ch:
 			return false
+	if plan.site != null:
+		for o: Rect2 in plan.floor_cuts():   # shafts and ramp lanes on a stack deck (none in a lone district)
+			if o.grow(radius + 0.6).has_point(pt):
+				return false
 	return true
+
+
+## The x of the plan's avenue lane centre (0 in a lone district).
+static func _lane_x(plan: CityPlan) -> float:
+	var av := plan.avenue_x()
+	return (av.x + av.y) * 0.5
 
 
 static func _find_clear_ground(plan: CityPlan, want: Vector2, radius: float, used: Array[Vector2],
@@ -234,7 +253,7 @@ static func _spec(next_id: Array, type_id: String, x: float, s: float, h: float,
 		"pocket": pocket, "patrol": patrol}
 
 
-static func _rooftop_candidates(plan: CityPlan) -> Array[Dictionary]:
+static func _rooftop_candidates(plan: CityPlan, lane: float = 0.0) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	for i in plan.buildings.size():
 		var b: Dictionary = plan.buildings[i]
@@ -254,7 +273,7 @@ static func _rooftop_candidates(plan: CityPlan) -> Array[Dictionary]:
 			var off: Vector2 = best_tier["off"]
 			var pos := c + off
 			var h := float(best_tier["y1"]) + CityPlan.CURB_H
-			out.append({"x": pos.x, "s": pos.y, "h": h, "near_ave": absf(pos.x) < 36.0,
+			out.append({"x": pos.x, "s": pos.y, "h": h, "near_ave": absf(pos.x - lane) < 36.0,
 				"b_center": c, "t_off": off, "t_y1": float(best_tier["y1"])})
 	return out
 
@@ -280,8 +299,8 @@ static func _pick_roof(plan: CityPlan, cands: Array[Dictionary], used: Array[Vec
 	return pool[rng.randi_range(0, pool.size() - 1)]
 
 
-static func _nearest_avenue_crossing(plan: CityPlan, want_s: float, p2: Vector2) -> Vector2:
-	var best := Vector2(0.0, want_s)
+static func _nearest_avenue_crossing(plan: CityPlan, want_s: float, p2: Vector2, lane: float = 0.0) -> Vector2:
+	var best := Vector2(lane, want_s)
 	var best_err := INF
 	for rs: Dictionary in plan.roads_s:
 		var s := (float(rs["a"]) + float(rs["b"])) * 0.5
@@ -290,7 +309,7 @@ static func _nearest_avenue_crossing(plan: CityPlan, want_s: float, p2: Vector2)
 		var err := absf(s - want_s)
 		if err < best_err:
 			best_err = err
-			best = Vector2(0.0, s)
+			best = Vector2(lane, s)
 	return best
 
 

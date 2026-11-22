@@ -350,3 +350,93 @@ test of its own. Renders: `life_traffic.png`, `life_pod_close.png`, `life_panic_
 and its passengers running), `life_riders.png` (passengers getting out, sidewalk camera), `life_wreck.png`,
 `life_crowd_{calm,panic,killed}.png` (24 people) and `life_crowd_{calm,panic,killed}_60.png`; no still of a pod speeding
 away (a still cannot show it).
+
+### Phase 3 (section decks, the stack, the tram, checkpoints, 2026-11-22)
+
+New files `life_tram.gd` (`LifeTram`), `life_tram_cars.gd` (`LifeTramCars`), `life_barriers.gd` (`LifeBarriers`); test
+`tests/test_life_section.gd`; a stack phase in `tests/test_net_life.gd`. A district on its own is unchanged (same plan and
+traffic checksums, same ids, no viewer culling unless a viewer is registered).
+
+- **One `AmbientLife` for a stack.** `setup_stack(stack, people = -1, pods = -1, carts = -1)` makes one child
+  `AmbientLife` per deck ("Deck0".., a *unit*: not in the group, not connected to the session), each built with
+  `setup(stack.decks[k])` and working in that deck's frame (`global_transform`, so an offset, rotated stack works). The
+  stack node routes: `raise_threat`, `blast` and pushers go to the deck `stack.deck_at()` names (a threat or a blast never
+  reaches another deck, also not through a floor hole); `sweep` is tested on every deck (each early-outs on its own
+  bounds, so a miss is still two AABB tests per deck); every deck's `CityProps` is bound by `setup_stack` itself.
+  **Ids**: `deck * AmbientLife.ID_STRIDE (1000) + the id on that deck`, for people and vehicles separately; deck 0's ids are
+  the stand-alone ones. `ids()`, `vehicle_ids()`, `unit(k)`, `count()` / `vehicle_count()` (all decks), and every query
+  (`state_of`, `pose_of`, `visible_now`, `drawn_now`, `vehicle_state`, `vehicle_pose`, `vehicle_kind`, `tally` summed)
+  take stack ids. `civilian_killed` carries the stack id. **Events**: no new names; `life.threat`, `life.req`,
+  `life.down`, `life.wreq` and `life.wreck` from a unit carry `"deck": k` (their x / s / id are per deck); no key = deck 0
+  or a district on its own. `life.sync` carries the whole stack's snapshot (deck count, then each deck's length-prefixed
+  snapshot); a section deck's snapshot adds the fleet length and the tram's halts. **Only one AmbientLife per scene**
+  handles `life.*`: a second one in the tree refuses to connect to the session and pushes an error.
+- **Near viewers only.** `add_viewer(node)` / `remove_viewer(node)`. In a stack with none registered the current camera
+  is the viewer; with no viewer at all nothing is culled. A deck with no viewer on it (by `deck_at`) is not evaluated or
+  drawn (its tram's collision bodies still move); on a viewer's deck an agent within 150 m is sampled at 5 Hz, 150-200 m
+  from 1 Hz samples (interpolated), beyond 200 m hidden and re-checked once a second. Hidden agents cannot be hit (a shot
+  from beyond 200 m of every viewer on that machine misses civilians). Poses are functions of events and the clock, so an
+  agent coming back into range is exactly where the events put it (tested against an instance with no viewers).
+- **Section-mode people (`LifePlan`).** No walk edge passes through a floor cut (grown by the curb + 0.4 m), and plaza
+  bench approaches avoid them. The zebras beside spine junctions are not used (they would cross the ramp-lane cuts and the
+  rail lane away from a cross street); instead, at every inner cross line, a crossing along the cross street (on the line,
+  or a quarter of the street's width off it if the line hits a cut, a ramp mouth or kept-clear ground; off the line when a
+  heavy checkpoint's barrier stands there), split from the cross-street zebras beside the spine, in three pieces:
+  ramp_a (no signal), the avenue (the spine junction's walk signal), rail + ramp_b (`rail_edges`: started only when the
+  tram's **timetable** keeps every car more than 40 m from the line for the whole piece, `LifeTram.next_clear`).
+- **Section-mode vehicles (`LifeTraffic`).** Arterial, cross and perimeter roads are streets (parking strips, pull-overs).
+  A block beside the spine has ramp lanes next to it, so **its loop is dropped**; every lap path is checked (inside the
+  walls, out of floor cuts and the rail / ramp lanes) and dropped if it fails. **Avenue loops** carry pods on the spine's
+  avenue lane: on every other stretch between two cross lines (so no two share a junction; the parity that covers most
+  heavy checkpoints), right-hand traffic in the outer lanes, a U-turn (half circle starting 2.5 m before the box) at each
+  end timed into the turn phase like every corner, docked against the avenue's -x edge midway; half the pods (up to two
+  per loop), the rest on block loops (up to three per loop). Nothing else uses the avenue lane, so the no-overlap argument
+  holds. Pods do **not** take ramps between decks in this phase (block and avenue loops only). Closed gates: no loop
+  reaches a wall gate (perimeter roads run along the walls), so they are dead ends by construction.
+- **Checkpoints (`LifeBarriers`, cosmetic, no collision).** `heavy`: two striped arms (terracotta / marking, 0.8 m
+  stripes) meeting mid-road across the avenue lane (or across the road the hook is on) at the cross line, a low booth at
+  each end; every loop with a turn at that junction holds 6 s (`CHECK_STOP`) at its stop line, a HOLD mark before the turn
+  wait in the timetable (closed form, no-overlap kept). `light`: one booth on the sidewalk corner beside the junction.
+  `cordon`: concrete barrier blocks (yellow band) across the sealed gate at the hook.
+- **Tram (`LifeTram`, `LifeTramCars`).** One per deck, three shuttle cars 3 x 9 m, 3.2 m (sky blue, cream lower band,
+  dark glazing, windscreens at both ends, roof unit), 0.6 m apart, on the rail lane's **-x track** (a quarter of the lane
+  off its centre: centred, it straddled the two drawn tracks). Shuttles between end stops 3 m short of each end wall,
+  14 m/s, 1.2 m/s^2, 20 s at every station hook's s (middle car's centre; stations within 30 m merged, clamped inside the
+  end stops), 10 s at an end before reversing; through a `portal` it turns round 100 m beyond the wall with its centre
+  beyond the wall for 40 s. Phase per deck from the seed. Halts: a threat within 60 m of any car brakes it (0.3 s
+  reaction, 2.5 m/s^2), hazards, doors shut, held to 15 s after the last threat in range, then it drives from where it
+  stands to the stop it was heading for, dwells there and rejoins its timetable at that departure, shifted (episodes in
+  `LifeTram`). Not wreckable, not pushable; sweeps / blasts / pushers ignore it. `vehicle_event("tram_bell", pos)` on
+  leaving a stop or restarting. Collision: one `AnimatableBody3D` per car (`sync_to_physics` off, layer 1, a 3 x 3.2 x 9
+  box), moved to the pose every frame; a car wholly beyond an end wall is hidden and its shape disabled. Queries:
+  `tram_state(k)`, unit `tram_car_pose(i)`.
+- **Lab.** Option `site` (alone / section / stack), param `deck`, cameras `station`, `tram` (close), `checkpoint`
+  (the clock is moved on to a dwell / a pod at the checkpoint); in section / stack a viewer node stands on the focus.
+  `--life site=stack,seed=4,camera=station`.
+- **Measured** (headless, 3-deck stack seed 1, 60 people + 6 pods + 4 carts + a tram per deck, `_process` of the stack
+  node and its units timed directly): viewer on deck 0, calm 0.12 ms average / 0.39 ms worst per frame; after four threats
+  0.12 / 0.86 ms; no viewer at all (every deck evaluated) 0.45 / 4.8 ms (the worst is the first frame resampling all three
+  decks). `setup_stack` 159 ms; the stack itself 0.9 s. Plan + traffic per deck 45-65 ms.
+
+**Not built / deviations (phase 3)**: pods per deck are 5-9, not 12 (only the blocks away from the spine take block loops,
+and every other avenue stretch); pods do not use ramps; people waiting for the tram use its timetable only, so after a
+halt (shifted timetable) a calm walker can still be on the rail piece as the late tram passes, and fleeing people route
+over the rail piece without waiting; people waiting at the rail piece stand at the avenue's edge, 1.5 m from a passing
+car; a deck with no viewer on it is not drawn even when visible through a floor hole; viewer culling is per machine (a
+client's shot at a civilian more than 200 m from its own viewers misses); barriers have no collision and walkers on the
+light checkpoint corner pass through its booth; the spine zebras are still drawn but unused; the test drive / mission do
+not create the stack life yet. Renders: `life_tram.png` (stack seed 4 deck 0, the tram dwelling at a station, the cordon
+blocks at the far blast door), `life_tram_close.png`, `life_checkpoint.png` (a pod held at the heavy checkpoint, arm and
+booth beyond it), `life_section_street.png` (mech eye on a section deck: one person and a service cart in frame).
+
+**Pod model adopted (user pick: candidate 7, `capsule_a`, 2026-11-22).** `LifeCars.pod()` calls
+`LifePodVariants.adopted(geo, lights)` (one source of truth; the gallery still draws the nine candidates unchanged):
+the capsule_a body and glass, trimmed to 484 triangles plain / 496 with hazards (one lighter facet on each end glass only,
+no dark lower split on the door glass, a straight side stripe, hexagonal wheels with a three-sided pyramid hub cap), closed
+and consistently wound (tested: every directed edge has its reverse). Pale light bars sit in the end slots with no housing;
+hazards are amber bars in those slots (y 0.80, z +-1.735) at both ends and a 1.1 x 1.0 m amber band on the roof
+(`terracotta_dark` / `marking_yellow` at 1.5 Hz). Wheels inboard with 0.28 m clearance (unchanged: they read at the
+junction camera's distance). `LifeTraffic.SIZE["pod"]` is now 1.85 x 1.95 x 3.5 m, which moves pod stop lines 0.05 m and
+so changes the stand-alone traffic checksums (seed 1/2/3: `742568104e969d8d`, `f95817faffc270f1`, `3daf84e9a4299bca`);
+riders already left from the middle of the side. Re-rendered: `life_pod_close.png`, `life_traffic.png`,
+`life_panic_traffic.png`, `life_riders.png`, `life_wreck.png`.

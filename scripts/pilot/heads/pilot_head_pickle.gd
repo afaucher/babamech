@@ -65,6 +65,7 @@ func build_pieces() -> void:
 	add_piece("NeckLow", "", Vector3.ZERO)
 	var k := kit()
 	k.loft([_ring(SECS[0]), _ring(SECS[1])], _colour, false, false)
+	add_neck_plug(k, _ring(SECS[0]))
 	add_mesh("NeckLow", k)
 	add_piece("NeckHigh", "NeckLow", Vector3(0.0, 0.16, 0.0))
 
@@ -115,8 +116,7 @@ func build_pieces() -> void:
 ## The jelly body: the standard two joints, then the Skull scaled (stretch / sag, volume kept) and sheared by the flair
 ## spring, times the landing squash.
 func pose_neck(neck: PilotNeck) -> void:
-	set_pose("NeckLow", Basis.from_euler(neck.low), Vector3(0.0, -neck.shift.x, -neck.shift.y))
-	set_pose("NeckHigh", Basis.from_euler(neck.high))
+	pose_neck_joints(neck.low, neck.high, neck.shift.x, neck.shift.y)
 	var s := clampf(-neck.flair.x / JELLY_REF, -1.6, 1.6)
 	var sy := 1.0 + STRETCH * s
 	var sxz := 1.0 / sqrt(sy)

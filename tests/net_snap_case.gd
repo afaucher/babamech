@@ -8,7 +8,12 @@ extends NetTest
 ## - the host judges: each puppet, at its render time, within TOL[link] of where its owner really was at that moment
 ##   (owner history interpolated), facing within YAW_TOL, ends within END_TOL of the owner's final spot; heat, thrust and
 ##   the overheat cross (and reach the crew panel's status_source); T_SNAP packets arrive (the unreliable sequenced
-##   channel) and none is over NetMechCodec.MAX_PACKET bytes.
+##   channel) and none is over NetMechCodec.MAX_PACKET bytes;
+## - damage crosses: each owner hits its own hull (DAMAGE_T: torso to HULL_AFTER) and is then downed (DOWN_T: leg_l
+##   destroyed); every viewer's puppet shows `hull`, `downed` and `disable_cause` (MechPuppet), mirrors them onto the
+##   puppet's PlayerTarget, and the crew panel says "disabled";
+## - mount aims cross: each owner aims off to the side (manual aim) so its pivoting weapons slew; every viewer's puppet
+##   carries the owner's largest barrel yaw within MOUNT_TOL.
 ## The scenario for test_net_snap (2) and test_net_snap_4 (a full crew). Not a test itself (no test_ prefix).
 
 const SEED := 7
@@ -19,6 +24,11 @@ const YAW_TOL := 0.12              ## rad, largest heading error at render time
 const END_TOL := 0.3               ## m, the puppet's last shown spot to the owner's last
 const SCRIPT_END := 6.6            ## s of scripted driving after mission_go
 const RECORD_END := 7.4            ## s of recording (the puppets catch up with the owners' last moves)
+const DAMAGE_T := 1.0              ## s: each owner hits its own torso for DAMAGE
+const DAMAGE := 100.0
+const HULL_AFTER := 0.75           ## torso 400 HP - 100
+const DOWN_T := 6.0                ## s: each owner loses a leg (downed, cause "leg_l")
+const MOUNT_TOL := 3.0             ## deg between the owner's largest barrel yaw and the one its puppet showed
 
 var td: TestDrive
 var _t0 := 0.0
@@ -82,6 +92,13 @@ func _drive_and_record() -> Dictionary:
 	var last_own := -1.0
 	var last_obs := {}
 	var heated := false
+	var hit := false
+	var downed := false
+	var max_own_mount := 0.0
+	var dmg := {}                      # peer -> [min hull, downed seen, cause, max |mount yaw|]
+	var pt := td.combat.player_target
+	pt.auto_respawn_delay = -1.0       # stay downed: the respawn would teleport the mech mid-recording
+	td.combat.rack.manual_aim = true
 	var max_own_heat := 0.0
 	var own_thrust := false
 	while true:
@@ -100,6 +117,16 @@ func _drive_and_record() -> Dictionary:
 			mv = Vector2(sgn * 0.7, 0.7)
 		elif e < 4.7:
 			turn = 1.0
+		if e >= DAMAGE_T and not hit:
+			hit = true
+			pt.apply_damage(DAMAGE, "torso", "test")
+		if e >= DOWN_T and not downed:
+			downed = true
+			pt.apply_damage(PlayerTarget.COMPONENT_HP["leg_l"] + 1.0, "leg_l", "test")
+		var right := m.global_basis.x
+		td.combat.rack.aim_point = m.global_position + m.up() * 4.0 + m.forward() * 30.0 + right * 30.0 * sgn
+		for v: float in CrewSync.mount_aims(td.combat.rack):
+			max_own_mount = maxf(max_own_mount, absf(v))
 		if e >= 5.5 and not heated:
 			heated = true
 			m.add_heat(m.heat_cap)
@@ -118,6 +145,14 @@ func _drive_and_record() -> Dictionary:
 			if pp.shown == null or pp.shown.t <= float(last_obs.get(p, -1e9)):
 				continue
 			last_obs[p] = pp.shown.t
+			var d: Array = dmg.get(p, [1.0, false, "", 0.0])
+			d[0] = minf(float(d[0]), pp.hull)
+			d[1] = bool(d[1]) or pp.downed
+			if pp.disable_cause != "":
+				d[2] = pp.disable_cause
+			for v: float in pp.shown.mount_aim:
+				d[3] = maxf(float(d[3]), absf(v))
+			dmg[p] = d
 			if not obs.has(p):
 				obs[p] = []   # an Array (a reference): appending to a Packed array read out of a Dictionary changes a copy
 			var at := pp.mech.global_position
@@ -125,7 +160,19 @@ func _drive_and_record() -> Dictionary:
 			(obs[p] as Array).append_array([pp.shown.t - _t0, at.x, at.y, at.z, yaw, pp.mech.heat / pp.mech.heat_cap,
 				1.0 if pp.mech.thrusting else 0.0, 1.0 if pp.mech.shutdown else 0.0])
 		await get_tree().physics_frame
-	return _summary(own, obs, max_own_heat, own_thrust)
+	var out := _summary(own, obs, max_own_heat, own_thrust)
+	var mirrored := {}
+	for p: int in td.crew_sync.puppets:
+		var pp: MechPuppet = td.crew_sync.puppets[p]
+		mirrored[str(p)] = pp.target != null and pp.target.disabled and pp.target.disable_cause == "leg_l" \
+			and absf(float(pp.target.hp["torso"]) - HULL_AFTER * PlayerTarget.COMPONENT_HP["torso"]) < 4.0
+	var dmg_s := {}
+	for p: int in dmg:
+		dmg_s[str(p)] = dmg[p]
+	out["dmg"] = dmg_s
+	out["mirrored"] = mirrored
+	out["own_mount"] = max_own_mount
+	return out
 
 
 func _summary(own: PackedFloat32Array, obs: Dictionary, max_own_heat: float, own_thrust: bool) -> Dictionary:
@@ -248,6 +295,15 @@ func _judge(all: Dictionary) -> void:
 			check(end_err < END_TOL, "peer %d's puppet of peer %d ends at its owner's spot (%.3f m)" % [viewer, owner, end_err])
 			check(max_heat > 0.9 and thrust_seen and shutdown_seen,
 				"peer %d sees peer %d's heat (max %.2f), thrust (%s) and overheat (%s)" % [viewer, owner, max_heat, thrust_seen, shutdown_seen])
-			eq(str((r["panel"] as Dictionary).get(ps, "")), "overheat", "peer %d's crew panel shows peer %d overheated" % [viewer, owner])
+			eq(str((r["panel"] as Dictionary).get(ps, "")), "disabled", "peer %d's crew panel shows peer %d downed" % [viewer, owner])
+			var d: Array = (r["dmg"] as Dictionary).get(ps, [1.0, false, "", 0.0])
+			near(float(d[0]), HULL_AFTER, 0.02, "peer %d sees peer %d's hull HP (%.3f)" % [viewer, owner, float(d[0])])
+			check(bool(d[1]), "peer %d sees peer %d downed" % [viewer, owner])
+			eq(str(d[2]), "leg_l", "peer %d sees why peer %d is down" % [viewer, owner])
+			check(bool((r["mirrored"] as Dictionary).get(ps, false)), "peer %d's PlayerTarget of peer %d mirrors its owner's damage" % [viewer, owner])
+			var own_mount := float((all[owner] as Dictionary)["own_mount"])
+			print("[snap] peer %d sees peer %d's largest barrel yaw %.1f deg (owner %.1f)" % [viewer, owner, float(d[3]), own_mount])
+			if own_mount > 5.0:
+				near(float(d[3]), own_mount, MOUNT_TOL, "peer %d sees peer %d's barrel aim" % [viewer, owner])
 			eq(int((r["targets"] as Dictionary).get(ps, 0)), owner, "peer %d registered peer %d's puppet as a PlayerTarget owned by it" % [viewer, owner])
 	check(crew == peers, "every machine reported (%d of %d)" % [crew, peers])

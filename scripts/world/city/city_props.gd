@@ -12,6 +12,8 @@ extends Node3D
 ##   add_pusher(body, radius)         a mover (reads global_position, velocity) that topples and shoves what it touches
 ##   request(id, kind, dir, v0)       ask for a topple or a shove (what the verbs and pushers call)
 ## Wire (through Session only): client -> host "prop.req", host -> crew "prop.ev", host -> joiner "prop.sync" (snapshot).
+## Each payload carries "deck" (this node's `deck`; -1 stand-alone, absent counts as -1): in a stack every deck's props
+## hear every event and act only on their own deck's.
 ## Drawing: one MultiMeshInstance3D per prop shape; only moving props have their instance rewritten each frame.
 ## Roof units (docs/design/city-rooftops.md): water tanks, AC units, vents and roof planters stand on building roofs.
 ## Such an item has `building` >= 0 (street props: absent or -1), `tier`, and its spot (lx, ly, lz) in that building's
@@ -33,6 +35,7 @@ const PUSH_HEIGHT := 6.0       ## a pusher only reaches props within this height
 const ASK_EVERY := 0.25        ## at most one request per prop per this long
 const SCAN_EVERY := 1.0        ## re-scan for CharacterBody3Ds this often (when nobody registered a pusher)
 const GRID_CELL := 16.0        ## m spatial-hash cell size for fast first_hit / blast queries
+const ARC_CELL := 8.0          ## m cell of the rest-position grid a pusher queries (arc x, s of every item)
 const MAX_PROP_HALF := 7.5     ## m conservative upper bound on any prop's half-height + radius
 const ROOF_TOL := 0.3          ## a pusher reaches a roof prop when [feet, feet + PUSH_HEIGHT] meets the prop's height span
 ## Roof unit footprints (m, centre to farthest edge, at any yaw) for placing them clear of each other and of what
@@ -45,6 +48,8 @@ signal prop_moved(id: int, type: String, kind: int, world_pos: Vector3, speed: f
 var items: Array = []           ## CityProps.layout(plan): [{id, type, x, s, h, yaw, scale, variant, pit}] (+ roof fields)
 var plan: CityPlan
 var ring: RingFrame
+var deck := -1                  ## the stack deck these props are on (CityDistrict.build_deck); -1 = a district on its own.
+                                ## Every prop.req / prop.ev / prop.sync carries it, and events for another deck are ignored.
 var now := 0.0                  ## prop clock: the session's host_time() online, local seconds offline
 
 var _ev: Dictionary = {}        ## id -> the prop's last event (absent: standing)
@@ -63,6 +68,9 @@ var _online_clock := false
 var _cap_local: Array = []      ## id -> [foot, head, radius, mid, half] in local space (updated only when prop draws)
 var _grid: Dictionary = {}      ## Vector2i cell -> Array[int] prop ids
 var _prop_cell: Array = []      ## id -> Vector2i cell currently indexed in _grid
+var _arc_grid: Dictionary = {}  ## Vector2i(x, s cell) -> ids (ascending) whose rest position (item x, s) is in it
+var _reach_pad := 0.0           ## the largest prop radius: a pusher's query reaches its radius + this
+var brute_force := false        ## tests only: _push checks every prop, as before the grid (tests/test_city_props.gd)
 var _bxf: Array = []            ## building index -> its flat frame (Transform3D) in this node's space
 var _bxf_inv: Array = []        ## and its inverse
 
@@ -71,11 +79,13 @@ func net_fields() -> Dictionary:
 	return {
 		"items": Net.SPAWN,          # from the plan's cosmetic seed, the same on every machine (layout_checksum)
 		"plan": Net.SPAWN, "ring": Net.SPAWN,
+		"deck": Net.SPAWN,           # from the section plan's deck index, the same on every machine
 		"_ev": Net.OWNER,            # the host decides every event; the crew receives them (prop.ev, prop.sync)
 		"now": Net.LOCAL,            # the shared clock where there is one
 		"_moving": Net.LOCAL, "_slot": Net.LOCAL, "_mms": Net.LOCAL, "_proto_tris": Net.LOCAL, "_geo": Net.LOCAL,
 		"_floors": Net.LOCAL, "_online_clock": Net.LOCAL,
 		"_cap_local": Net.LOCAL, "_grid": Net.LOCAL, "_prop_cell": Net.LOCAL,
+		"_arc_grid": Net.LOCAL, "_reach_pad": Net.LOCAL, "brute_force": Net.LOCAL,   # from the layout / a test switch
 		"_bxf": Net.LOCAL, "_bxf_inv": Net.LOCAL,      # from the plan and the ring, the same on every machine
 		"_pushers": Net.PRIVATE, "_found": Net.PRIVATE, "_scan_in": Net.PRIVATE, "_last_pos": Net.PRIVATE,
 		"_asked": Net.PRIVATE,
@@ -342,6 +352,14 @@ func setup(p: CityPlan, r: RingFrame) -> void:
 	_mms.clear()
 	_proto_tris.clear()
 	_grid.clear()
+	_arc_grid.clear()
+	_reach_pad = 0.0
+	for it: Dictionary in items:
+		var cell := Vector2i(int(floor(float(it["x"]) / ARC_CELL)), int(floor(float(it["s"]) / ARC_CELL)))
+		if not _arc_grid.has(cell):
+			_arc_grid[cell] = []
+		(_arc_grid[cell] as Array).append(int(it["id"]))
+		_reach_pad = maxf(_reach_pad, float(TYPES[it["type"]]["radius"]))
 	_cap_local.resize(items.size())
 	_prop_cell.resize(items.size())
 	for i in items.size():
@@ -508,7 +526,7 @@ func request(id: int, kind: int, dir: Vector2, v0: float = 0.0) -> void:
 		return
 	var s := Net.session()
 	if s != null and s.is_client():
-		s.send_event(1, "prop.req", {"id": id, "kind": kind, "dir": dir.normalized(), "v0": v0})
+		s.send_event(1, "prop.req", {"id": id, "kind": kind, "dir": dir.normalized(), "v0": v0, "deck": deck})
 		return
 	_decide(id, kind, dir.normalized(), v0)
 
@@ -542,7 +560,7 @@ func _decide(id: int, kind: int, dir: Vector2, v0: float) -> void:
 	apply_event(ev)
 	var s := Net.session()
 	if s != null and s.online():
-		s.send_event(0, "prop.ev", ev)
+		s.send_event(0, "prop.ev", ev.merged({"deck": deck}))
 
 
 ## Play a decided event (the host's own, or one received from it). A late one fast-forwards.
@@ -595,27 +613,38 @@ func restore(bytes: PackedByteArray) -> void:
 
 
 func _on_event(_from: int, kind: String, data: Dictionary, _stamp: float) -> void:
-	if items.is_empty():
-		return
 	var s := Net.session()
+	receive(kind, data, s != null and s.is_host(), s != null and s.is_client())
+
+
+## True if a prop event's payload is for this node's deck (a missing "deck" counts as -1: a district on its own).
+func for_me(data: Dictionary) -> bool:
+	return int(data.get("deck", -1)) == deck
+
+
+## One prop event as this machine plays it (`host` / `client`: its role; split from the Session hook so tests can drive
+## it in-process). Events for another deck are ignored: in a stack every deck's props hear every prop event.
+func receive(kind: String, data: Dictionary, host: bool, client: bool) -> void:
+	if items.is_empty() or not kind.begins_with("prop.") or not for_me(data):
+		return
 	match kind:
 		"prop.req":
 			var id := int(data.get("id", -1))
 			var dir: Variant = data.get("dir")
-			if s != null and s.is_host() and id >= 0 and id < items.size() and dir is Vector2 and (dir as Vector2).length_squared() > 1e-8:
+			if host and id >= 0 and id < items.size() and dir is Vector2 and (dir as Vector2).length_squared() > 1e-8:
 				_decide(id, int(data.get("kind", -1)), (dir as Vector2).normalized(), float(data.get("v0", 0.0)))
 		"prop.ev":
-			if s != null and s.is_client():
+			if client:
 				apply_event(data)
 		"prop.sync":
-			if s != null and s.is_client():
+			if client:
 				restore(data.get("bytes", PackedByteArray()))
 
 
 func _on_peer_joined(peer: int) -> void:
 	var s := Net.session()
 	if s != null and s.is_host() and not items.is_empty():
-		s.send_event(peer, "prop.sync", {"bytes": snapshot()})
+		s.send_event(peer, "prop.sync", {"bytes": snapshot(), "deck": deck})
 
 
 # --- Weapons ---------------------------------------------------------------------------------------------
@@ -758,12 +787,25 @@ func _scan() -> void:
 	_found.clear()
 	if not is_inside_tree():
 		return
-	for n in get_tree().root.find_children("*", "CharacterBody3D", true, false):
+	var bodies: Array[Node] = []
+	_bodies_under(get_tree().root, bodies)
+	for n in bodies:
 		var radius := 1.0
 		for c in n.get_children():
 			if c is CollisionShape3D and (c as CollisionShape3D).shape is CapsuleShape3D:
 				radius = ((c as CollisionShape3D).shape as CapsuleShape3D).radius
 		_found.append([n, radius])
+
+
+## Every CharacterBody3D under `node`, in the order find_children gives (depth first, a node before its children), without
+## walking into static bodies: a city's collision is thousands of shapes under one StaticBody3D per deck, and walking them
+## every second on every deck cost 4 ms a scan in a three-deck stack.
+static func _bodies_under(node: Node, out: Array[Node]) -> void:
+	for c in node.get_children():
+		if c is CharacterBody3D:
+			out.append(c)
+		if not (c is StaticBody3D):
+			_bodies_under(c, out)
 
 
 ## Whether this machine moves `body`: offline everything; online the owner peer (owner_peer, 0 = the host).
@@ -790,7 +832,26 @@ func _contacts(delta: float) -> void:
 		_push(body, float(p[1]), delta)
 
 
-## Touch every prop within reach of one pusher.
+## The props a pusher at arc (x, s) `here` with `radius` may touch, ascending: every standing prop whose rest position
+## is within radius + its own radius (from the rest-position grid), and every prop that has moved (it may lie anywhere).
+## The same set the old loop over every prop let through its distance test, in the same order.
+func push_candidates(here: Vector2, radius: float) -> Array[int]:
+	var out: Array[int] = []
+	var pad := radius + _reach_pad
+	for cx in range(int(floor((here.x - pad) / ARC_CELL)), int(floor((here.x + pad) / ARC_CELL)) + 1):
+		for cs in range(int(floor((here.y - pad) / ARC_CELL)), int(floor((here.y + pad) / ARC_CELL)) + 1):
+			var bucket: Variant = _arc_grid.get(Vector2i(cx, cs))
+			if bucket != null:
+				for id: int in bucket:
+					if not _ev.has(id):
+						out.append(id)
+	for id: int in _ev:
+		out.append(id)
+	out.sort()
+	return out
+
+
+## Touch every prop within reach of one pusher (the candidates from push_candidates; brute_force: every prop).
 func _push(body: Node3D, radius: float, delta: float) -> void:
 	var local := to_local(body.global_position)
 	var at := ring.world_to_arc(local)
@@ -810,7 +871,9 @@ func _push(body: Node3D, radius: float, delta: float) -> void:
 		return
 	var dir := v2 / speed
 	var here := Vector2(at.x, at.y)
-	for id in items.size():
+	if not brute_force and (at.z < -(PUSH_HEIGHT + 1.0) or at.z > plan.p("ceiling") + 1.0):
+		return      # on another deck (below this floor or above this ceiling): nothing here is within its reach
+	for id: int in (range(items.size()) if brute_force else push_candidates(here, radius)):
 		var t := float(_asked.get(id, -INF))
 		if now - t < ASK_EVERY and now >= t:
 			continue

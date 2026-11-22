@@ -172,11 +172,11 @@ static func head(id: String, scale: float = 1.0, lowpoly: bool = true) -> Node3D
 	return root
 
 
-## A weapon pointing -Z, origin at its mount point.
+## A weapon (or back-mount equipment, MechMeshes.EQUIPMENT) pointing -Z, origin at its mount point.
 static func weapon(id: String, lowpoly: bool = true) -> Node3D:
 	var root := Node3D.new()
 	root.name = "Weapon_" + id
-	if lowpoly and id in MechMeshes.WEAPONS:
+	if lowpoly and (id in MechMeshes.WEAPONS or id in MechMeshes.EQUIPMENT):
 		root.add_child(MechMeshes.instance("weapon_" + id))
 		return root
 	var gun := Color(0.25, 0.27, 0.3)

@@ -4,8 +4,9 @@ extends Node3D
 ## plain, hazards dark, hazards bright — no node or body per vehicle. Hazards (and a wreck's alarm) show big amber bars
 ## front and back and a band round the roof edge, swapped between dark and bright amber at 1.5 Hz. Flat palette colour per
 ## face on CityPalette.surface_material() (no emission: CityPalette's only emissive material is the cream ceiling strip).
-## Pod: the approved "bubble", civic livery: a rounded 16-sided loft, cream body with one terracotta stripe, a big dark-teal
-## canopy over the top half, a cream roof cap, dark skirts hiding the wheels, a light bar front and back. 3.4 x 1.8 x 1.9 m.
+## Pod: the user's pick capsule_a (LifePodVariants.adopted): a symmetric cream capsule, raked dark-teal glass at both ends,
+## a centre door with a pale frame and quarter windows each side, one terracotta stripe, wheels inboard under the body
+## (0.28 m clearance, dark underside), pale light bars at both ends. 3.5 x 1.85 x 1.95 m.
 ## Cart: a low sand flatbed with a sage hopper and a small cab, 2.6 x 1.4 x 1.6 m. A wreck is the same mesh, rolled.
 ## Instance transforms are in the district's local space (this node follows the district); feet on the road, nose +Z.
 
@@ -79,6 +80,14 @@ func show_vehicle(vid: int, want: int, xf: Transform3D) -> void:
 	(_mms[k][want] as MultiMesh).set_instance_transform(_index[vid], xf)
 
 
+## Hide vehicle vid (out of everyone's draw range).
+func hide_vehicle(vid: int) -> void:
+	var prev := _shown[vid]
+	if prev >= 0:
+		(_mms[_kind[vid]][prev] as MultiMesh).set_instance_transform(_index[vid], LifeFigures.HIDDEN)
+	_shown[vid] = -1
+
+
 func shown(vid: int) -> int:
 	return _shown[vid]
 
@@ -87,41 +96,6 @@ func shown(vid: int) -> int:
 
 static func _c(id: String) -> Color:
 	return CityPalette.C[id]
-
-
-const RING_PTS := 16
-const ROUND := 2.6             ## superellipse exponent of the pod's cross-sections (2 = an ellipse, higher = boxier)
-
-
-## A rounded loft along +Y: rings [y, half x, half z, colour of the band above this ring], each a superellipse of
-## RING_PTS points, capped top and bottom.
-static func _loft(geo: CityGeo, rings: Array, cap_top: Color, cap_bottom: Color) -> void:
-	var ring_pts: Array = []
-	for r: Array in rings:
-		var pts: Array[Vector3] = []
-		for k in RING_PTS:
-			var a := TAU * (float(k) + 0.5) / float(RING_PTS)
-			var c := cos(a)
-			var s := sin(a)
-			var x := signf(s) * pow(absf(s), 2.0 / ROUND) * float(r[1])
-			var z := signf(c) * pow(absf(c), 2.0 / ROUND) * float(r[2])
-			pts.append(Vector3(x, float(r[0]), z))
-		ring_pts.append(pts)
-	for i in rings.size() - 1:
-		var lo: Array = ring_pts[i]
-		var hi: Array = ring_pts[i + 1]
-		var col: Color = rings[i][3]
-		for k in RING_PTS:
-			var j := (k + 1) % RING_PTS
-			geo.quad(lo[k], lo[j], hi[j], hi[k], col)
-	var top: Array = ring_pts[rings.size() - 1]
-	var bot: Array = ring_pts[0]
-	var ct := Vector3(0.0, float(rings[rings.size() - 1][0]), 0.0)
-	var cb := Vector3(0.0, float(rings[0][0]), 0.0)
-	for k in RING_PTS:
-		var j := (k + 1) % RING_PTS
-		geo.tri(ct, top[k], top[j], cap_top)
-		geo.tri(cb, bot[j], bot[k], cap_bottom)
 
 
 ## Amber hazard lights: bars front and back, a band round the roof edge (dark or bright amber).
@@ -136,27 +110,10 @@ static func _hazards(geo: CityGeo, half_w: float, half_l: float, roof_y: float, 
 		geo.box(xf, Vector3(sx * roof_hw, roof_y, roof_z), Vector3(0.12, 0.16, roof_hl * 2.0), amber)
 
 
-## The bubble pod, nose +Z. `lights`: PLAIN, HAZARD_DARK or HAZARD_BRIGHT.
+## The pod, either end +Z: the adopted capsule_a (user pick), built by LifePodVariants.adopted (the one source).
+## `lights`: PLAIN, HAZARD_DARK or HAZARD_BRIGHT.
 static func pod(geo: CityGeo, lights: int) -> void:
-	var cream := _c("cream_light")
-	var glass := _c("glass_teal")
-	var dark := _c("metal_dark")
-	_loft(geo, [
-		[0.14, 0.78, 1.45, dark],
-		[0.34, 0.90, 1.68, cream],
-		[0.60, 0.90, 1.70, _c("terracotta")],
-		[0.72, 0.90, 1.70, cream],
-		[0.88, 0.88, 1.64, glass],
-		[1.38, 0.82, 1.46, glass],
-		[1.66, 0.66, 1.10, cream],
-		[1.86, 0.40, 0.66, cream],
-	], cream, dark)
-	var xf := Transform3D.IDENTITY
-	if lights == PLAIN:
-		geo.box(xf, Vector3(0.0, 0.47, 1.66), Vector3(0.95, 0.11, 0.1), _c("marking"))
-		geo.box(xf, Vector3(0.0, 0.47, -1.66), Vector3(0.95, 0.11, 0.1), _c("terracotta_dark"))
-	else:
-		_hazards(geo, 0.9, 1.66, 1.68, 0.7, 1.14, lights == HAZARD_BRIGHT)
+	LifePodVariants.adopted(geo, lights)
 
 
 ## The service cart, nose +Z: chassis, cab at the front, hopper on the bed.

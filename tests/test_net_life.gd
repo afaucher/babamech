@@ -5,11 +5,18 @@ extends NetTest
 ## client fires a sweep through someone: it does not decide (life.req), the host does (life.down), and both tallies agree.
 ## Vehicles: a threat at a pod e-stops it on both machines alike, and a client's shot through a vehicle wrecks it through
 ## the host (life.wreq -> life.wreck).
+## Stack (phase 3): both machines then swap the district for the same 3-deck CityStack with one AmbientLife (setup_stack).
+## Late join: the host kills someone on deck 2 and wrecks a vehicle on deck 0 before the client has its life, then the
+## join handler sends the whole stack's snapshot (life.sync); the client restores both. A threat on deck 1 ("deck": 1 on
+## the wire): both machines agree on every deck and nobody on deck 0 at the same arc spot reacts. The client's sweep
+## kills someone on deck 1 through the host (life.req / life.down carry "deck"); the same index on deck 0 lives; tallies
+## agree.
 
 const PEERS := 2
 
 var district: CityDistrict
 var life: AmbientLife
+var stack: CityStack
 
 
 func _init() -> void:
@@ -44,6 +51,60 @@ func _signature(t: float) -> String:
 		var q := life.fleet.pose(v, t)
 		out.append("%s@%d,%d" % [q["state"], int(round(float(q["x"]) * 100.0)), int(round(float(q["s"]) * 100.0))])
 	return ",".join(out)
+
+
+## Stack phase: drop the district and its life, build the stack (and, `with_life`, the one AmbientLife for it).
+func _build_stack(with_life: bool) -> void:
+	life.queue_free()
+	district.queue_free()
+	await frames(1)
+	stack = CityStack.new()
+	add_child(stack)
+	stack.build(SectionPlan.make({"seed": 1}))
+	if with_life:
+		_make_stack_life()
+	await frames(1)
+
+
+func _make_stack_life() -> void:
+	life = AmbientLife.new()
+	add_child(life)
+	life.setup_stack(stack)
+
+
+## Every deck's people, vehicles and tram at shared-clock time t (cm), as one string.
+func _stack_signature(t: float) -> String:
+	var out := PackedStringArray()
+	for u in life.units:
+		for id in u.count():
+			var p := u.crowd.pose(id, t)
+			out.append("%d.%s@%d,%d" % [u.deck, p["state"], int(round(float(p["x"]) * 100.0)), int(round(float(p["s"]) * 100.0))])
+		for v in u.vehicle_count():
+			var q := u.fleet.pose(v, t)
+			out.append("%d.v%s@%d,%d" % [u.deck, q["state"], int(round(float(q["x"]) * 100.0)), int(round(float(q["s"]) * 100.0))])
+		var tp := u.tram.pose(t)
+		out.append("%d.tram%s@%d" % [u.deck, tp["mode"], int(round(float(tp["s"]) * 100.0))])
+	return ",".join(out)
+
+
+## People alarmed on deck k at time t within `r` m of arc point `at` (r < 0: anywhere).
+func _stack_alarmed(k: int, t: float, at: Vector2 = Vector2.ZERO, r: float = -1.0) -> int:
+	var u := life.unit(k)
+	var n := 0
+	for id in u.count():
+		var p := u.crowd.pose(id, t)
+		if p["state"] in ["wary", "fleeing", "cowering"] and (r < 0.0 or Vector2(p["x"], p["s"]).distance_to(at) <= r):
+			n += 1
+	return n
+
+
+## An outdoor, living person on deck k (id on that deck), or -1.
+func _deck_outdoor(k: int) -> int:
+	var u := life.unit(k)
+	for id in u.count():
+		if u.visible_now(id) and u.state_of(id) != "down":
+			return id
+	return -1
 
 
 func run_host() -> void:
@@ -106,6 +167,56 @@ func run_host() -> void:
 			check(await until(func() -> bool: return life.vehicle_state(wv) == "wreck", 10.0), "the client's shot wrecks it on the host")
 	if check(await wait_reports("tally2", 1), "the client reports its tally after the wreck"):
 		eq(str(reported(client, "tally2")), str(life.tally()), "both machines keep the same tally, wrecks included")
+	# Stack: the client builds the stack but not its life yet (it misses everything the host does now: a late joiner).
+	await _build_stack(true)
+	if not check(await wait_reports("stack_ready", 1), "the client built the stack"):
+		return
+	eq(str(reported(client, "stack_ready")), stack.checksum(), "stack: both machines built the same stack")
+	if not check(await until(func() -> bool: return _deck_outdoor(2) >= 0, 30.0), "stack: someone outdoors on deck 2"):
+		return
+	var dead2 := _deck_outdoor(2)
+	check(life.blast(life.unit(2).pose_of(dead2).origin, 0.5, -1) >= 1, "stack: the host kills someone on deck 2")
+	var u0 := life.unit(0)
+	var wv := -1
+	for v in u0.vehicle_count():
+		if wv < 0 and u0.vehicle_state(v) != "wreck":
+			wv = v
+	if check(wv >= 0, "stack: a vehicle on deck 0"):
+		var vx := u0.vehicle_pose(wv)
+		check(life.blast(vx.origin + vx.basis.y * 0.8, 2.0, -1) >= 1, "stack: the host wrecks a vehicle on deck 0")
+	command(client, "make_life", {})
+	if not check(await wait_reports("life_ready", 1), "the client made its stack life"):
+		return
+	life._on_peer_joined(client)        # the join handler: life.sync with the whole stack's snapshot
+	if check(await wait_reports("stack_synced", 1) and await wait_reports("stack_tally", 1), "the client reports the stack snapshot"):
+		eq(str(reported(client, "stack_synced")), life.snapshot().hex_encode(), "stack late join: the joiner restored the host's snapshot")
+		eq(str(reported(client, "stack_tally")), str(life.tally()), "stack late join: the dead on deck 2 and the wreck on deck 0 arrive")
+	if not check(await until(func() -> bool: return _deck_outdoor(1) >= 0, 30.0), "stack: someone outdoors on deck 1"):
+		return
+	var w1 := _deck_outdoor(1)
+	var p1 := life.unit(1).crowd.pose(w1, life.now)
+	var spot := Vector2(p1["x"], p1["s"])
+	life.raise_threat(life.unit(1).pose_of(w1).origin, 40.0, 2)
+	var ev: Dictionary = life.sent[life.sent.size() - 1][1]
+	var ts := float(ev["t"])
+	eq(int(ev.get("deck", -1)), 1, "stack: the threat event carries deck 1")
+	command(client, "ssig", {"t": ts + 5.0, "x": spot.x, "s": spot.y})
+	if check(await wait_reports("ssig", 1) and await wait_reports("calm0", 1), "the client reports the stack after the threat"):
+		eq(str(reported(client, "ssig")), _stack_signature(ts + 5.0), "stack: both machines agree on every deck 5 s after a threat on deck 1")
+		check(_stack_alarmed(1, ts + 5.0) > 0, "stack: people on deck 1 react (%d)" % _stack_alarmed(1, ts + 5.0))
+		eq(_stack_alarmed(0, ts + 5.0, spot, 60.0), 0, "stack: deck 0 people at the same arc spot stay calm (host)")
+		eq(int(reported(client, "calm0")), 0, "stack: deck 0 people at the same arc spot stay calm (client)")
+	command(client, "sshoot", {})
+	if check(await wait_reports("sshot", 1), "the client reports its shot on deck 1"):
+		var sv := int(reported(client, "sshot"))
+		if check(sv >= 0, "the client found someone on deck 1"):
+			check(await until(func() -> bool: return life.state_of(AmbientLife.ID_STRIDE + sv) == "down", 10.0), "stack: the client's shot on deck 1 kills on the host")
+			check(life.state_of(sv) != "down", "stack: the same index on deck 0 is alive (host)")
+			check(int(life.tally()["by_src"].get(client, 0)) >= 1, "stack: counted against the client")
+	if check(await wait_reports("stally", 1) and await wait_reports("salive0", 1), "the client reports its stack tally"):
+		eq(str(reported(client, "stally")), str(life.tally()), "stack: both machines keep the same tally")
+		eq(str(reported(client, "salive0")), "true", "stack: the same index on deck 0 is alive (client)")
+	print("[net_life] stack phase done: %s" % str(life.tally()))
 	check(await wait_done(1), "the client is done")
 
 
@@ -160,12 +271,55 @@ func run_client() -> void:
 	report("wrecked", car)
 	await sleep(0.5)
 	report("tally2", str(life.tally()))
+	# Stack: build it, but make the life only when the host says (it has killed and wrecked by then).
+	await _build_stack(false)
+	report("stack_ready", stack.checksum())
+	cmd = await wait_command(60.0)
+	if str(cmd.get("cmd", "")) != "make_life":
+		check(false, "the host asks for the stack life (%s)" % str(cmd))
+		return
+	_make_stack_life()
+	await frames(1)
+	var synced := _synced
+	report("life_ready", true)
+	check(await until(func() -> bool: return _synced > synced, 10.0), "the stack snapshot arrives")
+	await frames(1)
+	report("stack_synced", life.snapshot().hex_encode())
+	report("stack_tally", str(life.tally()))
+	var before := _seen
+	cmd = await wait_command(60.0)
+	if str(cmd.get("cmd", "")) != "ssig":
+		check(false, "the host asks for the stack signature (%s)" % str(cmd))
+		return
+	check(await until(func() -> bool: return _seen > before, 10.0), "the stack threat arrives")
+	report("ssig", _stack_signature(float(cmd["t"])))
+	report("calm0", _stack_alarmed(0, float(cmd["t"]), Vector2(float(cmd["x"]), float(cmd["s"])), 60.0))
+	cmd = await wait_command(30.0)
+	if str(cmd.get("cmd", "")) != "sshoot":
+		check(false, "the host asks for a shot on deck 1 (%s)" % str(cmd))
+		return
+	await until(func() -> bool: return _deck_outdoor(1) >= 0, 30.0)
+	var u1 := life.unit(1)
+	var target := _deck_outdoor(1)
+	if target >= 0:
+		var xf := u1.pose_of(target)
+		var up := xf.basis.y.normalized()
+		var n := life.sweep(xf.origin + up - xf.basis.x * 1.0, xf.origin + up + xf.basis.x * 1.0, 0.1, Session.local_id())
+		check(n >= 1, "stack: the sweep finds the person on deck 1")
+		check(await until(func() -> bool: return u1.state_of(target) == "down", 10.0), "stack: down when the host's event arrives")
+	report("sshot", target)
+	await sleep(0.5)
+	report("stally", str(life.tally()))
+	report("salive0", str(target >= 0 and life.unit(0).state_of(target) != "down"))
 
 
 var _seen := 0                 ## client: life.threat events received
+var _synced := 0               ## client: life.sync events received
 
 
 func _on_event(from: int, kind: String, data: Dictionary, stamp: float) -> void:
 	if kind == "life.threat":
 		_seen += 1
+	elif kind == "life.sync":
+		_synced += 1
 	super._on_event(from, kind, data, stamp)

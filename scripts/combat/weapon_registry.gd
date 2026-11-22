@@ -46,7 +46,7 @@ static func built(id: String) -> bool:
 
 
 ## A loadout the test drive can fire: `loadout` sanitized for the chassis (MechCatalog.sanitize_loadout), then every
-## slot holding a weapon with no behaviour yet (paused: flamer, missiles, ...) swapped for that slot's chassis default
+## slot holding a weapon with no behaviour yet (paused: flamer, missiles, ...; back-mount equipment is kept) swapped for that slot's chassis default
 ## (or emptied when the default isn't built either). The player's other choices and empty slots are kept. Saved
 ## settings are never touched. {"loadout": Dictionary, "notes": Array[String]} with one note per swap, e.g.
 ## "LEFT SIDE: Flamer offline, using Side Laser".
@@ -58,7 +58,7 @@ static func playable_loadout(chassis_id: String, loadout: Dictionary) -> Diction
 	for hp: Dictionary in c["hardpoints"]:
 		var id := str(hp["id"])
 		var w := str(out.get(id, ""))
-		if w == "" or built(w):
+		if w == "" or built(w) or MechCatalog.is_equipment(w):   # equipment has no behaviour and needs none
 			continue
 		var name := str(MechCatalog.weapon(w).get("name", w))
 		var fallback := str(defaults.get(id, ""))

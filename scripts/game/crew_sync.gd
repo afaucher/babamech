@@ -6,8 +6,8 @@ extends Node
 ##   - makes every other crew mech a puppet (MechPuppet, child "Puppet" of that mech) shown from its owner's snapshots;
 ##   - registers each puppet as a PlayerTarget with its owner's peer (so weapons and enemies see it; hits on it are its
 ##     owner's to decide, co-op step 3), carried along by its MechPuppet;
-##   - answers the crew panel (hud.crew_panel.status_source): a teammate's heat and overheat from its snapshots (hp
-##     stays 1 until component HP is streamed).
+##   - answers the crew panel (hud.crew_panel.status_source): a teammate's hull HP, heat, overheat and downed state from
+##     its snapshots.
 ## Nothing here touches the wire: it only asks Session (begin / feed / pose / end).
 
 var drive: TestDrive
@@ -49,6 +49,11 @@ func setup(td: TestDrive, seats: Dictionary) -> void:
 			td.combat.world.register(pt)
 			pp.target = pt
 			targets[p] = pt
+		# Cosmetic: the teammate's pilot head reacts to its streamed state and the shots seen here (scripts/pilot/).
+		var pl := PilotPuppetLink.new()
+		pl.name = "PilotLink"
+		m.add_child(pl)
+		pl.bind_puppet(pp, td.combat.world if td.combat != null else null)
 	if sess != null and sess.mechs != null:
 		sess.mechs.begin(local, seats)
 
@@ -91,15 +96,48 @@ func sample(delta: float) -> NetMechState:
 		st.designator = rack.designator_on()
 	else:
 		st.aim = st.pos + m.forward() * 50.0
+	var pt := drive.combat.player_target if drive.combat != null else null
+	st.comp = component_fractions(pt)
+	if pt != null:
+		st.disabled = pt.disabled
+		st.disable_cause = pt.disable_cause
+	st.mount_aim = mount_aims(rack)
 	return st
 
 
-## A teammate's status for the crew panel: {hp, heat 0..1, state "ok" | "overheat"} (hp 1 until component HP streams).
+## A PlayerTarget's component HP as fractions in NetMechCodec.COMPONENTS order (-1 = no such component).
+static func component_fractions(pt: PlayerTarget) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	for c: String in NetMechCodec.COMPONENTS:
+		if pt == null or not pt.max_hp.has(c):
+			out.append(-1.0)
+		else:
+			out.append(clampf(float(pt.hp.get(c, 0.0)) / maxf(float(pt.max_hp[c]), 0.001), 0.0, 1.0))
+	return out
+
+
+## Each hardpoint's barrel aim (aim_yaw, aim_pitch, deg) in NetMechCodec.MOUNTS order: 0, 0 (the rest pose) for an empty
+## slot or a weapon that doesn't track (the rack only turns models whose mount has an aim_dir).
+static func mount_aims(rack: WeaponRack) -> PackedFloat32Array:
+	var out := PackedFloat32Array()
+	for h: String in NetMechCodec.MOUNTS:
+		var i := rack.hardpoints.find(h) if rack != null else -1
+		var m: WeaponMount = rack.mounts[i] if i >= 0 and i < rack.mounts.size() else null
+		if m != null and m.aim_dir != Vector3.ZERO:
+			out.append_array([m.aim_yaw, m.aim_pitch])
+		else:
+			out.append_array([0.0, 0.0])
+	return out
+
+
+## A teammate's status for the crew panel: {hp 0..1 (the hull: torso HP), heat 0..1, state "ok" | "overheat" |
+## "disabled" (downed: PlayerTarget.disabled from its owner's snapshots)}.
 func status(peer: int) -> Dictionary:
 	var pp := puppets.get(peer) as MechPuppet
 	if pp == null or pp.shown == null:
 		return {"hp": 1.0, "heat": 0.0, "state": "ok"}
-	return {"hp": 1.0, "heat": pp.shown.heat, "state": "overheat" if pp.shown.shutdown else "ok"}
+	var state := "disabled" if pp.downed else ("overheat" if pp.shown.shutdown else "ok")
+	return {"hp": pp.hull, "heat": pp.shown.heat, "state": state}
 
 
 ## The ring frame's axes at p for headings: the floor tangent toward +s (yaw 0) and world +X (yaw +90 deg). Flat world:

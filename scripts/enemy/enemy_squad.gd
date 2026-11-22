@@ -30,6 +30,12 @@ var _last_slot_time: Dictionary = {} ## enemy_id -> combat clock when it last he
 var _slot_ready_at := 0.0          ## combat clock when the next attack slot may be granted
 var _graph_nodes: Array[Vector2] = []
 var _graph_adj: Array = []
+## Multi-deck stack (W4): deck k -> [nodes, adj] (that deck's road graph, add_deck_nav), and `deck_of` (world position ->
+## deck index, CityStack.deck_at). Enemies path on their own deck's graph and only engage / hear about targets on it.
+var _deck_graphs: Dictionary = {}
+var deck_of := Callable()
+var _awake: Dictionary = {}       ## deck -> true while an opposing target stands on it (deck_awake; cached per clock step)
+var _awake_at := -INF
 
 
 func _init() -> void:
@@ -41,7 +47,8 @@ func net_fields() -> Dictionary:
 	return {"world": Net.LOCAL, "plan": Net.SPAWN, "ring": Net.SPAWN, "max_attackers": Net.SPAWN,
 		"slot_stagger": Net.SPAWN, "enemies": Net.LOCAL, "debris_field": Net.LOCAL, "known_targets": Net.OWNER,
 		"_wrecks": Net.LOCAL, "_slots": Net.OWNER, "_last_slot_time": Net.PRIVATE, "_slot_ready_at": Net.PRIVATE,
-		"_graph_nodes": Net.LOCAL, "_graph_adj": Net.LOCAL}
+		"_graph_nodes": Net.LOCAL, "_graph_adj": Net.LOCAL,
+		"_deck_graphs": Net.LOCAL, "deck_of": Net.LOCAL, "_awake": Net.PRIVATE, "_awake_at": Net.PRIVATE}
 
 
 func setup(w: CombatWorld, p: CityPlan = null, r: RingFrame = null) -> void:
@@ -57,6 +64,7 @@ func setup(w: CombatWorld, p: CityPlan = null, r: RingFrame = null) -> void:
 			world.advanced.connect(_on_world_advanced)
 	_ensure_debris_field()
 	EnemyMeshes.prewarm()
+	_deck_graphs.clear()
 	_build_nav_graph()
 
 
@@ -160,6 +168,7 @@ func report_sighting(spotter: EnemyBase, target: CombatTarget, pos: Vector3) -> 
 	var arc := ring.world_to_arc(pos) if ring != null else Vector3(pos.x, pos.z, pos.y)
 	known_targets[target.target_id] = {
 		"target": target, "pos": pos, "arc": arc, "last_seen": now, "seen_by": spotter.target_id,
+		"deck": spotter.spawn_deck,
 	}
 
 
@@ -172,14 +181,33 @@ func relay_alert_from(spotter: EnemyBase, tid: String) -> void:
 		return
 	var sp := spotter.global_position if spotter.is_inside_tree() else spotter.position
 	for e in enemies:
-		if not is_instance_valid(e) or e == spotter or e.destroyed():
+		if not is_instance_valid(e) or e == spotter or e.destroyed() or e.spawn_deck != spotter.spawn_deck:
 			continue
 		var ep := e.global_position if e.is_inside_tree() else e.position
 		if sp.distance_to(ep) <= RELAY_RADIUS:
 			e.receive_squad_alert(target)
 
 
-func best_known_target(from_pos: Vector3) -> Dictionary:
+## True when `pos` is on deck `k` (always true without a deck_of: one district).
+func on_deck(pos: Vector3, k: int) -> bool:
+	return not deck_of.is_valid() or int(deck_of.call(pos)) == k
+
+
+## Stack (W4): true while a hittable player-team target stands on deck `k`. Enemies on a deck nobody is on sleep (no AI:
+## nothing there to see, and it keeps three decks of encounters within the frame budget). Always true without deck_of.
+func deck_awake(k: int) -> bool:
+	if not deck_of.is_valid() or world == null:
+		return true
+	if world.now != _awake_at:
+		_awake_at = world.now
+		_awake.clear()
+		for t in world.targets:
+			if is_instance_valid(t) and t.team == "player" and t.is_hittable() and t.is_inside_tree():
+				_awake[int(deck_of.call(t.global_position))] = true
+	return _awake.has(k)
+
+
+func best_known_target(from_pos: Vector3, deck: int = -1) -> Dictionary:
 	var now := world.now if world != null else 0.0
 	var best := {}
 	var best_d := INF
@@ -188,6 +216,8 @@ func best_known_target(from_pos: Vector3) -> Dictionary:
 		var t: Variant = e.get("target")
 		if t == null or not is_instance_valid(t) or not (t as CombatTarget).is_hittable() or now - float(e["last_seen"]) > MEMORY_TIME:
 			known_targets.erase(tid)
+			continue
+		if deck >= 0 and int(e.get("deck", deck)) != deck:
 			continue
 		var d := from_pos.distance_to(e["pos"] as Vector3)
 		if d < best_d:
@@ -290,7 +320,35 @@ func _nearest_node(p: Vector2) -> int:
 	return best
 
 
-func find_arc_path(from_arc: Vector2, to_arc: Vector2) -> Array[Vector2]:
+## Stack deck k's road graph (its own plan, in its own arc coordinates) for find_arc_path(..., k).
+func add_deck_nav(k: int, deck_plan: CityPlan) -> void:
+	var keep_n := _graph_nodes
+	var keep_a := _graph_adj
+	var keep_p := plan
+	_graph_nodes = [] as Array[Vector2]
+	_graph_adj = []
+	plan = deck_plan
+	_build_nav_graph()
+	_deck_graphs[k] = [_graph_nodes, _graph_adj]
+	_graph_nodes = keep_n
+	_graph_adj = keep_a
+	plan = keep_p
+
+
+func find_arc_path(from_arc: Vector2, to_arc: Vector2, deck: int = -1) -> Array[Vector2]:
+	if _deck_graphs.has(deck):
+		var keep_n := _graph_nodes
+		var keep_a := _graph_adj
+		_graph_nodes = _deck_graphs[deck][0]
+		_graph_adj = _deck_graphs[deck][1]
+		var r := _find_arc_path(from_arc, to_arc)
+		_graph_nodes = keep_n
+		_graph_adj = keep_a
+		return r
+	return _find_arc_path(from_arc, to_arc)
+
+
+func _find_arc_path(from_arc: Vector2, to_arc: Vector2) -> Array[Vector2]:
 	var out: Array[Vector2] = []
 	if _graph_nodes.is_empty() or from_arc.distance_to(to_arc) < 22.0:
 		return out

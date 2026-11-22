@@ -25,7 +25,8 @@ const HEADER := 7
 const T_PING := 1
 const T_PONG := 2
 const T_ROW := 3          ## a client's telemetry row for the host's file
-const T_SNAP := 16        ## mech snapshots (not built yet: owner-authority streams go here)
+const T_SNAP := 16        ## mech snapshots (NetMechCodec)
+const T_ENEMY := 17       ## the host's enemy stream (NetEnemyCodec)
 const T_TEST := 15        ## tests only
 
 var link := NetLink.new()
