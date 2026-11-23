@@ -7,9 +7,9 @@ extends NetTest
 
 const PEERS := 2
 const LINKS := ["off"]
-const NET_TIMEOUT := 240   # test_runner: this run gets 240 s (a whole mission), not the default 90
+const NET_TIMEOUT := 340   # test_runner: this run gets 340 s (a whole mission), not the default 90
 const SEED := 4
-const WIN_TIMEOUT := 170.0
+const WIN_TIMEOUT := 260.0   # a crew of 2 faces about twice the enemies; the bot walks (shafts, ramps) instead of jumping
 
 var td: TestDrive
 
@@ -17,7 +17,7 @@ var td: TestDrive
 func _configure() -> void:
 	net_timeout = float(NET_TIMEOUT) - 5.0
 	TestDrive.bot_profile = "veteran"
-	TestDrive.dev_bot_travel = true
+	TestDrive.dev_bot_travel = OS.get_environment("BABAMECH_BOT_DEV_TRAVEL") != "0"   # "0": walk only (MissionBot routes)
 	CombatWorld.dev_enemy_damage = TestDrive.DEV_FAST_CLEAR
 
 
@@ -52,7 +52,7 @@ func run_host() -> void:
 		eq(str(theirs.get("done", "")), str(st.get("done", [])), "the client saw the same objectives done")
 		check(str(theirs.get("ended", "")) != "", "the client heard the mission end (%s)" % str(theirs.get("ended", "")))
 		check(int(theirs.get("kills", 0)) > 0, "the client's bot saw kills (%d)" % int(theirs.get("kills", 0)))
-	print("[Test] host bot: %d dev jumps" % (td.bot.dev_jumps if td.bot != null else -1))
+	print("[Test] host bot: %s" % (str(td.bot.stats()) if td.bot != null else "none"))
 	_restore()
 	check(await wait_done(1, 20.0), "the client is done")
 
@@ -71,6 +71,7 @@ func run_client() -> void:
 	await _load()
 	check(await until(func() -> bool: return ended[0] != "", WIN_TIMEOUT + 30.0), "the host's mission end arrives")
 	var done: Array = td.mission.rules.state().get("done", []) if td.mission != null else []
+	print("[Test] client bot: %s" % (str(td.bot.stats()) if td.bot != null else "none"))
 	report("mission", {"done": str(done), "ended": ended[0], "kills": int(td._flow.get("kills", 0))})
 	_restore()
 

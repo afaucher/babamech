@@ -46,6 +46,7 @@ func run_host() -> void:
 
 
 func run_client() -> void:
+	expect_end = NetSession.HOST_CLOSED   # the host leaves with Session.leave() (the menu's way), not by quitting
 	_listen()
 	if not check(await connect_client() == "", "joined"):
 		return

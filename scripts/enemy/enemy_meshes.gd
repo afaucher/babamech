@@ -39,6 +39,8 @@ static func mesh(part: String) -> ArrayMesh:
 		"drone_hull": _drone_hull(k)
 		"drone_optic": _drone_optic(k)
 		"drone_cone": _drone_cone(k)
+		"trooper_rifle": _trooper_rifle(k)
+		"trooper_at": _trooper_at(k)
 		"debris_plate": _debris_plate(k)
 		"debris_chunk": _debris_chunk(k)
 		"rupture_core": _rupture_core(k)
@@ -89,7 +91,8 @@ static func scanner_material() -> StandardMaterial3D:
 ## Pre-cache destruction & flame meshes once at setup so first kill in combat causes zero frame spike.
 static func prewarm() -> void:
 	for p: String in ["debris_plate", "debris_chunk", "rupture_core", "turret_gun_wreck", "tank_turret_wreck",
-			"turret_sniper_gun", "turret_missile_gun", "strider_breacher_chassis", "drone_hull", "drone_optic", "drone_cone"]:
+			"turret_sniper_gun", "turret_missile_gun", "strider_breacher_chassis", "drone_hull", "drone_optic", "drone_cone",
+			"trooper_rifle", "trooper_at"]:
 		mesh(p)
 	charred_material()
 	flash_material()
@@ -480,3 +483,66 @@ static func _drone_optic(k: MeshKit) -> void:
 ## Watertight downward translucent scanner frustum (origin at belly optic, extends along -Z / -Y).
 static func _drone_cone(k: MeshKit) -> void:
 	k.lathe([Vector2(0.18, 0.0), Vector2(2.6, -9.5)], 8, VENT_GLOW, true, true)
+
+
+## Shared bulky 2.26 m armored exo-trooper body (obsidian/slate + crimson chest chevron + glowing visor + jump-pack).
+static func _trooper_body(k: MeshKit) -> void:
+	# Heavy armored boots & greaves (y = 0.0..0.95).
+	for side: float in [-1.0, 1.0]:
+		var lx := side * 0.24
+		k.box(Vector3(0.28, 0.24, 0.44), ARMOR_DARK, Vector3(lx, 0.12, -0.05))
+		k.box(Vector3(0.26, 0.44, 0.30), ARMOR_PLATE, Vector3(lx, 0.44, 0.0))
+		k.box(Vector3(0.28, 0.34, 0.32), ARMOR_DARK, Vector3(lx, 0.80, 0.02))
+	# Armored hip belt & torso cuirass (y = 0.94..1.80).
+	k.box(Vector3(0.68, 0.22, 0.42), STEEL, Vector3(0.0, 1.02, 0.0))
+	k.box(Vector3(0.84, 0.72, 0.52), ARMOR_DARK, Vector3(0.0, 1.46, 0.0))
+	k.box(Vector3(0.72, 0.22, 0.56), TRIM_RED, Vector3(0.0, 1.56, -0.02))       # bold crimson chest chevron
+	# Broad armored shoulder pauldrons + upper arms.
+	for side: float in [-1.0, 1.0]:
+		k.box(Vector3(0.36, 0.36, 0.48), ARMOR_PLATE, Vector3(side * 0.56, 1.66, 0.0))
+		k.box(Vector3(0.40, 0.12, 0.42), TRIM_RED, Vector3(side * 0.58, 1.82, 0.0))
+		k.box(Vector3(0.22, 0.46, 0.24), ARMOR_DARK, Vector3(side * 0.54, 1.32, -0.10))
+	# Visored combat helmet (peaks ~2.26 m) + bright unshaded crimson visor strip.
+	k.box(Vector3(0.46, 0.42, 0.48), ARMOR_DARK, Vector3(0.0, 2.02, -0.02))
+	k.box(Vector3(0.48, 0.10, 0.44), ARMOR_PLATE, Vector3(0.0, 2.22, 0.0))
+	k.glow = true
+	k.box(Vector3(0.40, 0.14, 0.12), OPTIC_GLOW, Vector3(0.0, 2.02, -0.25))     # bright crimson visor
+	k.glow = false
+	# Backpack jump-thruster pack with twin downward nozzles.
+	k.box(Vector3(0.58, 0.62, 0.30), ARMOR_PLATE, Vector3(0.0, 1.48, 0.36))
+	for side: float in [-1.0, 1.0]:
+		k.tube(Vector3(side * 0.18, 1.24, 0.40), Vector3(side * 0.20, 1.00, 0.44), 0.09, 6, STEEL)
+		k.glow = true
+		k.box(Vector3(0.12, 0.06, 0.12), VENT_GLOW, Vector3(side * 0.20, 0.98, 0.44))
+		k.glow = false
+
+
+## Assault exo-trooper (troop_squad): heavy long anti-armor pulse rifle extending to z = -1.48 m.
+static func _trooper_rifle(k: MeshKit) -> void:
+	_trooper_body(k)
+	# Supporting left forearm + right rifle arm.
+	k.box(Vector3(0.20, 0.20, 0.46), STEEL, Vector3(-0.24, 1.32, -0.44))
+	k.box(Vector3(0.20, 0.20, 0.42), STEEL, Vector3(0.32, 1.34, -0.36))
+	# Heavy anti-armor rifle receiver + long barrel + glowing crimson sight.
+	k.box(Vector3(0.18, 0.24, 0.92), ARMOR_DARK, Vector3(0.22, 1.38, -0.68))
+	k.tube(Vector3(0.22, 1.40, -1.06), Vector3(0.22, 1.40, -1.48), 0.06, 6, STEEL)
+	k.glow = true
+	k.box(Vector3(0.12, 0.10, 0.14), OPTIC_GLOW, Vector3(0.22, 1.54, -0.68))
+	k.glow = false
+
+
+## Rooftop Anti-Armor exo-trooper (troop_roof): oversized shoulder-mounted AT rocket launcher + spare canister.
+static func _trooper_at(k: MeshKit) -> void:
+	_trooper_body(k)
+	# Supporting arms raised to hold shoulder launcher.
+	k.box(Vector3(0.20, 0.24, 0.44), STEEL, Vector3(-0.18, 1.54, -0.34))
+	k.box(Vector3(0.22, 0.24, 0.36), STEEL, Vector3(0.42, 1.62, -0.22))
+	# Oversized shoulder-mounted anti-armor tube (z = +0.76..-1.50 m) with crimson launch collar & optic.
+	k.tube(Vector3(0.42, 1.88, 0.76), Vector3(0.42, 1.88, -1.50), 0.17, 8, ARMOR_DARK)
+	k.tube(Vector3(0.42, 1.88, -1.32), Vector3(0.42, 1.88, -1.52), 0.22, 8, TRIM_RED)
+	k.tube(Vector3(0.42, 1.88, 0.62), Vector3(0.42, 1.88, 0.80), 0.21, 8, STEEL)
+	k.glow = true
+	k.box(Vector3(0.12, 0.12, 0.22), OPTIC_GLOW, Vector3(0.24, 1.98, -0.78))
+	k.glow = false
+	# Spare dorsal rocket tube strapped to backpack.
+	k.tube(Vector3(-0.24, 1.25, 0.56), Vector3(-0.24, 2.08, 0.56), 0.11, 6, TRIM_RED)

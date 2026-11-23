@@ -20,6 +20,8 @@ const BEHAVIOURS := {
 	"enemy_lance": preload("res://scripts/combat/weapons/enemy_lance.gd"),
 	"enemy_rockets": preload("res://scripts/combat/weapons/enemy_rockets.gd"),
 	"enemy_scatter": preload("res://scripts/combat/weapons/enemy_scatter.gd"),
+	"enemy_troop_rifle": preload("res://scripts/combat/weapons/enemy_troop_rifle.gd"),
+	"enemy_troop_at": preload("res://scripts/combat/weapons/enemy_troop_at.gd"),
 }
 
 static var _instances: Dictionary = {}

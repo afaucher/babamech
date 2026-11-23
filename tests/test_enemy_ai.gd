@@ -193,7 +193,7 @@ func _curved_ring_and_spawner_determinism() -> void:
 	var a := EnemySpawner.plan_encounters(plan1, ring1, spawn_p)
 	var b := EnemySpawner.plan_encounters(plan1, ring1, spawn_p)
 	eq(a.size(), b.size(), "same seed spawns identical enemy count (%d)" % a.size())
-	check(a.size() >= 5 and a.size() <= 6, "city district spawns a well-spaced 5-6 enemy set (%d)" % a.size())
+	check(a.size() >= 6 and a.size() <= 7, "city district spawns a well-spaced 6-7 enemy set (%d)" % a.size())
 	var types := {}
 	for i in a.size():
 		eq(str(a[i]["id"]), str(b[i]["id"]), "deterministic enemy id %d" % i)
@@ -204,8 +204,9 @@ func _curved_ring_and_spawner_determinism() -> void:
 		types[str(a[i]["type"])] = int(types.get(str(a[i]["type"]), 0)) + 1
 	var n_turret := int(types.get("turret", 0)) + int(types.get("turret_sniper", 0)) + int(types.get("turret_missile", 0))
 	var n_strider := int(types.get("strider", 0)) + int(types.get("strider_breacher", 0))
-	check(n_turret >= 1 and n_strider >= 1 and int(types.get("tank", 0)) >= 1 and int(types.get("drone", 0)) >= 1,
-		"district includes turret, strider, tank and drone classes (%s)" % str(types))
+	var n_troop := int(types.get("troop_squad", 0)) + int(types.get("troop_roof", 0))
+	check(n_turret >= 1 and n_strider >= 1 and int(types.get("tank", 0)) >= 1 and int(types.get("drone", 0)) >= 1 and n_troop >= 1,
+		"district includes turret, strider, tank, drone and troop classes (%s)" % str(types))
 
 	var plan2 := CityPlan.make({"seed": 8.0, "walls": 1.0})
 	var ring2 := RingFrame.new(plan2.p("radius"))

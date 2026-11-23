@@ -41,7 +41,8 @@ func _ready() -> void:
 	var renderer_note := GraphicsQuality.sync_renderer(str(settings["renderer"]))   # override.cfg for the next launch
 	print("[Graphics] %s, quality %s%s, renderer %s%s" % [GraphicsQuality.adapter_note(), CityQuality.name_of(GraphicsQuality.level()),
 		" (--quality)" if GraphicsQuality.override_level >= 0 else "", GraphicsQuality.renderer_current(),
-		(": " + renderer_note) if renderer_note != "" else ""])
+		(": " + renderer_note) if renderer_note != "" else ""]
+		+ (" (first-launch relaunch)" if args.has(GraphicsQuality.NO_RELAUNCH_FLAG) else ""))
 	# The profile goes into the session before NetSession's dev flags open a crew with it (they run deferred).
 	var head := arg_value(args, "--head")
 	var accent := arg_value(args, "--accent")   # run-only, like --head (run.ps1 -Crew gives each window its own)

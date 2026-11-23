@@ -15,15 +15,16 @@ const STRIDER_CLEAR := 2.2         ## m ground clearance radius for Hound Skirmi
 const TANK_CLEAR := 3.8            ## m ground clearance radius for Bastion Siege Tank
 const TURRET_CLEAR := 2.5          ## m clearance radius for Enforcer Turret variants on rooftops
 const DRONE_CLEAR := 2.2           ## m aerial clearance radius for Patrol Drone
+const TROOP_CLEAR := 2.0           ## m anchor clearance radius for Exo-Trooper fireteams
 
 
-## Compute deterministic spawn specs (5–6 well-spaced enemies solo incl. 1 Patrol Drone; scaled cleanly for 2–4 co-op crews).
+## Compute deterministic spawn specs (6–7 well-spaced enemies solo incl. 1 Troop Squad, 1 Rooftop AT Team & 1 Patrol Drone).
 static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vector3, crew_size: int = 1) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	if plan == null or ring == null:
 		return out
 	var rng := RandomNumberGenerator.new()
-	rng.seed = hash([plan.checksum(), "enemies_v3"])
+	rng.seed = hash([plan.checksum(), "enemies_v4"])
 	var p_arc := ring.world_to_arc(player_spawn)
 	var p2 := Vector2(p_arc.x, p_arc.y)
 	var used_spots: Array[Vector2] = [p2]
@@ -32,7 +33,6 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 
 	# 1. Avenue Scout (1 Hound Skirmisher or Breacher ~54 m ahead, patrolling AWAY/ACROSS the avenue).
 	var scout_type := "strider_breacher" if rng.randi() % 2 == 0 else "strider"
-	var park_type := "strider" if scout_type == "strider_breacher" else "strider_breacher"
 	var s_skirm := clampf(p_arc.y + 54.0, plan.extent.position.y + 18.0, plan.extent.end.y - 22.0)
 	var x_off := -4.0 if rng.randi() % 2 == 0 else 4.0
 	var x_skirm := lane + x_off
@@ -71,17 +71,23 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 		]))
 		used_spots.append(tank_pt)
 
-	# 4. Distant Park / Plaza Patrol (opposite light variant from #1, well away from spawn >= 72 m out).
+	# 4. Distant Park / Street-Corner Exo-Trooper Fireteam (4-man assault squad >= 68 m out, with jump-pack capability).
+	var troop_placed := false
 	var open_pts := _open_lot_centers(plan)
 	for oi in open_pts.size():
-		var c := _find_clear_ground(plan, open_pts[oi], STRIDER_CLEAR, used_spots, 28.0, p2)
-		if is_nan(c.x) or c.distance_to(p2) < 72.0:
+		var c := _find_clear_ground(plan, open_pts[oi], TROOP_CLEAR, used_spots, 24.0, p2)
+		if is_nan(c.x) or c.distance_to(p2) < 68.0:
 			continue
-		var r := 8.0
-		var patrol: Array[Vector2] = [c + Vector2(-r, -r * 0.5), c + Vector2(r, -r * 0.5), c + Vector2(r, r * 0.5), c + Vector2(-r, r * 0.5)]
-		out.append(_spec(next_id, park_type, c.x, c.y, CityPlan.CURB_H, _yaw_toward(p2, c), "park_patrol", patrol))
+		out.append(_spec(next_id, "troop_squad", c.x, c.y, CityPlan.CURB_H, _yaw_toward(p2, c), "troop_corner"))
 		used_spots.append(c)
+		troop_placed = true
 		break
+	if not troop_placed:
+		var side_x := 28.0 if rng.randi() % 2 == 0 else -28.0
+		var fallback_pt := _find_clear_ground(plan, Vector2(lane + side_x, clampf(p_arc.y + 74.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)), TROOP_CLEAR, used_spots, 16.0, p2)
+		if not is_nan(fallback_pt.x):
+			out.append(_spec(next_id, "troop_squad", fallback_pt.x, fallback_pt.y, 0.0, _yaw_toward(p2, fallback_pt), "troop_corner"))
+			used_spots.append(fallback_pt)
 
 	# 5. Far Flank Rooftop Overwatch (1 Sniper Turret >= 95 m away contesting long-range avenue sightlines).
 	var far_roof := _pick_roof(plan, roof_cands, used_spots, p2, 95.0, 175.0, false, rng)
@@ -94,7 +100,15 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 		out.append(sp)
 		used_spots.append(rp)
 
-	# 6. Patrol / Scout Drone (1 unarmed aerial spotter >= 68 m out on a mid-to-far avenue loop, 15 m altitude).
+	# 6. Rooftop Anti-Armor Exo-Trooper Team (4-man AT rocket squad on a jumpable low/mid-rise roof, y1 <= 13.5 m).
+	var low_roofs := roof_cands.filter(func(c: Dictionary) -> bool: return float(c["t_y1"]) <= 13.5)
+	var troop_roof := _pick_roof(plan, low_roofs if not low_roofs.is_empty() else roof_cands, used_spots, p2, 76.0, 155.0, false, rng)
+	if not troop_roof.is_empty():
+		var trsp := _troop_roof_spec(plan, next_id, troop_roof, p2, "troop_roof")
+		out.append(trsp)
+		used_spots.append(Vector2(float(trsp["x"]), float(trsp["s"])))
+
+	# 7. Patrol / Scout Drone (1 unarmed aerial spotter >= 68 m out on a mid-to-far avenue loop, 15 m altitude).
 	var s_drone := clampf(p_arc.y + 82.0, plan.extent.position.y + 24.0, plan.extent.end.y - 24.0)
 	var d_side := 14.0 if rng.randi() % 2 == 0 else -14.0
 	var d_pt := _find_clear_drone_spot(plan, Vector2(lane + d_side, s_drone), used_spots, p2, DRONE_SAFE_RADIUS)
@@ -103,7 +117,7 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 		out.append(_spec(next_id, "drone", d_pt.x, d_pt.y, DRONE_CRUISE_ALT, _yaw_toward(p2, d_pt), "drone_patrol", d_loop))
 		used_spots.append(d_pt)
 
-	# Co-op crew reinforcements (crew_size >= 2): deterministic extra pockets mixing variants + 2nd Drone at crew >= 3.
+	# Co-op crew reinforcements (crew_size >= 2): deterministic extra pockets mixing variants + troops + 2nd Drone at crew >= 3.
 	var crew := clampi(crew_size, 1, 4)
 	if crew >= 2:
 		var extra_sk := _find_clear_ground(plan, Vector2(lane - x_off * 2.0, clampf(p_arc.y + 68.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)), STRIDER_CLEAR, used_spots, 16.0, p2)
@@ -134,29 +148,38 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 				t2_pt, Vector2(t2_pt.x, clampf(t2_pt.y - 12.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)),
 			]))
 			used_spots.append(t2_pt)
-		var esc_pt := _find_clear_ground(plan, Vector2(lane - side_x * 0.6, clampf(p_arc.y + 84.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)), STRIDER_CLEAR, used_spots, 16.0, p2)
+		var esc_pt := _find_clear_ground(plan, Vector2(lane - side_x * 0.6, clampf(p_arc.y + 84.0, plan.extent.position.y + 20.0, plan.extent.end.y - 20.0)), TROOP_CLEAR, used_spots, 16.0, p2)
 		if not is_nan(esc_pt.x):
-			out.append(_spec(next_id, "strider", esc_pt.x, esc_pt.y, 0.0, _yaw_toward(p2, esc_pt), "coop_escort", [
-				esc_pt + Vector2(-7.0, 0.0), esc_pt + Vector2(7.0, 0.0),
-			]))
+			out.append(_spec(next_id, "troop_squad", esc_pt.x, esc_pt.y, 0.0, _yaw_toward(p2, esc_pt), "coop_troops"))
 			used_spots.append(esc_pt)
-		# Second Patrol Drone on the opposite far flank.
 		var d2_pt := _find_clear_drone_spot(plan, Vector2(lane - d_side * 1.4, clampf(p_arc.y + 112.0, plan.extent.position.y + 26.0, plan.extent.end.y - 22.0)), used_spots, p2, 84.0)
 		if not is_nan(d2_pt.x):
 			out.append(_spec(next_id, "drone", d2_pt.x, d2_pt.y, DRONE_CRUISE_ALT + 1.0, _yaw_toward(p2, d2_pt), "coop_drone", _drone_patrol_loop(plan, d2_pt, lane)))
 			used_spots.append(d2_pt)
 	if crew >= 4:
-		var r4 := _pick_roof(plan, roof_cands, used_spots, p2, 68.0, 175.0, false, rng)
+		var r4 := _pick_roof(plan, low_roofs if not low_roofs.is_empty() else roof_cands, used_spots, p2, 68.0, 175.0, false, rng)
 		if not r4.is_empty():
-			var r4p := Vector2(float(r4["x"]), float(r4["s"]))
-			var r4sp := _spec(next_id, "turret_sniper", r4p.x, r4p.y, float(r4["h"]), _yaw_toward(p2, r4p), "coop_roof_4p")
-			r4sp["b_center"] = r4["b_center"]
-			r4sp["t_off"] = r4["t_off"]
-			r4sp["t_y1"] = r4["t_y1"]
+			var r4sp := _troop_roof_spec(plan, next_id, r4, p2, "coop_troop_roof_4p")
 			out.append(r4sp)
-			used_spots.append(r4p)
+			used_spots.append(Vector2(float(r4sp["x"]), float(r4sp["s"])))
 
 	return out
+
+
+## Place a 4-man Rooftop Anti-Armor Team on a standable low/mid-rise roof tier, facing toward the avenue/player.
+static func _troop_roof_spec(_plan: CityPlan, next_id: Array, roof: Dictionary, p2: Vector2, pocket: String) -> Dictionary:
+	var bc: Vector2 = roof["b_center"]
+	var off: Vector2 = roof["t_off"]
+	var tsz: Vector2 = roof.get("t_size", Vector2(12.0, 12.0))
+	var tc := bc + off
+	var h := float(roof["h"])
+	var span := clampf(minf(tsz.x, tsz.y) * 0.5 - 1.2, 2.2, 8.5)
+	var sp := _spec(next_id, "troop_roof", tc.x, tc.y, h, _yaw_toward(p2, tc), pocket)
+	sp["b_center"] = bc
+	sp["t_off"] = off
+	sp["t_y1"] = roof["t_y1"]
+	sp["half_span"] = span
+	return sp
 
 
 ## Instantiate a concrete EnemyBase subclass and attach it to `squad` + `world` at its curved-deck transform. On a stack
@@ -193,6 +216,8 @@ static func spawn_all(plan: CityPlan, ring: RingFrame, player_spawn: Vector3, wo
 			for pt: Vector2 in pat:
 				pts.append(pt)
 			e.set_patrol_points(pts)
+		if e is EnemyTroopSquad and sp.has("half_span"):
+			(e as EnemyTroopSquad).set_formation_spacing(EnemyTroopSquad.DEFAULT_SPACING, float(sp["half_span"]))
 		squad.add_enemy(e)
 		spawned.append(e)
 	return spawned
@@ -204,6 +229,7 @@ static func make_enemy(type_id: String) -> EnemyBase:
 		"strider", "strider_breacher": return EnemyStrider.new()
 		"tank": return EnemyTank.new()
 		"drone": return EnemyDrone.new()
+		"troop_squad", "troop_roof": return EnemyTroopSquad.new()
 	return EnemyTurret.new()
 
 
@@ -330,7 +356,7 @@ static func _rooftop_candidates(plan: CityPlan, lane: float = 0.0) -> Array[Dict
 			var pos := c + off
 			var h := float(best_tier["y1"]) + CityPlan.CURB_H
 			out.append({"x": pos.x, "s": pos.y, "h": h, "near_ave": absf(pos.x - lane) < 36.0,
-				"b_center": c, "t_off": off, "t_y1": float(best_tier["y1"])})
+				"b_center": c, "t_off": off, "t_y1": float(best_tier["y1"]), "t_size": best_tier["size"]})
 	return out
 
 

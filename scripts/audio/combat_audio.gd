@@ -266,6 +266,10 @@ func _on_fired(record: Dictionary) -> void:
 		pitch = 1.18
 	elif w == "enemy_scatter":
 		pitch = 0.82
+	elif w == "enemy_troop_rifle":
+		pitch = 1.28
+	elif w == "enemy_troop_at":
+		pitch = 1.08
 	a.play_3d(cue, origin, 0.0, pitch, prof, bus)
 	if is_enemy:
 		a.play_3d("enemy.fire.accent", origin, -2.0, 1.0, "weapon", AudioDirector.BUS_SFX_WORLD)
@@ -532,8 +536,8 @@ func _lock_tag() -> String:
 func _weapon_fire_cue(w: String) -> String:
 	match w:
 		"enemy_lance": return "wpn.railgun.fire"
-		"enemy_rockets": return "wpn.rockets.fire"
-		"enemy_scatter": return "wpn.autocannon.fire"
+		"enemy_rockets", "enemy_troop_at": return "wpn.rockets.fire"
+		"enemy_scatter", "enemy_troop_rifle": return "wpn.autocannon.fire"
 	var cue := "wpn." + w + ".fire"
 	return cue if SoundBank.has_cue(cue) else "wpn.autocannon.fire"
 
@@ -541,8 +545,8 @@ func _weapon_fire_cue(w: String) -> String:
 func _telegraph_audio_kind(tk: String) -> String:
 	match tk:
 		"lance": return "beam"
-		"salvo": return "mortar"
-		"scatter": return "rush"
+		"salvo", "troop_at": return "mortar"
+		"scatter", "troop_rifle": return "rush"
 		"beacon": return "pulse"
 	return tk
 

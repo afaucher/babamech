@@ -100,7 +100,7 @@ The session's own watchdogs decide; the transports' timeouts are wide so they ne
 | ENet peer timeout (`ENetPacketPeer.set_timeout`, both sides, `_tune_enet` as soon as the peer exists) | ENet default: limit 32, min 5000 ms, max 30000 ms | limit 32, min 30000 ms, max 60000 ms (`ENET_TIMEOUT_*`) |
 | Steam connected timeout (`k_ESteamNetworkingConfig_TimeoutConnected` = 25, global, before the SteamMultiplayerPeer opens: `NetSteamLink.apply_timeouts`) | Steam default 10000 ms | 60000 ms (Steam answers keepalives on its own thread, so a blocked main thread alone doesn't trip it) |
 | Host drops a silent client | `CLIENT_SILENCE` 10 s | 10 s; while that member is loading (launch until its mission.ready): `Session.mission.load_allowance()` = load timeout + 2.5 + 5 s (52.5 s) |
-| Client ends a silent session | `HOST_SILENCE` 6 s, reason "The host left" | 6 s, reason `HOST_SILENT` "Lost the host (no answer)"; while loading (launch until mission.go): `load_allowance()`, reason `HOST_LOST_LOADING` "Lost the host while loading" |
+| Client ends a silent session | `HOST_SILENCE` 6 s, reason "The host left" (now `HOST_LEFT` is "Lost the host (connection closed)") | 6 s, reason `HOST_SILENT` "Lost the host (no answer)"; while loading (launch until mission.go): `load_allowance()`, reason `HOST_LOST_LOADING` "Lost the host while loading" |
 | Load barrier | `LOAD_TIMEOUT` 45 s after start_t, kick `LOAD_SLOW` | the same, overridable per machine: `Session.mission.load_timeout` (tests: 4 s) |
 | This machine's own stall | counted as the other side's silence | a frame longer than `STALL_GRACE` (0.5 s) moves every silence clock forward by the stall (`_pause_silence`; logged, telemetry note) |
 
@@ -125,8 +125,17 @@ client, back from its stall, heard nothing and ended 6 s later with "The host le
 - **Kicks:** a member sent out (`Session.kick`: DESYNC, LOAD_SLOW) is disconnected `REFUSE_GRACE` after it is HEARD
   again (so it has had the refusal; an ENet disconnect in the same receive batch would discard it), or `KICK_WAIT`
   (30 s) at the latest. Refused joiners keep the plain 1 s grace.
-- **Reasons on screen:** a client's `Session.last_reason` (the menu shows it) is `LOAD_SLOW`, `DESYNC`,
-  `HOST_LOST_LOADING`, `HOST_SILENT` or `HOST_LEFT` (the host said bye or closed). The host's `Session.crew_note(text)`
+- **Reasons on screen:** a client's `Session.last_reason` (the menu shows it) is `LOAD_SLOW`, `DESYNC` (kicks: their
+  own reason), `HOST_LOST_LOADING` / `HOST_SILENT` (timeouts), `HOST_ENDED` "The host ended the session" (the host's
+  game quit, or an `--auto-quit` run ended) / `HOST_CLOSED` "The host closed the crew" (the host left from the menu):
+  the reason in the host's `sys.bye`, or `HOST_LEFT` "Lost the host (connection closed)" (the transport closed with no
+  bye: a crash, a kill, ENet giving up). **The bye arrives:** the host sends `sys.bye {reason}`, flushes, and keeps its
+  transport open (polled, ignored: the session is already over) until every client has closed its end, which a client
+  does as soon as it reads the bye, `BYE_LINGER` (1.5 s) at most; a disconnect in the same receive batch would discard
+  the bye (the kick lesson). On quit the bye goes from `NetSession.QuitWatch`, a root child that leaves the tree just
+  before Session, while the Wire can still send (Session's own `_exit_tree` runs after its children's). Before this a
+  host's normal quit closed the transport with no bye at all, so the client showed "The host left", the same text a
+  real ENet timeout gave. Test: `test_net_bye`; every net test's client now expects `HOST_ENDED` when the host quits. The host's `Session.crew_note(text)`
   ("c1 dropped: went silent while loading", "c1 dropped: lost the link while loading", "c1 dropped: was sent out:
   Didn't load the mission in time") shows under the test drive's help line for 8 s and is a telemetry note.
 - Tests: `test_net_load_stall` (a client blocks its main thread 12 s in the mission load while the host keeps sending

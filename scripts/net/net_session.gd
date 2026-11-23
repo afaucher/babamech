@@ -242,20 +242,45 @@ func _ready() -> void:
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
 	if get_parent() == get_tree().root:
 		_apply_flags.call_deferred(OS.get_cmdline_user_args(), OS.get_cmdline_args())
+		var watch := QuitWatch.new()
+		watch.name = "SessionQuitWatch"
+		watch.on_quit = _on_quitting
+		get_tree().root.add_child.call_deferred(watch)
 
 
-## The process is quitting. A host says bye (HOST_ENDED) and keeps polling its transport for up to BYE_LINGER, until
-## every client has read it and closed its end; closing the transport is what tells the others otherwise.
-func _exit_tree() -> void:
+## Exits the tree just before Session does when the process quits (a later child of the root, and the root's children
+## leave last-first), while Session's Wire is still in the tree and can send: Session's own _exit_tree comes after its
+## children's, too late for an RPC.
+class QuitWatch extends Node:
+	var on_quit: Callable
+
+	func _exit_tree() -> void:
+		if on_quit.is_valid():
+			on_quit.call()
+
+
+## The process is quitting (QuitWatch). A host says bye (HOST_ENDED) and keeps polling its transport for up to
+## BYE_LINGER, until every client has read it and closed its end.
+func _on_quitting() -> void:
 	if hosting and state == State.ONLINE:
 		leave(CREW_CLOSED, HOST_ENDED)
-	elif state != State.OFFLINE:
+	_linger_block()
+
+
+func _linger_block() -> void:
+	if _linger_peer == null:
+		return
+	while _linger_peer != null and Time.get_ticks_usec() < _linger_until_usec and not multiplayer.get_peers().is_empty():
+		multiplayer.poll()
+		OS.delay_msec(5)
+	_close_linger()
+
+
+## Closing the transport is what tells the others (a host has said bye in _on_quitting already, when it could).
+func _exit_tree() -> void:
+	if state != State.OFFLINE:
 		_end(CREW_CLOSED if hosting else YOU_LEFT, true)
-	if _linger_peer != null:
-		while _linger_peer != null and Time.get_ticks_usec() < _linger_until_usec and not multiplayer.get_peers().is_empty():
-			multiplayer.poll()
-			OS.delay_msec(5)
-		_close_linger()
+	_linger_block()
 
 
 # --- Asking (anyone may) -------------------------------------------------------------------------------

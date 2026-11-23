@@ -121,6 +121,8 @@ var bot: MissionBot
 var _load_label: Label            ## "Building the station... 63%" while loading
 var _t_load := 0                  ## msec the load started
 var _t_city := 0                  ## msec the city was done
+## ShaderWarmup is drawing every look behind its overlay (the load's first frames and its last ones; not headless).
+var warming := false
 
 
 ## Authority (scripts/net/net.gd): the seed and the spawn layout are fixed by the mission; everything else here is this
@@ -133,12 +135,17 @@ func net_fields() -> Dictionary:
 		"_ignore_mouse_until": Net.LOCAL, "_shooting": Net.LOCAL, "_held": Net.PRIVATE, "crew_sync": Net.LOCAL,
 		"_seats": Net.SPAWN, "mission": Net.LOCAL, "enemies_spawned": Net.LOCAL,
 		"_leaving": Net.LOCAL, "_note_label": Net.LOCAL, "_note_until": Net.LOCAL, "_flow": Net.LOCAL,
-		"loading": Net.LOCAL, "loaded": Net.LOCAL, "bot": Net.LOCAL, "_load_label": Net.LOCAL, "_t_load": Net.LOCAL, "_t_city": Net.LOCAL}
+		"loading": Net.LOCAL, "loaded": Net.LOCAL, "bot": Net.LOCAL, "_load_label": Net.LOCAL, "_t_load": Net.LOCAL, "_t_city": Net.LOCAL,
+		"warming": Net.LOCAL}
 
 
 func _ready() -> void:
 	add_to_group(GraphicsQuality.GROUP)   # _on_graphics_quality when the setting changes
 	var args := OS.get_cmdline_user_args()
+	if DisplayServer.get_name() != "headless":
+		HitchLog.attach(self, func() -> String: return "warmup" if warming else ("play" if loaded else "load"))
+	if args.has("--no-shader-warmup"):
+		ShaderWarmup.enabled = false   # DEV: measure without the warm-up
 	var sess := Net.session()
 	var params: Dictionary = sess.mission_params() if sess != null and sess.online() else {}
 	crewed = not params.is_empty()
@@ -217,6 +224,12 @@ func _load_stepped(args: PackedStringArray) -> void:
 	for p: int in mechs:
 		(mechs[p] as Node).process_mode = Node.PROCESS_MODE_DISABLED
 	stack.position = Vector3.ZERO
+	if ShaderWarmup.should_run():   # the shared materials first, so the build's frames don't compile them
+		warming = true
+		await ShaderWarmup.warm(cam, null)
+		warming = false
+		if _leaving or not is_inside_tree():
+			return
 	stack.build_begin(SectionPlan.make({"seed": float(seed_value)}))
 	while not stack.build_step(STEP_BUDGET_MS):
 		_show_loading(stack.build_progress() * 0.85)
@@ -295,6 +308,19 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 	if DisplayServer.get_name() != "headless" and Audio != null and Audio.music != null:
 		Audio.music.set_ambience("city")
 		Audio.music.set_mode("calm")
+	if ShaderWarmup.should_run():
+		# Every look in the scene (all decks, mechs, enemies, heads, life) and what play makes later (FX), drawn once
+		# behind an overlay before play: solo too (paused), whose build was synchronous.
+		warming = true
+		var was_paused := get_tree().paused
+		if not crewed:
+			get_tree().paused = true
+		await ShaderWarmup.warm(cam, self)
+		if is_inside_tree():
+			get_tree().paused = was_paused
+		warming = false
+		if _leaving or not is_inside_tree():
+			return
 	# --shot <png> [--shot-after s] [--thrust]: walk forward (holding thrust), save the view, quit
 	var shot := Boot.arg_value(args, "--shot")
 	_shooting = shot != ""

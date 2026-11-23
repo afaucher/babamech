@@ -4,7 +4,8 @@ extends Node3D
 ## Bastion Siege Tank) beside an 8 m Strider player mech for scale/silhouette/palette inspection, plus a live skirmish
 ## arena with cover blocks, a 9 m roof perch, a moving target bot, tunable AI sliders, and a 3D debug overlay.
 
-const PRESETS := ["showcase", "skirmish", "turret_only", "strider_only", "tank_only", "drone", "long_range", "breacher_cover"]
+const PRESETS := ["showcase", "skirmish", "turret_only", "strider_only", "tank_only", "drone", "long_range", "breacher_cover",
+	"troops", "troops_roof"]
 const AI_MODES := ["live", "idle", "telegraph_loop", "overheat"]
 const TARGET_MODES := ["strafe", "stationary", "hidden", "bot_rookie", "bot_average", "bot_veteran", "bot_brawler"]
 const DEBUG_MODES := ["on", "off"]
@@ -254,6 +255,14 @@ func _rebuild() -> void:
 			b1.set_patrol_points([Vector2(-18.0, -44.0), Vector2(-4.0, -44.0)])
 			var b2 := _spawn("strider_breacher", "lab_breacher_2", Vector3(14.0, 0.0, -46.0), PI, ai_mode)
 			b2.set_patrol_points([Vector2(18.0, -44.0), Vector2(4.0, -44.0)])
+		"troops":
+			_spawn("troop_squad", "lab_troops_1", Vector3(-10.0, 0.0, -34.0), PI, ai_mode)
+			_spawn("troop_squad", "lab_troops_2", Vector3(12.0, 0.0, -40.0), PI, ai_mode)
+		"troops_roof":
+			var tr := _spawn("troop_roof", "lab_troops_roof", Vector3(-22.0, 9.4, -38.0), PI, ai_mode) as EnemyTroopSquad
+			if tr != null:
+				tr.set_formation_spacing(4.2, 5.6)
+			_spawn("troop_squad", "lab_troops_street", Vector3(12.0, 0.0, -38.0), PI, ai_mode)
 	_sync_params()
 
 

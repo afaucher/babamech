@@ -36,8 +36,8 @@ func _spawn_calmness_and_pocket_isolation() -> void:
 	near(td.combat.player_target.total_hp(), hp0, 0.01, "player takes 0 damage on spawn")
 	var entry_k := int(td.stack.section.entry["deck"]) if td.stack != null else 0
 	var on_entry := td.combat.enemies.filter(func(e: EnemyBase) -> bool: return e.spawn_deck == entry_k)
-	check(on_entry.size() >= 4 and on_entry.size() <= 5,
-		"Test Drive spawns 4-5 spaced enemies on the entry deck (%d; every deck has its own encounter)" % on_entry.size())
+	check(on_entry.size() >= 5 and on_entry.size() <= 7,
+		"Test Drive spawns 5-7 spaced enemies on the entry deck (%d; every deck has its own encounter)" % on_entry.size())
 
 	# Alerting the avenue scout (enemies[0]) must NOT pull distant pockets (> 80 m away).
 	var scout := td.combat.enemies[0]
@@ -319,7 +319,7 @@ func _multi_seed_spawn_and_patrol_audit() -> void:
 		var list := EnemySpawner.spawn_all(plan, ring, spawn_p, w, sq, seed_i, false)
 		await frames(2)
 		var sp := w.space()
-		var seed_ok := list.size() >= 5 and list.size() <= 6
+		var seed_ok := list.size() >= 6 and list.size() <= 7
 		total_enemies += list.size()
 
 		for e in list:
@@ -331,7 +331,8 @@ func _multi_seed_spawn_and_patrol_audit() -> void:
 				check(false, "seed %d %s too close to spawn (%.1f m)" % [seed_i, e.target_id, d_spawn])
 			var clear_r := EnemySpawner.TURRET_CLEAR if e.enemy_type.begins_with("turret") else (
 				EnemySpawner.TANK_CLEAR if e.enemy_type == "tank" else (
-				EnemySpawner.DRONE_CLEAR if e.enemy_type == "drone" else EnemySpawner.STRIDER_CLEAR))
+				EnemySpawner.DRONE_CLEAR if e.enemy_type == "drone" else (
+				EnemySpawner.TROOP_CLEAR if e.enemy_type.begins_with("troop") else EnemySpawner.STRIDER_CLEAR)))
 			if not EnemySpawner.clear_of_buildings(plan, Vector2(arc.x, arc.y), clear_r * 0.9, arc.z + 0.25):
 				seed_ok = false
 				check(false, "seed %d %s overlaps building/pillar at %s" % [seed_i, e.target_id, str(arc)])

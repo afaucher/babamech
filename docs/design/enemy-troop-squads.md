@@ -1,6 +1,6 @@
 # Enemy Troop Squads & Drop Drones
 
-Status: **proposed design** (waiting for user confirmation before implementation), 2026-11-22.
+Status: **Phase 1 implemented & verified** (Phase 2 Drop Drones queued next), 2026-11-22.
 Parent: [enemies.md](enemies.md), [enemy-tactics-and-drones.md](enemy-tactics-and-drones.md), [ambient-life.md](ambient-life.md), `AGENTS.md`, [../networking.md](../networking.md).
 
 ---
@@ -164,13 +164,23 @@ Designed cleanly now so Phase 1's `EnemyTroopSquad` plugs straight into it with 
 
 ---
 
-## 8. Open Decisions to Confirm Before Building Phase 1
+## 8. Confirmed User Decisions (2026-11-22)
 
-1. **Squad size & durability:** `4` armored troopers per squad at `28–30 HP` each (~`112–120` total squad HP, so 1 Laser /
-   Autocannon / direct Rocket kills a trooper, and 1 centered Mortar/Rocket splash wipes the cluster) — does that feel
-   right against your mech's weapons?
-2. **Mech stomp:** Should walking/landing directly on a ground or rooftop troop squad crush troopers under your feet
-   (`3.0 m` stomp radius, satisfying crunch + spark burst)?
-3. **Scope now vs. later:** Build **Phase 1 now** (`troop_squad` + `troop_roof` + cover peeking + rooftop jump-pack hop +
-   `deploy_from_air` hook), and keep **Phase 2 (`EnemyDropDrone`)** ready as the follow-up pass once Phase 1 feels great in
-   playtests — or include a first version of `EnemyDropDrone` in the same pass?
+1. **Durability & Anti-Cluster Awareness:** **Approved** — 4 troopers at `28–30 HP` each; easy to defeat individually or
+   when caught bunched together, AND **troopers actively avoid bunching**: they spread out (`4.0–6.0 m` spacing along cover
+   walls/parapets when space allows) and immediately **scatter / widen spacing or jump-pack to a roof** if hit by splash
+   or rushed by a mech, so cluster wipes reward catching them in transit or pinning them in tight cover!
+2. **Mech Stomp:** **Approved** — walking or landing within `3.0 m` horizontally (`2.5 m` vertically) of an alive trooper
+   crushes that trooper instantly under foot (`sparks + crunch + knocked-over charred exo-suit`) and triggers surviving
+   squadmates to scatter/jump-pack away.
+3. **Scope:** Build **Phase 1 now** (`troop_squad`, `troop_roof`, single-shot cover peeking, anti-cluster spacing/scatter,
+   rooftop jump-pack hop, mech stomp, and `deploy_from_air` hook); **Phase 2 (`EnemyDropDrone`)** follows next.
+
+---
+
+## 9. As Built (Phase 1)
+
+- **Weapons & Catalog:** Added `scripts/combat/weapons/enemy_troop_rifle.gd` (`150 m`, `58 m/s`, `15 dmg`, `0.60 s` telegraph) and `scripts/combat/weapons/enemy_troop_at.gd` (`190 m`, `38 m/s`, `26 dmg` + `12 / 3.8 m` splash, `0.85 s` telegraph), registered in `WeaponRegistry.BEHAVIOURS`. Added `troop_squad` (4 × `30 HP`) and `troop_roof` (4 × `28 HP`) to `EnemyCatalog.CLASSES`.
+- **Watertight Meshes:** Built `trooper_rifle` and `trooper_at` (`~2.26 m` bulky obsidian/slate exo-troopers with crimson chest chevrons, glowing crimson visors, backpack jump-thrusters, and rifle vs. shoulder AT launcher) in `EnemyMeshes` — both strictly watertight (`0` open edges in `test_geometry_audit`).
+- **`EnemyTroopSquad` (`scripts/enemy/enemy_troop_squad.gd`):** Single `EnemyBase` managing `t0..t3` components, dynamic per-trooper `world_spheres()` (`R = 1.15 m`), multi-trooper splash distribution in `apply_hit()`, anti-cluster `4.0–6.0 m` spacing with splash/rush scatter + `1.4 s` jump-pack ascent onto adjacent standable low roofs (`<= 12 m`, `kind != "plant"`), host-only mech stomp (`3.0 m` horiz / `2.5 m` vert), `deploy_from_air(landing_pos, deck)` Phase 2 hook, and zero-wire-change co-op puppet sync (`puppet_aim` + `t0..t3` HP).
+- **Spawner, Lab, Audio & Tests:** Wired `troop_squad` & `troop_roof` into `EnemySpawner.plan_encounters()` (6–7 entries per deck solo, keeping 3-deck stacks safely under `NetEnemyCodec.MAX_ENTRIES = 32`), added `"troops"` and `"troops_roof"` to `EnemyLab`, mapped cues in `CombatAudio`, and added `tests/test_enemy_troops.gd`.

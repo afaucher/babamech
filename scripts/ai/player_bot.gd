@@ -975,7 +975,11 @@ func _min_core_hp_frac() -> float:
 
 func _enemy_core_pos(e: EnemyBase) -> Vector3:
 	if e.hit_shapes.size() > 0:
-		return (e.world_spheres()[0] as Dictionary)["center"] as Vector3
+		var ws := e.world_spheres()
+		for s: Dictionary in ws:   # a troop squad: the first trooper still up (a downed one's sphere hides nothing)
+			if float(e.hp.get(s["component"], 1.0)) > 0.0:
+				return s["center"] as Vector3
+		return (ws[0] as Dictionary)["center"] as Vector3
 	return e.global_position + e.up * 3.0
 
 

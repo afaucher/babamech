@@ -54,7 +54,12 @@ func setup() -> void:
 	# 3. Every enemy down.
 	for e in td.combat.squad.enemies.duplicate():   # killing past MAX_WRECKS frees old wrecks from the list
 		if is_instance_valid(e) and not e.destroyed():
-			e.apply_damage(1.0e7, e.core_component(), "test")
+			# A troop squad is one EnemyBase with a component per trooper: the core hit downs one trooper, so hit until
+			# it is destroyed (bounded).
+			for _i in 12:
+				if e.destroyed():
+					break
+				e.apply_damage(1.0e7, e.core_component(), "test")
 	await _seconds(0.8)
 	eq(rules.current(), "extract", "every deck cleared: extraction is the objective")
 	eq(rules.text(), "Reach the extraction portal", "the objective line says so")

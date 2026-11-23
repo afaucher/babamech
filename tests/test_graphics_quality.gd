@@ -87,4 +87,25 @@ func setup() -> void:
 	GraphicsQuality.write_override(path, "gl_compatibility")
 	GraphicsQuality.write_override(path, "forward_plus")
 	check(not FileAccess.file_exists(path), "an emptied override.cfg is removed")
+
+	# The first-launch relaunch rule (integrated GPU pretended so "auto" wants Compatibility).
+	GraphicsQuality.pretend_integrated = true
+	var none: PackedStringArray = []
+	var fp := "forward_plus"
+	eq(GraphicsQuality.relaunch_block("auto", none, none, true, false, false, "", fp), "", "exported, integrated, auto, Forward+: relaunch")
+	check(GraphicsQuality.relaunch_block("auto", none, none, false, false, false, "", fp) != "", "never in a dev run")
+	check(GraphicsQuality.relaunch_block("auto", none, none, true, true, false, "", fp) != "", "never headless")
+	check(GraphicsQuality.relaunch_block("auto", PackedStringArray([GraphicsQuality.NO_RELAUNCH_FLAG]), none, true, false, false, "", fp) != "",
+		"never twice (the guard flag)")
+	check(GraphicsQuality.relaunch_block("auto", PackedStringArray(["--run-test", "x"]), none, true, false, false, "", fp) != "", "never in a test")
+	check(GraphicsQuality.relaunch_block("auto", none, none, true, false, false, "gl_compatibility", fp) != "",
+		"not when override.cfg already chose (the second launch)")
+	check(GraphicsQuality.relaunch_block("forward_plus", none, none, true, false, false, "", fp) != "", "not when the player chose")
+	check(GraphicsQuality.relaunch_block("auto", none, PackedStringArray(["--rendering-method", fp]), true, false, false, "", fp) != "",
+		"not when the command line names a renderer")
+	check(GraphicsQuality.relaunch_block("auto", none, none, true, false, false, "", "gl_compatibility") != "", "not on Compatibility already")
+	eq(GraphicsQuality.relaunch_block("auto", none, none, true, false, true, "", fp), "started by Steam", "a Steam launch only writes the file")
+	GraphicsQuality.pretend_integrated = false
+	if not GraphicsQuality.integrated_here():
+		check(GraphicsQuality.relaunch_block("auto", none, none, true, false, false, "", fp) != "", "a dedicated GPU never relaunches")
 	finish()
