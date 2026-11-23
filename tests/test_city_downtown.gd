@@ -19,16 +19,62 @@ func setup() -> void:
 	var decks := 0
 	var zoned := 0
 	var kinds := {}
+	# Pass 2 (2026-11-23): density. Zone share on zoned decks, shafts per block, slab share, pillars in the zone,
+	# diagonal views.
+	var shares: Array[float] = []
+	var per_block := {}
+	var slabs := 0
+	var towers := 0
+	var zone_blocks := 0
+	var pillar_blocks := 0
+	var diag_blocks := 0
+	var corner_blocks := 0
+	var corner_diag := 0
 	for seed_ in SEEDS:
 		var sec := SectionPlan.make({"seed": seed_})
 		for k in sec.deck_count:
 			var plan := CityPlan.for_deck(sec, k)
 			decks += 1
-			if not plan.downtown_blocks().is_empty():
+			var zone := plan.downtown_blocks()
+			if not zone.is_empty():
 				zoned += 1
+				shares.append(float(zone.size()) / float(plan.blocks.size()))
 			_check_zone(plan, "section %d deck %d" % [seed_, k], kinds)
+			for bi in zone:
+				zone_blocks += 1
+				var n := plan.shaft_rects(bi).size()
+				per_block[n] = int(per_block.get(n, 0)) + 1
+				check(n >= 2 and n <= CityPlan.DT_MAX_SHAFTS, "section %d deck %d block %d: %d shafts (2..%d)" % [seed_, k, bi, n, CityPlan.DT_MAX_SHAFTS])
+				var has_pillar := false
+				var has_corner := false
+				for i in plan.buildings_in(bi):
+					has_pillar = has_pillar or plan.buildings[i]["pillar"]
+					has_corner = has_corner or str(plan.buildings[i].get("base", "")) == "corner"
+					for t: Dictionary in plan.buildings[i]["tiers"]:
+						if str(t.get("kind", "")) == "tower":
+							towers += 1
+							slabs += 1 if str(t.get("tower", "")) == "slab" else 0
+				pillar_blocks += 1 if has_pillar else 0
+				var diag := not plan.diagonal_views(bi).is_empty()
+				diag_blocks += 1 if diag else 0
+				if has_corner:
+					corner_blocks += 1
+					corner_diag += 1 if diag else 0
 	print("decks with a zone: %d of %d; bases %s" % [zoned, decks, kinds])
 	check(float(zoned) / float(decks) >= 0.5 and float(zoned) / float(decks) <= 0.85, "about two decks in three have a zone (%d of %d)" % [zoned, decks])
+	var mean := 0.0
+	for v in shares:
+		mean += v / float(shares.size())
+		check(v >= 0.2, "a zoned deck has at least a fifth of its blocks in the zone (%.2f)" % v)
+	print("zone share on zoned decks: mean %.2f, %s" % [mean, shares])
+	check(mean >= 0.28, "zones are about a third of the deck (mean %.2f)" % mean)
+	print("shafts per zone block: %s; slabs %d of %d towers; %d of %d zone blocks hold a pillar; diagonal views in %d blocks, %d of %d corner-cut blocks"
+			% [per_block, slabs, towers, pillar_blocks, zone_blocks, diag_blocks, corner_diag, corner_blocks])
+	var slab_share := float(slabs) / maxf(float(towers), 1.0)
+	check(slab_share >= 0.3 and slab_share <= 0.5, "slab share about 40 %% (%.2f)" % slab_share)
+	check(float(pillar_blocks) >= float(zone_blocks) * 0.5, "pillar cells join the zone (%d of %d blocks)" % [pillar_blocks, zone_blocks])
+	check(diag_blocks > 0, "some blocks have a diagonal view")
+	check(corner_diag * 2 >= corner_blocks, "corner cuts mostly open a diagonal view (%d of %d)" % [corner_diag, corner_blocks])
 	for b: String in CityPlan.DT_BASES:
 		check(int(kinds.get(b, 0)) > 0, "the %s base is built somewhere (%s)" % [b, kinds])
 	for seed_ in [1, 2, 5]:
@@ -40,10 +86,12 @@ func setup() -> void:
 	finish()
 
 
+## Re-captured 2026-11-23 (city variety: alleys + stand-alone road forms on by default). Was 209989488eaa0e52 /
+## e4ec580da1956459 / props 7e78d4e1e3db1a61 (still the values with alleys 0, road_variety 0: tests/test_city_variety.gd).
 func _goldens() -> void:
-	eq(CityPlan.make({"seed": 1}).checksum(), "209989488eaa0e52", "downtown 0: the seed 1 plan checksum (golden)")
-	eq(CityPlan.make({"seed": 1, "walls": 1.0}).checksum(), "e4ec580da1956459", "downtown 0: the walled plan checksum (golden)")
-	eq(CityProps.layout_checksum(CityProps.layout(CityPlan.make({"seed": 1}))), "7e78d4e1e3db1a61", "downtown 0: the props layout (golden)")
+	eq(CityPlan.make({"seed": 1}).checksum(), "bd1d848c575e85df", "downtown 0: the seed 1 plan checksum (golden)")
+	eq(CityPlan.make({"seed": 1, "walls": 1.0}).checksum(), "3eb0728c9b4cffa2", "downtown 0: the walled plan checksum (golden)")
+	eq(CityProps.layout_checksum(CityProps.layout(CityPlan.make({"seed": 1}))), "f321076ebd6e98f1", "downtown 0: the props layout (golden)")
 	check(CityPlan.make({"seed": 1}).downtown_blocks().is_empty(), "no zone on its own by default")
 
 
@@ -73,7 +121,8 @@ func _check_zone(plan: CityPlan, what: String, kinds: Dictionary) -> void:
 	while not queue.is_empty():
 		var bi: int = queue.pop_back()
 		for o in zone:
-			if not seen.has(o) and absi(int(plan.blocks[o]["ix"]) - int(plan.blocks[bi]["ix"])) + absi(int(plan.blocks[o]["is"]) - int(plan.blocks[bi]["is"])) == 1:
+			# Pass 2: blocks sharing a side or a crossing (corner to corner) are one cluster.
+			if not seen.has(o) and maxi(absi(int(plan.blocks[o]["ix"]) - int(plan.blocks[bi]["ix"])), absi(int(plan.blocks[o]["is"]) - int(plan.blocks[bi]["is"]))) == 1:
 				seen[o] = true
 				queue.append(o)
 	eq(seen.size(), zone.size(), "%s: the zone is one contiguous cluster" % what)
@@ -131,7 +180,8 @@ func _check_zone(plan: CityPlan, what: String, kinds: Dictionary) -> void:
 		var distinct := {}
 		for u: int in units:
 			distinct[units[u]] = true
-		check(distinct.size() >= 3, "%s: three bases or more (%s)" % [tag, units.values()])
+		# Three bases or more; a block of only two based lots: both differ (pass 2).
+		check(distinct.size() >= mini(3, units.size()), "%s: three bases or more (%s)" % [tag, units.values()])
 		check(heights.size() >= 2, "%s: perches at two heights or more (%s)" % [tag, heights])
 		check(not plan.through_views(bi).is_empty(), "%s: a through view at the mech's eye" % tag)
 		# Neighbours on a block face differ.

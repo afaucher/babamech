@@ -366,14 +366,18 @@ func _build_graph() -> void:
 		var b: Dictionary = plan.blocks[bi]
 		var cell := Vector2i(int(b["ix"]), int(b["is"]))
 		var c: Array = corners[bi]
+		# Across a pedestrian street or a superblock's court (CityPlan road forms, docs/design/city-variety.md) no vehicle
+		# passes: the crossing has no signal (junction -1), people cross when they get there.
 		if by_cell.has(cell + Vector2i(1, 0)) and cell.x != spine_line - 1:     # (not across the spine: see above)
 			var o: Array = corners[int(by_cell[cell + Vector2i(1, 0)])]
-			_crossing(int(c[1]), int(o[0]), 0)
-			_crossing(int(c[2]), int(o[3]), 0)
+			var free := not plan.seg_drives("s", cell.x + 1, cell.y)
+			_crossing(int(c[1]), int(o[0]), 0, free)
+			_crossing(int(c[2]), int(o[3]), 0, free)
 		if by_cell.has(cell + Vector2i(0, 1)):
 			var o: Array = corners[int(by_cell[cell + Vector2i(0, 1)])]
-			_crossing(int(c[3]), int(o[0]), 1)
-			_crossing(int(c[2]), int(o[1]), 1)
+			var free := not plan.seg_drives("x", cell.y + 1, cell.x)
+			_crossing(int(c[3]), int(o[0]), 1, free)
+			_crossing(int(c[2]), int(o[1]), 1, free)
 
 
 ## The open lot containing `at`, or -1.
@@ -513,14 +517,14 @@ func _spine_crossings(by_cell: Dictionary, corners: Array) -> void:
 			rail_edges[e] = sc
 
 
-func _crossing(a: int, b: int, axis: int) -> void:
+func _crossing(a: int, b: int, axis: int, free: bool = false) -> void:
 	var m := int(_split.get(Vector2i(mini(a, b), maxi(a, b)), -1))
 	if m >= 0:
-		var j := _crossing_junction(a, b, axis)
+		var j := -1 if free else _crossing_junction(a, b, axis)
 		_add_edge(a, m, CROSS, j, axis)
 		_add_edge(m, b, CROSS, j, axis)
 		return
-	_add_edge(a, b, CROSS, _crossing_junction(a, b, axis), axis)
+	_add_edge(a, b, CROSS, -1 if free else _crossing_junction(a, b, axis), axis)
 
 
 ## The junction a crossing between nodes a and b belongs to.

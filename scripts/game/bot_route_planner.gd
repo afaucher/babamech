@@ -58,6 +58,8 @@ var adj: Array = []            ## node -> [edge id]
 var edges: Array = []          ## edge -> {a, b, kind: walk | ramp | shaft | glide, from, to, cost, pts: [(x, theta)]}
 var blocked: Dictionary = {}   ## edge id -> true
 var by_deck: Array = []        ## per deck: [node]
+var closed: Array = []         ## per deck: Array[Rect2] road segments a mech can't walk (a superblock "none" court
+#                                CityPlan.court_open() says is blocked); line edges through them are left out
 var last_error := ""
 var no_drops := false         ## tests: plan without shafts and glides (ramps only)
 var _key: Dictionary = {}      ## "k:x:s" -> node
@@ -66,7 +68,7 @@ var _key: Dictionary = {}      ## "k:x:s" -> node
 func net_fields() -> Dictionary:
 	return {"stack": Net.LOCAL, "sec": Net.LOCAL, "cuts": Net.PRIVATE, "unders": Net.PRIVATE, "cells": Net.PRIVATE,
 		"xlines": Net.PRIVATE, "slines": Net.PRIVATE, "pos": Net.PRIVATE, "deck_of": Net.PRIVATE, "adj": Net.PRIVATE,
-		"edges": Net.PRIVATE, "blocked": Net.PRIVATE, "by_deck": Net.PRIVATE, "last_error": Net.PRIVATE,
+		"edges": Net.PRIVATE, "blocked": Net.PRIVATE, "by_deck": Net.PRIVATE, "closed": Net.PRIVATE, "last_error": Net.PRIVATE,
 		"_key": Net.PRIVATE, "no_drops": Net.PRIVATE}
 
 
@@ -100,6 +102,7 @@ func setup_plans(section: SectionPlan, plans: Array[CityPlan]) -> void:
 		for b: Dictionary in plan.blocks:
 			c.append(b["rect"] as Rect2)
 		cells.append(c)
+		closed.append(_closed_segments(plan))
 		var xs: Array[float] = []
 		for road: Dictionary in plan.roads_x:
 			if road.has("lanes"):
@@ -293,6 +296,11 @@ func _node(k: int, p: Vector2) -> int:
 func _walk_edge(k: int, a: Vector2, b: Vector2, on_line: bool) -> void:
 	if not seg_ok(k, a, b, -1 if on_line else cell_at(k, a), on_line):
 		return
+	if on_line:
+		var mid := (a + b) * 0.5
+		for r: Rect2 in closed[k]:
+			if r.has_point(mid):
+				return
 	var ia := _node(k, a)
 	var ib := _node(k, b)
 	var d := a.distance_to(b)
@@ -305,6 +313,26 @@ func _add_edge(a: int, b: int, kind: String, cost: float, pts: Array, connector:
 	edges.append({"a": a, "b": b, "kind": kind, "from": deck_of[a], "to": deck_of[b], "cost": cost, "pts": pts,
 		"connector": connector})
 	(adj[a] as Array).append(id)
+
+
+## The road segments of `plan` the mech can't walk along (CityPlan road forms, docs/design/city-variety.md "Graphs"):
+## superblock ("none") segments whose court isn't open (CityPlan.court_open). Streets, lanes and pedestrian streets are
+## walkable (the planner walks every road line: CityPlan.walk_graph()'s edges, not road_graph()'s vehicle edges).
+static func _closed_segments(plan: CityPlan) -> Array[Rect2]:
+	var out: Array[Rect2] = []
+	if not plan.has_method("seg_form") or not plan.has_method("court_open"):
+		return out
+	var nx := plan.roads_x.size()
+	var ns := plan.roads_s.size()
+	for i in nx:
+		for j in ns - 1:
+			if plan.seg_form("s", i, j) == "none" and not plan.court_open("s", i, j):
+				out.append(plan.seg_inner("s", i, j))
+	for j in ns:
+		for i in nx - 1:
+			if plan.seg_form("x", j, i) == "none" and not plan.court_open("x", j, i):
+				out.append(plan.seg_inner("x", j, i))
+	return out
 
 
 ## True when walking straight from a to b on deck k touches no floor cut (grown CUT_GROW), no ramp standing on the deck

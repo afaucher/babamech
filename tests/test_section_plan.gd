@@ -43,11 +43,13 @@ func setup() -> void:
 ## before them (grid, zones, regions, pillars, connectors, roads, mech route, hooks, walls and gates, ends) is unchanged.
 const LEGACY_1_40 := "3ac644959496e0cf"
 ## checksum() of seeds 1..40, concatenated and sha256'd, recorded before ramp bridges and segment forms: with the forms
-## dormant (default fractions 0) and the bridge rule on, the whole plan hashes exactly as before.
+## off (fractions 0, the defaults until 2026-11-23) and the bridge rule on, the whole plan hashes exactly as before.
 const CHECKSUM_1_40 := "af844bf36222946e"
+## The same digest at the DEFAULTS since the forms went live (2026-11-23: f_lane 0.20, f_pedestrian 0.15, f_none 0.08).
+const CHECKSUM_DEFAULT_1_40 := "730d587c09108457"
 const ZERO_FORMS := {"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0}
-## The intended mix (DEFAULTS keep the forms dormant at 0 until the city draws them).
-const FORM_MIX := {"f_lane": 0.20, "f_pedestrian": 0.10, "f_none": 0.08}
+## The mix the DEFAULTS roll (forms live since 2026-11-23).
+const FORM_MIX := {"f_lane": 0.20, "f_pedestrian": 0.15, "f_none": 0.08}
 const EXTREMES := [
 	{"f_pedestrian": 0.6, "f_none": 0.6}, {"f_lane": 1.0}, {"f_pedestrian": 1.0}, {"f_none": 1.0},
 	{"f_pedestrian": 0.6, "f_none": 0.6, "decks": 5.0, "arc": 900.0, "width": 450.0, "cell": 60.0, "shafts": 3.0},
@@ -62,20 +64,38 @@ func _forms_sweep() -> void:
 	var a := SectionPlan.make(mo)
 	var b := SectionPlan.make(mo)
 	eq(str(a.forms), str(b.forms), "same seed, same segment forms")
-	check(a.checksum() != SectionPlan.make({"seed": 7.0}).checksum(), "forms are in the checksum")
-	# Defaults: forms dormant, every segment a street, the plan and its checksum exactly as before forms and bridges.
+	var zo7 := ZERO_FORMS.duplicate()
+	zo7["seed"] = 7.0
+	check(a.checksum() != SectionPlan.make(zo7).checksum(), "forms are in the checksum")
+	# Forms off: every segment a street, the plan and its checksum exactly as before forms and bridges.
+	# Defaults: the forms are live (the FORM_MIX plan), some minor segment is not a street on every seed.
 	var sums := ""
+	var def_sums := ""
 	for seed_ in range(1, 41):
-		var plan := SectionPlan.make({"seed": float(seed_)})
+		var zo := ZERO_FORMS.duplicate()
+		zo["seed"] = float(seed_)
+		var plan := SectionPlan.make(zo)
 		sums += plan.checksum()
 		var streets := true
 		for k in plan.deck_count:
 			for sg: Dictionary in plan.segments(k):
 				streets = streets and sg["form"] == "street"
-		check(streets, "seed %d: forms dormant by default" % seed_)
-		eq(plan.checksum(), SectionPlan.make({"seed": float(seed_), "bridge_rule": 0.0}).checksum(),
-				"seed %d: the bridge rule changes nothing stored" % seed_)
-	eq(sums.sha256_text().substr(0, 16), CHECKSUM_1_40, "seeds 1..40: default checksums as before forms and bridges")
+		check(streets, "seed %d: forms off, every segment a street" % seed_)
+		var zb := zo.duplicate()
+		zb["bridge_rule"] = 0.0
+		eq(plan.checksum(), SectionPlan.make(zb).checksum(), "seed %d: the bridge rule changes nothing stored" % seed_)
+		var dp := SectionPlan.make({"seed": float(seed_)})
+		def_sums += dp.checksum()
+		var fm := FORM_MIX.duplicate()
+		fm["seed"] = float(seed_)
+		eq(dp.checksum(), SectionPlan.make(fm).checksum(), "seed %d: the defaults roll FORM_MIX" % seed_)
+		var formed := false
+		for k in dp.deck_count:
+			for sg: Dictionary in dp.segments(k):
+				formed = formed or sg["form"] != "street"
+		check(formed, "seed %d: forms live by default" % seed_)
+	eq(sums.sha256_text().substr(0, 16), CHECKSUM_1_40, "seeds 1..40: forms-off checksums as before forms and bridges")
+	eq(def_sums.sha256_text().substr(0, 16), CHECKSUM_DEFAULT_1_40, "seeds 1..40: default checksums (forms live)")
 	# Old data unmoved, and at default grade one bridge goes per ramp; mix of the minor segments (intended mix).
 	var all := ""
 	var mix := {"street": 0, "lane": 0, "pedestrian": 0, "none": 0}

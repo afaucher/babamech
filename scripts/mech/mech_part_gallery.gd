@@ -2,7 +2,8 @@ class_name MechPartGallery
 extends Node3D
 ## Lab subject: the low-poly art parts of the mech (MechMeshes), each on its own: every part laid out in rows by group
 ## (chassis, legs, weapons, back equipment, heads), or one part alone, turning. A small marker shows the origin of each part (its pivot:
-## the proximal joint of a leg segment, the mount point of a weapon, the neck base of a head).
+## the proximal joint of a leg segment, the mount point of a weapon, the neck base of a head). `chassis` picks whose body
+## and leg parts fill the first two rows (ChassisParts.ORDER: the Strider's MechMeshes, the Bulwark's BulwarkMeshes).
 
 const PARAMS := [
 	{"id": "spacing", "label": "Spacing", "min": 1.5, "max": 4.0, "value": 3.0},
@@ -12,6 +13,7 @@ const PARAMS := [
 
 var params: Dictionary = {}
 var part := "all"
+var chassis := "strider"
 var time_scale := 1.0
 var _spinners: Array[Node3D] = []
 var _rows := 1
@@ -38,6 +40,8 @@ func rebuild() -> void:
 		_add(part, Vector3(0, 1.4, 0))
 		return
 	var groups: Array = [MechMeshes.BODY_PARTS, MechMeshes.LEG_PARTS, [], [], []]
+	if chassis == "bulwark":
+		groups = [BulwarkMeshes.BODY_PARTS, BulwarkMeshes.LEG_PARTS, [], [], []]
 	for w: String in MechMeshes.WEAPONS:
 		(groups[2] as Array).append("weapon_" + w)
 	for e: String in MechMeshes.EQUIPMENT:
@@ -58,7 +62,7 @@ func _add(id: String, at: Vector3) -> void:
 	var holder := Node3D.new()
 	holder.position = at
 	add_child(holder)
-	holder.add_child(MechMeshes.instance(id))
+	holder.add_child(ChassisParts.instance(id))
 	if float(params["pivots"]) >= 0.5:
 		holder.add_child(MechParts.sphere(0.04, Color(1.0, 0.1, 0.8), Vector3.ZERO, 6))
 	_spinners.append(holder)
@@ -94,12 +98,17 @@ func set_lab_param(id: String, v: float) -> void:
 func lab_options() -> Array:
 	var choices: Array = ["all"]
 	choices.append_array(MechMeshes.all_parts())
-	return [{"id": "part", "label": "Part", "choices": choices, "value": part}]
+	choices.append_array(BulwarkMeshes.all_parts())
+	return [{"id": "chassis", "label": "Chassis", "choices": ChassisParts.ORDER, "value": chassis},
+		{"id": "part", "label": "Part", "choices": choices, "value": part}]
 
 
 func set_lab_option(id: String, v: String) -> void:
 	if id == "part":
-		part = v if MechMeshes.has_part(v) else "all"
+		part = v if MechMeshes.has_part(v) or BulwarkMeshes.has_part(v) else "all"
+		rebuild()
+	elif id == "chassis":
+		chassis = v if ChassisParts.has(v) else "strider"
 		rebuild()
 
 

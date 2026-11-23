@@ -18,6 +18,14 @@ const TURRET_CLEAR := 2.5          ## m clearance radius for Enforcer Turret var
 const DRONE_CLEAR := 2.2           ## m aerial clearance radius for Patrol Drone
 const GUNSHIP_CLEAR := 3.2         ## m aerial clearance radius for Valkyrie Gunship
 const TROOP_CLEAR := 1.6           ## m ground clearance radius for an individual Exo-Trooper
+## Rooftop units must be visible from the street (roof_seen_from_street): ROOF_SIGHT_POINTS street points between
+## ROOF_SIGHT_MIN and ROOF_SIGHT_R m away see from a mech's weapon height (ROOF_SIGHT_EYE above the street) to the unit's
+## body (ROOF_SIGHT_AIM above the roof) over the plan's building boxes.
+const ROOF_SIGHT_R := 110.0
+const ROOF_SIGHT_MIN := 15.0
+const ROOF_SIGHT_EYE := 6.0
+const ROOF_SIGHT_AIM := 2.5
+const ROOF_SIGHT_POINTS := 3
 
 
 ## Deterministic total unit budget for one deck (garrison + waves combined; deeper decks & larger crews scale up).
@@ -859,6 +867,7 @@ static func _spec(next_id: Array, type_id: String, x: float, s: float, h: float,
 
 static func _rooftop_candidates(plan: CityPlan, lane: float = 0.0) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
+	var sight := _roof_sight_context(plan)   # shared by every candidate (one reference), read lazily
 	for i in plan.buildings.size():
 		var b: Dictionary = plan.buildings[i]
 		if bool(b.get("pillar", false)):
@@ -878,8 +887,118 @@ static func _rooftop_candidates(plan: CityPlan, lane: float = 0.0) -> Array[Dict
 			var pos := c + off
 			var h := float(best_tier["y1"]) + CityPlan.CURB_H
 			out.append({"x": pos.x, "s": pos.y, "h": h, "near_ave": absf(pos.x - lane) < 36.0,
-				"b_center": c, "t_off": off, "t_y1": float(best_tier["y1"]), "t_size": best_tier["size"]})
+				"b_center": c, "t_off": off, "t_y1": float(best_tier["y1"]), "t_size": best_tier["size"], "sight": sight})
 	return out
+
+
+## Street sight for rooftop units (turrets, roof fireteams): a stationary unit on a roof that no street point can see
+## keeps a sweep open until a crew climbs a roof (seed 5 deck 1: a sniper turret on a 13 m roof that 17 street points
+## 15-170 m away could not see, 172 s of a sweep spent on it). Street points: the walk graph's nodes and edge midpoints
+## (where a mech walks); occluders: every building tier >= 2.5 m and pillar cores, as boxes from the plan (no physics).
+static func _roof_sight_context(plan: CityPlan) -> Dictionary:
+	var pts: Array[Vector2] = []
+	var rg: Dictionary = plan.walk_graph() if plan.has_method("walk_graph") else plan.road_graph()
+	var nodes: Array = rg["nodes"]
+	for n: Vector2 in nodes:
+		pts.append(n)
+	for ed: Array in rg["edges"]:
+		pts.append(((nodes[int(ed[0])] as Vector2) + (nodes[int(ed[1])] as Vector2)) * 0.5)
+	var rects: Array[Rect2] = []
+	var tops: PackedFloat32Array = []
+	for b: Dictionary in plan.buildings:
+		var bc: Vector2 = b["center"]
+		for t: Dictionary in b.get("tiers", []):
+			var y1 := float(t["y1"])
+			if y1 < 2.5:
+				continue
+			var sz: Vector2 = t["size"]
+			rects.append(Rect2(bc + (t["off"] as Vector2) - sz * 0.5, sz))
+			tops.append(y1 + CityPlan.CURB_H)
+		if bool(b.get("pillar", false)):
+			var core: Dictionary = b["core"]
+			var csz: Vector2 = core["size"]
+			rects.append(Rect2(Vector2(float(core["x"]), float(core["s"])) - csz * 0.5, csz))
+			tops.append(999.0)
+	return {"pts": pts, "rects": rects, "tops": tops}
+
+
+## True when at least ROOF_SIGHT_POINTS street points ROOF_SIGHT_MIN-ROOF_SIGHT_R m from a rooftop candidate see a mech's
+## weapon height (ROOF_SIGHT_EYE) to the unit's body (ROOF_SIGHT_AIM above the roof). Cached in the candidate. A candidate
+## without sight data (built elsewhere) passes.
+static func roof_seen_from_street(c: Dictionary) -> bool:
+	if c.has("seen"):
+		return bool(c["seen"])
+	var ctx: Dictionary = c.get("sight", {})
+	if ctx.is_empty():
+		return true
+	var at := Vector2(float(c["x"]), float(c["s"]))
+	var aim_h := float(c["h"]) + ROOF_SIGHT_AIM
+	var near_r: Array[Rect2] = []
+	var near_t: PackedFloat32Array = []
+	var area := Rect2(at - Vector2.ONE * ROOF_SIGHT_R, Vector2.ONE * ROOF_SIGHT_R * 2.0)
+	var rects: Array[Rect2] = ctx["rects"]
+	var tops: PackedFloat32Array = ctx["tops"]
+	for i in rects.size():
+		if area.intersects(rects[i]):
+			near_r.append(rects[i])
+			near_t.append(tops[i])
+	var cand: Array = []
+	for p: Vector2 in ctx["pts"]:
+		var d := p.distance_to(at)
+		if d >= ROOF_SIGHT_MIN and d <= ROOF_SIGHT_R:
+			cand.append([d, p])
+	cand.sort_custom(func(a: Array, b: Array) -> bool: return float(a[0]) < float(b[0]))
+	var seen := 0
+	for e: Array in cand:
+		if _street_line_clear(e[1] as Vector2, CityPlan.CURB_H + ROOF_SIGHT_EYE, at, aim_h, near_r, near_t):
+			seen += 1
+			if seen >= ROOF_SIGHT_POINTS:
+				break
+	c["seen"] = seen >= ROOF_SIGHT_POINTS
+	return bool(c["seen"])
+
+
+## The 3D segment (a, ha) -> (b, hb) over the arc plane passes above every box (rect, top). The segment rises toward b
+## (hb > ha for a rooftop target), so inside a box its lowest point is where it enters: compare that with the top.
+static func _street_line_clear(a: Vector2, ha: float, b: Vector2, hb: float, rects: Array[Rect2],
+		tops: PackedFloat32Array) -> bool:
+	var dvec := b - a
+	var lo := Vector2(minf(a.x, b.x), minf(a.y, b.y))
+	var hi := Vector2(maxf(a.x, b.x), maxf(a.y, b.y))
+	for i in rects.size():
+		var r := rects[i]
+		if r.end.x < lo.x or r.position.x > hi.x or r.end.y < lo.y or r.position.y > hi.y:
+			continue
+		var t0 := 0.0
+		var t1 := 1.0
+		var ok := true
+		for ax in 2:
+			var p0 := a.x if ax == 0 else a.y
+			var dv := dvec.x if ax == 0 else dvec.y
+			var mn := r.position.x if ax == 0 else r.position.y
+			var mx := r.end.x if ax == 0 else r.end.y
+			if absf(dv) < 1e-6:
+				if p0 < mn or p0 > mx:
+					ok = false
+					break
+				continue
+			var ta := (mn - p0) / dv
+			var tb := (mx - p0) / dv
+			if ta > tb:
+				var tmp := ta
+				ta = tb
+				tb = tmp
+			t0 = maxf(t0, ta)
+			t1 = minf(t1, tb)
+			if t0 > t1:
+				ok = false
+				break
+		if not ok:
+			continue
+		var h_low := lerpf(ha, hb, t0) if hb >= ha else lerpf(ha, hb, t1)
+		if h_low < tops[i]:
+			return false
+	return true
 
 
 static func _pick_roof_near(plan: CityPlan, cands: Array[Dictionary], used: Array[Vector2], near_pt: Vector2,
@@ -894,6 +1013,8 @@ static func _pick_roof_near(plan: CityPlan, cands: Array[Dictionary], used: Arra
 		if not _clear_of(pt, used, 18.0):
 			continue
 		if not clear_of_buildings(plan, pt, TURRET_CLEAR, float(c["h"]) + 0.2):
+			continue
+		if not roof_seen_from_street(c):
 			continue
 		pool.append(c)
 	if pool.is_empty():

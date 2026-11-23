@@ -17,6 +17,7 @@ const DT := 1.0 / 60.0
 
 func setup() -> void:
 	_multi_seed_full_deck_distribution()
+	_rooftop_units_seen_from_street()
 	await _mission_waves_end_to_end()
 	await _defend_relay_targeting_and_pool_sizing()
 	finish()
@@ -43,6 +44,87 @@ func _mock_player(w: CombatWorld, at: Vector3, id: String = "player1") -> Combat
 	add_child(p)
 	w.register(p)
 	return p
+
+
+## 3. Rooftop units (turrets, roof fireteams) stand where a mech in the street can shoot them: each is seen from at least
+## EnemySpawner.ROOF_SIGHT_POINTS walkable street points (CityPlan.walk_graph nodes and edge midpoints) within
+## ROOF_SIGHT_R m, mech weapon height to the unit's body, over the plan's building boxes. Checked here by an independent
+## sampled line march (not the spawner's slab test). A perched turret no street point saw held seed 5's deck-1 sweep for
+## 172 s (and seed 1's sniper lived 633 s). Non-vacuous: some roof candidates on these seeds are hidden from the street.
+func _rooftop_units_seen_from_street() -> void:
+	var hidden_cands := 0
+	var roof_units := 0
+	for s in range(1, 9):
+		var sec := SectionPlan.make({"seed": float(s)})
+		for k in sec.deck_count:
+			var dp := CityPlan.for_deck(sec, k)
+			var dr := RingFrame.new(sec.radius_of(k))
+			var arr := sec.arrival(k)
+			var arr_w := dr.arc_to_world(float(arr["x"]), float(arr["s"]), CityPlan.CURB_H)
+			var pts: Array[Vector2] = []
+			var g := dp.walk_graph()
+			for n: Vector2 in g["nodes"]:
+				pts.append(n)
+			for ed: Array in g["edges"]:
+				pts.append(((g["nodes"][int(ed[0])] as Vector2) + (g["nodes"][int(ed[1])] as Vector2)) * 0.5)
+			var boxes: Array = []
+			for b: Dictionary in dp.buildings:
+				for t: Dictionary in b.get("tiers", []):
+					if float(t["y1"]) >= 2.5:
+						var sz: Vector2 = t["size"]
+						boxes.append([Rect2((b["center"] as Vector2) + (t["off"] as Vector2) - sz * 0.5, sz), float(t["y1"]) + CityPlan.CURB_H])
+				if bool(b.get("pillar", false)):
+					var csz: Vector2 = b["core"]["size"]
+					boxes.append([Rect2(Vector2(float(b["core"]["x"]), float(b["core"]["s"])) - csz * 0.5, csz), 999.0])
+			for c: Dictionary in EnemySpawner._rooftop_candidates(dp, 0.0):
+				if _street_sight_count(Vector2(float(c["x"]), float(c["s"])), float(c["h"]), pts, boxes,
+						EnemySpawner.ROOF_SIGHT_POINTS) < EnemySpawner.ROOF_SIGHT_POINTS:
+					hidden_cands += 1
+			for sp: Dictionary in EnemySpawner.plan_encounters(dp, dr, arr_w, 1):
+				var roof := str(sp["type"]).begins_with("turret") or bool(sp.get("on_roof", false))
+				if not roof or float(sp["h"]) < 3.0:
+					continue
+				roof_units += 1
+				var n := _street_sight_count(Vector2(float(sp["x"]), float(sp["s"])), float(sp["h"]), pts, boxes,
+					EnemySpawner.ROOF_SIGHT_POINTS)
+				check(n >= EnemySpawner.ROOF_SIGHT_POINTS, "seed %d deck %d: rooftop %s at (%.0f, %.0f, h %.1f) is seen from %d street points (need %d)" % [
+					s, k, sp["type"], float(sp["x"]), float(sp["s"]), float(sp["h"]), n, EnemySpawner.ROOF_SIGHT_POINTS])
+	print("roof sight: %d rooftop units checked, %d roof candidates hidden from the street" % [roof_units, hidden_cands])
+	check(roof_units > 0 and hidden_cands > 0, "the check has rooftop units and hidden roofs to tell apart (%d, %d)" % [roof_units, hidden_cands])
+
+
+## Street points that see (at, roof h): marching the 3D line every 0.5 m against every box (stops at `need`).
+func _street_sight_count(at: Vector2, h: float, pts: Array[Vector2], boxes: Array, need: int) -> int:
+	var aim := h + EnemySpawner.ROOF_SIGHT_AIM
+	var eye := CityPlan.CURB_H + EnemySpawner.ROOF_SIGHT_EYE
+	var n := 0
+	for p in pts:
+		var d := p.distance_to(at)
+		if d < EnemySpawner.ROOF_SIGHT_MIN or d > EnemySpawner.ROOF_SIGHT_R:
+			continue
+		var near: Array = []
+		var lo := Vector2(minf(p.x, at.x), minf(p.y, at.y)) - Vector2.ONE
+		var bb := Rect2(lo, (Vector2(maxf(p.x, at.x), maxf(p.y, at.y)) + Vector2.ONE) - lo)
+		for bx: Array in boxes:
+			if bb.intersects(bx[0] as Rect2):
+				near.append(bx)
+		var clear := true
+		var steps := int(ceil(d / 0.5))
+		for i in range(1, steps):
+			var f := float(i) / float(steps)
+			var q := p.lerp(at, f)
+			var lh := lerpf(eye, aim, f)
+			for bx: Array in near:
+				if (bx[0] as Rect2).has_point(q) and lh < float(bx[1]):
+					clear = false
+					break
+			if not clear:
+				break
+		if clear:
+			n += 1
+			if n >= need:
+				return n
+	return n
 
 
 func _multi_seed_full_deck_distribution() -> void:

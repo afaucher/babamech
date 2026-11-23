@@ -92,7 +92,9 @@ func height_of(p: Vector3) -> float:
 # --- City Road Graph, Rooftops & Fair Exploration Route --------------------------------------------------
 
 func _build_city_graph() -> void:
-	var rg := plan.road_graph()
+	# Where a mech can walk (streets, lanes, pedestrian streets, open courts), not road_graph()'s vehicle graph (Engine
+	# 2026-11-23, for the road forms: docs/design/city-variety.md "Graphs"; same nodes / edges shape).
+	var rg: Dictionary = plan.walk_graph() if plan.has_method("walk_graph") else plan.road_graph()
 	for n: Vector2 in rg["nodes"]:
 		_nodes.append(n)
 		_adj.append([])

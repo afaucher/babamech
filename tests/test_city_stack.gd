@@ -258,8 +258,11 @@ func _underside(stack: CityStack, ci: int, what: String) -> void:
 			continue
 		tested = true
 		for h: float in [1.0, 9.0]:
-			var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(at.call(x0 - 4.0, s, h), at.call(x1 + 4.0, s, h)))
-			check(hit.is_empty(), "%s: a mech walks under the ramp between piers (nothing across at %.0f m)" % [what, h])
+			# 3.5 m out each side (2026-11-23: was 4 m, which ends exactly on the building line of a ramp lane by the curb;
+			# a podium or shop row built out to that line - downtown pass 2, section 4 deck 2 - was hit at the ray's end).
+			var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(at.call(x0 - 3.5, s, h), at.call(x1 + 3.5, s, h)))
+			check(hit.is_empty(), "%s: a mech walks under the ramp between piers (nothing across at %.0f m; hit %s at %s)"
+					% [what, h, (hit["collider"] as Node).get_path() if not hit.is_empty() else "-", hit.get("position", "-")])
 	check(tested, "%s: a span high enough to walk under" % what)
 
 

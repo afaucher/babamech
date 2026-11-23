@@ -39,6 +39,9 @@ const FLOOR_CUT_FAR := 14.0             ## m beyond which the floor-cut guard sl
 const FLOOR_CUT_FAR_T := 0.4            ## s (catalog max 20 m/s -> 8 m, well inside FLOOR_CUT_FAR - FLOOR_CUT_KEEP)
 const STEER_RAY_INTERVAL := 0.05       ## 20 Hz obstacle & ground probe cadence while walking (60 Hz when knocked/airborne)
 const AI_LOD_DIST_SQ := 150.0 * 150.0   ## > 150 m from every crew mech -> 15 Hz AI LOD (dt * 4, staggered by id)
+const TRANSIT_ENTRY_R := 4.0            ## m from the ramp entry at which a transiting wave unit steps onto the ramp
+const TRANSIT_EXIT_R := 5.0             ## m from the ramp exit (on the new deck) at which the transit ends
+const TRANSIT_RAMP_MAX := 60.0          ## s on a ramp before giving up (stuck): back to normal pathing (seed 1's ~100 m ramps take ~20 s)
 
 signal alerted(enemy: EnemyBase, target_id: String)
 signal comms_relayed(enemy: EnemyBase)
@@ -133,6 +136,14 @@ var _lod_tick := 0
 var _lod_phase := 0
 var _lod_dt := 0.0
 var _cut_far_t := 0.0              ## s the floor-cut guard may skip (unit was > FLOOR_CUT_FAR from every cut)
+# Wave cross-deck transit (host-only; set by EnemySquad._step_wave_transit when no crew stands on this unit's deck):
+# walk to a ramp's entry on this deck (_transit_entry), then along the ramp to its exit on deck _transit_deck.
+var _transit_deck := -1            ## deck the ramp leads to (-1 = no transit)
+var _transit_entry := Vector3.ZERO ## world point on this deck's floor in front of the ramp (mouth / foot)
+var _transit_exit := Vector3.ZERO  ## world point on _transit_deck's floor past the ramp's far end
+var _transit_ramp := false         ## on the ramp: floor-cut guard off, walks straight to _transit_exit
+var _transit_t := 0.0              ## s spent on the ramp (gives up after TRANSIT_RAMP_MAX)
+var _transit_from := -1            ## deck the transit started on (reverse_transit walks back to it)
 
 # Continuous read-only telemetry for Audio loops
 var move_speed_ratio := 0.0
@@ -207,7 +218,9 @@ func net_fields() -> Dictionary:
 		"_steer_ray_t": Net.PRIVATE, "_cached_avoid_dir": Net.PRIVATE, "_cached_block_n": Net.PRIVATE,
 		"_cached_slide_blocked": Net.PRIVATE, "_ground_probe_t": Net.PRIVATE, "_ground_h_off": Net.PRIVATE,
 		"_has_ground_h": Net.PRIVATE, "_lod_tick": Net.PRIVATE, "_lod_phase": Net.PRIVATE, "_lod_dt": Net.PRIVATE,
-		"_cut_far_t": Net.PRIVATE, "move_speed_ratio": Net.LOCAL, "turret_slew_speed": Net.LOCAL, "heat_ratio": Net.LOCAL,
+		"_cut_far_t": Net.PRIVATE, "_transit_deck": Net.PRIVATE, "_transit_entry": Net.PRIVATE,
+		"_transit_exit": Net.PRIVATE, "_transit_ramp": Net.PRIVATE, "_transit_t": Net.PRIVATE,
+		"_transit_from": Net.PRIVATE, "move_speed_ratio": Net.LOCAL, "turret_slew_speed": Net.LOCAL, "heat_ratio": Net.LOCAL,
 		"_cfg": Net.LOCAL, "_comp_meta": Net.LOCAL, "_comp_nodes": Net.LOCAL, "_flash_timers": Net.LOCAL,
 		"_telegraph_fx": Net.LOCAL, "_status_bar": Net.LOCAL, "_rng": Net.PRIVATE,
 		"_built_visuals": Net.LOCAL, "_was_shutdown": Net.PRIVATE, "_was_staggered": Net.PRIVATE,
@@ -405,8 +418,91 @@ func rehome_deck(new_deck: int, new_ring: RingFrame = null) -> void:
 	_last_target_ref = null
 	_target_id = ""
 	_release_slot()
+	if not _transit_ramp or new_deck != _transit_deck:
+		clear_transit()   # arriving where the ramp leads keeps walking off it (_step_transit); anything else: drop it
 	if not puppet and Net.is_host():
 		_emit_squad("alerted", {"id": target_id, "state": "deck:%d" % new_deck, "pos": pos})
+
+
+## Host (EnemySquad._step_wave_transit): a wave unit with no crew on its deck heads for the ramp toward the crew's deck.
+## `entry` is on this deck's floor in front of the ramp, `exit` on deck `to_deck`'s floor past the ramp's far end.
+func set_transit(to_deck: int, entry: Vector3, exit: Vector3) -> void:
+	if _transit_ramp:
+		return   # already walking a ramp: finish it first
+	if to_deck != _transit_deck or entry.distance_squared_to(_transit_entry) > 1.0:
+		_path_points.clear()
+		_path_timer = 0.0
+	_transit_deck = to_deck
+	_transit_from = spawn_deck
+	_transit_entry = entry
+	_transit_exit = exit
+
+
+## Host (EnemySquad._step_wave_transit): the crew came back to the deck this unit is leaving while it walks the ramp:
+## turn round and walk the ramp back to its entry on that deck (otherwise it walks the whole ramp away from the crew and
+## back: seed 1 deck 1, ~70 s of a sweep after the bot respawned on deck 0 and returned). False when not on a ramp.
+func reverse_transit() -> bool:
+	if not _transit_ramp or _transit_from < 0:
+		return false
+	var back_to := _transit_from
+	_transit_from = _transit_deck
+	_transit_deck = back_to
+	var e := _transit_entry
+	_transit_entry = _transit_exit
+	_transit_exit = e
+	_transit_t = 0.0
+	_path_points.clear()
+	return true
+
+
+func transit_from_deck() -> int:
+	return _transit_from if _transit_deck >= 0 else -1
+
+
+func transit_to_deck() -> int:
+	return _transit_deck
+
+
+func clear_transit() -> void:
+	_transit_from = -1
+	_transit_deck = -1
+	_transit_ramp = false
+	_transit_t = 0.0
+
+
+func is_on_transit_ramp() -> bool:
+	return _transit_ramp
+
+
+## Cross-deck walk for a wave unit (no target on its deck): path to the ramp entry, then straight along the ramp to its
+## exit on the next deck (the floor-cut guard is off on the ramp; EnemySquad re-homes the unit as it changes deck).
+## Returns false when there is no transit to do (the caller patrols instead).
+func _step_transit(dt: float, space: PhysicsDirectSpaceState3D) -> bool:
+	if _transit_deck < 0 or not is_mobile():
+		return false
+	var spd := float(_cfg.get("flank_speed", _cfg.get("move_speed", 0.0))) * speed_scale * _speed_mult
+	var pos := _world_pos()
+	if not _transit_ramp:
+		var to_e := _transit_entry - pos
+		to_e -= up * to_e.dot(up)
+		if to_e.length() > TRANSIT_ENTRY_R:
+			ai_state = STATE_PATROL
+			_move_along_plan(_transit_entry, spd, dt, space)
+			return true
+		_transit_ramp = true
+		_transit_t = 0.0
+		_path_points.clear()
+	_transit_t += dt
+	var to_x := _transit_exit - pos
+	to_x -= up * to_x.dot(up)
+	if (spawn_deck == _transit_deck and to_x.length() <= TRANSIT_EXIT_R) or _transit_t > TRANSIT_RAMP_MAX:
+		clear_transit()
+		_path_points.clear()
+		_path_timer = 0.0
+		return false
+	ai_state = STATE_PATROL
+	_steer_toward(_transit_exit, spd, dt, space)
+	return true
 
 
 func _is_aerial_wreck() -> bool:
@@ -1057,13 +1153,15 @@ func _on_alert_perception_hint(target: CombatTarget) -> void:
 	_perc_t = minf(_perc_t, _perc_stagger_offset())
 
 
-## True when this enemy should tick: either its deck has a standing crew mech (deck_awake), or it belongs to an
-## active defend wave whose target relay is live (so abandoning a defend deck doesn't freeze its waves).
+## True when this enemy should tick: its deck has a standing crew mech (deck_awake), or it is a wave unit (waves never
+## sleep), or (garrison) it belongs to an active defend whose target relay is live.
 func _is_awake() -> bool:
 	if squad == null or not squad.has_method("deck_awake"):
 		return true
 	if squad.deck_awake(spawn_deck):
 		return true
+	if wave != "":
+		return true   # wave units hunt the crew from spawn until dead: never asleep (cross decks via _step_transit)
 	if defend_target_id != "" and squad.has_method("is_defend_asset_live"):
 		return bool(squad.is_defend_asset_live(defend_target_id))
 	return false
@@ -1072,7 +1170,7 @@ func _is_awake() -> bool:
 func _can_lod_throttle() -> bool:
 	return not _has_los and ai_state != STATE_TELEGRAPH and ai_state != STATE_FIRE \
 		and not knock.moving() and _grounded_now and enemy_type != "dropship" \
-		and ai_mode == "live"
+		and ai_mode == "live" and not _transit_ramp
 
 
 func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
@@ -1106,7 +1204,8 @@ func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
 	var pos := _world_pos()
 	if _can_lod_throttle() and squad != null and squad.has_method("min_crew_dist_sq"):
 		var d2 := float(squad.min_crew_dist_sq(pos, spawn_deck))
-		if d2 > AI_LOD_DIST_SQ:
+		# A wave unit awake on a deck with no crew (d2 < 0 in a stack) is far from everyone too: 15 Hz.
+		if d2 > AI_LOD_DIST_SQ or (d2 < 0.0 and wave != "" and squad.deck_of.is_valid()):
 			_lod_dt += dt
 			_lod_tick += 1
 			if (_lod_tick & 3) != _lod_phase:
@@ -1249,6 +1348,8 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 		ai_state = STATE_STAGGERED
 		_align_to_ring()
 		return
+	if _transit_ramp and _step_transit(dt, space):
+		return   # walking a ramp to the crew's deck: finish it before anything else
 
 	# Perception: check LOS to opposing targets (or shared squad target board).
 	var target := _acquire_target(space)
@@ -1264,7 +1365,8 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 		else:
 			if ai_state in [STATE_ALERT, STATE_ENGAGE, STATE_FLANK, STATE_COOLDOWN]:
 				_emit_squad("alerted", {"id": target_id, "state": "lost", "pos": _world_pos()})
-			_step_patrol(dt, space)
+			if not _step_transit(dt, space):
+				_step_patrol(dt, space)
 		return
 
 	_target_id = target.target_id
@@ -2051,6 +2153,8 @@ func _steer_toward(goal_w: Vector3, spd: float, dt: float, space: PhysicsDirectS
 ## the cut's edge instead (cuts are axis-aligned in arc space; arc x is world x). A unit already inside a cut (knocked
 ## onto a ramp) moves freely so it can walk out.
 func _keep_out_of_floor_cuts(pos: Vector3, step_vec: Vector3, dt: float) -> Vector3:
+	if _transit_ramp:
+		return step_vec   # a wave unit walking a ramp to the next deck on purpose (_step_transit)
 	if _cut_far_t > 0.0:
 		_cut_far_t -= dt   # known to be well clear of every cut: skip (cheap path for most frames)
 		return step_vec
@@ -2117,7 +2221,7 @@ func _check_ground_unstick(next_pos: Vector3, step_vec: Vector3, dt: float) -> V
 	_stuck_travel += step_vec.length()
 	if _stuck_t >= 2.8:
 		var inside_b := false
-		if squad != null and squad.has_method("deck_plan"):
+		if squad != null and squad.has_method("deck_plan") and not _transit_ramp:   # a ramp is not "inside a building" while transiting
 			var d_plan: CityPlan = squad.deck_plan(spawn_deck)
 			if d_plan != null:
 				var h_cur := ring.height(next_pos) if ring != null else next_pos.y
@@ -2139,7 +2243,7 @@ func _check_ground_unstick(next_pos: Vector3, step_vec: Vector3, dt: float) -> V
 			_cached_avoid_dir = Vector3.ZERO
 			_cached_block_n = Vector3.ZERO
 			_cached_slide_blocked = false
-			if squad != null and squad.has_method("nearest_road_point"):
+			if squad != null and squad.has_method("nearest_road_point") and not _transit_ramp:
 				var rp: Vector2 = squad.nearest_road_point(_world_to_arc2(next_pos), spawn_deck, 8.0)
 				if not is_nan(rp.x):
 					_unstick_goal = _arc_to_world_pos(rp)
@@ -2273,6 +2377,7 @@ func reset_enemy() -> void:
 	_cached_target = null
 	_steer_ray_t = 0.0
 	_cut_far_t = 0.0
+	clear_transit()
 	_cached_avoid_dir = Vector3.ZERO
 	_cached_block_n = Vector3.ZERO
 	_cached_slide_blocked = false

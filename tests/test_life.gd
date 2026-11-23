@@ -114,7 +114,9 @@ func _calm_checks() -> void:
 					var c := lp.crossing_at(at.x, at.y)
 					if c.is_empty():
 						bad_place += 1
-					elif not lp.green(int(c["junction"]), int(c["axis"]), t):
+					# junction -1: a crossing with no signal (over a pedestrian street or a superblock's court, no
+					# vehicles: docs/design/city-variety.md), crossed whenever a walker gets there.
+					elif int(c["junction"]) >= 0 and not lp.green(int(c["junction"]), int(c["axis"]), t):
 						bad_light += 1
 				if k % 5 == 0:
 					for r in footprints:

@@ -51,9 +51,16 @@ func setup() -> void:
 	var tt := 0.0
 	var wall := Time.get_ticks_msec()
 	var asset_min := {}
+	var deaths := 0
+	var was_down := false
 	while tt < limit:
 		await get_tree().physics_frame
 		tt += Engine.time_scale / float(Engine.physics_ticks_per_second)
+		var down: bool = td.combat.player_target != null and td.combat.player_target.disabled
+		if down and not was_down:
+			deaths += 1
+			print("[Test] seed %d: the bot's mech is down at %.1f s (task %s)" % [seed_n, tt, td.bot.task_id])
+		was_down = down
 		for o: Dictionary in rules.objectives:
 			var id := str(o["id"])
 			if not done_at.has(id) and rules.obj_state(id) in ["done", "failed"]:
@@ -65,8 +72,8 @@ func setup() -> void:
 		if rules.outcome != "" or (goal_id != "" and rules.obj_state(goal_id) == "done"):
 			break
 	var st := td.bot.stats()
-	print("[Test] seed %d: goal_id '%s' outcome '%s' after %.1f s game time (%.1f s wall); done %s; relay min hp %s" % [seed_n,
-		goal_id, rules.outcome, tt, float(Time.get_ticks_msec() - wall) / 1000.0, str(done_at), str(asset_min)])
+	print("[Test] seed %d: goal_id '%s' outcome '%s' after %.1f s game time (%.1f s wall); deaths %d; done %s; relay min hp %s" % [seed_n,
+		goal_id, rules.outcome, tt, float(Time.get_ticks_msec() - wall) / 1000.0, deaths, str(done_at), str(asset_min)])
 	print("[Test] seed %d: tasks %s; deck changes %s; dev jumps %d; stuck %d; ff holds %d" % [seed_n, str(st["tasks"]),
 		str(st["deck_changes"]), int(st["dev_jumps"]), int(st["stuck"]), int(st["ff_holds"])])
 	if goal_id == "":

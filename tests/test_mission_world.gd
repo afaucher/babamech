@@ -1,4 +1,4 @@
-extends TestCase
+﻿extends TestCase
 ## MissionWorld (scripts/world/city/mission_world.gd, docs/design/city-ramps-and-stack.md "Mission world (phase 1)"):
 ## wave doors as scheduled effects on the shared clock (gate and lift: warn / opening / open / closing / shut at the right
 ## times, collision with them, a late call snaps, a repeat open only extends the hold, hold_source extends, sealed is solid
@@ -21,7 +21,8 @@ func setup() -> void:
 	add_child(stack)
 	stack.build(sec)
 	var before := _fingerprint(stack)
-	eq(CityPlan.make({"seed": 1}).checksum(), "209989488eaa0e52", "the district plan's golden checksum")
+	# Re-captured 2026-11-23 (city variety: alleys + stand-alone road forms on by default); was 209989488eaa0e52.
+	eq(CityPlan.make({"seed": 1}).checksum(), "bd1d848c575e85df", "the district plan's golden checksum")
 	var plan := _as_dict(MissionLab.make_plan(stack))
 	plan["sources"].append({"id": "ramp1", "deck": 0, "kind": "ramp", "x": 0.0, "s": 0.0})
 	plan["sources"].append({"id": "shaft1", "deck": 0, "kind": "shaft", "x": 0.0, "s": 0.0})
@@ -74,6 +75,10 @@ func setup() -> void:
 	await _stepping()
 	for seed_ in range(1, SEEDS_TO + 1):
 		await _seed_sites(seed_)
+	# The same with the section's road forms on (docs/design/city-variety.md: lanes, pedestrian streets, superblock
+	# courts drawn by the city; the mix Missions will switch on). Issues are tagged "forms".
+	for seed_ in range(1, SEEDS_TO + 1):
+		await _seed_sites(seed_, true)
 	print("[mission] plan issues for Missions (%d):" % issues.size())
 	for line in issues:
 		print("[mission]   " + line)
@@ -409,10 +414,14 @@ func _flag_sites(stack: CityStack, mw: MissionWorld, plan: Dictionary) -> void:
 		check(is_equal_approx(float(again["x"]), got.x) and is_equal_approx(float(again["s"]), got.y), "%s: the snap is deterministic" % o["id"])
 
 
-func _seed_sites(seed_: int) -> void:
+func _seed_sites(seed_: int, forms: bool = false) -> void:
 	var stack := CityStack.new()
 	add_child(stack)
-	stack.build(SectionPlan.make({"seed": seed_}))
+	var so := {"seed": seed_}
+	if forms:
+		so.merge({"f_lane": 0.20, "f_pedestrian": 0.10, "f_none": 0.08})
+	stack.build(SectionPlan.make(so))
+	var n_issues := issues.size()
 	var plan := _as_dict(MissionLab.make_plan(stack))
 	var mw := stack.setup_mission(plan)
 	_flag_sites(stack, mw, plan)
@@ -444,7 +453,10 @@ func _seed_sites(seed_: int) -> void:
 				var fs := mw.flag_site(f["id"])
 				var gap := Vector2(float(a["x"]), float(a["s"])).distance_to(Vector2(float(fs["x"]), float(fs["s"])))
 				check(gap >= MissionWorld.FLAG_CLEAR + MissionWorld.ASSET_CLEAR - 0.01, "seed %d: relay %s stands clear of mast %s (%.1f m)" % [seed_, str(o["id"]), str(f["id"]), gap])
-	print("[mission] seed %d: %d doors" % [seed_, n_door])
+	if forms:
+		for i in range(n_issues, issues.size()):
+			issues[i] = "forms: " + str(issues[i])
+	print("[mission] seed %d%s: %d doors" % [seed_, " (road forms)" if forms else "", n_door])
 	stack.queue_free()
 	await frames(1)
 

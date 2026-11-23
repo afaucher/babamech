@@ -413,7 +413,9 @@ func _pusher() -> void:
 
 # --- Roof units ------------------------------------------------------------------------------------------
 
-const GOLDEN_LAYOUT := "7e78d4e1e3db1a61"     ## CityProps.layout_checksum of the seed 1 plan (golden: changes it everywhere)
+## Re-captured 2026-11-23 (city variety: alley bins, road-form furniture; alleys + road forms on by default). Was
+## 7e78d4e1e3db1a61 (still the layout with alleys 0, road_variety 0).
+const GOLDEN_LAYOUT := "f321076ebd6e98f1"     ## CityProps.layout_checksum of the seed 1 plan (golden: changes it everywhere)
 
 
 func _roof() -> void:

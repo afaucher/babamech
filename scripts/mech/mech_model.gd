@@ -6,6 +6,11 @@ extends Node3D
 ## primitive stand-in they replaced, kept for comparison); the rig, the node names and the hardpoints are the same. The SAME builder is used by the menu preview, the hangar line-up and the lab,
 ## so nothing can show a mech the game won't (Bridge to Friendship's rule for its character screen).
 ##
+## `chassis_id` picks the chassis (MechCatalog.CHASSIS / ChassisParts): its parts, layout, mounts, leg rest lengths, pose
+## angles and lab params all come from ChassisParts.of(chassis_id) (parts()). configure() with a different chassis also
+## resets the leg params and leg_bend to that chassis' defaults. "strider" (default): the description above; "bulwark":
+## the squat heavy biped (BulwarkMeshes: barrel hull, forward-knee sumo legs, two side guns, two back mounts).
+##
 ## Legs are posed by forward kinematics from a crouch value (with the default `leg_bend` -1: thigh back to the knee,
 ## shin forward to the ankle, tarsus back to the foot; +1 is the same chain mirrored fore-aft), so the hip height
 ## follows from the leg lengths. The walk is a placeholder
@@ -89,9 +94,30 @@ func _ready() -> void:
 ## Set who it is and what it carries, and rebuild.
 func configure(head: String, chassis: String, weapons: Dictionary) -> void:
 	head_id = head if MechCatalog.HEADS.has(head) else "chicken"
-	chassis_id = chassis if MechCatalog.CHASSIS.has(chassis) else "strider"
+	var prev := chassis_id
+	chassis_id = chassis if MechCatalog.CHASSIS.has(chassis) and ChassisParts.has(chassis) else "strider"
+	if chassis_id != prev:
+		_apply_chassis_defaults()
 	loadout = MechCatalog.sanitize_loadout(chassis_id, weapons)
 	rebuild()
+
+
+## The chassis' art data (ChassisParts: parts, layout, mounts, rest lengths, pose angles, lab params).
+func parts() -> Dictionary:
+	return ChassisParts.of(chassis_id)
+
+
+## The lab params with the chassis' defaults and ranges (MechModel.PARAMS for the Strider).
+func param_specs() -> Array:
+	return parts().get("params", PARAMS)
+
+
+## A new chassis brings its own leg shape: its default leg params and bend (body and head scale, walk rate stay).
+func _apply_chassis_defaults() -> void:
+	for p: Dictionary in param_specs():
+		if not str(p["id"]) in ["body", "head", "gait"]:
+			params[p["id"]] = p["value"]
+	leg_bend = float(parts()["bend"])
 
 
 func rebuild() -> void:
@@ -126,82 +152,85 @@ func set_accent(c: Color) -> void:
 		rebuild()
 
 
-## The art meshes. Body parts sit in a "Chassis" node scaled by the body param, at MechMeshes.LAYOUT / MOUNTS.
+## The art meshes, from the chassis' entry in ChassisParts (parts()). Body parts sit in a "Chassis" node scaled by the
+## body param, at its layout / mounts. Node names are the same on every chassis (Torso, Pelvis, Nose, Hatch, Cockpit,
+## HP_<id>, thigh_l / shin_l / tarsus_l, socket_l, hip_l / knee_l / ankle_l, foot_l, ...).
 func _build_lowpoly(s: float) -> void:
+	var pa := parts()
+	var layout: Dictionary = pa["layout"]
+	var bs := float(pa["body_scale"])
 	var chassis := Node3D.new()
 	chassis.name = "Chassis"
-	chassis.scale = Vector3.ONE * s * MechMeshes.BODY_SCALE
+	chassis.scale = Vector3.ONE * s * bs
 	_body.add_child(chassis)
-	for part: String in ["torso", "pelvis", "nose", "hatch", "back_plate"]:
-		var mi := MechMeshes.instance(part)
-		mi.name = part.capitalize().replace(" ", "")
-		mi.position = MechMeshes.LAYOUT[part][0]
-		mi.rotation_degrees = MechMeshes.LAYOUT[part][1]
+	for rp: Array in pa["body"]:
+		var role := str(rp[0])
+		var mi := ChassisParts.instance(str(rp[1]))
+		mi.name = role.capitalize().replace(" ", "")
+		mi.position = layout[role][0]
+		mi.rotation_degrees = layout[role][1]
 		chassis.add_child(mi)
-		if part == "pelvis":
+		if role == "pelvis":
 			_pelvis = mi
-	for side: float in [-1.0, 1.0]:
-		var pod := MechMeshes.instance("shoulder_pod")
-		pod.name = "ShoulderPod_%s" % ("l" if side < 0.0 else "r")
-		pod.position = (MechMeshes.LAYOUT["shoulder_pod"][0] as Vector3) * Vector3(side, 1, 1)
-		pod.scale = Vector3(side, 1, 1)
-		chassis.add_child(pod)
+	for rp: Array in pa["mirrored"]:
+		var role := str(rp[0])
+		for side: float in [-1.0, 1.0]:
+			var pod := ChassisParts.instance(str(rp[1]))
+			pod.name = "%s_%s" % [role.capitalize().replace(" ", ""), "l" if side < 0.0 else "r"]
+			pod.position = (layout[role][0] as Vector3) * Vector3(side, 1, 1)
+			pod.scale = Vector3(side, 1, 1)
+			chassis.add_child(pod)
 	# The pilot: only the head and neck stick out of the hatch.
 	var seat := Node3D.new()
 	seat.name = "Cockpit"
-	seat.position = MechMeshes.LAYOUT["hatch"][0]
+	seat.position = layout["hatch"][0]
 	chassis.add_child(seat)
 	var head := Node3D.new()   # the expressive pilot head (PilotHead), in a holder named like the static head was
 	head.name = "Head_" + head_id
-	head.scale = Vector3.ONE * float(params["head"]) / (s * MechMeshes.BODY_SCALE)   # the head param is absolute
+	head.scale = Vector3.ONE * float(params["head"]) / (s * bs)   # the head param is absolute
 	head.position = Vector3(0, -0.12, 0)
 	seat.add_child(head)
 	pilot = PilotHead.make(head_id, pilot_seed)
 	pilot.idle_always = true   # idles on its own (menu, hangar, lab); MechRig turns it off when it feeds the head
 	head.add_child(pilot)
 	# Hardpoints: the mount hardware (mirrored for the left) and the weapon.
+	var mounts: Dictionary = pa["mounts"]
+	var mount_hw: Dictionary = pa["mount_hw"]
 	for hp: Dictionary in MechCatalog.chassis(chassis_id)["hardpoints"]:
 		var id := str(hp["id"])
 		var node := Node3D.new()
 		node.name = "HP_" + id
-		node.position = MechMeshes.MOUNTS.get(id, Vector3.ZERO)
+		node.position = mounts.get(id, Vector3.ZERO)
 		chassis.add_child(node)
 		var side := -1.0 if id.ends_with("_l") else 1.0
-		var hw := ""
-		var reach := Vector3.ZERO
-		match str(hp["mount"]):
-			"shoulder":
-				hw = "shoulder_pylon"
-				reach = MechMeshes.PYLON_TOP
-			"side":
-				hw = "side_mount"
-				reach = MechMeshes.SIDE_REACH
-		if hw != "":
-			var mount := MechMeshes.instance(hw)
+		if mount_hw.has(str(hp["mount"])):
+			var hw: Array = mount_hw[str(hp["mount"])]
+			var mount := ChassisParts.instance(str(hw[0]))
 			mount.name = "Mount"
-			mount.position = -reach * Vector3(side, 1, 1)
+			mount.position = -(hw[1] as Vector3) * Vector3(side, 1, 1)
 			mount.scale = Vector3(side, 1, 1)
 			node.add_child(mount)
 		var w := str(loadout.get(id, ""))
 		if w != "":
 			node.add_child(MechParts.weapon(w))
-	# Legs: segments, joint caps and the foot (hub, three toes, spur), posed every frame.
+	# Legs: segments, joint caps and the foot (hub or boot, toes, spur), posed every frame.
+	var lp: Dictionary = pa["legs"]
 	for side: float in [-1.0, 1.0]:
 		var tag := "l" if side < 0.0 else "r"
 		var leg := {"side": side}
 		for part: String in ["thigh", "shin", "tarsus"]:
-			var mi := MechMeshes.instance(part)
+			var mi := ChassisParts.instance(str(lp[part]))
 			mi.name = "%s_%s" % [part, tag]
 			add_child(mi)
 			leg[part] = mi
 		# The hip is a ball joint: the socket is part of the pelvis (it rides the body), the ball sits on the pivot.
-		var socket := MechMeshes.instance("hip_socket")
+		var socket := ChassisParts.instance(str(lp["socket"]))
 		socket.name = "socket_" + tag
 		socket.scale = Vector3(side, 1, 1) * s
 		_body.add_child(socket)
 		leg["socket"] = socket
 		for j: String in ["hip", "knee", "ankle"]:
-			var cap := MechMeshes.instance(j + "_cap")
+			var cap := ChassisParts.instance(str(lp[j]))
 			cap.name = "%s_%s" % [j, tag]
 			cap.scale = Vector3(side, 1, 1) * s
 			add_child(cap)
@@ -209,15 +238,17 @@ func _build_lowpoly(s: float) -> void:
 		var foot := Node3D.new()
 		foot.name = "foot_" + tag
 		foot.scale = Vector3.ONE * s
-		foot.add_child(MechMeshes.instance("foot"))
-		for i in MechMeshes.TOES.size():
-			var toe := MechMeshes.instance("toe")
+		foot.add_child(ChassisParts.instance(str(lp["foot"])))
+		var toes: Array = pa["toes"]
+		for i in toes.size():
+			var toe := ChassisParts.instance(str(toes[i][0]))
 			toe.name = "toe_%d" % i
-			toe.position = MechMeshes.TOES[i][0]
-			toe.rotation_degrees = Vector3(0, MechMeshes.TOES[i][1], 0)
+			toe.position = toes[i][1]
+			toe.rotation_degrees = Vector3(0, toes[i][2], 0)
 			foot.add_child(toe)
-		var spur := MechMeshes.instance("spur")
-		spur.position = MechMeshes.SPUR_ROOT
+		var spur := ChassisParts.instance(str(pa["spur"][0]))
+		spur.name = "spur"
+		spur.position = pa["spur"][1]
 		foot.add_child(spur)
 		add_child(foot)
 		leg["foot"] = foot
@@ -303,7 +334,8 @@ func leg_lengths() -> Vector3:
 
 ## The tarsus' lean forward of straight down (radians) for the current crouch.
 func tarsus_lean() -> float:
-	return lerpf(0.15, 0.5, float(params["crouch"]))
+	var tl: Vector2 = parts()["tarsus_lean"]
+	return lerpf(tl.x, tl.y, float(params["crouch"]))
 
 
 ## Where hip `side` (-1 left, +1 right) sits in model space when standing, before any body offset.
@@ -368,15 +400,18 @@ func pose() -> void:
 	var ls := float(params["shin"]) * s
 	var lm := float(params["tarsus"]) * s
 	var b := _bend()
-	var a_t := lerpf(0.3, 0.95, c) * b     # thigh: forward of straight down (back when flipped)
-	var a_s := -lerpf(0.45, 1.15, c) * b   # shin: back (the reverse joint; forward when flipped)
-	var a_m := tarsus_lean() * b           # tarsus: forward again (back when flipped)
+	var pa := parts()
+	var ta: Vector2 = pa["thigh_angle"]
+	var sa: Vector2 = pa["shin_angle"]
+	var a_t := lerpf(ta.x, ta.y, c) * b     # thigh: forward of straight down (back when flipped)
+	var a_s := -lerpf(sa.x, sa.y, c) * b    # shin: back (the reverse joint; forward when flipped)
+	var a_m := tarsus_lean() * b            # tarsus: forward again (back when flipped)
 	_hip_height = lt * cos(a_t) + ls * cos(a_s) + lm * cos(a_m)
 	var external := _ext_legs.size() == _legs.size() and not _legs.is_empty()
 	var tw := twist_basis(_leg_yaw if external else 0.0)
 	if _pelvis != null:   # the pelvis turns about the hip line's centre (the body's vertical axis)
 		if art == "lowpoly":
-			var rest: Array = MechMeshes.LAYOUT["pelvis"]
+			var rest: Array = pa["layout"]["pelvis"]
 			_pelvis.transform = Transform3D(tw * Basis.from_euler((rest[1] as Vector3) * (PI / 180.0)), tw * (rest[0] as Vector3))
 		else:
 			_pelvis.basis = tw
@@ -434,9 +469,10 @@ func _place_leg(leg: Dictionary, hip: Vector3, knee: Vector3, ankle: Vector3, fo
 		var mirror := side < 0.0
 		var right := tw * Vector3.RIGHT
 		var b := _bend()   # flipped: the segments and caps are mirrored front-to-back too (their detail follows the bend)
-		_aim(leg["thigh"], hip, knee, MechMeshes.REST_LENGTH["thigh"], s, mirror, right, b)
-		_aim(leg["shin"], knee, ankle, MechMeshes.REST_LENGTH["shin"], s, mirror, right, b)
-		_aim(leg["tarsus"], ankle, foot, MechMeshes.REST_LENGTH["tarsus"], s, mirror, right, b)
+		var rest: Dictionary = parts()["rest"]
+		_aim(leg["thigh"], hip, knee, rest["thigh"], s, mirror, right, b)
+		_aim(leg["shin"], knee, ankle, rest["shin"], s, mirror, right, b)
+		_aim(leg["tarsus"], ankle, foot, rest["tarsus"], s, mirror, right, b)
 		var cap_basis := tw * Basis.from_scale(Vector3(side, 1, b) * s)
 		(leg["hip"] as Node3D).transform = Transform3D(cap_basis, hip)
 		(leg["knee"] as Node3D).transform = Transform3D(cap_basis, knee)
@@ -466,9 +502,11 @@ func _seat_socket(leg: Dictionary, hip: Vector3, knee: Vector3, tw: Basis, s: fl
 		return
 	var b := _bend()
 	var d := tw.inverse() * (_body.transform.basis.orthonormalized().inverse() * (knee - hip))
+	var pa := parts()
+	var ta: Vector2 = pa["thigh_angle"]
 	var pitch := atan2(d.z, -d.y)                                  # the thigh, + = back from straight down
-	var rest := -lerpf(0.3, 0.95, float(params["crouch"])) * b     # its standing pitch (pose()'s a_t)
-	var tilt := b * SOCKET_TILT - SOCKET_FOLLOW * (pitch - rest)   # about +X: negative leans the cup forward
+	var rest := -lerpf(ta.x, ta.y, float(params["crouch"])) * b    # its standing pitch (pose()'s a_t)
+	var tilt := b * float(pa["socket_tilt"]) - float(pa["socket_follow"]) * (pitch - rest)   # about +X: negative leans the cup forward
 	var side := float(leg["side"])
 	(leg["socket"] as Node3D).transform = Transform3D(tw * Basis(Vector3.RIGHT, tilt) * Basis.from_scale(Vector3(side, 1, 1) * s),
 			tw * _hip_in_body(side))
@@ -510,7 +548,7 @@ func hip_height() -> float:
 
 func lab_params() -> Array:
 	var out: Array = []
-	for p: Dictionary in PARAMS:
+	for p: Dictionary in param_specs():
 		var d := p.duplicate()
 		d["value"] = params[p["id"]]
 		out.append(d)
@@ -529,14 +567,13 @@ func lab_options() -> Array:
 	var out: Array = [
 		{"id": "art", "label": "Art", "choices": ART_ORDER, "value": art},
 		{"id": "head", "label": "Head", "choices": MechCatalog.HEAD_ORDER, "value": head_id},
-		{"id": "chassis", "label": "Chassis", "choices": MechCatalog.CHASSIS_ORDER, "value": chassis_id},
+		{"id": "chassis", "label": "Chassis", "choices": ChassisParts.ORDER, "value": chassis_id},   # the lab shows every built chassis
 		{"id": "accent", "label": "Accent", "choices": MechMeshes.ACCENT_ORDER, "value": _accent_id()},
 		{"id": "legs", "label": "Leg bend", "choices": BEND_ORDER, "value": bend_id()},
 	]
 	for hp: Dictionary in MechCatalog.chassis(chassis_id)["hardpoints"]:
 		var choices: Array = [""]
-		choices.append_array(MechCatalog.weapons_for(str(hp["mount"])))
-		choices.append_array(MechCatalog.equipment_for(str(hp["mount"])))   # back: repair_drone, radiator, ammo_bin
+		choices.append_array(MechCatalog.items_for(hp))   # weapons, then back equipment (repair_drone, radiator, ammo_bin)
 		out.append({"id": "hp:" + str(hp["id"]), "label": str(hp["label"]), "choices": choices, "value": str(loadout.get(hp["id"], ""))})
 	return out
 

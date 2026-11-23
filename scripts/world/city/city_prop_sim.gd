@@ -236,6 +236,8 @@ static func floor_rects(plan: CityPlan) -> Array:
 	var out: Array = []
 	for b: Dictionary in plan.blocks:
 		out.append({"rect": b["rect"], "h": CityPlan.CURB_H})
+	for q: Dictionary in plan.raised:      # road forms' courts and planting bands (city-variety.md)
+		out.append({"rect": q["rect"], "h": CityPlan.CURB_H})
 	var av := plan.avenue_x()
 	for road: Dictionary in plan.roads_x:
 		if road["kind"] != "avenue" and road["kind"] != "spine":

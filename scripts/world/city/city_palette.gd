@@ -42,7 +42,24 @@ const C := {
 	"m_ours": Color("ee7520"), "m_ours_mark": Color("f4ecd8"), "m_relay": Color("7d8a8f"), "m_relay_band": Color("5fd0e6"),
 	"m_portal": Color("6fe3ff"), "m_portal_off": Color("3c4446"), "m_zone": Color("f2ead5"), "m_hostile": Color("e0402e"),
 	"m_done": Color("7ee08a"),
+	# building variety (docs/design/city-variety.md section 2): the second colourway of each style, more awning and sign
+	# fascia colours; all inside the palette family (cream, terracotta, sage, sky blue, sand)
+	"apt_sky": Color("9dbfd4"), "apt_sky_dark": Color("7fa5be"), "sand_light": Color("e4d2ac"), "office_sand": Color("cdb488"),
+	"sage_cream": Color("e2dcc0"), "shop_rose": Color("cf8e78"),
+	"awning_teal": Color("4f8f88"), "awning_sky": Color("6fa3c4"), "awning_cream": Color("efe2c2"),
+	"fascia_teal": Color("3f6b66"), "fascia_sand": Color("c9ad7c"), "fascia_rose": Color("b86650"),
+	# alleys and road forms (city-variety.md section 1): service paving, a drain, lane planting, string lights
+	"service": Color("8e8274"), "service_dark": Color("5d554d"), "drain": Color("4a443f"), "pipe": Color("8a8f8c"),
+	"door_back": Color("6f7a78"), "planting": Color("7fae62"), "bulb": Color("ffe6b0"),
 }
+
+## A building's own shade of its body colour (cosmetic, `rng` is the building's own stream): a small shift in hue,
+## saturation and value, so a row of one style is not one colour while staying in the palette family.
+static func tint(col: Color, rng: RandomNumberGenerator, amount: float = 1.0) -> Color:
+	var h := fposmod(col.h + rng.randf_range(-0.014, 0.014) * amount, 1.0)
+	var s := clampf(col.s * (1.0 + rng.randf_range(-0.12, 0.12) * amount), 0.0, 1.0)
+	var v := clampf(col.v * (1.0 + rng.randf_range(-0.07, 0.07) * amount), 0.0, 1.0)
+	return Color.from_hsv(h, s, v, col.a)
 
 static var _surface: StandardMaterial3D
 static var _strip: StandardMaterial3D

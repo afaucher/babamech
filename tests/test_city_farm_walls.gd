@@ -13,7 +13,16 @@ extends TestCase
 ## Was {"1/0": [1393, 26314770], "4/1": [2070, 2398881905]}.
 ## Recaptured 2026-11-23 again: both decks got a downtown zone (docs/design/city-downtown.md; section 1 deck 0: one
 ## block, section 4 deck 1: three). Was {"1/0": [1398, 3304332043], "4/1": [2072, 1075195680]}.
-const GOLDEN_COLLISION := {"1/0": [1398, 1495191684], "4/1": [2053, 2059034929]}
+## Recaptured 2026-11-23 (downtown pass 2: zones of 5 blocks on both decks, wings, alleys beside pillars). Was
+## {"1/0": [1398, 1495191684], "4/1": [2053, 2059034929]}.
+## 2026-11-23 (forms live: Missions switched the SectionPlan road forms on by default): these are now the decks built with
+## the forms EXPLICITLY off (FORMS_OFF), where they still hold unchanged; GOLDEN_LIVE is the default (forms live) deck,
+## captured 2026-11-23: 4/1 has 2 form segments whose courts / planting bands add 45 sidewalk-height boxes (the live list
+## is the forms-off list with exactly those boxes inserted, asserted in _deck: the walls are untouched); 1/0's
+## 4 form segments raise no ground (CityPlan.raised empty), so its collision is the same.
+const GOLDEN_COLLISION := {"1/0": [1366, 1996002468], "4/1": [2030, 4209122442]}
+const GOLDEN_LIVE := {"1/0": [1366, 1996002468], "4/1": [2075, 2245239995]}
+const FORMS_OFF := {"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0}
 const FARM_TRIS_PER_M := 32.0      ## budget: lit + light-bar triangles per metre of farm wall (target ~30)
 
 
@@ -27,10 +36,12 @@ func setup() -> void:
 	finish()
 
 
+## Re-captured 2026-11-23 (city variety: alleys + stand-alone road forms on by default). Was 209989488eaa0e52 /
+## e4ec580da1956459 / props 7e78d4e1e3db1a61 (still the values with alleys 0, road_variety 0).
 func _goldens() -> void:
-	eq(CityPlan.make({"seed": 1}).checksum(), "209989488eaa0e52", "the seed 1 plan checksum (golden)")
-	eq(CityPlan.make({"seed": 1, "walls": 1.0}).checksum(), "e4ec580da1956459", "the seed 1 walled plan checksum (golden)")
-	eq(CityProps.layout_checksum(CityProps.layout(CityPlan.make({"seed": 1}))), "7e78d4e1e3db1a61", "the seed 1 props layout (golden)")
+	eq(CityPlan.make({"seed": 1}).checksum(), "bd1d848c575e85df", "the seed 1 plan checksum (golden)")
+	eq(CityPlan.make({"seed": 1, "walls": 1.0}).checksum(), "3eb0728c9b4cffa2", "the seed 1 walled plan checksum (golden)")
+	eq(CityProps.layout_checksum(CityProps.layout(CityPlan.make({"seed": 1}))), "f321076ebd6e98f1", "the seed 1 props layout (golden)")
 
 
 ## Every section window with a backdrop is a farm with none; nothing else changes kind.
@@ -58,6 +69,15 @@ func _collision_hash(d: CityDistrict) -> Array:
 	return [col.get_child_count(), h]
 
 
+func _shape_list(d: CityDistrict) -> Array:
+	var out := []
+	for c in d.get_node("Collision").get_children():
+		var cs := c as CollisionShape3D
+		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else (cs.shape as ConvexPolygonShape3D).points
+		out.append(hash([cs.transform, sz]))
+	return out
+
+
 func _deck(seed_: int, k: int) -> void:
 	var tag := "section %d deck %d" % [seed_, k]
 	var d := CityDistrict.new()
@@ -67,7 +87,28 @@ func _deck(seed_: int, k: int) -> void:
 	d.build_deck(SectionPlan.make({"seed": seed_}), k)
 	var plan := d.plan
 	var key := "%d/%d" % [seed_, k]
-	eq(_collision_hash(d), GOLDEN_COLLISION[key], tag + ": collision identical to the window walls' (count, hash)")
+	var off_sp := FORMS_OFF.duplicate()
+	off_sp["seed"] = seed_
+	var o := CityDistrict.new()
+	o.with_rig = false
+	add_child(o)
+	o.build_deck(SectionPlan.make(off_sp), k)
+	eq(_collision_hash(o), GOLDEN_COLLISION[key], tag + " (forms off): collision identical to the window walls' (count, hash)")
+	eq(_collision_hash(d), GOLDEN_LIVE[key], tag + " (forms live): collision as captured (count, hash)")
+	# The road forms only add the ground they raise (CityPlan.raised: courts, planting bands), as one run of boxes after
+	# the sidewalks; every other shape (walls, gates, buildings, ramps) is the forms-off deck's, in the same order.
+	var so := _shape_list(o)
+	var sl := _shape_list(d)
+	var n_raised := 0
+	for rq: Dictionary in plan.raised:
+		for q in CityGeo.cut(rq["rect"], plan.floor_cuts()):
+			n_raised += CityGeo.breaks(q.position.y, q.end.y).size() - 1
+	var i := 0
+	while i < so.size() and i < sl.size() and so[i] == sl[i]:
+		i += 1
+	eq(sl.size(), so.size() + n_raised, tag + ": the forms add exactly their raised ground boxes (%d)" % n_raised)
+	check(sl.slice(i + n_raised) == so.slice(i), tag + ": with forms live every other shape is the forms-off deck's (walls untouched)")
+	o.queue_free()
 	check(d.get_node_or_null("Backdrop") == null, tag + ": no backdrop (every window wall here is a farm)")
 	var lights := d.get_node_or_null("FarmLights") as MeshInstance3D
 	check(lights != null, tag + ": the farm's light bars")

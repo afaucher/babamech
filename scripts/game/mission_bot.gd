@@ -60,6 +60,9 @@ const ROOF_OUT := 8.0         ## m past the block's side a roof escape heads for
 const PERCH_MIN_H := 6.0      ## m: a target this high above its deck may need a roof to be seen from
 const PERCH_HOLD := 6.0       ## s on a perch without line of sight before giving it up
 const PERCH_GIVE_UP := 45.0   ## s to reach a perch at most
+const PERCH_RETRY := 45.0     ## s before a roof whose climb stalled may be tried again (a later try, cooler or from
+#                               another side, sometimes makes it)
+const PERCH_STALL := 8.0      ## s climbing toward a perch without rising 1 m, getting 2 m nearer or moving 2 m: that try is given up
 const DEV_STALL := 25.0       ## DEV --dev-bot-travel: s without 5 m of progress along the route before a jump
 const DEV_FIGHT_STALL := 30.0 ## DEV: s fighting without a kill before a jump near the target
 const DEV_NEAR := 20.0        ## DEV: m from the target enemy a fight jump lands (each jump from another side)
@@ -71,6 +74,7 @@ const LOCAL_R := 60.0          ## m from a zone: the last stretch is planned on 
 const LOCAL_HALF := 66.0       ## m: half the side of that grid (around the zone's centre)
 const LOCAL_STEP := 3.0        ## m between its points
 const LOCAL_SIDE := 2.4        ## m either side of a grid edge its side rays run (the mech's capsule is ~2.2 m in radius)
+const ROOMY := 3.0             ## m of clear space all round a stand / cover point (the capsule is ~2.2 m in radius)
 const STAND_IN := 0.45         ## share of the zone's radius a stand point may lie from the centre
 const DEFEND_HOLD_R := 20.0    ## m: a defend is held this close to its relay (its activation radius is 30)
 const HUNT_AFTER := 12.0       ## s holding with no progress (flag) / no engagement (defend) before hunting
@@ -80,10 +84,21 @@ const BONUS_GIVE_UP := 240.0   ## s on one bonus before it is skipped
 const ESCORT_OFF := 0.4        ## co-op: an escort holds this share of the radius off the centre
 const FF_CLEAR := 4.0          ## m: a teammate this close to the line of fire holds the trigger...
 const FF_SPLASH := 8.0         ## m: ...or this close to the aim point
+const LOW_HP := 0.45           ## holding: weakest core part under this share -> cover inside the zone
+const DEFEND_LOW_HP := 0.3     ## ...defending only under this (the relay needs the mech out front)
+const PRESSURE_DROP := 0.15    ## ...or losing this share of it within PRESSURE_WIN s
+const PRESSURE_WIN := 3.0
+const COVER_IN := 0.85         ## cover lies within this share of the zone's radius from its centre
+const COVER_RECHECK := 2.0     ## s between checks that the cover still hides it
+const COVER_THREAT_R := 160.0  ## m: enemies this close count as threats to hide from
+const REPAIR_AT := 0.6         ## weakest core part under this: launch a repair drone if the loadout has one
 const ADVANCE_WAIT := 1.5      ## s with nothing left on a deck before moving on (a chained bonus shows up a tick late)
 
 ## Tests: plan with ramps only (no shaft drops or glides), to exercise the ramp legs.
 static var ramps_only := false
+## Tests / A-B: the hole guard (_guard_holes) and the hold survival (cover in the zone, repair drone) on.
+static var hole_guard := true
+static var survival := true
 ## Plan mode: do the known bonus objectives of a deck after its primary (tests may turn this off for speed).
 static var bonuses := true
 
@@ -97,6 +112,11 @@ var _navs: Array = []         ## per deck: BotNavigator on that deck's plan (its
 var _perch: Dictionary = {}   ## fighting: the roof being climbed to see the target (BotNavigator roof entry)
 var _perch_t := 0.0           ## s since the perch was chosen
 var _perch_hold := 0.0        ## s standing on it
+var _perch_prog_t := 0.0      ## s since the climb last got anywhere (PERCH_STALL)
+var _perch_best := Vector2.INF   ## (flat distance to the roof, height) at the last progress
+var _bad_perch: Dictionary = {}  ## roof key -> t its climb last stalled (PERCH_RETRY)
+var _perch_anchor := Vector3.ZERO   ## where the climb was when it last moved 2 m
+var perch_fails := 0          ## climbs given up for stalling (tests)
 var _vantage_kind := ""       ## "sight" (a road point that sees the target) | "patrol" (none does: walk round it)
 var _rng := RandomNumberGenerator.new()
 var _deck := -1               ## the deck PlayerBot is bound to
@@ -168,11 +188,17 @@ var _stand_key := ""          ## plan mode: the goal key + role the stand point 
 var _stand_pt := Vector3.INF  ## plan mode: a street-level point inside the zone the mech can walk to (_plan_local)
 var local_plans := 0          ## physics-grid plans made (tests)
 var local_fails := 0          ## ...of which found no stand point it could walk to
+var hop_vetoes := 0           ## frames a thruster hop toward a floor cut lost its thrust (_guard_holes)
+var drones := 0               ## repair drones launched (_use_repair)
+var covers := 0               ## covers taken while holding a zone (tests)
+var _cover_pt := Vector3.INF  ## holding and in trouble: the cover point inside the zone
+var _cover_t := 0.0
+var _hp_hist: Array = []      ## [[t, weakest core part]] over PRESSURE_WIN s
 
 
 func net_fields() -> Dictionary:
 	return {"drive": Net.LOCAL, "pilot": Net.LOCAL, "planner": Net.LOCAL, "mode": Net.PRIVATE, "goal_text": Net.PRIVATE,
-		"_nav": Net.PRIVATE, "_navs": Net.PRIVATE, "_perch": Net.PRIVATE, "_perch_t": Net.PRIVATE, "_perch_hold": Net.PRIVATE, "_vantage_kind": Net.PRIVATE, "_rng": Net.PRIVATE, "_deck": Net.PRIVATE, "_legs": Net.PRIVATE, "_leg_i": Net.PRIVATE,
+		"_nav": Net.PRIVATE, "_navs": Net.PRIVATE, "_perch": Net.PRIVATE, "_perch_t": Net.PRIVATE, "_perch_hold": Net.PRIVATE, "_perch_prog_t": Net.PRIVATE, "_perch_best": Net.PRIVATE, "_bad_perch": Net.PRIVATE, "perch_fails": Net.PRIVATE, "_perch_anchor": Net.PRIVATE, "_vantage_kind": Net.PRIVATE, "_rng": Net.PRIVATE, "_deck": Net.PRIVATE, "_legs": Net.PRIVATE, "_leg_i": Net.PRIVATE,
 		"_seg_i": Net.PRIVATE, "_route_key": Net.PRIVATE, "_route_goal": Net.PRIVATE, "_route_t": Net.PRIVATE,
 		"_target": Net.LOCAL, "_target_t": Net.PRIVATE, "_mode_t": Net.PRIVATE, "_said": Net.PRIVATE,
 		"_status_t": Net.PRIVATE, "_last_pos": Net.PRIVATE, "_stk_t": Net.PRIVATE, "_stk_rem": Net.PRIVATE,
@@ -186,7 +212,8 @@ func net_fields() -> Dictionary:
 		"_task_t": Net.PRIVATE, "_skipped": Net.PRIVATE, "_hunt": Net.LOCAL, "_hunt_t": Net.PRIVATE, "_quiet_t": Net.PRIVATE,
 		"_stuck_prog_t": Net.PRIVATE, "_prog_last": Net.PRIVATE, "_holding": Net.PRIVATE, "role_index": Net.PRIVATE,
 		"_advance_t": Net.PRIVATE, "_stand_key": Net.PRIVATE, "_stand_pt": Net.PRIVATE, "local_plans": Net.PRIVATE,
-		"local_fails": Net.PRIVATE}
+		"local_fails": Net.PRIVATE, "hop_vetoes": Net.PRIVATE, "drones": Net.PRIVATE,
+		"covers": Net.PRIVATE, "_cover_pt": Net.PRIVATE, "_cover_t": Net.PRIVATE, "_hp_hist": Net.PRIVATE}
 
 
 ## TestDrive calls this once its scene is set up (and the stack built).
@@ -228,11 +255,42 @@ func stats() -> Dictionary:
 		by[c["by"]] = int(by.get(c["by"], 0)) + 1
 	return {"dev_jumps": dev_jumps, "deck_changes": deck_changes.duplicate(true), "by": by, "stuck": stuck_events,
 		"blocked": blocked_edges, "replans": replans, "t": t, "roof_max": snappedf(roof_max, 0.1),
-		"stall_max": snappedf(stall_max, 0.1), "tasks": task_log.duplicate(true), "ff_holds": ff_holds,
-		"local_plans": local_plans, "local_fails": local_fails}
+		"stall_max": snappedf(stall_max, 0.1), "tasks": task_log.duplicate(true), "ff_holds": ff_holds, "perch_fails": perch_fails,
+		"local_plans": local_plans, "local_fails": local_fails, "hop_vetoes": hop_vetoes, "drones": drones, "covers": covers}
 
 
 func _physics_process(dt: float) -> void:
+	_step(dt)
+	if hole_guard:
+		_guard_holes()
+	if survival:
+		_use_repair()
+
+
+## Last word on the legs every frame, whoever chose them (this layer, PlayerBot fighting / dodging / taking cover, or
+## PlayerBot alone while idle): keep them out of the floor cuts (shafts, ramp holes) of the deck the mech is on, unless
+## the current leg means to go down one (a ramp, a shaft drop, a glide). A thruster hop whose next second of flight ends
+## over a cut loses its thrust.
+func _guard_holes() -> void:
+	if drive == null or drive.loading or drive.mech == null or drive.stack == null or planner == null or drive._held:
+		return
+	if _leg_i < _legs.size() and str(_legs[_leg_i]["kind"]) != "walk":
+		return
+	var mech := drive.mech
+	var k := drive.stack.deck_at(mech.global_position)
+	if k < 0 or k >= planner.cuts.size():
+		return
+	_veto_inputs(k)
+	if mech.thrust_input:
+		var up := mech.up()
+		var ahead := mech.global_position + _flat(mech.velocity, up)
+		var a := _arc_on(k, ahead)
+		if planner.in_cut(k, Vector2(float(a["x"]), float(a["s"])), VETO_GROW):
+			mech.thrust_input = false
+			hop_vetoes += 1
+
+
+func _step(dt: float) -> void:
 	if drive == null or drive.loading or drive.mech == null or drive.stack == null or drive.mission == null:
 		return
 	if drive._held:
@@ -292,7 +350,7 @@ func _physics_process(dt: float) -> void:
 				_clear_route()
 			_holding = true
 			_set_mode("hold", str(goal["text"]), "hold %s on deck %d" % [str(goal["key"]), k])
-			_zone_hold(k, at, zr, dt)
+			_zone_hold(k, at, zr, dt, goal)
 			return
 	_holding = false
 	# Fight near the target (hysteresis: in at ENGAGE, out past ENGAGE_OUT), or once the road there has run out.
@@ -399,28 +457,10 @@ func _plan_local(k: int, goal: Dictionary, key: String, zone_key: String) -> boo
 	var space := mech.get_world_3d().direct_space_state
 	var floor_at := {}   # Vector2i -> Vector3 floor point, or null
 	var fl := func(c: Vector2i) -> Variant:
-		if floor_at.has(c):
-			return floor_at[c]
-		var v: Variant = null
-		var p2 := org + Vector2(c) * LOCAL_STEP
-		if c.x >= 0 and c.y >= 0 and c.x < n and c.y < n and not planner.in_cut(k, p2, 1.5):
-			var base := st.from_deck_arc(k, p2.x, p2.y, 0.0)
-			var up := st.deck_ring(k).up_at(base)
-			# From just above a mech's knee, counting a start inside something (a podium, a tower's solid base: their
-			# colliders are solid, a ray born inside them reports nothing without hit_from_inside).
-			var q := PhysicsRayQueryParameters3D.create(base + up * 3.5, base - up * 2.0)
-			q.exclude = [mech.get_rid()]
-			q.hit_from_inside = true
-			var h := space.intersect_ray(q)
-			if not h.is_empty() and (h["normal"] as Vector3).dot(up) > 0.8 and ((h["position"] as Vector3) - base).dot(up) < 1.2:
-				var f: Vector3 = h["position"]
-				var q2 := PhysicsRayQueryParameters3D.create(f + up * 0.5, f + up * 7.5)
-				q2.exclude = [mech.get_rid()]
-				q2.hit_from_inside = true
-				if space.intersect_ray(q2).is_empty():
-					v = f
-		floor_at[c] = v
-		return v
+		if not floor_at.has(c):
+			var inside := c.x >= 0 and c.y >= 0 and c.x < n and c.y < n
+			floor_at[c] = _street_floor(k, org + Vector2(c) * LOCAL_STEP) if inside else null
+		return floor_at[c]
 	var start := Vector2i(-1, -1)
 	var best_d := INF
 	for dx in range(-2, 3):
@@ -445,7 +485,7 @@ func _plan_local(k: int, goal: Dictionary, key: String, zone_key: String) -> boo
 		var p2 := org + Vector2(c) * LOCAL_STEP
 		if p2.distance_to(centre) <= r * STAND_IN:
 			var sc := p2.distance_to(want)
-			if sc < best_score:
+			if sc < best_score and _roomy(fl.call(c), st.deck_ring(k).up_at(fl.call(c))):
 				best_score = sc
 				best = c
 		var fa: Vector3 = fl.call(c)
@@ -457,19 +497,7 @@ func _plan_local(k: int, goal: Dictionary, key: String, zone_key: String) -> boo
 			var fb: Variant = fl.call(nb)
 			if fb == null:
 				continue
-			# A mech's width, not a line: rays at both sides (LOCAL_SIDE) and the middle (a doorway slit isn't a way).
-			var clear := true
-			var side := ((fb as Vector3) - fa).cross(up).normalized() * LOCAL_SIDE
-			for hh: float in [2.5, 5.5]:
-				for off: Vector3 in [Vector3.ZERO, side, -side]:
-					var q := PhysicsRayQueryParameters3D.create(fa + up * hh + off, (fb as Vector3) + up * hh + off)
-					q.exclude = [mech.get_rid()]
-					q.hit_from_inside = true
-					if not space.intersect_ray(q).is_empty():
-						clear = false
-						break
-				if not clear:
-					break
+			var clear := _walk_clear(fa, fb as Vector3, up)
 			if not clear:
 				continue
 			came[nb] = c
@@ -718,6 +746,167 @@ func _pick_hunt(o: Dictionary, waves_first: bool, near_only: bool) -> Variant:
 	return best
 
 
+## Deck k's street-level floor point at arc (x, s) = p2, or null: outside floor cuts, a ray down from 3.5 m (a start
+## inside a solid counts: podiums and tower bases are solid colliders) finds floor within 1.2 m of the deck's floor, with
+## 7 m of headroom above it.
+func _street_floor(k: int, p2: Vector2) -> Variant:
+	if planner.in_cut(k, p2, 1.5):
+		return null
+	var st := drive.stack
+	var mech := drive.mech
+	var space := mech.get_world_3d().direct_space_state
+	var base := st.from_deck_arc(k, p2.x, p2.y, 0.0)
+	var up := st.deck_ring(k).up_at(base)
+	var q := PhysicsRayQueryParameters3D.create(base + up * 3.5, base - up * 2.0)
+	q.exclude = [mech.get_rid()]
+	q.hit_from_inside = true
+	var h := space.intersect_ray(q)
+	if h.is_empty() or (h["normal"] as Vector3).dot(up) <= 0.8 or ((h["position"] as Vector3) - base).dot(up) >= 1.2:
+		return null
+	var f: Vector3 = h["position"]
+	var q2 := PhysicsRayQueryParameters3D.create(f + up * 0.5, f + up * 7.5)
+	q2.exclude = [mech.get_rid()]
+	q2.hit_from_inside = true
+	return f if space.intersect_ray(q2).is_empty() else null
+
+
+## A mech can walk straight from floor point a to b: rays at 2.5 and 5.5 m, in the middle and LOCAL_SIDE to each side
+## (a mech's width: a doorway slit isn't a way), all clear.
+func _walk_clear(a: Vector3, b: Vector3, up: Vector3) -> bool:
+	var space := drive.mech.get_world_3d().direct_space_state
+	var side := (b - a).cross(up).normalized() * LOCAL_SIDE
+	for hh: float in [2.5, 5.5]:
+		for off: Vector3 in [Vector3.ZERO, side, -side]:
+			var q := PhysicsRayQueryParameters3D.create(a + up * hh + off, b + up * hh + off)
+			q.exclude = [drive.mech.get_rid()]
+			q.hit_from_inside = true
+			if not space.intersect_ray(q).is_empty():
+				return false
+	return true
+
+
+## Room for a mech to stand at floor point p: eight rays at 2.5 m height, ROOMY m out, all clear (a stand point or a
+## cover point pressed against the relay, the mast or a wall wedges the mech; seen on seed 2: wedged by the relay).
+func _roomy(p: Vector3, up: Vector3) -> bool:
+	var space := drive.mech.get_world_3d().direct_space_state
+	var ref := up.cross(Vector3.RIGHT if absf(up.dot(Vector3.RIGHT)) < 0.9 else Vector3.FORWARD).normalized()
+	var o := p + up * 2.5
+	for i in 8:
+		var q := PhysicsRayQueryParameters3D.create(o, o + ref.rotated(up, TAU * float(i) / 8.0) * ROOMY)
+		q.exclude = [drive.mech.get_rid()]
+		q.hit_from_inside = true
+		if not space.intersect_ray(q).is_empty():
+			return false
+	return true
+
+
+## The mech's weakest core component, 0..1 (PlayerTarget.CORE_COMPONENTS: one at 0 downs the mech).
+func _core_hp() -> float:
+	var pt := drive.combat.player_target if drive.combat != null else null
+	if pt == null:
+		return 1.0
+	var fr := pt.component_fractions()
+	var lo := 1.0
+	for c: String in PlayerTarget.CORE_COMPONENTS:
+		if fr.has(c):
+			lo = minf(lo, float(fr[c]))
+	return lo
+
+
+## Holding a zone and in trouble: the weakest core part under LOW_HP, or down PRESSURE_DROP in the last PRESSURE_WIN s.
+## Defending, only under DEFEND_LOW_HP: hiding leaves the relay to the enemy.
+func _pressed() -> bool:
+	var hp := _core_hp()
+	_hp_hist.append([t, hp])
+	while _hp_hist.size() > 1 and t - float(_hp_hist[0][0]) > PRESSURE_WIN:
+		_hp_hist.pop_front()
+	if str(drive.mission.rules.objective(task_id).get("type", "")) == "defend":
+		return hp < DEFEND_LOW_HP
+	return hp < LOW_HP or float(_hp_hist[0][1]) - hp > PRESSURE_DROP
+
+
+## The live enemies of deck k worth hiding from: up to 4, nearest first, within COVER_THREAT_R m.
+func _threats(k: int) -> Array:
+	var out: Array = []
+	var pos := drive.mech.global_position
+	for e: Variant in (drive.combat.squad.enemies as Array):
+		if not _live_on(e, k):
+			continue
+		var d := (e as EnemyBase).global_position.distance_to(pos)
+		if d < COVER_THREAT_R:
+			out.append([d, e])
+	out.sort_custom(func(u: Array, v: Array) -> bool: return float(u[0]) < float(v[0]))
+	var eyes: Array = []
+	for u: Array in out.slice(0, 4):
+		eyes.append((u[1] as EnemyBase).eye_world())
+	return eyes
+
+
+## How many of the threat eyes don't see a mech's chest at floor point p.
+func _covered(p: Vector3, up: Vector3, eyes: Array) -> int:
+	var space := drive.mech.get_world_3d().direct_space_state
+	var n := 0
+	var chest := p + up * 4.5
+	for eye: Vector3 in eyes:
+		var q := PhysicsRayQueryParameters3D.create(eye, chest)
+		q.exclude = [drive.mech.get_rid()]
+		var h := space.intersect_ray(q)
+		if not h.is_empty() and eye.distance_to(h["position"] as Vector3) < eye.distance_to(chest) - 2.5:
+			n += 1
+	return n
+
+
+## A street-level point near the stand point `at`, inside the zone (COVER_IN of r from the centre `zc`), the mech can
+## walk to straight, hidden from the most threats (at least one), nearest the mech among equals. INF when none.
+func _pick_cover(k: int, at: Vector3, zc: Vector3, r: float, eyes: Array) -> Vector3:
+	if eyes.is_empty():
+		return Vector3.INF
+	var st := drive.stack
+	var mech := drive.mech
+	var up := mech.up()
+	var sa := _arc_on(k, at)
+	var za := _arc_on(k, zc)
+	var zc2 := Vector2(float(za["x"]), float(za["s"]))
+	var best := Vector3.INF
+	var best_n := 0
+	var best_d := INF
+	for dist: float in [0.0, 4.0, 7.0, 10.0]:
+		for i in (1 if dist == 0.0 else 12):
+			var p2 := Vector2(float(sa["x"]), float(sa["s"])) + Vector2.from_angle(TAU * float(i) / 12.0) * dist
+			if p2.distance_to(zc2) > r * COVER_IN:
+				continue
+			var f: Variant = _street_floor(k, p2)
+			if f == null:
+				continue
+			var fp: Vector3 = f
+			if not _roomy(fp, up):
+				continue
+			var d := _flat(fp - mech.global_position, up).length()
+			if d > 1.5 and not _walk_clear(mech.global_position + up * 0.3, fp, up):
+				continue
+			var n := _covered(fp, up, eyes)
+			if n > best_n or (n == best_n and n > 0 and d < best_d):
+				best_n = n
+				best_d = d
+				best = fp
+	return best
+
+
+## Low on HP: launch a repair drone from active equipment if the loadout has one (WeaponRack.activate, the bots' way).
+func _use_repair() -> void:
+	if drive == null or drive.combat == null or drive.combat.rack == null or drive.mech == null or drive._held:
+		return
+	var pt := drive.combat.player_target
+	if pt == null or pt.disabled or _core_hp() > REPAIR_AT:
+		return
+	var rack := drive.combat.rack
+	for i in rack.slot_count():
+		if rack.can_launch(i) and rack.activate(i + 1):
+			drones += 1
+			FlowLog.say("bot", "repair drone out (weakest core part at %.0f %%)" % (_core_hp() * 100.0))
+			return
+
+
 func _live(e: Variant) -> bool:
 	return e != null and is_instance_valid(e) and e is EnemyBase and not (e as EnemyBase).destroyed() \
 		and not (e as EnemyBase).is_queued_for_deletion()
@@ -737,7 +926,7 @@ func _update_role() -> void:
 
 ## Stand in the zone (centre `at`, radius r): PlayerBot aims and fires; its legs only while it engages / dodges / takes
 ## cover and stays near the centre; past HOLD_DRIFT of r, walk back (still facing the enemy when engaging).
-func _zone_hold(k: int, at: Vector3, r: float, _dt: float) -> void:
+func _zone_hold(k: int, at: Vector3, r: float, dt: float, goal: Dictionary = {}) -> void:
 	var mech := drive.mech
 	var up := mech.up()
 	var off := _flat(at - mech.global_position, up)
@@ -745,6 +934,35 @@ func _zone_hold(k: int, at: Vector3, r: float, _dt: float) -> void:
 	_roof_done()
 	var pb := pilot.bot if pilot != null else null
 	var st := pb.ai_state if pb != null and is_instance_valid(pb) else ""
+	# In trouble (low, or losing HP fast): into cover inside the zone (it keeps counting), still shooting what it sees.
+	if survival and _pressed():
+		_cover_t += dt
+		var eyes := _threats(k)
+		if _cover_pt == Vector3.INF or (_cover_t > COVER_RECHECK and _covered(_cover_pt, up, eyes) == 0):
+			var zc := at
+			var o := drive.mission.rules.objective(task_id)
+			if not o.is_empty() and str(goal.get("key", "")) == task_id:
+				var zz := _zone_of(o)
+				zc = drive.stack.from_deck_arc(k, (zz[0] as Vector2).x, (zz[0] as Vector2).y)
+			_cover_pt = _pick_cover(k, at, zc, r, eyes)
+			_cover_t = 0.0
+			if _cover_pt != Vector3.INF:
+				covers += 1
+				print("[Bot] taking cover in the zone (weakest core part %.0f %%)" % (_core_hp() * 100.0))
+		if _cover_pt != Vector3.INF:
+			var co := _flat(_cover_pt - mech.global_position, up)
+			if co.length() > 1.5:
+				var cdir := _veto(k, co.normalized())
+				var cb := mech.global_transform.basis
+				mech.move_input = Vector2(cdir.dot(cb.x), -cdir.dot(cb.z)).limit_length(1.0)   # keep PlayerBot's facing
+				mech.running = co.length() > 6.0
+			else:
+				mech.move_input = Vector2.ZERO
+				mech.running = false
+			mech.thrust_input = false
+			return
+	else:
+		_cover_pt = Vector3.INF
 	if d > r * HOLD_DRIFT:
 		var dir := _nav.avoid_obstacles(mech, off.normalized(), mech.get_world_3d().direct_space_state, up)
 		dir = _veto(k, dir)
@@ -1580,7 +1798,7 @@ func _pick_perch(k: int, look: Vector3) -> Dictionary:
 		var cw: Vector3 = r["center_w"]
 		var key := "roof:%d:%d" % [roundi((r["arc2"] as Vector2).x), roundi((r["arc2"] as Vector2).y)]
 		var d := cw.distance_to(look)
-		if d < 14.0 or d > 110.0 or _tried.has(key):
+		if d < 14.0 or d > 110.0 or _tried.has(key) or t - float(_bad_perch.get(key, -INF)) < PERCH_RETRY:
 			continue
 		cands.append([r, cw.distance_to(mp), key])
 	cands.sort_custom(func(u: Array, v: Array) -> bool: return float(u[1]) < float(v[1]))
@@ -1600,7 +1818,11 @@ func _pick_perch(k: int, look: Vector3) -> Dictionary:
 			FlowLog.say("bot", "climbing a roof on deck %d (x %.0f s %.0f, %.0f m up) to see the target" % [k, float(a["x"]),
 				float(a["s"]), float((c[0] as Dictionary)["roof_h"])])
 			_said = ""
-			return c[0]
+			_perch_prog_t = 0.0
+			_perch_best = Vector2.INF
+			var pr: Dictionary = (c[0] as Dictionary).duplicate()
+			pr["_key"] = c[2]
+			return pr
 	return {}
 
 
@@ -1615,7 +1837,29 @@ func _perch_step(k: int, dt: float) -> void:
 		return
 	var cw: Vector3 = _perch["center_w"]
 	var flat := _flat(cw - mech.global_position, up).length()
-	var high := float(_arc_on(k, mech.global_position)["h"]) > ROOF_H
+	var my_h := float(_arc_on(k, mech.global_position)["h"])
+	var high := my_h > ROOF_H
+	# A climb that gets nowhere (a wall too tall for the thrusters, a ledge it slides off): give it up for PERCH_RETRY s.
+	if _perch_best == Vector2.INF:
+		_perch_best = Vector2(flat, my_h)
+		_perch_prog_t = 0.0
+		_perch_anchor = mech.global_position
+	elif flat < _perch_best.x - 2.0 or my_h > _perch_best.y + 1.0:
+		_perch_best = Vector2(minf(flat, _perch_best.x), maxf(my_h, _perch_best.y))
+		_perch_prog_t = 0.0
+	elif mech.global_position.distance_to(_perch_anchor) > 2.0:
+		_perch_anchor = mech.global_position   # moving about (a hop, sliding along the wall): not stuck yet
+		_perch_prog_t = maxf(_perch_prog_t - 1.0, 0.0)
+	else:
+		_perch_prog_t += dt
+	if _perch_prog_t > PERCH_STALL and not bool(_perch.get("_reached", false)):
+		_bad_perch[str(_perch.get("_key", ""))] = t
+		perch_fails += 1
+		FlowLog.say("bot", "giving up the roof climb on deck %d after %.0f s without getting higher or nearer" % [k, _perch_prog_t])
+		_said = ""
+		_perch = {}
+		_stand()
+		return
 	if flat > 32.0 and not high:
 		var key := "perch@%d:%s" % [k, str(cw)]
 		if key != _route_key or (_legs.is_empty() and _route_t > 1.0):
@@ -1628,6 +1872,7 @@ func _perch_step(k: int, dt: float) -> void:
 		_stand()   # too hot: cool down first (PERCH_GIVE_UP ends it if this never works)
 		return
 	if bool(res["reached"]):
+		_perch["_reached"] = true
 		_stand()
 		_perch_hold += dt
 		if _perch_hold > PERCH_HOLD:

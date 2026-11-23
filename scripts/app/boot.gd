@@ -72,7 +72,27 @@ static func arg_value(args: PackedStringArray, key: String) -> String:
 	return ""
 
 
+## A test never reads or writes the player's real settings (user://settings.cfg: their hangar loadout, graphics,
+## controls): GameSettings.path goes to a fresh per-test file under user://test_settings/ (removed first, so every run
+## starts from GameSettings.DEFAULTS: the chassis' default loadout), unless the command line names one with
+## --settings-file. Tests that need their own file still set GameSettings.path themselves.
+## One file per test name (and net link / role / index) so parallel runs never share one.
+func _isolate_test_settings(test_name: String) -> void:
+	var args := OS.get_cmdline_user_args()
+	var file := arg_value(args, "--settings-file")
+	if file == "":
+		var role := arg_value(args, "--net-role")
+		var idx := arg_value(args, "--net-index")
+		var tag := test_name + ("_%s_%s%s" % [arg_value(args, "--net-link"), role, idx] if role != "" else "")
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://test_settings"))
+		file = "user://test_settings/%s.cfg" % tag
+		if FileAccess.file_exists(file):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(file))
+	GameSettings.path = file
+
+
 func _run_test(test_name: String) -> void:
+	_isolate_test_settings(test_name)
 	var path := "res://tests/%s.gd" % test_name
 	if not ResourceLoader.exists(path):
 		push_error("No such test: " + path)

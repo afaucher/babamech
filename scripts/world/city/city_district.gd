@@ -273,7 +273,18 @@ func _c_props() -> void:
 func _c_furniture() -> void:
 	var furn := CityGeo.new(ring)
 	CityStreets.furniture(furn, plan, props.items)
+	var bulbs := CityGeo.new(ring)
+	if not plan.forms.is_empty():
+		CityStreets.string_lights(furn, bulbs, plan)
 	_tris += _add(furn, "Furniture", self)
+	if not bulbs.is_empty():
+		# Pedestrian streets' string lights: emissive bulbs (the farm walls' warm light material), no Light3D, no shadows.
+		var lights := bulbs.instance("StringLights", CityPalette.farm_light_material())
+		lights.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		lights.layers = render_layer
+		add_child(lights)
+		_digest = hash([_digest, bulbs.verts])
+		_tris += bulbs.tri_count()
 	for g in props.find_children("*", "GeometryInstance3D", true, false):
 		(g as GeometryInstance3D).layers = render_layer      # props is not in the tree yet
 	add_child(props)
@@ -472,6 +483,10 @@ func _col_walls() -> void:
 	var th := CityPlan.CURB_H + 0.5
 	for b: Dictionary in plan.blocks:
 		for q in CityGeo.cut(b["rect"], holes):
+			count += _ground_box(body, geo, q, CityPlan.CURB_H - th, CityPlan.CURB_H)
+	# Ground a road form raises to the sidewalk (a superblock's court, a lane's planting bands: CityPlan.raised).
+	for rq: Dictionary in plan.raised:
+		for q in CityGeo.cut(rq["rect"], holes):
 			count += _ground_box(body, geo, q, CityPlan.CURB_H - th, CityPlan.CURB_H)
 	var c := CityStreets.HOLE_CURB
 	for o in holes:

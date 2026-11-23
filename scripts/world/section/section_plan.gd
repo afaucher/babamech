@@ -95,9 +95,9 @@ const DEFAULTS := {
 	"seed": 1.0, "decks": 3.0, "arc": 540.0, "width": 270.0, "radius": 400.0, "pitch": 48.0, "slab": 8.0,
 	"cell": 90.0, "ramp_grade": 0.18, "shafts": 1.0, "express": 1.0,
 	"w_urban": 1.0, "w_park": 0.45, "w_industrial": 0.45,
-	# Road segment forms: share of the minor segments. DORMANT (0: every segment a street) until the city draws them;
-	# the intended mix is 0.20 / 0.10 / 0.08 (tests: FORM_MIX).
-	"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0,
+	# Road segment forms: share of the minor segments rolled lane / pedestrian / none (the rest stay streets). Live since
+	# 2026-11-23 (the city draws them); 0 / 0 / 0 makes every segment a street.
+	"f_lane": 0.20, "f_pedestrian": 0.15, "f_none": 0.08,
 	"bridge_rule": 1.0,      # 1: no road across a ramp's cut where a mech would not fit under the bridge (bridge_lines)
 }
 
@@ -123,7 +123,8 @@ var repair_stats := {}             ## {rolled, repaired, stubs}: how many minor 
 
 var _rng := RandomNumberGenerator.new()
 var _minor: Array = []             ## per deck: segment key -> true where the form was rolled (not a forced street)
-var _cut: Array = []               ## per deck: segment key -> "bridge" | "foot": a cross segment nothing drives over
+var _cut: Array = []               ## per deck: segment key -> "bridge" | "foot": a cross segment no vehicle drives over
+                                   ## (a "foot" is still walked: mechs and enemies keep it in the city graph)
 var _pillar_of: Dictionary = {}    ## cell key -> pillar id
 var _omit: Dictionary = {}         ## cell key -> true: a long-span bay (no pillar on any deck)
 var _lift_cells: Dictionary = {}   ## cell key -> connector index of the lift housed in that cell's pillar
@@ -913,7 +914,8 @@ func _seg_dict(k: int, axis: String, line: int, index: int) -> Dictionary:
 
 ## The segments of one road line on deck k, in order: [{axis, line, index, a, b, form, rect, inner, minor, blocked}].
 ## rect tiles the line's strip; inner is the stretch between the crossings; blocked: "" | "bridge" (a ramp's cut runs
-## under, no bridge) | "foot" (a ramp's foot comes down on it): nothing drives across, whatever the form.
+## under, no bridge) | "foot" (a ramp's foot comes down on it): no vehicle drives across, whatever the form (a foot
+## segment is still walked by mechs and enemies).
 func line_segments(k: int, axis: String, line: int) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	for index in _seg_count(axis):

@@ -141,3 +141,76 @@ buildings (`CityDistrict.TOWER_WEIGHT`) and stay out of the top five. Bases over
 
 **Not enforced**: "about a third" (zone size is what eligible contiguous blocks allow); the 40 / 60 slab / point mix (a
 slab needs an 18 x 10 m room; roughly a third of shafts are slabs).
+
+### Pass 2 (2026-11-23, Environment session subagent): density, family looks, distinct bases
+
+Review of pass 1: a few scattered towers in open ground, zones of 1-6 blocks, slabs dominating, points hard to read,
+bases alike at eye level. Stats tool: `tools/city_downtown/dt_stats.gd` (`--seeds 1-12 --map --why`); shots
+`tools/city_downtown/shots.ps1` -> `city-downtown/pass2_*.png`.
+
+**Plan** (`city_plan.gd` "Downtown")
+
+- **Pillar cells join.** Almost every urban section cell holds an 18 m pillar core, and pass 1 failed them ("fewer than
+  three lots with a base": 76 of the eligible blocks over seeds 1-12). Three causes, three fixes: (1) the core spacing
+  was measured axis by axis, so a tower diagonally off a core was refused: `_dt_avoid` now keeps 10.5 m face to face
+  (Euclidean) and finds the largest room anchored at a corner of the lot's room (analytic per width, 0.5 m steps);
+  (2) `_carve_geom` cut full-length strips beside the core (12-13 m wide: no room after the 6 m setback): it now also
+  cuts full-width bands first (`first` 1) and `_dt_design` keeps whichever layout holds more based lots; (3) points go
+  down to 8 m square (`DT_POINT.x`). A block of two based lots (pillar + one tower) joins when both differ (the
+  ">= 3 bases" rule relaxed for two-lot blocks). Still failing over seeds 1-12: 4 pillar blocks ("fewer than two lots
+  with a base": the core leaves no 8 m room anywhere 6 m from the street).
+- **Zone size.** The zone starts at an avenue block whose cluster can reach the target (else the biggest), and grows
+  through side neighbours, then corner-to-corner neighbours across a crossing when no side neighbour can join
+  (deviation: "contiguous" now includes blocks that share only a crossing; urban cells are scattered among parks and
+  transit cells). Seeds 1-12, zone blocks / deck blocks on zoned decks: before 9 decks at 0.06, 3 at 0.11, 2 at 0.17, 1 at
+  0.22, 1 at 0.28, 9 at 0.33; after 5 at 0.28, 20 at 0.33 (25 of 36 decks zoned, as before).
+- **Shafts per block** (pillar cores and twins included), seeds 1-12: before {3: 51, 4: 1, 5: 17, 6: 13, 7: 1, 8: 1};
+  after {2: 12, 3: 44, 4: 89}. `DT_MAX_SHAFTS` 4: past it the tightest rooms become open lots, and a twin is offered
+  only while the block has fewer than four based lots.
+- **Wings** (`_dt_wings`): an open lot left beside a podium-like base (podium, stepped, twin, corner, a pillar's
+  podium) becomes that base's low wing (6.5 m podium on its own lot, same `unit`, `wing` true) three times in four,
+  unless it would put two lots of one base side by side on a street. This is the continuous street wall of the
+  concepts; at 6.5 m it never closes a through view (seen over at 8 m). The through view's paved gap stays open.
+- **Slabs** 37 % of towers (seeds 1-12; `DT_SLAB_CHANCE` 0.9 where an 18 x 10 m room fits, tight rooms are points).
+- **Diagonal views** (`diagonal_views(bi)`): 45-degree lines on a 1 m step whose stretch inside the building line is
+  at least 20 m (`DT_DIAG_MIN`) and whose 2 m corridor clears everything rising past 8 m. Counted, not required (the
+  axis-aligned view per block stays the rule): every zone block over seeds 1-8 has one, all 11 corner-cut blocks too
+  (low podiums do not block a view at 8 m, so diagonals are common).
+- Corner cuts and twins stay rare (12 and 2 over 8 seeds): a corner cut needs a 30 x 30 m corner lot, a twin a 26 m room,
+  and the four-shaft cap leaves little room for twins.
+- **Stand-alone `downtown` at the default 44 m block: not feasible.** The inside of a block is 36 m; two tower lots side
+  by side need 6 + 8 + 5 + 5 + 8 + 6 = 38 m (setback, smallest point, half the spacing, each side), so a block holds one
+  tower each way and never three bases. `DT_BLOCK` (62 m) stays.
+
+**Looks** (`city_buildings.gd` section 7)
+
+- One family: cream (or cream-light) frame and sand trim on every tower, sky-blue glass, the same band line every two
+  storeys (a sand ring round each corner pier, across the slab, round the point's fin), the same collar.
+- The glass is recessed behind the plan line (point 1.1 m, slab 0.45 m): the frame stands flush with the collision box,
+  so the relief is deep without the looks sticking out of the collision.
+- **Point**: one deep corner pier a corner (both faces), a full-height centre fin between two unbroken glass strips a
+  face (the band line rings only the piers and fin). **Slab**: a flush spandrel every storey, shallow piers every 3.2 m,
+  solid corner piers: it reads horizontal.
+- **Collar**: 1.6 m tall, 1.3 m proud (`DT_COLLAR`, `DT_COLLAR_PROUD`; pillars keep theirs), dark concrete under the
+  flare: it reads from the street (`pass2_street_eye.png`, `pass2_avenue.png`).
+- **Bases at eye level**: podium / twin = shop fronts with awnings (one awning colour a building); stepped = sand
+  podium with a stone base course and tall windows, a metal rail on the terrace's street edges (looks only); corner = a
+  teal glass curtain with slim mullions; arcade = columns in the frame tone (as before); plaza = paving and planters (as
+  before); a pillar's podium keeps its teal grid.
+
+**Numbers** (triangles with the zone / with `{"downtown": 0}`): s1 d0 (5 blocks) 267 705 / 281 251 (-4.8 %), s1 d1 (no
+zone) 336 024, s1 d2 (5) 302 716 / 323 004 (-6.3 %), s4 d0 (no zone) 309 753, s4 d1 (5) 331 864 / 354 954 (-6.5 %), s4 d2
+(6) 311 229 / 338 057 (-7.9 %). Build (city_perf headless, stack seed 4): max chunk 18.5 ms, the five slowest are all
+`ground` chunks; no building chunk in the top five. z-fight audit (seed 4, full tool): no tower finding on decks 0 and 2;
+one group left on deck 1 (0.97 m2, cream-light / sand at 1.7 cm, a podium band against a corner pier face; not traced
+to the end).
+
+**Lab**: camera `downtown_street` (mech eye 8 m on a zone street, looking along it); `downtown_avenue` starts inside the
+zone (pass 1 started 22 m before it, between two foreground columns); `downtown_perch` looks away from its shaft;
+`downtown_arcade` stands under the gallery; top views (`downtown_top`, `variety_top`, `alley_top`) quarter the haze.
+
+**Honest look at the shots**: the zone now reads as a downtown (continuous podiums, three or four shafts a block,
+collars in a row under the ceiling, towers behind towers along a street); slab and point are both legible as one family
+(horizontal bands vs a fin between strips). Still off: seed 4 deck 2's best street has the park on one side, so the
+avenue and street-eye shots show towers on one side only; from the street the podium bases differ mostly by colour and
+awnings, the stepped rail is small; corner cuts and twins are rare.

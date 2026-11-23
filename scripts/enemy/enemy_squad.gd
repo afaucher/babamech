@@ -4,7 +4,7 @@ extends Node3D
 ##   - Shared last-known-position target board fed ONLY by real LOS sightings.
 ##   - Delayed alert propagation (0.45 s relay from spotter to squadmates within RELAY_RADIUS).
 ##   - Attack-slot arbiter (max `max_attackers` firing at one target simultaneously, fair priority rotation).
-##   - Lightweight A* pathfinder over CityPlan.road_graph() in 2D arc (x, s) space.
+##   - Lightweight A* pathfinder over CityPlan.walk_graph() (alleys off) in 2D arc (x, s) space.
 ##   - Unified Audio event bus: joins group "enemy_squad" and emits `enemy_event(kind, enemy, payload)`.
 
 const RELAY_RADIUS := 52.0
@@ -22,6 +22,8 @@ const WAVE_PROXIMITY_MAX_DELAY := 8.0     ## s max hold if a player camps a wave
 ## Never hunt or reveal while > HUNT_MAX_REMAINING enemies remain on a deck (including queued wave units) or before
 ## the crew has actually had combat contact on that deck.
 const CUT_PATH_MARGIN := 2.0              ## m: paths keep a body's width clear of floor cuts (ramp mouths, holes)
+const RAMP_ENTRY_BACK := 5.0              ## m in front of a ramp (before its mouth / past its foot) a transiting wave unit aims for
+const RAMP_EXIT_PAST := 8.0               ## m past a ramp's far end on the next deck where its transit ends
 const HUNT_MAX_REMAINING := 3             ## hard cap: never trigger last-enemy hunt/reveal while > 3 remain on deck
 const HUNT_QUIET_S := 75.0                ## s of deck quiet after contact (<= 3 remaining) before Step 1 hunt starts
 const REVEAL_HUNT_DELAY_S := 50.0         ## s further without LOS/combat after hunt starts before Step 2 reveal markers
@@ -88,6 +90,7 @@ var _pending_wave_orders: Array[Dictionary] = []  ## queued orders awaiting open
 var _wave_spawned_total: Dictionary = {}          ## wave_id -> int total units spawned so far
 var _wave_unreleased_pending: Dictionary = {}     ## wave_id -> int units owed after a partial release (for WaveDirector)
 var _wave_decks: Dictionary = {}                  ## wave_id -> int deck index (so queued waves count toward deck remaining)
+var _transit_refresh := 0.0                       ## s until the next wave cross-deck transit pick (_step_wave_transit)
 
 
 func _init() -> void:
@@ -110,7 +113,8 @@ func net_fields() -> Dictionary:
 		"reveal_hunt_delay_s": Net.SPAWN, "cull_idle_s": Net.SPAWN,
 		"_deck_quiet": Net.PRIVATE, "_deck_engaged": Net.PRIVATE, "_deck_hunt_refresh": Net.PRIVATE, "_hunt_tick_acc": Net.PRIVATE,
 		"_fireteams": Net.PRIVATE, "_pending_wave_orders": Net.PRIVATE,
-		"_wave_spawned_total": Net.PRIVATE, "_wave_unreleased_pending": Net.PRIVATE, "_wave_decks": Net.PRIVATE}
+		"_wave_spawned_total": Net.PRIVATE, "_wave_unreleased_pending": Net.PRIVATE, "_wave_decks": Net.PRIVATE,
+		"_transit_refresh": Net.PRIVATE}
 
 
 func setup(w: CombatWorld, p: CityPlan = null, r: RingFrame = null) -> void:
@@ -156,6 +160,7 @@ func setup(w: CombatWorld, p: CityPlan = null, r: RingFrame = null) -> void:
 	_crew_pos_by_deck.clear()
 	_live_assets.clear()
 	_hunt_tick_acc = 0.0
+	_transit_refresh = 0.0
 	_drop_seq = 0
 	_cover_repath_at = -INF
 	_build_nav_graph()
@@ -189,6 +194,7 @@ func _on_world_advanced(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 			_hunt_tick_acc = 0.0
 			_step_deck_rehome()
 			_step_hunt_and_reveal(step_dt)
+			_step_wave_transit(step_dt)
 
 
 func clear_enemies() -> void:
@@ -533,6 +539,17 @@ func _step_deck_rehome() -> void:
 				var old_d := e.spawn_deck
 				e.rehome_deck(cur_d, deck_ring(cur_d))
 				enemy_deck_changed.emit(e, old_d, cur_d)
+				if e.wave != "" and e.is_mobile():
+					# A wave unit arriving on a crewed deck (ramp transit, knocked down a shaft) hunts at once.
+					var pt := _nearest_player_on_deck(pos, cur_d)
+					if pt != null:
+						var tp := e._target_aim_center(pt)
+						var cr := deck_ring(cur_d)
+						known_targets[pt.target_id] = {
+							"target": pt, "pos": tp, "arc": cr.world_to_arc(tp) if cr != null else Vector3(tp.x, tp.z, tp.y),
+							"last_seen": world.now, "seen_by": "hunt", "deck": cur_d,
+						}
+						e.begin_hunt_pursuit(pt, tp)
 				continue
 		# 3. Left the mission deck horizontally (past outer walls + recess margin) -> cull so it never blocks clear!
 		var dp := deck_plan(e.spawn_deck)
@@ -541,6 +558,101 @@ func _step_deck_rehome() -> void:
 			var a3 := dr.world_to_arc(pos)
 			if not dp.extent.grow(28.0).has_point(Vector2(a3.x, a3.y)):
 				e._kill("fell_out")
+
+
+## Host-only, 1 Hz: wave units never sleep (EnemyBase._is_awake). A mobile ground wave unit on a deck with no standing crew
+## mech heads for the deck of the nearest crew (fewest decks away, then nearest) one deck at a time, over the section's
+## ramps (the only connector a walker can use: lifts and shafts are wave doors, not paths). A unit already on a ramp
+## finishes it, except that it turns round (EnemyBase.reverse_transit) when the crew is back on the deck it is leaving and
+## not on the one it is walking to. Its target here is the entry of
+## the nearest ramp on its deck that leads one deck toward the crew; EnemyBase._step_transit walks it there and down / up
+## the ramp, and _step_deck_rehome re-homes it as it changes deck. A unit with a target on its own deck (a live defend
+## relay, crew) ignores the transit; garrisons (wave == "") are never moved and keep sleeping.
+func _step_wave_transit(dt: float) -> void:
+	_transit_refresh -= dt
+	if _transit_refresh > 0.0:
+		return
+	_transit_refresh = 1.0
+	if not deck_of.is_valid() or world == null:
+		return
+	_refresh_awake_cache()
+	for e in enemies:
+		if not is_instance_valid(e) or e.puppet or e.destroyed() or e.wave == "" or e.ai_mode != "live" \
+				or not e.is_mobile() or e is EnemyDrone or e is EnemyGunship or e is EnemyDropDrone:
+			continue
+		if e.is_on_transit_ramp():
+			# Mid-ramp: finish it, unless the crew now stands on the deck it is leaving and not on the one it walks to.
+			var from_d := e.transit_from_deck()
+			if from_d >= 0 and _awake.has(from_d) and not _awake.has(e.transit_to_deck()):
+				e.reverse_transit()
+			continue
+		var d := e.spawn_deck
+		if _awake.has(d) or _crew_pos_by_deck.is_empty():
+			e.clear_transit()   # crew on its deck (normal hunt), or no standing crew anywhere
+			continue
+		if e.defend_target_id != "":
+			var relay := live_defend_asset(e.defend_target_id)
+			if relay != null and on_deck(relay.global_position, d):
+				e.clear_transit()   # pushing its live relay on this deck
+				continue
+		var pos := e.global_position if e.is_inside_tree() else e.position
+		var goal_deck := -1
+		var best := INF
+		for dk: int in _crew_pos_by_deck.keys():
+			var pts: PackedVector3Array = _crew_pos_by_deck[dk]
+			for i in pts.size():
+				var score := float(absi(dk - d)) * 1.0e6 + pos.distance_squared_to(pts[i])
+				if score < best:
+					best = score
+					goal_deck = dk
+		if goal_deck < 0 or goal_deck == d:
+			continue
+		var tr := _ramp_transit(pos, d, d + signi(goal_deck - d))
+		if tr.is_empty():
+			e.clear_transit()
+			continue
+		e.set_transit(int(tr["deck"]), tr["entry"] as Vector3, tr["exit"] as Vector3)
+
+
+## The ramp from deck `d` to the adjacent deck `to_d` nearest `from_pos` (straight-line to its entry): {deck, entry, exit}
+## in world positions, entry on deck d's floor RAMP_ENTRY_BACK m in front of the ramp (before the mouth going down,
+## past the foot going up), exit on deck to_d's floor RAMP_EXIT_PAST m beyond the ramp's far end. {} when none.
+func _ramp_transit(from_pos: Vector3, d: int, to_d: int) -> Dictionary:
+	var dp := deck_plan(d)
+	var tp := deck_plan(to_d)
+	var dr := deck_ring(d)
+	var tr := deck_ring(to_d)
+	if dp == null or tp == null or dr == null or tr == null or dp == tp:
+		return {}
+	var down := to_d > d   # deck k + 1 is the one below deck k (larger radius)
+	var a3 := dr.world_to_arc(from_pos)
+	var a := Vector2(a3.x, a3.y)
+	var out := {}
+	var best := INF
+	for r: Dictionary in dp.ramps:
+		if str(r["role"]) != ("top" if down else "bottom"):
+			continue
+		var other := {}
+		for r2: Dictionary in tp.ramps:
+			if int(r2["connector"]) == int(r["connector"]) and str(r2["role"]) != str(r["role"]):
+				other = r2
+				break
+		if other.is_empty():
+			continue
+		var xc := (float(r["x0"]) + float(r["x1"])) * 0.5
+		var dir := signf(float(r["s_foot"]) - float(r["s_top"]))   # this part's downhill direction along s
+		var entry := Vector2(xc, float(r["s_top"]) - dir * RAMP_ENTRY_BACK) if down \
+			else Vector2(xc, float(r["s_foot"]) + dir * RAMP_ENTRY_BACK)
+		var oxc := (float(other["x0"]) + float(other["x1"])) * 0.5
+		var odir := signf(float(other["s_foot"]) - float(other["s_top"]))
+		var exit := Vector2(oxc, float(other["s_foot"]) + odir * RAMP_EXIT_PAST) if down \
+			else Vector2(oxc, float(other["s_top"]) - odir * RAMP_EXIT_PAST)
+		var dd := a.distance_squared_to(entry)
+		if dd < best:
+			best = dd
+			out = {"deck": to_d, "entry": dr.arc_to_world(entry.x, entry.y, CityPlan.CURB_H),
+				"exit": tr.arc_to_world(exit.x, exit.y, CityPlan.CURB_H)}
+	return out
 
 
 func note_deck_activity(deck: int) -> void:
@@ -619,7 +731,8 @@ func _step_hunt_and_reveal(dt: float) -> void:
 					if pt == null:
 						continue
 					var tp := e._target_aim_center(pt)
-					var arc := ring.world_to_arc(tp) if ring != null else Vector3(tp.x, tp.z, tp.y)
+					var d_ring := deck_ring(d)
+					var arc := d_ring.world_to_arc(tp) if d_ring != null else Vector3(tp.x, tp.z, tp.y)
 					known_targets[pt.target_id] = {
 						"target": pt, "pos": tp, "arc": arc, "last_seen": now, "seen_by": "hunt", "deck": d,
 					}
@@ -783,7 +896,7 @@ func _pick_drop_zone(d_plan: CityPlan, d_ring: RingFrame, target_pos: Vector3, d
 	# can never land on shadowed/enclosed rooftops unreachable to ground mechs or bots.
 	var reachable := _reachable_graph_nodes(t2, deck)
 	if reachable.is_empty():
-		var rg := d_plan.road_graph()
+		var rg := d_plan.walk_graph()   # its nodes are road_graph()'s
 		for n: Vector2 in rg["nodes"]:
 			reachable.append(n)
 		for l: Dictionary in d_plan.lots:
@@ -1186,13 +1299,17 @@ func _build_nav_graph() -> void:
 		return
 	if plan.site != null:
 		_cut_rects = plan.floor_cuts()
-	var rg := plan.road_graph()
+	# Where a walker goes (CityPlan.walk_graph, alleys off): every road edge, pedestrian streets and crossable courts,
+	# never across a floor cut. Every ground unit (tanks too) walks it; road_graph() is the vehicles' (ambient traffic).
+	var rg := plan.walk_graph()
 	for n: Vector2 in rg["nodes"]:
 		_graph_nodes.append(n)
 		_graph_adj.append([])
 	for ed: Array in rg["edges"]:
 		var a := int(ed[0])
 		var b := int(ed[1])
+		if b in (_graph_adj[a] as Array):
+			continue
 		(_graph_adj[a] as Array).append(b)
 		(_graph_adj[b] as Array).append(a)
 	# Also link park / plaza centers to their nearest road crossing so patrols can traverse open lots.
@@ -1592,8 +1709,10 @@ func _find_arc_path(from_arc: Vector2, to_arc: Vector2, rects: Array[Rect2] = []
 		return out
 	var s := _nearest_nav_node(from_arc, rects, PackedByteArray(), cuts)
 	var g := _nearest_nav_node(to_arc, rects, PackedByteArray(), cuts)
-	if s < 0 or g < 0 or s == g:
+	if s < 0 or g < 0:
 		return out
+	if s == g:
+		return _same_node_path(from_arc, to_arc, g, rects, cuts)
 	var res := _astar_arc(from_arc, s, g, rects, cuts)
 	if not res.is_empty():
 		return res
@@ -1602,10 +1721,23 @@ func _find_arc_path(from_arc: Vector2, to_arc: Vector2, rects: Array[Rect2] = []
 	var s2 := _nearest_nav_node(from_arc, rects, comp, cuts)
 	if s2 >= 0 and s2 != s:
 		if s2 == g:
-			return [_graph_nodes[g]]
+			return _same_node_path(from_arc, to_arc, g, rects, cuts)
 		res = _astar_arc(from_arc, s2, g, rects, cuts)
 		if not res.is_empty():
 			return res
+	return out
+
+
+## Start and goal snap to the same crossing `g` (they can still be 50-60 m apart: both near one big crossing): reachable.
+## Straight to the goal when that line crosses no building and no floor cut (no detour back to the crossing), else via
+## the crossing. Like every path here it ends at (or near) the goal; callers steer the last stretch to the goal itself.
+func _same_node_path(from_arc: Vector2, to_arc: Vector2, g: int, rects: Array[Rect2], cuts: Array[Rect2]) -> Array[Vector2]:
+	var out: Array[Vector2] = []
+	if (rects.is_empty() or not _arc_seg_occluded_rects(from_arc, to_arc, rects)) \
+			and (cuts.is_empty() or not seg_crosses_cuts(from_arc, to_arc, cuts)):
+		out.append(to_arc)
+	else:
+		out.append(_graph_nodes[g])
 	return out
 
 

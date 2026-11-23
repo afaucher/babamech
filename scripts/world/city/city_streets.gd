@@ -65,14 +65,24 @@ static func ground_part(geo: CityGeo, plan: CityPlan, part: int) -> void:
 		if plan.roads_x[i]["kind"] == "spine":
 			_spine(geo, plan.roads_x[i], plan.roads_s)
 		else:
-			_road(geo, plan.roads_x[i], plan.roads_s, false)
+			_road(geo, plan.roads_x[i], plan.roads_s, false, true, _line_forms(plan, "s", i))
 	elif part == nx + 1:
 		for j in plan.roads_s.size():
-			_road(geo, plan.roads_s[j], plan.roads_x, true)
+			_road(geo, plan.roads_s[j], plan.roads_x, true, true, _line_forms(plan, "x", j))
 	elif part == nx + 2:
 		geo.tag("block")
-		for b: Dictionary in plan.blocks:
-			_block(geo, b["rect"])
+		for bi in plan.blocks.size():
+			if plan.forms.is_empty():
+				_block(geo, plan.blocks[bi]["rect"])
+			else:
+				var flush: Array[bool] = []
+				for side in 4:
+					flush.append(plan.block_side_form(bi, side) == "none")
+				_block(geo, plan.blocks[bi]["rect"], flush)
+		if not plan.raised.is_empty():
+			geo.tag("form.raised")
+			for q: Dictionary in plan.raised:
+				_raised(geo, q)
 	elif part == nx + 3:
 		var cuts := geo.holes
 		geo.tag("open_lot")
@@ -84,6 +94,9 @@ static func ground_part(geo: CityGeo, plan: CityPlan, part: int) -> void:
 		for b: Dictionary in plan.buildings:
 			for r: Rect2 in b.get("paving", []):
 				_plaza_paving(geo, r.grow(-0.6))
+		geo.tag("alley")
+		for a: Dictionary in plan.alleys:
+			_alley(geo, a)
 		geo.tag("floor_hole")
 		for o in cuts:
 			_floor_hole(geo, o, plan.site.slab, plan.ramp_mouth(o))
@@ -99,8 +112,21 @@ static func _r(geo: CityGeo, swap: bool, u0: float, u1: float, v0: float, v1: fl
 		geo.g_rect(u0, u1, v0, v1, h, col)
 
 
-## `zebra` false: the crossings are drawn by the caller (the spine draws them across all its lanes at once).
-static func _road(geo: CityGeo, road: Dictionary, crossings: Array, swap: bool, zebra: bool = true) -> void:
+## The forms of the segments of road `line` along `axis` (CityPlan.seg_form), [] when every one is a street.
+static func _line_forms(plan: CityPlan, axis: String, line: int) -> Array:
+	if plan.forms.is_empty():
+		return []
+	var out := []
+	var n := (plan.roads_s.size() if axis == "s" else plan.roads_x.size()) - 1
+	for index in n:
+		out.append(plan.seg_form(axis, line, index))
+	return out
+
+
+## `zebra` false: the crossings are drawn by the caller (the spine draws them across all its lanes at once). `forms`: the
+## form of each segment (city-variety.md; [] = all streets): a lane, a pedestrian street or nothing (a superblock's court,
+## drawn with the blocks) instead of the street.
+static func _road(geo: CityGeo, road: Dictionary, crossings: Array, swap: bool, zebra: bool = true, forms: Array = []) -> void:
 	var a: float = road["a"]
 	var b: float = road["b"]
 	var mid := (a + b) * 0.5
@@ -109,6 +135,10 @@ static func _road(geo: CityGeo, road: Dictionary, crossings: Array, swap: bool, 
 	for j in crossings.size() - 1:
 		var v0: float = crossings[j]["b"]
 		var v1: float = crossings[j + 1]["a"]
+		var form: String = forms[j] if j < forms.size() else "street"
+		if form != "street":
+			_form_segment(geo, form, a, b, v0, v1, swap)
+			continue
 		# Gutters along both curbs.
 		if zebra:
 			geo.tag("road.gutter")
@@ -156,6 +186,89 @@ static func _road(geo: CityGeo, road: Dictionary, crossings: Array, swap: bool, 
 					t += (m1 - m0) / maxf(round((m1 - m0) / 6.0), 1.0)
 			geo.tag("road.lines")
 			_dashes(geo, swap, mid, m0, m1, 2.5, 6.0, white)
+
+
+## One segment of a road (a..b across, v0..v1 between its crossings) in a form other than a street (city-variety.md):
+##   lane        an 8 m one-lane carriageway in the middle of the strip: gutters, solid edge lines, a zebra and a stop line
+##               at each end (vehicles pass), no parking, no centre line; the raised planting bands beside it are drawn
+##               with the blocks (CityPlan.raised)
+##   pedestrian  paved in the plaza colour over the whole strip with bands across it, no gutters, no zebras, no stop lines
+##               (no vehicles); the blocks' curbs stay as its one low step
+##   none        nothing: the superblock's court covers it (drawn with the blocks)
+static func _form_segment(geo: CityGeo, form: String, a: float, b: float, v0: float, v1: float, swap: bool) -> void:
+	var white := _c("marking")
+	var mid := (a + b) * 0.5
+	match form:
+		"lane":
+			var la := mid - CityPlan.LANE_W * 0.5
+			var lb := mid + CityPlan.LANE_W * 0.5
+			geo.tag("road.gutter")
+			_r(geo, swap, la, la + 0.5, v0, v1, _c("asphalt_dark"), DECAL_PATCH)
+			_r(geo, swap, lb - 0.5, lb, v0, v1, _c("asphalt_dark"), DECAL_PATCH)
+			geo.tag("road.zebra_stop")
+			_zebra(geo, swap, la - 0.4, lb + 0.4, v0 + 1.8)
+			_zebra(geo, swap, la - 0.4, lb + 0.4, v1 - 4.8)
+			_r(geo, swap, la + 0.5, lb - 0.5, v0 + 5.6, v0 + 6.0, white)
+			_r(geo, swap, la + 0.5, lb - 0.5, v1 - 6.0, v1 - 5.6, white)
+			var m0 := v0 + 7.0
+			var m1 := v1 - 7.0
+			if m1 - m0 >= 4.0:
+				geo.tag("road.lines")
+				_r(geo, swap, la + 0.75, la + 0.9, m0, m1, white)
+				_r(geo, swap, lb - 0.9, lb - 0.75, m0, m1, white)
+		"pedestrian":
+			geo.tag("road.pedestrian")
+			_r(geo, swap, a, b, v0, v1, _c("plaza"), DECAL_PATCH)
+			var n := maxi(int((v1 - v0) / 4.0), 1)
+			for i in n:
+				if i % 2 == 0:
+					var c0 := v0 + (v1 - v0) * float(i) / float(n)
+					_r(geo, swap, a + 0.6, b - 0.6, c0 + 0.3, c0 + (v1 - v0) / float(n) - 0.3, _c("plaza_alt"), DECAL_LINE)
+		_:
+			pass
+
+
+## Ground a road form raises to the sidewalk (CityPlan.raised; solid, CityDistrict._col_walls): a superblock's court
+## (sidewalk-level paving across the strip, a curb face where it meets each crossing, nothing where it joins the blocks)
+## or a lane's planting band (a curb on the carriageway side and the ends, planting on top).
+static func _raised(geo: CityGeo, q: Dictionary) -> void:
+	var r: Rect2 = q["rect"]
+	var along_s := int(q["seg"]) < 65536          # the segment's road runs along s
+	var curb := _c("curb")
+	var c := 0.3
+	if q["kind"] == "court":
+		if along_s:
+			geo.g_rect(r.position.x, r.end.x, r.position.y, r.position.y + c, CURB, curb)
+			geo.g_rect(r.position.x, r.end.x, r.end.y - c, r.end.y, CURB, curb)
+			geo.g_rect(r.position.x, r.end.x, r.position.y + c, r.end.y - c, CURB, _c("sidewalk"))
+			geo.g_wall_s(r.position.y, r.position.x, r.end.x, 0.0, CURB, -1.0, curb)
+			geo.g_wall_s(r.end.y, r.position.x, r.end.x, 0.0, CURB, 1.0, curb)
+		else:
+			geo.g_rect(r.position.x, r.position.x + c, r.position.y, r.end.y, CURB, curb)
+			geo.g_rect(r.end.x - c, r.end.x, r.position.y, r.end.y, CURB, curb)
+			geo.g_rect(r.position.x + c, r.end.x - c, r.position.y, r.end.y, CURB, _c("sidewalk"))
+			geo.g_wall_x(r.position.x, r.position.y, r.end.y, 0.0, CURB, -1.0, curb)
+			geo.g_wall_x(r.end.x, r.position.y, r.end.y, 0.0, CURB, 1.0, curb)
+		_plaza_paving(geo, r.grow(-1.2))
+		return
+	# A band: the carriageway is on its high side (side 0) or its low side (side 1), across the road.
+	var low := int(q.get("side", 0)) == 1
+	if along_s:
+		var xc := r.position.x if low else r.end.x
+		var xi := r.position.x + c if low else r.end.x - c
+		geo.g_rect(minf(xc, xi), maxf(xc, xi), r.position.y, r.end.y, CURB, curb)
+		geo.g_rect(r.position.x + (c if low else 0.0), r.end.x - (0.0 if low else c), r.position.y, r.end.y, CURB, _c("planting"))
+		geo.g_wall_x(xc, r.position.y, r.end.y, 0.0, CURB, -1.0 if low else 1.0, curb)
+		geo.g_wall_s(r.position.y, r.position.x, r.end.x, 0.0, CURB, -1.0, curb)
+		geo.g_wall_s(r.end.y, r.position.x, r.end.x, 0.0, CURB, 1.0, curb)
+	else:
+		var sc := r.position.y if low else r.end.y
+		var si := r.position.y + c if low else r.end.y - c
+		geo.g_rect(r.position.x, r.end.x, minf(sc, si), maxf(sc, si), CURB, curb)
+		geo.g_rect(r.position.x, r.end.x, r.position.y + (c if low else 0.0), r.end.y - (0.0 if low else c), CURB, _c("planting"))
+		geo.g_wall_s(sc, r.position.x, r.end.x, 0.0, CURB, -1.0 if low else 1.0, curb)
+		geo.g_wall_x(r.position.x, r.position.y, r.end.y, 0.0, CURB, -1.0, curb)
+		geo.g_wall_x(r.end.x, r.position.y, r.end.y, 0.0, CURB, 1.0, curb)
 
 
 static func _zebra(geo: CityGeo, swap: bool, a: float, b: float, c0: float) -> void:
@@ -554,8 +667,9 @@ static func _both(geo: CityGeo, a: Vector3, b: Vector3, c: Vector3, col: Color) 
 	geo.g_tri(a, c, b, col)
 
 
-## A block: the raised sidewalk slab with its curb, furnishing band and corner ramps.
-static func _block(geo: CityGeo, r: Rect2) -> void:
+## A block: the raised sidewalk slab with its curb, furnishing band and corner ramps. `flush` (by CityPlan side, may be
+## empty): edges that meet a superblock's court at the same height, drawn as plain sidewalk (no curb, band or ramps).
+static func _block(geo: CityGeo, r: Rect2, flush: Array[bool] = []) -> void:
 	var x0 := r.position.x
 	var x1 := r.end.x
 	var s0 := r.position.y
@@ -584,6 +698,9 @@ static func _block(geo: CityGeo, r: Rect2) -> void:
 		var xi := x0 + EDGE if side == 0 else x1 - EDGE      # inner line
 		var xc := x0 + 0.3 if side == 0 else x1 - 0.3        # curb / band line
 		var sgn := -1.0 if side == 0 else 1.0
+		if not flush.is_empty() and flush[1 if side == 0 else 0]:
+			geo.g_rect(minf(xi, xo), maxf(xi, xo), s0 + EDGE, s1 - EDGE, CURB, walk)
+			continue
 		var spans := [[s0 + EDGE, s0 + RAMP_A, false], [s0 + RAMP_A, s0 + RAMP_B, true], [s0 + RAMP_B, s1 - RAMP_B, false],
 				[s1 - RAMP_B, s1 - RAMP_A, true], [s1 - RAMP_A, s1 - EDGE, false]]
 		for sp: Array in spans:
@@ -607,6 +724,9 @@ static func _block(geo: CityGeo, r: Rect2) -> void:
 		var si := s0 + EDGE if side == 0 else s1 - EDGE
 		var sc := s0 + 0.3 if side == 0 else s1 - 0.3
 		var sgn := -1.0 if side == 0 else 1.0
+		if not flush.is_empty() and flush[3 if side == 0 else 2]:
+			geo.g_rect(x0 + EDGE, x1 - EDGE, minf(si, so), maxf(si, so), CURB, walk)
+			continue
 		var spans := [[x0 + EDGE, x0 + RAMP_A, false], [x0 + RAMP_A, x0 + RAMP_B, true], [x0 + RAMP_B, x1 - RAMP_B, false],
 				[x1 - RAMP_B, x1 - RAMP_A, true], [x1 - RAMP_A, x1 - EDGE, false]]
 		for sp: Array in spans:
@@ -635,6 +755,36 @@ static func _plaza_paving(geo: CityGeo, r: Rect2) -> void:
 		if i % 2 == 0:
 			var a := r.position.y + r.size.y * float(i) / float(n)
 			geo.g_rect(r.position.x + 0.6, r.end.x - 0.6, a + 0.3, a + r.size.y / float(n) - 0.3, h + DECAL_PATCH, _c("plaza_alt"))
+
+
+## A service alley on the block's sidewalk slab (CityPlan.alleys): darker service paving (decal layer 1) with a dark
+## edge band each side and a drain line down the middle with a grate every 6 m (layer 2). No curb, walkway or trees.
+static func _alley(geo: CityGeo, a: Dictionary) -> void:
+	var r: Rect2 = a["rect"]
+	var h := CURB + DECAL_PATCH
+	var along := int(a["axis"])
+	geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, h, _c("service"))
+	var hl := CURB + DECAL_LINE
+	if along == 0:
+		var c := r.get_center().y
+		geo.g_rect(r.position.x, r.end.x, r.position.y, r.position.y + 0.6, hl, _c("service_dark"))
+		geo.g_rect(r.position.x, r.end.x, r.end.y - 0.6, r.end.y, hl, _c("service_dark"))
+		geo.g_rect(r.position.x + 0.5, r.end.x - 0.5, c - 0.15, c + 0.15, hl, _c("drain"))
+		var x := r.position.x + 3.0
+		while x < r.end.x - 2.0:
+			geo.g_rect(x - 0.4, x + 0.4, c - 0.4, c - 0.15, hl, _c("drain"))
+			geo.g_rect(x - 0.4, x + 0.4, c + 0.15, c + 0.4, hl, _c("drain"))
+			x += 6.0
+	else:
+		var c := r.get_center().x
+		geo.g_rect(r.position.x, r.position.x + 0.6, r.position.y, r.end.y, hl, _c("service_dark"))
+		geo.g_rect(r.end.x - 0.6, r.end.x, r.position.y, r.end.y, hl, _c("service_dark"))
+		geo.g_rect(c - 0.15, c + 0.15, r.position.y + 0.5, r.end.y - 0.5, hl, _c("drain"))
+		var s := r.position.y + 3.0
+		while s < r.end.y - 2.0:
+			geo.g_rect(c - 0.4, c - 0.15, s - 0.4, s + 0.4, hl, _c("drain"))
+			geo.g_rect(c + 0.15, c + 0.4, s - 0.4, s + 0.4, hl, _c("drain"))
+			s += 6.0
 
 
 static func _open_lot(geo: CityGeo, l: Dictionary) -> void:
@@ -697,6 +847,50 @@ static func furniture(geo: CityGeo, plan: CityPlan, items: Array) -> void:
 			var sz: Vector2 = pl[1]
 			if plan.clear_at(at):
 				geo.box(geo.frame(at.x, at.y, CURB), Vector3(0, 0.35, 0), Vector3(sz.x, 0.7, sz.y), _c("cream_light"), CityGeo.NO_BOTTOM, _c("soil"))
+
+
+## String lights over every pedestrian street (city-variety.md): slim posts just inside the strip's edges, zig-zagging
+## from side to side every STRING_PITCH, with a sagging wire between their tops (into `geo`) and bulbs along it (into
+## `bulbs`, which takes the emissive farm-light material: no Light3D). Fixed looks, no collision.
+const STRING_PITCH := 10.0
+const STRING_H := 6.2
+static func string_lights(geo: CityGeo, bulbs: CityGeo, plan: CityPlan) -> void:
+	var keys := plan.forms.keys()
+	keys.sort()
+	var metal := _c("metal_dark")
+	for k: int in keys:
+		if str(plan.forms[k]) != "pedestrian":
+			continue
+		var along_s := k < 65536
+		var r := plan.seg_inner("s" if along_s else "x", (k % 65536) / 256, k % 256)
+		var a := 1 if along_s else 0
+		var length := r.size[a]
+		var n := maxi(int((length - 14.0) / STRING_PITCH), 1)
+		var tops: Array[Vector3] = []
+		geo.tag("form.string_lights")
+		bulbs.tag("form.bulbs")
+		for i in n + 1:
+			var p := Vector2.ZERO
+			p[a] = r.position[a] + 7.0 + (length - 14.0) * float(i) / float(n)
+			p[1 - a] = r.position[1 - a] + 0.8 if i % 2 == 0 else r.end[1 - a] - 0.8
+			var f := geo.frame(p.x, p.y, 0.0)
+			geo.prism(f, Vector3.ZERO, 0.1, STRING_H, 6, metal, 0.07, null, metal)
+			tops.append(Vector3(p.x, p.y, STRING_H - 0.1))
+		for i in tops.size() - 1:
+			var steps := 6
+			var prev := geo.g_point(tops[i].x, tops[i].y, tops[i].z)
+			for st in range(1, steps + 1):
+				var t := float(st) / float(steps)
+				var q := tops[i].lerp(tops[i + 1], t)
+				var sag := 1.1 * 4.0 * t * (1.0 - t)
+				var cur := geo.g_point(q.x, q.y, q.z - sag)
+				var d := cur - prev
+				if d.length() > 0.01:
+					var basis := Basis.looking_at(d.normalized(), Vector3.UP if absf(d.normalized().y) < 0.95 else Vector3.RIGHT)
+					geo.box(Transform3D(basis, (prev + cur) * 0.5), Vector3.ZERO, Vector3(0.04, 0.04, d.length()), metal)
+				if st < steps:
+					bulbs.box(Transform3D(Basis.IDENTITY, cur - Vector3(0, 0.12, 0)), Vector3.ZERO, Vector3(0.2, 0.2, 0.2), _c("bulb"))
+				prev = cur
 
 
 ## A chunky low-poly tree: trunk and three stacked canopy shapes, in one of TREE_LEAVES' colourings.

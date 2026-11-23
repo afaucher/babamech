@@ -16,12 +16,16 @@ const SAMPLE := 600.0
 ## Stand-alone goldens: life plans captured before phase 3 (unchanged by it); traffic recaptured when the adopted capsule
 ## pod changed the pod footprint to 3.5 m (its stop lines moved 0.05 m; phase 3 itself left traffic unchanged). Valid while CityPlan seed 1 keeps the plan checksum recorded with them
 ## (another session may change the city plan; then only the section checks run).
+## Re-captured 2026-11-23 with the stand-alone plan (city variety: alleys and road forms on by default; life follows the
+## forms: no signal over pedestrian streets / courts, loops only round blocks with vehicle roads, one loop per lane). Was
+## 1: 509c51ad1d41d49a / 742568104e969d8d, 2: 504b06bd82a5a9ab / f95817faffc270f1, 3: 14c5573cbbee8a40 / 3daf84e9a4299bca
+## (plan 209989488eaa0e52).
 const GOLDEN := {
-	1: ["509c51ad1d41d49a", "742568104e969d8d"],
-	2: ["504b06bd82a5a9ab", "f95817faffc270f1"],
-	3: ["14c5573cbbee8a40", "3daf84e9a4299bca"],
+	1: ["cde9f443947f3108", "9871bde2f8293485"],
+	2: ["663736b939fb3227", "4f11c6e60adf44b5"],
+	3: ["8d12b766dfd8f264", "a3fb3d0f9cf1877b"],
 }
-const GOLDEN_PLAN_SEED1 := "209989488eaa0e52"
+const GOLDEN_PLAN_SEED1 := "bd1d848c575e85df"
 
 var stack: CityStack
 var life: AmbientLife
@@ -512,6 +516,16 @@ func _tram_body_checks() -> void:
 func _rotated_checks() -> void:
 	stack.position = Vector3(30.0, -12.0, 55.0)
 	stack.rotation = Vector3(0.2, 0.7, -0.1)
+	# 2026-11-23 (forms live): pushers are handed to a deck by CityStack.deck_at, which ignored the stack's rotation (the
+	# foot below was handed to deck 1 once the forms moved the person picked to s = -117). Every deck, far along the arc.
+	var wrong := []
+	for k in stack.decks.size():
+		var dk: CityDistrict = stack.decks[k]
+		for s: float in [-160.0, -117.0, -60.0, 0.0, 60.0, 117.0, 160.0]:
+			for h: float in [0.2, 1.5]:
+				if stack.deck_at(dk.to_global(dk.ring.arc_to_world(40.0, s, h))) != k:
+					wrong.append([k, s, h])
+	eq(wrong, [], "rotated stack: deck_at names the deck a point stands on, anywhere along the arc")
 	life.restore(PackedByteArray())
 	life.advance_to(T0 + 5.0)
 	killed.clear()

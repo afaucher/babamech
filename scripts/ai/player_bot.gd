@@ -973,12 +973,16 @@ func _min_core_hp_frac() -> float:
 	return lo
 
 
+## Where the bot looks at an enemy: the first hit sphere whose component still has HP (a destroyed part, e.g. a broken
+## turret gun, hides nothing), else the first sphere, else 3 m above its feet. world_spheres() may be empty with
+## hit_shapes set (EnemyTrooper returns [] once dead), so the list is checked, not hit_shapes alone.
+## (Engine edit 2026-11-22, self-reviewed 2026-11-23: empty-list guard added; callers only pass live, valid enemies.)
 func _enemy_core_pos(e: EnemyBase) -> Vector3:
-	if e.hit_shapes.size() > 0:
-		var ws := e.world_spheres()
-		for s: Dictionary in ws:   # a troop squad: the first trooper still up (a downed one's sphere hides nothing)
-			if float(e.hp.get(s["component"], 1.0)) > 0.0:
-				return s["center"] as Vector3
+	var ws: Array = e.world_spheres() if e.hit_shapes.size() > 0 else []
+	for s: Dictionary in ws:
+		if float(e.hp.get(s["component"], 1.0)) > 0.0:
+			return s["center"] as Vector3
+	if not ws.is_empty():
 		return (ws[0] as Dictionary)["center"] as Vector3
 	return e.global_position + e.up * 3.0
 

@@ -64,12 +64,14 @@ var vehicles: Array = []   ## [{id, kind, loop, offset}]
 ## Section mode (phase 3): heavy checkpoints by junction ({junction: {x, s}}); every loop with a turn at one of those
 ## junctions holds CHECK_STOP s at that stop line first (a HOLD mark tagged "check", built into the timetable).
 var checks: Dictionary = {}
+var lane_claims: Dictionary = {}   ## lane segment key (CityPlan.seg_key) -> the block whose loop drives it (one per lane)
 
 
 func net_fields() -> Dictionary:
 	return {
 		"lp": Net.SPAWN, "plan": Net.SPAWN, "pods": Net.SPAWN, "carts": Net.SPAWN,     # seed + params
 		"loops": Net.LOCAL, "vehicles": Net.LOCAL, "checks": Net.LOCAL,     # derived on every machine (checksum())
+		"lane_claims": Net.LOCAL,
 	}
 
 
@@ -88,6 +90,7 @@ func build(life_plan: LifePlan, pod_count: int = -1, cart_count: int = -1) -> vo
 	loops.clear()
 	vehicles.clear()
 	checks.clear()
+	lane_claims.clear()
 	if plan.section != null:
 		for hk: Dictionary in plan.section.hooks:
 			if hk["kind"] == "checkpoint" and int(hk["deck"]) == plan.deck and hk.get("size", "") == "heavy":
@@ -118,6 +121,25 @@ func build(life_plan: LifePlan, pod_count: int = -1, cart_count: int = -1) -> vo
 		for i in n:
 			vehicles.append({"id": vehicles.size(), "kind": "pod", "loop": li, "offset": float(i * step * int(lo["k"])) * LifePlan.CYCLE})
 		left -= n
+	if left > 0:
+		# Too few blocks with a loop (road forms close streets: docs/design/city-variety.md): more pods on the pod loops
+		# that have the slots (a slot is a whole lap shift no follower can close), in loop order, spaced evenly again.
+		# Never reached when the blocks suffice.
+		for li in loops.size():
+			var lo: Dictionary = loops[li]
+			if left <= 0 or lo["kind"] != "pod" or lo.has("avenue"):
+				continue
+			var mine: Array = vehicles.filter(func(v: Dictionary) -> bool: return int(v["loop"]) == li)
+			var n := mini(mine.size() + left, int(lo["slots"]))
+			if n <= mine.size():
+				continue
+			left -= n - mine.size()
+			vehicles = vehicles.filter(func(v: Dictionary) -> bool: return int(v["loop"]) != li)
+			var step := maxi(int(lo["slots"]) / n, 1)
+			for i in n:
+				vehicles.append({"id": 0, "kind": "pod", "loop": li, "offset": float(i * step * int(lo["k"])) * LifePlan.CYCLE})
+		for i in vehicles.size():
+			vehicles[i]["id"] = i
 	pods -= left          # (only if the district has too few blocks)
 
 
@@ -184,10 +206,24 @@ static func _side_end(side: int) -> int:
 func _make_loop(bi: int, kind: String) -> int:
 	var r: Rect2 = plan.blocks[bi]["rect"]
 	var roads: Array = []
+	var claims: Array[int] = []
 	for side in 4:
+		# CityPlan road forms (docs/design/city-variety.md): a pedestrian street or a superblock's court is no road, so
+		# no loop runs round a block beside one. A lane is ONE lane: the first loop to claim it drives it one way down
+		# its middle (no parking strip), and the block across it gets no loop, so two vehicles never meet on it.
+		var form := plan.block_side_form(bi, side)
+		if form == "pedestrian" or form == "none":
+			return -1
 		var rd := _road_of(r, side)
 		if rd.is_empty():
 			return -1
+		if form == "lane":
+			var key := plan.block_side_seg(bi, side)
+			if int(lane_claims.get(key, bi)) != bi:
+				return -1
+			claims.append(key)
+			var across: Rect2 = plan.seg_inner("s" if side < 2 else "x", (key % 65536) / 256, key % 256)
+			rd = {"kind": "lane", "offset": (across.size.x if side < 2 else across.size.y) * 0.5, "parking": false}
 		roads.append(rd)
 	var cs := _corners(r)
 	var lens := [r.size.y, r.size.y, r.size.x, r.size.x]
@@ -270,6 +306,8 @@ func _make_loop(bi: int, kind: String) -> int:
 		lo["cum"] = _cum(ppts)
 		lo["length"] = (lo["cum"] as PackedFloat32Array)[ppts.size() - 1]
 		_bin_stops(lo, bi, marks)
+	for key in claims:
+		lane_claims[key] = bi
 	return _finish_loop(lo, ppts, spd, marks, kind, bi)
 
 

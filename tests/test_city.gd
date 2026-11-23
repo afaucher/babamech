@@ -35,7 +35,9 @@ func setup() -> void:
 
 ## Golden values: the stand-alone plan of seed 1 (with and without walls), and which roofs can be reached for seeds
 ## 1-5 (unchanged by the rooftop pass: captured before it). A change here changes every machine's district on purpose.
-const GOLDEN_PLAN := {"1": "209989488eaa0e52", "1w": "e4ec580da1956459"}
+## Re-captured 2026-11-23 (city variety, docs/design/city-variety.md: service alleys and stand-alone road forms, both on
+## by default): was {"1": "209989488eaa0e52", "1w": "e4ec580da1956459"} (still the plan with alleys 0, road_variety 0).
+const GOLDEN_PLAN := {"1": "bd1d848c575e85df", "1w": "3eb0728c9b4cffa2"}
 const GOLDEN_REACH := {
 	1: "1111111111101111111111011111101111111111",
 	2: "111111111111011111111111011111011111111111",
@@ -49,7 +51,8 @@ func _golden() -> void:
 	eq(CityPlan.make({"seed": 1}).checksum(), GOLDEN_PLAN["1"], "the seed 1 plan checksum (golden)")
 	eq(CityPlan.make({"seed": 1, "walls": 1.0}).checksum(), GOLDEN_PLAN["1w"], "the seed 1 walled plan checksum (golden)")
 	for seed_: int in GOLDEN_REACH:
-		var ok := CityPlan.make({"seed": seed_}).reachable_roofs()
+		# Without the city variety's alleys and road forms (2026-11-23), which change the lots on purpose.
+		var ok := CityPlan.make({"seed": seed_, "alleys": 0.0, "road_variety": 0.0}).reachable_roofs()
 		var flags := ""
 		for f in ok:
 			flags += "1" if f else "0"

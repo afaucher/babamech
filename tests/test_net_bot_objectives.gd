@@ -9,9 +9,9 @@ extends NetTest
 
 const PEERS := 2
 const LINKS := ["off"]
-const NET_TIMEOUT := 500   # test_runner reads this literal: WIN_TIMEOUT + 80 (load, end flow, slack). Update both together.
+const NET_TIMEOUT := 620   # test_runner reads this literal: WIN_TIMEOUT + 80 (load, end flow, slack). Update both together.
 const SEED := 6
-const WIN_TIMEOUT := 420.0   # measured 2026-11-23: won 247.5 s wall after the barrier (real time); ~1.7x. docs/design/player-ai.md §9.6
+const WIN_TIMEOUT := 540.0   # measured 2026-11-23: won 247.5 s, later 271.4 s, then 318.1 s wall after the barrier as layouts grew (real time); ~1.7x. docs/design/player-ai.md §9.6
 
 var td: TestDrive
 

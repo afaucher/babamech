@@ -122,7 +122,204 @@ func setup() -> void:
 	m2.queue_free()
 	_body_detail()
 	_equipment()
+	await _bulwark()
 	finish()
+
+
+## The Bulwark's parts (BulwarkMeshes; docs/design/chassis-rules.md 6.6, 6.7, 3.3, 3.6, 9.1): saved files match the
+## builders, face budgets, pivots, nothing thinner than 0.02, joints sized to the segments' necks, the assembled mech
+## (every node, two toes and a spur per boot, segments spanning their joints, the knee pads on the accent surface, every
+## allowed item on every hardpoint), and the whole chassis with a full loadout within 1.25x the Strider's faces.
+func _bulwark() -> void:
+	const BUDGET := {"bulwark_torso": 1600, "bulwark_thigh": 300, "bulwark_shin": 300, "bulwark_ankle": 300}
+	for part: String in BulwarkMeshes.all_parts():
+		check(part.begins_with(BulwarkMeshes.PREFIX), "%s is a bulwark_ part" % part)
+		check(not MechMeshes.has_part(part), "%s is not also a MechMeshes part" % part)
+		if not check(ResourceLoader.exists(BulwarkMeshes.path(part)), "%s has a saved file" % part):
+			continue
+		var saved := load(BulwarkMeshes.path(part)) as ArrayMesh
+		var built := BulwarkMeshes.build(part)
+		eq(_faces(saved), _faces(built), "%s: the saved file matches the builder (faces)" % part)
+		check(saved.get_aabb().is_equal_approx(built.get_aabb()), "%s: the saved file matches the builder (bounds)" % part)
+		check(saved.surface_get_material(0) != null, "%s has its material" % part)
+		for s in saved.get_surface_count():
+			check(saved.surface_get_name(s) in ["matte", "glow", "accent"], "%s: surface %s is matte / glow / accent" % [part, saved.surface_get_name(s)])
+		var n := _faces(built)
+		var cap := int(BUDGET.get(part, 400))
+		check(n <= cap, "%s: within its face budget (%d <= %d)" % [part, n, cap])
+		var thin := _thinnest(built)
+		check(thin >= 0.0195, "%s: nothing thinner than 0.02 (thinnest shell %.4f; 0.0005 vertex quantisation allowed)" % [part, thin])
+	for part: String in ["bulwark_torso", "bulwark_knee_cap", "bulwark_side_mount"]:
+		check(_accent_surface(BulwarkMeshes.mesh(part)) >= 0, "%s has an accent surface (the knee pads on the knee cap)" % part)
+	# Pivots: segments hang from the proximal joint to their rest length.
+	for seg: String in BulwarkMeshes.REST_LENGTH:
+		var part: String = {"thigh": "bulwark_thigh", "shin": "bulwark_shin", "tarsus": "bulwark_ankle"}[seg]
+		var bb := BulwarkMeshes.mesh(part).get_aabb()
+		near(bb.position.y, -float(BulwarkMeshes.REST_LENGTH[seg]), 0.06, "%s reaches its distal joint" % part)
+		check(bb.end.y < 0.3 and bb.end.y >= 0.0, "%s starts at its proximal joint" % part)
+	near(BulwarkMeshes.mesh("bulwark_side_mount").get_aabb().end.x, BulwarkMeshes.SIDE_REACH.x + 0.07, 0.02,
+		"bulwark_side_mount: the block's outer face at SIDE_REACH")
+	# Joints sized to the load (rule 3.3, read at the necks: the end section each segment enters its joint with), and the
+	# two drums / the ball and drum on one segment never meeting (radii sum under the segment's length).
+	var rest: Dictionary = BulwarkMeshes.REST_LENGTH
+	var thigh_neck := 2.0 * maxf(_neck(BulwarkMeshes.THIGH, 0), _neck(BulwarkMeshes.THIGH, -1))
+	var shin_top := 2.0 * _neck(BulwarkMeshes.SHIN, 0)
+	var shin_bot := 2.0 * _neck(BulwarkMeshes.SHIN, -1)
+	check(BulwarkMeshes.HIP_BALL >= 0.55 * thigh_neck, "hip ball %.2f >= 0.55 x the thigh's neck %.2f" % [BulwarkMeshes.HIP_BALL, thigh_neck])
+	check(BulwarkMeshes.KNEE_DRUM.x >= 0.55 * maxf(thigh_neck, shin_top), "knee drum %.2f >= 0.55 x the thicker neck %.2f" % [BulwarkMeshes.KNEE_DRUM.x, maxf(thigh_neck, shin_top)])
+	check(BulwarkMeshes.ANKLE_DRUM.x >= 0.55 * maxf(shin_bot, 0.32), "ankle drum %.2f >= 0.55 x the thicker neck %.2f" % [BulwarkMeshes.ANKLE_DRUM.x, maxf(shin_bot, 0.32)])
+	check(BulwarkMeshes.HIP_BALL + BulwarkMeshes.KNEE_DRUM.x < float(rest["thigh"]), "hip ball and knee drum stay apart on the thigh")
+	check(BulwarkMeshes.KNEE_DRUM.x + BulwarkMeshes.ANKLE_DRUM.x < float(rest["shin"]), "knee and ankle drums stay apart on the shin")
+	print("  bulwark joints vs the segments' biggest sections: hip %.2f, knee %.2f (rule 3.3 read at the necks)" % [
+		BulwarkMeshes.HIP_BALL / (2.0 * 0.36), BulwarkMeshes.KNEE_DRUM.x / (2.0 * 0.36)])
+
+	# The assembled Bulwark.
+	var m := MechModel.new()
+	m.configure("chicken", "bulwark", {})
+	add_child(m)
+	await frames(1)
+	eq(m.leg_bend, 1.0, "the Bulwark's knees bend forward")
+	# Size at game scale (MechRig's mech_scale 2): overall height (the pilot's comb), body and overall width, against the
+	# Strider (printed; the Bulwark is wider than it is tall with its guns, its barrel ~1.3x the Strider's body).
+	var sizes := {}
+	for chassis: String in ["bulwark", "strider"]:
+		m.configure("chicken", chassis, {})
+		await frames(1)
+		var all := AABB()
+		var torso := AABB()
+		var comb := 0.0
+		for c in m.find_children("*", "MeshInstance3D", true, false):
+			var mi := c as MeshInstance3D
+			if mi.mesh == null or not mi.is_visible_in_tree():
+				continue
+			var b := mi.global_transform * mi.mesh.get_aabb()
+			all = b if all.size == Vector3.ZERO else all.merge(b)
+			if mi.name == "Torso":
+				torso = b
+			if m.find_child("Head_chicken", true, false).is_ancestor_of(mi):
+				comb = maxf(comb, b.end.y)
+		sizes[chassis] = [all, torso]
+		print("  %s at scale 2: comb %.2f m, overall height %.2f m, width %.2f m (body %.2f m), hip %.2f m, max step %.2f m" % [chassis,
+			comb * 2.0, all.end.y * 2.0, all.size.x * 2.0, torso.size.x * 2.0, m.hip_height() * 2.0, m.max_foot_lift() * 0.9 * 2.0])
+	var bw: Array = sizes["bulwark"]
+	check((bw[0] as AABB).size.x > (bw[0] as AABB).end.y, "the Bulwark is wider than it is tall")
+	m.configure("chicken", "bulwark", {})
+	await frames(1)
+	near(float(m.params["thigh"]), float(rest["thigh"]), 1e-6, "the Bulwark's default thigh is its rest length")
+	for n: String in ["Torso", "Pelvis", "Nose", "Hatch", "Cockpit", "Head_chicken", "thigh_l", "thigh_r", "shin_l", "shin_r", "tarsus_l",
+			"tarsus_r", "socket_l", "socket_r", "hip_l", "knee_l", "ankle_l", "hip_r", "knee_r", "ankle_r", "foot_l", "foot_r",
+			"HP_side_l", "HP_side_r", "HP_back_l", "HP_back_r"]:
+		check(m.find_child(n, true, false) != null, "bulwark mech has %s" % n)
+	check(m.find_child("BackPlate", true, false) == null and m.find_child("ShoulderPod_l", true, false) == null, "no Strider back plate or pods")
+	for hp: String in ["HP_side_l", "HP_side_r"]:
+		check(m.find_child(hp, true, false).find_child("Mount", false, false) != null, "%s has its side mount" % hp)
+	for side: String in ["l", "r"]:
+		var foot := m.find_child("foot_" + side, true, false)
+		var toes := 0
+		for c in foot.get_children():
+			if c.name.begins_with("toe"):
+				toes += 1
+		eq(toes, 2, "foot_%s has the two toes of its clamp" % side)
+		check(foot.find_child("spur", true, false) != null, "foot_%s has its heel spur" % side)
+	var pts := m.leg_points(1)
+	for c: Array in [["thigh_r", "hip", "knee", "thigh"], ["shin_r", "knee", "ankle", "shin"], ["tarsus_r", "ankle", "foot", "tarsus"]]:
+		var seg := m.find_child(c[0], true, false) as Node3D
+		var r := float(rest[c[3]])
+		check(seg.position.is_equal_approx(pts[c[1]]), "bulwark %s starts on the %s" % [c[0], c[1]])
+		check((seg.transform * Vector3(0, -r, 0)).distance_to(pts[c[2]]) < 0.001, "bulwark %s ends on the %s" % [c[0], c[2]])
+	# The knee forward of the hip and the ankle, the foot long enough for the knee (rule 3.6).
+	check(pts["knee"].z < pts["hip"].z - 0.2 and pts["knee"].z < pts["ankle"].z - 0.2, "the knee bends forward (%s)" % str(pts))
+	var fb := AABB()
+	for c in m.find_child("foot_r", true, false).get_children():
+		var mi := c as MeshInstance3D
+		var b := mi.transform * mi.mesh.get_aabb()
+		fb = b if fb.size == Vector3.ZERO else fb.merge(b)
+	check(fb.size.z >= 0.8 * float(rest["shin"]), "the foot is at least 0.8 x the shin long (%.2f)" % fb.size.z)
+	# Every allowed item on every hardpoint shows its mesh.
+	for hp: Dictionary in MechCatalog.chassis("bulwark")["hardpoints"]:
+		for w: String in MechCatalog.items_for(hp):
+			m.configure("chicken", "bulwark", {hp["id"]: w})
+			var node := m.find_child("HP_" + str(hp["id"]), true, false)
+			var gun := node.find_child("Weapon_" + w, true, false) if node != null else null
+			check(gun != null and gun.get_child_count() == 1, "bulwark %s mounts %s" % [hp["id"], w])
+	# Whole chassis, heaviest loadout, against the Strider's (rule 6.6).
+	var heavy := {}
+	for chassis: String in ["strider", "bulwark"]:
+		var lo := {}
+		for hp: Dictionary in MechCatalog.chassis(chassis)["hardpoints"]:
+			var best := ""
+			for w: String in MechCatalog.items_for(hp):
+				if w == "railgun" and lo.values().has("railgun"):
+					continue
+				if best == "" or _faces(MechMeshes.mesh("weapon_" + w)) > _faces(MechMeshes.mesh("weapon_" + best)):
+					best = w
+			lo[hp["id"]] = best
+		m.configure("chicken", chassis, lo)
+		await frames(1)
+		heavy[chassis] = _tree_faces(m)
+		print("  %s, heaviest loadout %s: %d faces" % [chassis, str(lo), heavy[chassis]])
+	check(float(heavy["bulwark"]) <= 1.25 * float(heavy["strider"]), "the Bulwark's full loadout is within 1.25x the Strider's faces (%d vs %d)" % [heavy["bulwark"], heavy["strider"]])
+	m.configure("chicken", "strider", {})
+	eq(m.leg_bend, -1.0, "back to the Strider: its chicken legs again")
+	near(float(m.params["thigh"]), 1.1, 1e-6, "back to the Strider: its thigh again")
+	m.queue_free()
+
+
+## Half the larger extent of a segment's end ring (0 = proximal, -1 = distal) from its axis, its offset included.
+static func _neck(spec: Array, i: int) -> float:
+	var s: Array = spec[i if i >= 0 else spec.size() + i]
+	return maxf(absf(float(s[1])) + float(s[3]), absf(float(s[2])) + float(s[4]))
+
+
+## Faces of every mesh under a node (the pilot head included).
+func _tree_faces(root: Node) -> int:
+	var n := 0
+	for c in root.find_children("*", "MeshInstance3D", true, false):
+		var mi := c as MeshInstance3D
+		if mi.mesh != null and mi.is_visible_in_tree():
+			for s in mi.mesh.get_surface_count():
+				var arr := mi.mesh.surface_get_arrays(s)
+				var idx: Variant = arr[Mesh.ARRAY_INDEX]
+				n += ((idx as PackedInt32Array).size() if idx is PackedInt32Array and not (idx as PackedInt32Array).is_empty() else (arr[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()) / 3
+	return n
+
+
+## The thinnest closed shell in a mesh: its triangles grouped by shared vertex positions, each group's smallest bounding
+## box extent (a proxy for its thickness: a 0.012 strip shows 0.012; curved shells only read thicker).
+static func _thinnest(mesh: ArrayMesh) -> float:
+	var parent := {}
+	var tris: Array = []
+	for s in mesh.get_surface_count():
+		var v: PackedVector3Array = mesh.surface_get_arrays(s)[Mesh.ARRAY_VERTEX]
+		for i in range(0, v.size() - 2, 3):
+			var keys: Array = []
+			for j in 3:
+				var q := Vector3i((v[i + j] * 2000.0).round())
+				keys.append(q)
+				if not parent.has(q):
+					parent[q] = q
+			tris.append([keys, v[i], v[i + 1], v[i + 2]])
+			var r0: Vector3i = _find(parent, keys[0])
+			for j in [1, 2]:
+				var rj: Vector3i = _find(parent, keys[j])
+				if rj != r0:
+					parent[rj] = r0
+	var boxes := {}
+	for t: Array in tris:
+		var root: Vector3i = _find(parent, (t[0] as Array)[0])
+		var b: AABB = boxes.get(root, AABB(t[1], Vector3.ZERO))
+		boxes[root] = b.expand(t[1]).expand(t[2]).expand(t[3])
+	var thin := INF
+	for b: AABB in boxes.values():
+		thin = minf(thin, minf(b.size.x, minf(b.size.y, b.size.z)))
+	return thin
+
+
+static func _find(parent: Dictionary, q: Vector3i) -> Vector3i:
+	while parent[q] != q:
+		parent[q] = parent[parent[q]]
+		q = parent[q]
+	return q
 
 
 ## The back-mount equipment meshes (docs/design/back-equipment.md): on the back mount like the mortar, inside an envelope

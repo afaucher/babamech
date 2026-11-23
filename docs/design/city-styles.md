@@ -50,6 +50,10 @@ avenue whose lots carry ceiling-touching towers of one family (style `tower`: cr
 point, the pillars' collar at the ceiling) on six bases (podium, stepped, plaza, corner cut, twin, arcade). Lab param
 `downtown`.
 
+**City variety** (`city-variety.md`, landed 2026-11-23): per-building tint and a second colourway per style, more
+shopfronts; service alleys through blocks (param `alleys`); road forms per segment (lane, pedestrian street, superblock
+court) drawn from the SectionPlan, or rolled on their own (param `road_variety`).
+
 ## Streets
 
 Grid in arc coordinates: a central **avenue** runs along the spin direction (it climbs the curve, the Cluckipede view),

@@ -137,6 +137,10 @@ func _audit_mech_meshes() -> void:
 		if absf(c.y - 0.1) < 0.02 and Vector2(c.x, c.z).length() < 0.4 and n.y < -0.9:
 			sock_bot += 1
 	check(sock_bot >= 6, "MechMeshes.hip_socket: cup has bottom cap at y=0.1 (%d tris)" % sock_bot)
+	# The Bulwark's parts (BulwarkMeshes): every one closed and outward-facing (chassis-rules 2.1, 9.1).
+	for part: String in BulwarkMeshes.all_parts():
+		var bst := _check_mesh_winding(BulwarkMeshes.mesh(part), "BulwarkMeshes.%s" % part)
+		eq(int(bst["open_edges"]), 0, "BulwarkMeshes.%s: watertight (0 open edges)" % part)
 
 
 func _audit_enemy_meshes() -> void:

@@ -8,3 +8,4 @@
 
 User picks (2026-11-23): Bulwark = barrel torso + sumo legs (forward knees); Wasp = four fans, pod hull.
 | `pick_bulwark_concept.png` | `bulwark_full_s22.png` | flux3_klein_refs | `pick_bulwark_torso_barrel.png` + `pick_bulwark_legs_sumo.png` |
+| `pick_wasp_landed_chicken_legs.png` | `wasp_legs_a_chicken_s22.png` | flux3_klein_refs | `pick_wasp_four_fans_pod.png` |

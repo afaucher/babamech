@@ -16,7 +16,10 @@ func _ready() -> void:
 	var out := PackedStringArray()
 	var t0 := Time.get_ticks_msec()
 	CityGeo.audit = true
-	var sec := SectionPlan.make({"seed": seed_})
+	var so := {"seed": seed_}
+	if args.has("--audit-forms"):      # the section's road forms on (docs/design/city-variety.md: the mix Missions will use)
+		so.merge({"f_lane": 0.20, "f_pedestrian": 0.10, "f_none": 0.08})
+	var sec := SectionPlan.make(so)
 	var stack := CityStack.new()
 	add_child(stack)
 	stack.build(sec)

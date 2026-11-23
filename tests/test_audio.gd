@@ -37,6 +37,7 @@ func setup() -> void:
 	_test_synth_determinism_and_quality(a)
 	_test_pooling_limits_stealing_and_ducking(a)
 	await _test_mech_audio(a)
+	await _test_mech_step_signal(a)
 	await _test_combat_props_and_enemy_contract(a)
 	await _test_real_end_to_end_firefight(a)
 	await _test_audio_lab(a)
@@ -321,6 +322,103 @@ func _test_mech_audio(a: AudioDirector) -> void:
 	mech.queue_free()
 	floor_body.queue_free()
 	await frames(2)
+
+
+## Footfalls driven by Gait.stepped (MechAudio._on_stepped queues, _step_gait plays): per-kind levels, and a teammate's
+## puppet (MechController.puppet) whose own gait emits the signal locally plays them on the world bus.
+func _test_mech_step_signal(a: AudioDirector) -> void:
+	a.reset_state()
+	a.record_events = true
+	var mech := MechSpawn.make("pickle", "strider")
+	add_child(mech)
+	var floor_body := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(400, 1, 400)
+	cs.shape = box
+	cs.position = Vector3(0, -0.5, 0)
+	floor_body.add_child(cs)
+	add_child(floor_body)
+	await frames(2)
+	var ma := mech.get_node_or_null("Audio") as MechAudio
+	var rig := MechSpawn.rig_of(mech)
+	if not check(ma != null and rig != null and rig.gait != null, "step-signal mech has MechAudio, rig and gait"):
+		mech.queue_free()
+		floor_body.queue_free()
+		return
+	rig.set_physics_process(false)   # no real gait steps in between: only the emitted ones below
+	ma.set_physics_process(false)
+	await frames(10)                 # the controller settles onto the floor
+	check(mech.grounded(), "step-signal mech stands on the floor")
+	var g := rig.gait
+	var at := mech.global_position + Vector3(1.0, 0.0, 0.5)
+	ma.step(1.0 / 60.0)
+	# Emit one step event, check nothing plays inside the signal, then flush with ma.step; returns the mech.step.* events.
+	var emit_step := func(kind: String, w: float) -> Array:
+		a.advance_clock(1.0)
+		a.clear_events()
+		g.stepped.emit(0, {"kind": kind, "length": w * g.step_length, "weight": w, "pos": at})
+		var inside := _cues_with_prefix(a, "mech.step.").size()
+		ma.step(1.0 / 60.0)
+		var out := _cues_with_prefix(a, "mech.step.")
+		if inside > 0:
+			out.append({"cue": "played_inside_signal", "db": 0.0, "bus": ""})
+		return out
+	var full: Array = emit_step.call("stride", 1.0)
+	eq(full.size(), 1, "a stride step plays one mech.step.* cue (after the signal, in step())")
+	if full.size() == 1:
+		eq(str(full[0]["bus"]), AudioDirector.BUS_SFX_PLAYER, "own mech's stride on the player bus")
+		check((full[0]["pos"] as Vector3).distance_to(at) < 0.01, "stride plays at info.pos")
+	var landed: Array = emit_step.call("land", 1.0)
+	eq(landed.size(), 0, "a land step plays no mech.step.* cue")
+	var short: Array = emit_step.call("stride", 0.3)
+	if check(short.size() == 1 and full.size() == 1, "a short stride plays once"):
+		check(float(short[0]["db"]) < float(full[0]["db"]) - 3.0, "a weight-0.3 stride (%.1f dB) is quieter than a full one (%.1f dB)" % [
+			float(short[0]["db"]), float(full[0]["db"])])
+	var corr: Array = emit_step.call("correction", 0.5)
+	if check(corr.size() == 1 and full.size() == 1, "a correction step plays once"):
+		check(float(corr[0]["db"]) < float(full[0]["db"]) - 6.0, "a correction (%.1f dB) is clearly quieter than a full stride (%.1f dB)" % [
+			float(corr[0]["db"]), float(full[0]["db"])])
+	eq((emit_step.call("settle", 0.02) as Array).size(), 0, "a negligible settle step is silent")
+
+	# A teammate's puppet: same MechAudio, its own rig's gait steps locally from the motion written into it.
+	mech.set_physics_process(false)
+	mech.puppet = true
+	mech.puppet_grounded = true
+	var pup: Array = emit_step.call("stride", 1.0)
+	if check(pup.size() == 1, "a puppet's stride plays one mech.step.* cue"):
+		eq(str(pup[0]["bus"]), AudioDirector.BUS_SFX_WORLD, "a puppet's stride plays on the world bus")
+	a.advance_clock(1.0)
+	a.clear_events()
+	var emitted := [0]
+	var count_cb := func(_f: int, _i: Dictionary) -> void: emitted[0] += 1
+	g.stepped.connect(count_cb)
+	var dt := 1.0 / 60.0
+	mech.velocity = mech.forward() * 10.0
+	for i in 90:
+		mech.global_position += mech.velocity * dt
+		rig.update_pose(dt)
+		ma.step(dt)
+		a.advance_clock(dt)
+	g.stepped.disconnect(count_cb)
+	check(emitted[0] > 0, "a puppet's own gait emits stepped locally (%d steps)" % emitted[0])
+	var walk := _cues_with_prefix(a, "mech.step.")
+	check(walk.size() > 0, "a moving puppet's gait steps play footfalls (%d)" % walk.size())
+	var all_world := true
+	for e: Dictionary in walk:
+		all_world = all_world and str(e["bus"]) == AudioDirector.BUS_SFX_WORLD
+	check(all_world, "every puppet footfall is on the world bus")
+	mech.queue_free()
+	floor_body.queue_free()
+	await frames(2)
+
+
+static func _cues_with_prefix(a: AudioDirector, prefix: String) -> Array:
+	var out: Array = []
+	for ev: Dictionary in a.recent_events:
+		if str(ev["cue"]).begins_with(prefix):
+			out.append(ev)
+	return out
 
 
 func _test_combat_props_and_enemy_contract(a: AudioDirector) -> void:

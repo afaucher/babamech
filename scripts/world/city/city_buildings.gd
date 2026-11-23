@@ -8,6 +8,28 @@ extends RefCounted
 ## collision is built from; loose roof units are CityProps (their prototypes are roof_unit()).
 
 const FH := CityPlan.FLOOR_H
+const COLOURWAY := 0.24      ## share of the buildings of a style in its second colourway (city-variety.md section 2)
+
+static var _vr := RandomNumberGenerator.new()     ## the building being meshed: its own variety stream (build())
+static var _corner := -1     ## the building being meshed: the side whose far end is a street corner of its front (-1: none)
+
+
+## Whether the end of a Face on side `face_side` at u = w lies toward side `other` (Face u = up x n).
+static func _corner_at_high_u(face_side: int, other: int) -> bool:
+	var n: Vector2 = CityPlan.SIDE_N[face_side]
+	var o: Vector2 = CityPlan.SIDE_N[other]
+	return n.y * o.x - n.x * o.y > 0.0
+
+
+## On a corner lot (its front and a neighbouring side both face a street): that neighbouring side, else -1.
+static func _corner_side(lot: Dictionary, front: int) -> int:
+	var faces: Array = lot["faces"]
+	if front < 0 or not faces[front]:
+		return -1
+	for side: int in ([2, 3] if front < 2 else [0, 1]):
+		if faces[side]:
+			return side
+	return -1
 
 
 ## One wall of a tier, seen from outside: u runs right along the wall, v is height above the building's ground, n out.
@@ -24,6 +46,10 @@ static func build(geo: CityGeo, xf: Transform3D, core_xf: Transform3D, plan: Cit
 	var b: Dictionary = plan.buildings[index]
 	var lot: Dictionary = plan.lots[b["lot"]]
 	geo.tag("bld." + str(b["style"]))
+	# The building's own variety stream (tint, colourway, shopfront variants: docs/design/city-variety.md section 2), seeded
+	# per building, so the district's shared cosmetic stream `rng` is drawn exactly as before and every other look stays.
+	_vr.seed = plan.cosmetic_seed() * 92821 + index * 104729 + 7
+	_corner = _corner_side(lot, int(b["front"]))
 	match str(b["style"]):
 		"apartment": _apartment(geo, xf, b, lot, rng)
 		"office": _office(geo, xf, b, lot, rng)
@@ -32,6 +58,49 @@ static func build(geo: CityGeo, xf: Transform3D, core_xf: Transform3D, plan: Cit
 		"civic": _civic(geo, xf, b, lot, rng)
 		"pillar": _pillar(geo, xf, core_xf, b, lot, rng, plan.p("ceiling"))
 		"tower": _tower(geo, xf, b, lot, rng, plan.p("ceiling"))
+	if not plan.alleys.is_empty() and str(b["style"]) in ["apartment", "office", "sage", "shops"]:
+		var side := plan.alley_side(int(b["lot"]))
+		if side >= 0:
+			_alley_face(geo, _faces(xf, b["tiers"][0], lot)[side])
+	if not plan.forms.is_empty() and str(b["style"]) in ["apartment", "office", "sage", "shops"]:
+		for f in _faces(xf, b["tiers"][0], lot):
+			if f.street and plan.block_side_form(int(lot["block"]), f.side) == "lane":
+				_lane_face(geo, f)
+
+
+## A wall on a lane (city-variety.md): wall lamps on brackets every 8 m and a hanging sign on a bracket, instead of the
+## street trees a street has. Fixed looks.
+static func _lane_face(geo: CityGeo, f: Face) -> void:
+	if f.w < 5.0:
+		return
+	geo.tag("lane.dressing")
+	var n := maxi(int(f.w / 8.0), 1)
+	for k in n:
+		var u := f.w * (float(k) + 0.5) / float(n)
+		_slab(geo, f, u - 0.06, u + 0.06, 4.9, 5.05, 0.9, _c("metal_dark"))
+		geo.box(f.xf, Vector3(u, 4.75, 0.85), Vector3(0.36, 0.3, 0.36), _c("cream_light"), CityGeo.ALL, _c("metal_dark"))
+	var us := f.w * (0.25 + 0.5 * _vr.randf())
+	_slab(geo, f, us - 0.05, us + 0.05, 6.1, 6.2, 1.5, _c("metal_dark"))
+	geo.box(f.xf, Vector3(us, 5.525, 1.0), Vector3(0.08, 1.15, 0.9), _pick(_vr, ["fascia_teal", "fascia_rose", "fascia_sand", "sage_dark", "terracotta"]))
+
+
+## The wall a building turns to a service alley (city-variety.md): back doors with a small hood, downpipes and a pipe run.
+static func _alley_face(geo: CityGeo, f: Face) -> void:
+	if f.w < 4.0:
+		return
+	geo.tag("alley.dressing")
+	var n := maxi(int(f.w / 12.0), 1)
+	for k in n:
+		var c := f.w * (float(k) + 0.5) / float(n) + _vr.randf_range(-1.5, 1.5)
+		c = clampf(c, 1.5, f.w - 1.5)
+		# 0.16 out: in front of an apartment's 0.12 m base band. Pipes stand 0.41 / 0.47 m proud, clear of every style's
+		# piers (0.3), cornices (0.35) and ledges (0.3), so no face of theirs lies in a facade's plane.
+		_pane(geo, f, c - 0.6, c + 0.6, 0.0, 2.3, _c("door_back"), 0.16)
+		_slab(geo, f, c - 0.8, c + 0.8, 2.45, 2.65, 0.7, _c("metal_dark"))
+	for u: float in [0.6, f.w - 0.6]:
+		_slab(geo, f, u - 0.12, u + 0.12, -0.3, f.y1 - 0.4, 0.41, _c("pipe"))
+	# 4.95..5.2: clear of every style's sills, ledges and balcony tops (their top faces lay in a pipe run at 4.45).
+	_slab(geo, f, 0.75, f.w - 0.75, 4.95, 5.2, 0.47, _c("pipe"))
 
 
 # --- Shared pieces ---------------------------------------------------------------------------------------
@@ -218,6 +287,11 @@ static func _apartment(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictio
 	var base := _pick(rng, ["concrete", "cream", "sand"])
 	var glass := _pick(rng, ["glass_teal", "glass_dark", "glass_teal"])
 	var balcony := _pick(rng, ["cream_light", "sage_light", "cream"])
+	if _vr.randf() < COLOURWAY:      # second colourway: sky-blue body, cream trim, blue glass
+		wall = _c("apt_sky") if _vr.randf() < 0.7 else _c("apt_sky_dark")
+		trim = _c("cream_light")
+		glass = _c("glass_blue")
+	wall = CityPalette.tint(wall, _vr)
 	var main: Dictionary = b["tiers"][0]
 	var floors: int = b["floors"]
 	var roof: float = b["roof_h"]
@@ -267,6 +341,12 @@ static func _office(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionar
 	var frame := _pick(rng, ["cream_light", "cream", "sand"])
 	var spandrel := _pick(rng, ["cream", "sand", "cream_light"])
 	var accent := _pick(rng, ["terracotta", "sage_dark", "blue_grey"])
+	if _vr.randf() < COLOURWAY:      # second colourway: sand frame and spandrels, teal glass
+		frame = _c("office_sand")
+		spandrel = _c("sand_light")
+		glass = _c("glass_teal")
+	frame = CityPalette.tint(frame, _vr, 0.7)
+	spandrel = CityPalette.tint(spandrel, _vr, 0.7)
 	var tiers: Array = b["tiers"]
 	var plant := {}
 	for t: Dictionary in tiers:
@@ -327,6 +407,11 @@ static func _sage(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary,
 	var wall := _pick(rng, ["sage", "sage", "sage_light", "sage_dark", "blue_grey"])
 	var ledge := _pick(rng, ["cream_light", "cream"])
 	var glass := _pick(rng, ["glass_dark", "glass_teal"])
+	if _vr.randf() < COLOURWAY:      # second colourway: pale cream panels with sage ledges
+		wall = _c("sage_cream")
+		ledge = _c("sage_dark")
+		glass = _c("glass_teal")
+	wall = CityPalette.tint(wall, _vr)
 	var tiers: Array = b["tiers"]
 	for t: Dictionary in tiers:
 		_body(geo, xf, t, wall, _c("roof"))
@@ -361,11 +446,20 @@ static func _sage(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary,
 static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary, rng: RandomNumberGenerator) -> void:
 	var wall := _pick(rng, ["cream", "cream_light", "terracotta_light", "sage_light", "sky_blue", "sand"])
 	var trim := _c("cream_light") if wall != _c("cream_light") else _c("sand")
+	if _vr.randf() < COLOURWAY:      # second colourway: a rose-terracotta row with cream trim
+		wall = _c("shop_rose")
+		trim = _c("cream_light")
+	wall = CityPalette.tint(wall, _vr)
 	var main: Dictionary = b["tiers"][0]
 	var roof: float = b["roof_h"]
 	_body(geo, xf, main, wall, _c("roof"))
 	var faces := _faces(xf, main, lot)
 	var awnings := ["terracotta", "sage_dark", "sky_blue", "marking_yellow", "terracotta_dark", "cream_light"]
+	# Shopfront variants (one per row: awning shape, recessed doors; fascia colours per unit), from the row's own stream.
+	var shape := _vr.randi_range(0, 2)          # 0 sloped awning, 1 flat canopy, 2 short steep awning
+	var recessed := _vr.randf() < 0.4
+	var fascias := ["cream_light", "sage", "terracotta", "blue_grey", "fascia_teal", "fascia_sand", "fascia_rose", "awning_cream"]
+	var more_awnings := ["awning_teal", "awning_sky", "awning_cream", "terracotta", "sage_dark"]
 	for f in faces:
 		if f.street:
 			var bays := _bays(f.w, 5.6, 0.3)
@@ -374,16 +468,36 @@ static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 				var c := bays[k]
 				var h := pitch * 0.5
 				var col := _pick(rng, awnings)
+				var fascia := _pick(rng, ["cream_light", "sage", "terracotta", "blue_grey"])
+				if _vr.randf() < 0.5:
+					col = _pick(_vr, more_awnings)
+				if _vr.randf() < 0.5:
+					fascia = _pick(_vr, fascias)
 				_pane(geo, f, c - h + 0.45, c + h - 0.45, 0.55, 3.0, _c("glass_dark"))
 				_pane(geo, f, c + h - 1.9, c + h - 0.75, 0.0, 2.6, _c("glass_teal"), 0.07)
+				if recessed:
+					# A recessed entrance: deep jambs and a head round the door, so the door reads as set into the front.
+					_slab(geo, f, c + h - 2.1, c + h - 1.9, 0.0, 2.8, 0.45, trim)
+					_slab(geo, f, c + h - 0.75, c + h - 0.55, 0.0, 2.8, 0.45, trim)
+					_slab(geo, f, c + h - 2.1, c + h - 0.55, 2.6, 2.8, 0.45, trim)
 				# 2 cm clear of the pilasters (u +/- 0.3): its double-sided end gussets lay in their side faces (z-fighting).
-				_awning(geo, f, c - h + 0.32, c + h - 0.32, 3.3, 2.75, 1.5, col, col.darkened(0.25))
-				_slab(geo, f, c - h + 0.5, c + h - 0.5, 3.5, 4.3, 0.12, _pick(rng, ["cream_light", "sage", "terracotta", "blue_grey"]))
+				match shape:
+					0: _awning(geo, f, c - h + 0.32, c + h - 0.32, 3.3, 2.75, 1.5, col, col.darkened(0.25))
+					1: _slab(geo, f, c - h + 0.32, c + h - 0.32, 3.05, 3.3, 1.3, col)
+					_: _awning(geo, f, c - h + 0.32, c + h - 0.32, 3.4, 2.5, 0.9, col, col.darkened(0.25))
+				_slab(geo, f, c - h + 0.5, c + h - 0.5, 3.5, 4.3, 0.12, fascia)
 				_punched(geo, f, FH, PackedFloat32Array([c - h * 0.45, c + h * 0.45]), 0.65, 1.2, 2.5, _c("glass_teal"), trim)
 			for k in bays.size() + 1:
 				var u := 0.3 + float(k) * pitch
 				_slab(geo, f, u - 0.3, u + 0.3, -0.5, 3.3, 0.15, trim)
 			_slab(geo, f, f.w * 0.3, f.w * 0.7, roof + 0.6, roof + 1.3, 0.2, trim)
+			if _corner >= 0 and f.side == _corner:
+				# A corner entrance on a corner lot: a door on the side street right by the corner, and a blade sign over it.
+				var at_hi := _corner_at_high_u(f.side, int(b["front"]))
+				var u0 := f.w - 1.9 if at_hi else 0.75
+				_pane(geo, f, u0, u0 + 1.15, 0.0, 2.6, _c("glass_dark"), 0.09)
+				var ub := f.w - 0.35 if at_hi else 0.35
+				_slab(geo, f, ub - 0.08, ub + 0.08, 3.6, 5.9, 0.95, _pick(_vr, fascias))
 		else:
 			_punched(geo, f, FH, _bays(f.w, 5.0, 1.0), 0.6, 1.2, 2.4, _c("glass_teal"), trim)
 	_band(geo, faces, roof - 0.2, roof + 0.6, 0.2, trim)
@@ -501,33 +615,50 @@ const CAPITAL_COLLAR := 0.8     ## the collar under a pillar's capital: this tal
 
 ## How a pillar meets the ceiling: a collar, a flare, and a drop panel (a thickened patch of the deck above) that the
 ## ceiling's girders die into.
-static func capital(geo: CityGeo, xf: Transform3D, half: Vector2, ceiling: float, col: Color) -> void:
+## `collar` / `proud`: the collar's height and how far it stands out (downtown towers wear a bigger one, readable from
+## the street: DT_COLLAR / DT_COLLAR_PROUD).
+static func capital(geo: CityGeo, xf: Transform3D, half: Vector2, ceiling: float, col: Color,
+		collar: float = CAPITAL_COLLAR, proud: float = 0.8) -> void:
 	var flare := ceiling - 7.5
 	var pad := CityStreets.DROP_PANEL
-	geo.box(xf, Vector3(0, flare - CAPITAL_COLLAR * 0.5, 0), Vector3(half.x * 2.0 + 1.6, CAPITAL_COLLAR, half.y * 2.0 + 1.6), _c("concrete_dark"))
+	geo.box(xf, Vector3(0, flare - collar * 0.5, 0), Vector3(half.x * 2.0 + proud * 2.0, collar, half.y * 2.0 + proud * 2.0), _c("concrete_dark"))
 	geo.frustum(xf, Vector3.ZERO, flare, half + Vector2(0.5, 0.5), ceiling - 1.4, half + Vector2(pad - 1.0, pad - 1.0), col)
 	geo.box(xf, Vector3(0, ceiling - 0.6, 0), Vector3((half.x + pad) * 2.0, 1.8, (half.y + pad) * 2.0), _c("rib"), CityGeo.ALL - CityGeo.PY)
 
 
 # --- 7. Downtown towers (docs/design/city-downtown.md) ----------------------------------------------------
-# One family on varied bases: cream / sand frame, sky-blue glass. A slab (broad) has piers every 3.2 m and a spandrel
-# every two storeys over ribbon glazing; a point (slender) has broad corner piers, a centre fin and two tall glass strips
-# a face, a band line every two storeys. Every shaft ends in the pillars' collar, flare and drop panel (capital). Bases
-# (podium, terrace, the arcade's lobby and roof, its columns) are plan tiers and solids, drawn from the numbers the
-# collision is made from. Coarse on purpose (the zone's triangle budget).
+# One family on varied bases: the same two frame tones (cream frame, sand trim), sky-blue glass, the same band line every
+# two storeys and the same big collar, flare and drop panel (capital) on both members. The SLAB (broad) reads horizontal:
+# a deep spandrel every storey over ribbon glazing, shallow piers every 3.2 m, solid end piers. The POINT (slender) reads
+# vertical: deep corner piers and a centre fin running full height between two glass strips a face; its band line rings
+# only the piers and the fin, so the strips stay unbroken. Bases tell themselves apart at eye level within the palette:
+# a shop podium with awnings, a stepped podium in sand with a terrace rail, a corner podium in a teal glass curtain, the
+# arcade's columns in the frame tone. Bases (podium, terrace, the arcade's lobby and roof, its columns) are plan tiers and
+# solids, drawn from the numbers the collision is made from. Coarse on purpose (the zone's triangle budget).
+
+const DT_COLLAR := 1.6          ## a tower's collar under its capital: this tall
+const DT_COLLAR_PROUD := 1.3    ## and this far proud of the shaft's faces
+const DT_PIER := 1.1            ## a point's glass is this far behind its plan line: its corner piers and fin stand flush
+const DT_SPANDREL := 0.45       ## a slab's glass is this far behind: its spandrels and end piers flush, its piers less
+const DT_SLAB_PIER := 0.2
+
 
 static func _tower(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary, rng: RandomNumberGenerator, ceiling: float) -> void:
-	var frame := _pick(rng, ["cream", "cream", "sand", "cream_light"])
-	var trim := _c("cream_light") if frame != _c("cream_light") else _c("sand")
-	var glass := _pick(rng, ["sky_blue", "sky_blue", "glass_blue"])
+	# The district stream is drawn as in pass 1 (four picks), so no other building's looks move; the family's tones are fixed.
+	_pick(rng, ["cream", "cream", "sand", "cream_light"])
+	_pick(rng, ["sky_blue", "sky_blue", "glass_blue"])
 	var shop := _pick(rng, ["glass_dark", "glass_teal"])
+	var frame := _c("cream_light") if _vr.randf() < 0.35 else _c("cream")
+	var trim := _c("sand")
+	var glass := _c("sky_blue")
 	var dt: Dictionary = b["dt"]
+	var base := str(b.get("base", "podium"))
 	for t: Dictionary in b["tiers"]:
 		match str(t.get("kind", "")):
 			"podium", "terrace":
-				_dt_block(geo, xf, t, lot, frame, trim, glass, shop)
+				_dt_block(geo, xf, t, lot, base, frame, trim, glass, shop)
 			"arcade":
-				_dt_block(geo, xf, t, lot, frame, trim, glass, shop)
+				_dt_block(geo, xf, t, lot, base, frame, trim, glass, shop)
 				if dt.has("gallery_frame"):      # the gallery's ceiling, seen from under the arcade
 					var g: Rect2 = dt["gallery_frame"]
 					geo.box(xf, Vector3(g.get_center().x, float(t["y0"]) - 0.05, g.get_center().y), Vector3(g.size.x, 0.1, g.size.y),
@@ -548,31 +679,68 @@ static func _tower(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 const DT_COL := CityPlan.DT_COLUMN
 
 
-## A podium or terrace box: shop fronts on a podium's street faces, a ribbon window a storey elsewhere, floor bands and
-## a cornice standing a little above the roof.
-static func _dt_block(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Dictionary, frame: Color, trim: Color, glass: Color, shop: Color) -> void:
-	_body(geo, xf, t, frame, _c("roof"))
+## A podium or terrace box, its face by base kind (city-downtown.md pass 2): a shop podium (podium, twin) has shop fronts
+## and awnings on its street faces; a stepped podium is sand with a stone base course and tall windows, and a rail round
+## its terrace's street edges; a corner podium wears a teal glass curtain; others a ribbon window a storey. Floor bands
+## and a cornice standing a little above the roof on all.
+static func _dt_block(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Dictionary, base: String, frame: Color, trim: Color,
+		glass: Color, shop: Color) -> void:
 	var y0 := float(t["y0"])
 	var y1 := float(t["y1"])
+	var terrace := str(t.get("kind", "")) == "terrace"
+	# A stepped podium is sand; its terrace stays in the frame tone (its sides lie in the shaft's corner piers' faces).
+	var wall := frame
+	if base == "stepped" and not terrace:
+		wall = trim
+	_body(geo, xf, t, wall, _c("roof"))
 	var floors := maxi(int(round((y1 - y0) / FH)), 1)
+	var awning := _c(["awning_teal", "awning_sky", "awning_cream"][_vr.randi_range(0, 2)])
 	for f in _faces(xf, t, lot):
 		if f.w < 3.0:
 			continue
+		if base == "corner" and not terrace:
+			# A glass curtain: full-storey teal panes between slim frame mullions.
+			var bays := _bays(f.w, 2.6, 0.3)
+			var pitch := _pitch(f.w, 2.6, 0.3)
+			_pane(geo, f, 0.3, f.w - 0.3, y0 + 0.4 if y0 > 0.0 else 0.2, y1 - 0.6, _c("glass_teal"))
+			for k in bays.size() + 1:
+				var u := 0.3 + float(k) * pitch
+				_slab(geo, f, u - 0.12, u + 0.12, y0 - (0.5 if y0 <= 0.0 else 0.0), y1 - 0.45, 0.14, frame)
 		for i in floors:
 			var y := y0 + float(i) * FH
-			if y0 <= 0.0 and i == 0 and f.street:
+			if base == "corner" and not terrace:
+				pass
+			elif y0 <= 0.0 and i == 0 and f.street and base != "stepped":
 				var bays := _bays(f.w, 5.2, 0.4)
 				var pitch := _pitch(f.w, 5.2, 0.4)
 				for c in bays:
 					_pane(geo, f, c - pitch * 0.5 + 0.4, c + pitch * 0.5 - 0.4, 0.3, FH - 0.5, shop)
+					if base == "podium" or base == "twin":
+						_awning(geo, f, c - pitch * 0.5 + 0.55, c + pitch * 0.5 - 0.55, FH - 0.55, FH - 1.15, 1.3, awning, awning.darkened(0.25))
 				for k in bays.size() + 1:
 					var u := 0.4 + float(k) * pitch
 					_slab(geo, f, u - 0.25, u + 0.25, -0.5, FH - 0.25, 0.15, trim)
+			elif base == "stepped":
+				# Tall windows over a stone base course.
+				if y0 <= 0.0 and i == 0:
+					_slab(geo, f, -0.1, f.w + 0.1, -0.5, 1.2, 0.1, _c("concrete"))
+				var bays := _bays(f.w, 2.8, 0.6)
+				for c in bays:
+					_pane(geo, f, c - 0.75, c + 0.75, y + (1.4 if y0 <= 0.0 and i == 0 else 0.6), y + FH - 0.5, glass)
 			else:
 				_pane(geo, f, 0.7, f.w - 0.7, y + 0.85, y + FH - 0.6, glass)
 			if i > 0:
-				_slab(geo, f, 0.0, f.w, y - 0.18, y + 0.18, 0.12, trim)
-		_slab(geo, f, -0.2, f.w + 0.2, y1 - 0.45, y1 + 0.45, 0.2, trim)
+				# Wrapping the corners (its ends clear of the side walls' faces, z-fight audit).
+				var bd := 0.2 if base == "corner" and not terrace else 0.12
+				_slab(geo, f, -bd, f.w + bd, y - 0.18, y + 0.18, bd, trim if base != "stepped" or terrace else frame)
+		_slab(geo, f, -0.2, f.w + 0.2, y1 - 0.45, y1 + 0.45, 0.2, trim if base != "stepped" or terrace else frame)
+		if terrace and f.street:
+			# The terrace rail: posts and a top bar on its street edge, set in from the cornice.
+			var n := maxi(int(f.w / 2.5), 1)
+			for k in n + 1:
+				var u := 0.6 + (f.w - 1.2) * float(k) / float(n)
+				geo.box(f.xf, Vector3(u, y1 + 0.7, -0.55), Vector3(0.12, 1.6, 0.12), _c("metal_dark"), CityGeo.NO_BOTTOM)
+			geo.box(f.xf, Vector3(f.w * 0.5, y1 + 1.55, -0.55), Vector3(f.w - 1.0, 0.14, 0.16), _c("metal_dark"))
 
 
 ## An arcade's lobby behind its gallery: glass across the gallery side, ribbon windows elsewhere (no cornice: the arcade's
@@ -606,54 +774,67 @@ static func _dt_first_band(y0: float) -> float:
 	return y
 
 
-## A tower shaft: glass box from its base into the ceiling slab, the family's frame over it, the collar and flare.
+## A tower shaft: its glass recessed behind the plan line (DT_PIER / DT_SPANDREL: the frame stands flush with the
+## collision box), the family's frame over it, the collar and flare.
 static func _dt_shaft(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Dictionary, b: Dictionary, frame: Color, trim: Color,
 		glass: Color, shop: Color, ceiling: float) -> void:
 	var size: Vector2 = t["size"]
 	var off: Vector2 = t["off"]
 	var y0 := float(t["y0"])
 	var flare := ceiling - 7.5
-	var under := flare - CAPITAL_COLLAR
-	_body(geo, xf, t, glass, glass)
+	var under := flare - DT_COLLAR
 	var slab := str(t.get("tower", "point")) == "slab"
+	var recess := DT_SPANDREL if slab else DT_PIER
+	var inner := t.duplicate()
+	inner["size"] = size - Vector2(recess, recess) * 2.0
+	_body(geo, xf, inner, glass, glass)
 	var v0 := y0 - (0.5 if y0 <= 0.0 else 0.0)
 	var fin0 := 5.0 if y0 <= 0.0 else v0          # a ground lobby keeps its glass clear of the centre fin
-	for f in _faces(xf, t, lot):
-		var corner := minf(1.6, f.w * 0.16)
+	var first := _dt_first_band(y0)
+	# Corner piers on both members: one box a corner, flush with the plan line, deep on a point and solid on a slab; the
+	# band line rings it every two storeys.
+	var corner := minf(1.8, minf(size.x, size.y) * 0.18) if not slab else 0.9
+	var w := corner + recess
+	for cx: float in [-1.0, 1.0]:
+		for cz: float in [-1.0, 1.0]:
+			var c := Vector2(off.x + cx * (size.x - w) * 0.5, off.y + cz * (size.y - w) * 0.5)
+			geo.box(xf, Vector3(c.x, (v0 + under) * 0.5, c.y), Vector3(w, under - v0, w), frame, CityGeo.NO_BOTTOM)
+			var y := first
+			while y < under - 1.5:
+				geo.box(xf, Vector3(c.x, y, c.y), Vector3(w + 0.24, 0.34, w + 0.24), trim)
+				y += FH * 2.0
+	for f in _faces(xf, inner, lot):
 		if slab:
+			# Shallow piers, a deep spandrel every storey (flush), the band line on every second storey line.
 			var pitch := _pitch(f.w, 3.2, 0.0)
 			var n := int(round(f.w / pitch))
-			for k in n + 1:
+			for k in range(1, n):
 				var u := float(k) * pitch
-				var a := u - 0.3
-				var c := u + 0.3
-				if k == 0:
-					a = -0.35
-					c = 0.6
-				if k == n:
-					a = f.w - 0.6
-					c = f.w + 0.35
-				_slab(geo, f, a, c, v0, under, 0.35, frame)
-			var y := _dt_first_band(y0)
+				_slab(geo, f, u - 0.22, u + 0.22, v0, under, DT_SLAB_PIER, frame)
+			var y := first - FH
+			var k2 := 0
 			while y < under - 1.5:
-				_slab(geo, f, 0.0, f.w, y - 0.5, y + 0.5, 0.2, frame)
-				y += FH * 2.0
-		else:
-			_slab(geo, f, -0.5, corner, v0, under, 0.5, frame)
-			_slab(geo, f, f.w - corner, f.w + 0.5, v0, under, 0.5, frame)
-			if f.w >= 10.0:
-				_slab(geo, f, f.w * 0.5 - 0.35, f.w * 0.5 + 0.35, fin0, under, 0.45, frame)
-			var y := _dt_first_band(y0)
+				if y > y0 + 1.0:
+					_slab(geo, f, 0.35, f.w - 0.35, y - 0.5, y + 0.5, recess, frame)
+					if k2 % 2 == 1:
+						_slab(geo, f, 0.25, f.w - 0.25, y - 0.17, y + 0.17, recess + 0.12, trim)
+				y += FH
+				k2 += 1
+		elif f.w >= 6.0:
+			# The centre fin, flush, between two full-height glass strips; the band line rings it.
+			_slab(geo, f, f.w * 0.5 - 0.4, f.w * 0.5 + 0.4, fin0, under, recess, frame)
+			var y := first
 			while y < under - 1.5:
-				_slab(geo, f, corner, f.w - corner, y - 0.16, y + 0.16, 0.12, trim)
+				if y > fin0 + 0.5:
+					_slab(geo, f, f.w * 0.5 - 0.52, f.w * 0.5 + 0.52, y - 0.17, y + 0.17, recess + 0.12, trim)
 				y += FH * 2.0
 		if y0 <= 0.0 and f.side == int(b["front"]):
 			# A lobby at the plaza: dark glass and a canopy over the door.
+			var inset := maxf(corner - recess, 0.3)
 			if not slab:
-				_pane(geo, f, corner + 0.3, f.w - corner - 0.3, 0.0, 4.2, shop, 0.06)
-			_slab(geo, f, corner + 0.2, f.w - corner - 0.2, 4.4, 4.8, 2.0, trim)
-	capital(geo, xf * Transform3D(Basis.IDENTITY, Vector3(off.x, 0.0, off.y)), size * 0.5, ceiling, frame)
-
+				_pane(geo, f, inset + 0.3, f.w - inset - 0.3, 0.0, 4.2, shop, 0.06)
+			_slab(geo, f, inset + 0.2, f.w - inset - 0.2, 4.4, 4.8, recess + 1.6, trim)
+	capital(geo, xf * Transform3D(Basis.IDENTITY, Vector3(off.x, 0.0, off.y)), size * 0.5, ceiling, frame, DT_COLLAR, DT_COLLAR_PROUD)
 
 ## A park pillar: a slim trunk that branches into the ceiling like a tree, standing in a planted ring.
 static func column(geo: CityGeo, xf: Transform3D, c: Dictionary, ceiling: float) -> void:

@@ -14,6 +14,10 @@ extends CharacterBody3D
 ## turns it into leg damage, docs/design/weapons.md "Fall damage"; shut down = no burn). Heat is the primary limit: thrust, walking and running heat, the frame cools; at `heat_cap` the mech
 ## SHUTS DOWN (no move, no thrust), cools to `reboot_heat`, then reboots after `reboot_time`.
 ##
+## Blocked motion: vertical velocity is reconciled with the motion move_and_slide achieved (_reconcile), a body jammed in
+## the air is zeroed and nudged free (_unstick), and speed is capped at MAX_SPEED, so gravity never piles up while the
+## mech cannot move (no fling, no false hard landing).
+##
 ## Input comes from whoever drives it (player, lab bot, later the network for puppets): set `move_input`, `turn_input`,
 ## `running` and `thrust_input`. Weapons add heat through `add_heat()` (S4).
 ##
@@ -69,6 +73,16 @@ var _climbing := false               ## rising over a ledge this step (counts as
 var _reboot_t := 0.0
 var _was_grounded := true
 var _fall_speed := 0.0               ## m/s down, last airborne step
+var _wedge_t := 0.0                  ## s of consecutive wedged steps (see _unstick)
+var _wedge_nudge := 0.0              ## m nudged free in this wedge episode
+
+const MAX_SPEED := 150.0             ## m/s backstop (a 3-deck free fall is ~80, a long thrust climb less)
+const RECONCILE_SLACK := 0.5         ## m/s of vertical speed the achieved motion may lag before it is cut back
+const WEDGE_MIN_SINK := 0.2          ## m/s down asked of the body before a step can count as wedged
+const WEDGE_SINK_SHARE := 0.4        ## share of the asked sink a wedged step makes at most
+const WEDGE_TIME := 0.25             ## s of wedged steps before the velocity is zeroed and the nudge starts
+const WEDGE_NUDGE_SPEED := 3.0       ## m/s the nudge moves the body
+const WEDGE_NUDGE_MAX := 6.0         ## m of nudge per wedge episode (a slot it cannot leave keeps it, at rest)
 
 
 func net_fields() -> Dictionary:
@@ -84,6 +98,7 @@ func net_fields() -> Dictionary:
 		"last_impact": Net.OWNER, "puppet_grounded": Net.OWNER,
 		"owner_peer": Net.SPAWN, "puppet": Net.SPAWN,
 		"_climbing": Net.PRIVATE, "_reboot_t": Net.PRIVATE, "_was_grounded": Net.PRIVATE, "_fall_speed": Net.PRIVATE,
+		"_wedge_t": Net.PRIVATE, "_wedge_nudge": Net.PRIVATE,
 	}
 
 
@@ -161,10 +176,63 @@ func step(delta: float) -> void:
 		vert -= u * gravity * delta
 	velocity = flat + vert
 	var want := flat
+	var p0 := global_position
+	var vs0 := velocity.dot(u)
 	move_and_slide()
+	var moved := global_position - p0
+	_reconcile(u, moved, delta)
 	_climbing = _step_up(u, want, delta)
+	_unstick(u, vs0, moved, delta)
+	velocity = velocity.limit_length(MAX_SPEED)
 	_update_heat(delta)
 	_check_landing(u)
+
+
+## Velocity along local up must match the motion move_and_slide achieved. In grounded mode Godot only clears velocity on
+## a floor (and slides it on a ceiling): against walls, or when the capsule is jammed into two faces it cannot depenetrate
+## from, the motion is blocked but `velocity` keeps whatever gravity / thrust added, so it grew ~22 m/s every second while
+## the mech stood still (5767 m/s seen on a bot run) and would fling it, or land it "hard", once free. With contacts this
+## step, a vertical speed the body did not actually make is cut back to the achieved one (never past zero).
+func _reconcile(u: Vector3, moved: Vector3, delta: float) -> void:
+	if delta <= 0.0 or get_slide_collision_count() == 0:
+		return
+	var vs := velocity.dot(u)
+	var real := moved.dot(u) / delta
+	if vs < 0.0 and real > vs + RECONCILE_SLACK:
+		velocity += u * (minf(real, 0.0) - vs)
+	elif vs > 0.0 and real < vs - RECONCILE_SLACK:
+		velocity += u * (maxf(real, 0.0) - vs)
+
+
+## Wedged: airborne by our reckoning (not grounded, not thrusting), touching something, asked to sink (vs0 below
+## -WEDGE_MIN_SINK) and making less than WEDGE_SINK_SHARE of it, every step for WEDGE_TIME. A free fall, a fall grazing a
+## wall and a slide down any wall steeper than floor_max_angle all make most of their sink (sin^2 50 deg = 0.59), so only
+## a body held up by faces it is not standing on counts (the capsule can jitter sideways there: Godot's depenetration
+## pushes it back and forth). Its velocity is phantom (zeroed: no fling, no hard landing from it), and it is nudged free
+## along the summed contact normals tilted up (straight up when they cancel, as between two faces), at WEDGE_NUDGE_SPEED,
+## at most WEDGE_NUDGE_MAX m per episode. Deterministic; owner only (puppets run no step()).
+func _unstick(u: Vector3, vs0: float, moved: Vector3, delta: float) -> void:
+	var n := get_slide_collision_count()
+	var blocked := not grounded() and not thrusting and n > 0 and delta > 0.0 and vs0 < -WEDGE_MIN_SINK \
+		and moved.dot(u) / delta > vs0 * WEDGE_SINK_SHARE
+	if not blocked:
+		_wedge_t = 0.0
+		_wedge_nudge = 0.0
+		return
+	_wedge_t += delta
+	if _wedge_t < WEDGE_TIME:
+		return
+	velocity = Vector3.ZERO
+	_fall_speed = 0.0
+	if _wedge_nudge >= WEDGE_NUDGE_MAX:
+		return
+	var sum := Vector3.ZERO
+	for i in n:
+		sum += get_slide_collision(i).get_normal()
+	var dir := (sum.normalized() + u).normalized() if sum.length() > 0.5 else u
+	var stepd := minf(WEDGE_NUDGE_SPEED * delta, WEDGE_NUDGE_MAX - _wedge_nudge)
+	global_position += dir * stepd
+	_wedge_nudge += stepd
 
 
 ## Heat from outside (weapons fire, flamers): pushes toward shutdown.

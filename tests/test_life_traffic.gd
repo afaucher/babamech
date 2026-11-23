@@ -19,7 +19,9 @@ func setup() -> void:
 	_calm_checks()
 	district = CityDistrict.new()
 	add_child(district)
-	district.build({"seed": 1, "walls": 1.0})
+	# Without the stand-alone road forms (2026-11-23): the fleet scenarios below look for long straight laps, which the
+	# forms (fewer street loops) take away on this seed; the calm checks run with the forms on (seed 2).
+	district.build({"seed": 1, "walls": 1.0, "road_variety": 0.0})
 	_panic_checks()
 	_flee_check()
 	_rider_check()
@@ -61,7 +63,7 @@ func _plan_checks() -> void:
 		print("traffic seed %d: %s  loops %d  laps %s" % [seed, a.checksum(), a.loops.size(),
 				str(a.loops.map(func(lo: Dictionary) -> int: return int(lo["L"])))])
 	eq(sums.size(), 3, "three seeds, three traffic checksums")
-	var lp := LifePlan.make(CityPlan.make({"seed": 1}))
+	var lp := LifePlan.make(CityPlan.make({"seed": 1, "road_variety": 0.0}))     # (all streets: room for the cap)
 	var capped := LifeTraffic.make(lp, 50, 10)
 	eq(capped.pods, LifeTraffic.PODS_CAP, "pods capped at 12")
 	eq(capped.carts, LifeTraffic.CARTS_CAP, "carts capped at 4")

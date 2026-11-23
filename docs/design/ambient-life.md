@@ -710,3 +710,17 @@ timetable, host events): no message, no new event, the same on every machine; th
   in rows, each figure on its own spot (at this 18x game density it still reads as a tight crowd, 0.9 m apart); the
   street is clean; a blast into ~15 people still reads as a pile: the bodies rest 0.8 m apart, but each lies 1.7 m long,
   so limbs overlap. Not done: bodies spread wider than 0.8 m (they would slide further during the fall).
+
+## Road forms (2026-11-23)
+
+City variety (`city-variety.md`) gives segments a form (lane, pedestrian street, superblock court; service alleys inside
+blocks). Life follows it, all from plan data, no new messages: a crossing over a pedestrian street or a court has no
+signal (junction -1, crossed on arrival, like the spine's ramp_a piece); walkers keep the walkways (no walking down a
+pedestrian street's middle in v1) and never enter an alley. `LifeTraffic._make_loop`: no loop round a block beside a
+pedestrian street or a court; a lane (one 8 m lane) is driven one way down its middle (no parking strip) by the first
+loop that claims it (`lane_claims`), and the block across it gets no loop; when there are not enough loops for the pods,
+the pod loops with free slots take more (never reached when blocks suffice). The section's forms are live by default
+since 2026-11-23 (f_lane 0.20, f_pedestrian 0.15, f_none 0.08), switched by Missions, so every section deck's life
+follows them; with the forms off (explicit zero mix) nothing changes. Stand-alone life / traffic goldens were re-captured (test_life_section). test_life skips the walk-signal check
+for junction -1 crossings; test_life_traffic's fleet scenarios run on seed 1 with `road_variety 0` (they look for long
+straight laps), its calm checks with the forms on.

@@ -33,6 +33,26 @@ const CHASSIS := {
 		],
 		"default_loadout": {"side_l": "laser", "side_r": "autocannon", "shoulder_l": "rockets", "shoulder_r": "", "back": "mortar"},
 	},
+	## Squat heavy biped (docs/design/chassis-rules.md). Art built (BulwarkMeshes), gameplay not yet: not in CHASSIS_ORDER,
+	## so the hangar does not offer it. A hardpoint may list several `mounts` (hardpoint_mounts): its side guns take every
+	## side and shoulder weapon; `mount` stays the hardware kind (the side mount). `yaw_in_max` (deg): the most a weapon on
+	## the hardpoint may turn inward, toward the hull (it only bites on the swivel's 120 deg arc, whose boom hits the barrel
+	## past 45 deg; test_hardpoint_contact_bulwark). Not read by WeaponMount yet (phase 2: clamp the aim with it).
+	"bulwark": {
+		"name": "Bulwark",
+		"blurb": "Squat heavy biped. Sumo legs, barrel hull, two heavy side guns, two back mounts.",
+		"base_weight": 55.0,
+		"max_weight": 40.0,
+		"heat_cap": 130.0,
+		"cooling": 12.0,
+		"hardpoints": [
+			{"id": "side_l", "label": "Left side gun", "mount": "side", "mounts": ["side", "shoulder"], "yaw_in_max": 40.0},
+			{"id": "side_r", "label": "Right side gun", "mount": "side", "mounts": ["side", "shoulder"], "yaw_in_max": 40.0},
+			{"id": "back_l", "label": "Left back", "mount": "back"},
+			{"id": "back_r", "label": "Right back", "mount": "back"},
+		],
+		"default_loadout": {"side_l": "autocannon", "side_r": "rockets", "back_l": "mortar", "back_r": "radiator"},
+	},
 }
 const CHASSIS_ORDER := ["strider"]
 
@@ -175,6 +195,31 @@ static func equipment_for(mount: String) -> Array[String]:
 	return out
 
 
+## The mount kinds a hardpoint accepts: its `mounts` list when it has one, else its single `mount`.
+static func hardpoint_mounts(hp: Dictionary) -> Array:
+	return hp.get("mounts", [hp["mount"]])
+
+
+## True when weapon / equipment `w` fits hardpoint `hp` (one of its mount kinds is in the item's `mounts`).
+static func fits(hp: Dictionary, w: String) -> bool:
+	if not WEAPONS.has(w):
+		return false
+	for m: Variant in hardpoint_mounts(hp):
+		if m in (WEAPONS[w]["mounts"] as Array):
+			return true
+	return false
+
+
+## Everything a hardpoint takes, in display order: the weapons, then the equipment (weapons_for + equipment_for over its
+## mount kinds, without repeats).
+static func items_for(hp: Dictionary) -> Array[String]:
+	var out: Array[String] = []
+	for id: String in WEAPON_ORDER + EQUIPMENT_ORDER:
+		if fits(hp, id):
+			out.append(id)
+	return out
+
+
 ## A loadout made valid for a chassis: every hardpoint present, unknown or misfit weapons emptied. An empty saved
 ## loadout gets the chassis default.
 static func sanitize_loadout(chassis_id: String, loadout: Dictionary) -> Dictionary:
@@ -183,7 +228,7 @@ static func sanitize_loadout(chassis_id: String, loadout: Dictionary) -> Diction
 	var out := {}
 	for hp: Dictionary in c["hardpoints"]:
 		var w := str(src.get(hp["id"], ""))
-		var ok := w != "" and WEAPONS.has(w) and str(hp["mount"]) in (WEAPONS[w]["mounts"] as Array)
+		var ok := w != "" and fits(hp, w)
 		if ok and int(WEAPONS[w].get("max_per_mech", 0)) > 0:   # e.g. one railgun per mech: later hardpoints are emptied
 			ok = out.values().count(w) < int(WEAPONS[w]["max_per_mech"])
 		out[hp["id"]] = w if ok else ""

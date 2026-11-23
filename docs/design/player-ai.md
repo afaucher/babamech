@@ -422,6 +422,12 @@ the hold; then the next deck (after `ADVANCE_WAIT` 1.5 s, so a bonus chained to 
 | military output | not yet | |
 | evac (order the truck, escort it) | not yet | |
 
+**Road forms** (2026-11-23, docs/design/city-variety.md "Graphs"). `BotRoutePlanner` walks every road line of a deck
+(streets, lanes, pedestrian streets: CityPlan.walk_graph()'s edges, not road_graph()'s vehicle edges) and leaves out
+the superblock ("none") segments whose court `CityPlan.court_open()` reports blocked (`closed`). Alleys are not used
+(7.5 m, tight for a mech; the physics-grid last stretch can still go through one). PlayerBot's own `BotNavigator` reads
+`walk_graph()` too.
+
 **Reaching a zone.** The street graph (`BotRoutePlanner`) knows roads and blocks, not what stands inside a block
 (downtown towers and podiums, a mast). Within `LOCAL_R` (60 m) of a zone the last stretch is planned on a physics grid
 instead (`_plan_local`, once per goal): 3 m points around the zone's centre that have street-level floor and headroom
@@ -430,6 +436,24 @@ middle and 2.4 m to each side (a mech's width: a doorway slit is not a way). Bre
 within 0.45 r of the centre nearest the goal's point; that point becomes the **stand point** (the hold centre). None
 found: the street route as before. Found 2026-11-23 on seed 6 deck 1: the flag snapped to the south side of a downtown
 podium; the straight walk from the north ran into the podium wall through a slit only a ray fits through.
+
+**Staying alive in a zone.** Holding a flag / hold (and a sweep's wait), the bot is "pressed" when its weakest core part
+is under 45 % or dropped 15 % in 3 s (defending: only under 30 %, the relay needs it out front). Pressed, it walks to a
+cover point inside the zone (within 0.85 r of the centre, street-level, 3 m of room all round, reachable straight) that
+hides it from the most of the 4 nearest enemies of the deck, keeps PlayerBot's facing (it still shoots what it sees) and
+stays there while pressed; the zone keeps counting. Under 60 % it launches a repair drone if the loadout has active
+equipment (`WeaponRack.activate`). HP doesn't regenerate, so cover is about taking less fire until the timer ends.
+A/B over six whole missions (seeds 1, 2, 3, 6, 7, 8, 2026-11-23): deaths 1 -> 0; times moved with the paths taken.
+`MissionBot.survival` / `hole_guard` turn the two off (A/B).
+
+**Holes.** Every frame, whoever chose the legs (this layer, PlayerBot engaging / dodging / taking cover, PlayerBot alone
+while idle), `_guard_holes` removes the part of the move toward a floor cut of the deck the mech is on (shafts, ramp
+holes), and drops thrust from a hop whose next second of flight ends over one, unless the current leg is a ramp, a drop
+or a glide. (The fall seen at deck 0's arrival came from PlayerBot's legs while the bot was idle between decks.)
+
+**Roofs it can't climb.** A perch climb (to see an enemy on a roof) that doesn't rise 1 m, get 2 m nearer or move 2 m
+for 8 s is given up, and that roof isn't tried again for 45 s (a later try sometimes makes it); meanwhile the bot
+patrols round the target for other angles (seed 9 deck 1: a sniper turret on a 20 m roof, 85 s of pushing before).
 
 ### 9.4 Co-op split
 Every machine sorts the standing crew (`crew_facts`, not downed) by peer id. Alone: `solo`. Otherwise the first is the
@@ -445,6 +469,8 @@ list (the same replicated state). Sweeps: everyone sweeps.
   test_bot_obj_flag` (`tests/bot_obj_case.gd` is the shared body: seed, objective to finish or the win, game-time limit,
   `expect` types; 2x sim speed like the nav tests, `BOT_SPEED=1` for full fidelity).
 - Crew: `tests/test_net_bot_objectives.gd` (2 processes over ENet, real time).
+- Tests never read the player's real settings: `Boot._run_test` points `GameSettings.path` at a fresh
+  `user://test_settings/<test>[_<link>_<role><index>].cfg`, so the mech flies the chassis' default loadout (no repair drone).
 - No cheats in these tests: no `--dev-bot-travel`, no `--dev-fast-clear`, no teleport, full enemies.
 - Seeds are pinned (natural plans, checksums unchanged) and each test asserts its plan's types first, so a plan change
   fails loudly instead of testing something else. To re-pick: `MissionPlan.find_seed(type)`, or force a type with
@@ -460,10 +486,10 @@ sets it in game seconds (limit + 120).
 | Test | Seed (primaries) | Plays until | Measured (3 runs, game s) | Limit |
 |---|---|---|---|---|
 | `test_bot_obj_flag` | 6 (flag / flag / flag) | d0_p (flag) done | 38.6 / 38.6 / 38.6 (~5 s wall); after downtown + stand points 38.6 x3 | 70 s |
-| `test_bot_obj_defend` | 7 (flag / defend / defend) | d1_p (defend, 2 waves) done: flag, shaft drop, defend | 205.3 / 149.8 / 149.8 (~20-26 s wall); after downtown + stand points 173.8 x3, relay kept 97 % | 360 s |
-| `test_bot_obj_sweep` | 4 (sweep / flag / flag) | d0_p (sweep, with its waves) done | 117.0 / 117.0 / 117.0 (~17 s wall); after downtown + stand points 111.7 x3 | 210 s |
-| `test_bot_obj_hold` | 6 | **won**: three flags, a shaft, a ramp, the 60 s hold | 247.7 / 321.0 / 321.0 (~32-43 s wall; 321: downed in the hold, respawn on deck 0, walk back); after downtown + stand points 249.0 x3 | 560 s |
-| `test_net_bot_objectives` | 6, 2 peers, real time | **won** on the host, client agrees | 247.5 s wall (two runs passed) | 420 s (`NET_TIMEOUT` 500) |
+| `test_bot_obj_defend` | 7 (flag / defend / defend) | d1_p (defend, 2 waves) done: flag, shaft drop, defend | 205.3 / 149.8 / 149.8 (~20-26 s wall); after downtown + stand points 173.8 x3, relay kept 97 %; after hole guard + survival 163.4 x3; default loadout 147.1 / 153.5 | 360 s |
+| `test_bot_obj_sweep` | 4 (sweep / flag / flag) | d0_p (sweep, with its waves) done | 117.0 / 117.0 / 117.0 (~17 s wall); after downtown + stand points 111.7 x3; after hole guard + survival 153.8 x3; default loadout 115.7 / 122.3 | 270 s |
+| `test_bot_obj_hold` | 6 | **won**: three flags, a shaft, a ramp, the 60 s hold | 247.7 / 321.0 / 321.0 (~32-43 s wall; 321: downed in the hold, respawn on deck 0, walk back); after downtown + stand points 249.0 x3; after hole guard + survival 260.7 x3, 0 deaths; default loadout (settings isolated) 328.7 / 319.4, 1 death | 560 s |
+| `test_net_bot_objectives` | 6, 2 peers, real time | **won** on the host, client agrees | 247.5 s wall (two runs passed); later 271.4, then 318.1 s | 540 s (`NET_TIMEOUT` 620) |
 
 The non-objective sweep missions keep their own tests (`test_net_bot_mission`, `test_bot_nav_*`; those use DEV fast clear).
 `test_mission_phase1` (teleport + lethal hits) stays the fast frame check of the rules and waves.

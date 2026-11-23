@@ -2,12 +2,18 @@ extends TestCase
 ## Wave pursuit & abandoned-defend regression test (docs/design/mission-objectives.md §5, §9):
 ##   1. Real-stack Seed 1 waves (lift, shaft, gate sources at ~85-200 m): every combat wave unit must persistently
 ##      pursue its target from spawn to contact (closing from ~150 m to within 80 m in <= 35 s, never drifting away or
-##      reverting to patrol/cover-idle).
-##   2. Abandoned Defend (Seed 7 deck 2): when the crew leaves the defend deck while the relay is live, defend-wave
+##      reverting to patrol/cover-idle), then stay engaged (within its weapon's range, still targeting the mech).
+##   2. Cross-deck (Seed 1): wave units on a deck with no crew never sleep; they walk the ramps to the crew's deck
+##      (down and up) and close on the mech there.
+##   3. Abandoned Defend (Seed 7 deck 2): when the crew leaves the defend deck while the relay is live, defend-wave
 ##      units stay awake, pursue the relay, and damage it (while deck garrisons stay asleep / never touch the relay).
 
 const DT := 1.0 / 60.0
 const CLOSE_DIST := 80.0
+const ENGAGE_HOLD := 10.0   ## s every unit that made contact is watched after the 35 s closing window
+## s cap to reach the crew's deck and close within CLOSE_DIST, from a source ~300 m away by road plus a ramp (seed 1 on
+## 2026-11-23: down arrives ~42 s / closes ~66 s, up ~37 s / ~49 s; strider flank pace, so about 2x headroom).
+const XDECK_TIME := 120.0
 
 
 func _init() -> void:
@@ -16,6 +22,8 @@ func _init() -> void:
 
 func setup() -> void:
 	await _probe_seed1_wave_closing()
+	await _probe_seed1_cross_deck()
+	await _probe_seed1_ramp_turnaround()
 	await _probe_seed7_abandoned_defend()
 	finish()
 
@@ -37,6 +45,7 @@ func _probe_seed1_wave_closing() -> void:
 	var mplan: MissionPlan = td.mission.plan
 	var sq: EnemySquad = td.combat.squad
 	var w: CombatWorld = td.combat.world
+	var pt: PlayerTarget = td.combat.player_target
 
 	for k in [0, 1, 2]:
 		var pool: Dictionary = mplan.pool(k)
@@ -90,26 +99,43 @@ func _probe_seed1_wave_closing() -> void:
 			var start_d := {}
 			var min_d := {}
 			var close_t := {}
+			var contact_t := {}   # first time within the unit's engage range of the mech (-1: never)
+			var max_after := {}   # farthest from the mech after that contact
 			for u in units:
 				var d0 := u.global_position.distance_to(m_pos)
 				start_d[u.target_id] = d0
 				min_d[u.target_id] = d0
 				close_t[u.target_id] = 0.0 if d0 <= CLOSE_DIST else -1.0
+				contact_t[u.target_id] = -1.0
+				max_after[u.target_id] = 0.0
 				var a0 := td.stack.to_deck_arc(u.global_position)
 				print("[wave] d%d %s (%s) src=%s(%s) start=%.1fm arc=(%.1f,%.1f) -> mech=(%.1f,%.1f)" % [
 					k, u.target_id, u.enemy_type, str(sdef["id"]), str(sdef["kind"]),
 					d0, float(a0["x"]), float(a0["s"]), best_node.x, best_node.y])
-			# Step 35 s (2100 frames) and track closing time to <= 80 m.
-			for f in 2100:
+			# Step 35 s (2100 frames) and track closing time to <= 80 m, then ENGAGE_HOLD s more so every unit that made
+			# contact is watched for at least that long after it. The mech is the fixture, not the subject: it is kept
+			# standing (repair_all every frame). Units used to kill it at ~27 s, it respawned at the deck's entry ~330 m
+			# away and they (rightly) went after it there: the "drift" this probe once showed.
+			for f in 2100 + int(ENGAGE_HOLD / DT):
+				if pt != null:
+					pt.repair_all()
 				w.advance(DT)
+				var t := float(f + 1) * DT
 				for u in units:
 					if not is_instance_valid(u) or u.destroyed():
 						continue
 					var d := u.global_position.distance_to(m_pos)
-					if d < float(min_d[u.target_id]):
-						min_d[u.target_id] = d
-					if float(close_t[u.target_id]) < 0.0 and d <= CLOSE_DIST:
-						close_t[u.target_id] = float(f + 1) * DT
+					if f < 2100:
+						if d < float(min_d[u.target_id]):
+							min_d[u.target_id] = d
+						if float(close_t[u.target_id]) < 0.0 and d <= CLOSE_DIST:
+							close_t[u.target_id] = t
+					if float(contact_t[u.target_id]) < 0.0:
+						if d <= EnemyCatalog.engage_range(u.enemy_type):
+							contact_t[u.target_id] = t
+					elif d > float(max_after[u.target_id]):
+						max_after[u.target_id] = d
+			var t_end := float(2100 + int(ENGAGE_HOLD / DT)) * DT
 			for u in units:
 				if not is_instance_valid(u):
 					continue
@@ -119,9 +145,10 @@ func _probe_seed1_wave_closing() -> void:
 				var md := float(min_d[u.target_id])
 				var ct := float(close_t[u.target_id])
 				var wp0 := str(u._path_points[0]) if not u._path_points.is_empty() else "none"
-				print("[wave]   END d%d %s (%s): state=%s los=%s hunt=%s start=%.1fm min=%.1fm end=%.1fm close_t=%.1fs arc=(%.1f,%.1f) path=%d wp0=%s" % [
-					k, u.target_id, u.enemy_type, u.ai_state, str(u._has_los), str(u._hunting),
-					d0, md, d_end, ct, float(ac["x"]), float(ac["s"]), u._path_points.size(), wp0])
+				print("[wave]   END d%d %s (%s): state=%s los=%s hunt=%s tgt=%s start=%.1fm min=%.1fm end=%.1fm close_t=%.1fs contact_t=%.1fs max_after=%.1fm arc=(%.1f,%.1f) path=%d wp0=%s" % [
+					k, u.target_id, u.enemy_type, u.ai_state, str(u._has_los), str(u._hunting), u._target_id,
+					d0, md, d_end, ct, float(contact_t[u.target_id]), float(max_after[u.target_id]),
+					float(ac["x"]), float(ac["s"]), u._path_points.size(), wp0])
 				# Budget: <= 30 s at 150 m (scales slightly if source was > 155 m away).
 				var max_t := maxf(30.0, (d0 - CLOSE_DIST) / 4.5 + 14.0)
 				# Every source kind asserts, ramps included: a unit snapped beside a ramp mouth (seed 1 d0_ramp_0, unit _02 at
@@ -131,10 +158,259 @@ func _probe_seed1_wave_closing() -> void:
 					u.target_id, u.enemy_type, str(sdef["kind"]), d0, md, d_end])
 				if md <= CLOSE_DIST:
 					check(ct <= max_t, "wave unit %s closed in %.1f s (<= %.1f s from %.1f m)" % [u.target_id, ct, max_t, d0])
+				# Stays engaged after contact: once within its engage range (EnemyCatalog.engage_range), an armed unit never
+				# gets farther from the mech than its primary weapon's range for the rest of the run (>= ENGAGE_HOLD s), and
+				# still holds the mech as its target at the end. Unarmed spotters (the drone) have no range to keep.
+				var wpn := str(EnemyCatalog.unit(u.enemy_type).get("primary_weapon", ""))
+				if wpn == "" or u.destroyed():
+					continue
+				var w_range := float(EnemyCatalog.weapon(wpn).get("range", 0.0))
+				var cnt := float(contact_t[u.target_id])
+				check(cnt >= 0.0, "wave unit %s (%s) made contact (within its %.0f m engage range; min=%.1f)" % [
+					u.target_id, u.enemy_type, EnemyCatalog.engage_range(u.enemy_type), md])
+				if cnt >= 0.0:
+					check(t_end - cnt >= ENGAGE_HOLD - 0.01, "wave unit %s watched %.1f s after contact" % [u.target_id, t_end - cnt])
+					check(float(max_after[u.target_id]) <= w_range, "wave unit %s (%s) stayed engaged after contact at %.1f s: max %.1f m (<= %s range %.0f m), end %.1f m" % [
+						u.target_id, u.enemy_type, cnt, float(max_after[u.target_id]), wpn, w_range, d_end])
+					check(pt != null and u._target_id == pt.target_id and u.is_alerted(), "wave unit %s still targets the mech at the end (state=%s target=%s)" % [
+						u.target_id, u.ai_state, u._target_id])
 			for u in units:
 				if is_instance_valid(u) and not u.destroyed():
 					u.apply_damage(1.0e7, u.core_component(), "test")
 
+	td.queue_free()
+	await frames(3)
+
+
+## Wave units released on a deck with no crew: they used to be re-homed / left there asleep for good (EnemyBase._is_awake
+## only kept defend waves awake). Now every wave unit stays awake and walks the section's ramps toward the crew's deck
+## (EnemySquad._step_wave_transit). Down: crew on deck 1, a deck-0 wave. Up: crew on deck 0, a deck-1 wave.
+func _probe_seed1_cross_deck() -> void:
+	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td.city_mode = TestDrive.MODE_STACK
+	td.seed_value = 1
+	td.objectives = true
+	add_child(td)
+	await frames(6)
+	td.drive_override = true
+	td.mech.set_physics_process(false)
+	td.rig.set_physics_process(false)
+	td.combat.set_physics_process(false)
+	if td.mission != null:
+		td.mission.set_physics_process(false)
+	var mplan: MissionPlan = td.mission.plan
+	var sq: EnemySquad = td.combat.squad
+	var w: CombatWorld = td.combat.world
+	var pt: PlayerTarget = td.combat.player_target
+	for e in sq.enemies.duplicate():
+		if is_instance_valid(e) and not e.destroyed():
+			e.apply_damage(1.0e7, e.core_component(), "test")   # isolate the wave from every deck's garrison
+	for pair: Array in [[0, 1], [1, 0]]:
+		var wave_deck := int(pair[0])
+		var crew_deck := int(pair[1])
+		var waves: Array = mplan.pool(wave_deck).get("waves", [])
+		var src := {}
+		for s: Dictionary in mplan.deck_sources(wave_deck):
+			if str(s["kind"]) in ["gate", "lift"]:
+				src = s.duplicate(true)
+				break
+		check(not waves.is_empty() and not src.is_empty(), "deck %d has a wave and a gate/lift source" % wave_deck)
+		if waves.is_empty() or src.is_empty():
+			continue
+		src["point"] = td.stack.mission.source_point(str(src["id"])) if td.stack.mission != null else {}
+		# The crew mech on a road crossing of crew_deck near the middle of the map.
+		var rnodes: Array = td.stack.decks[crew_deck].plan.road_graph()["nodes"]
+		var node: Vector2 = rnodes[0]
+		for rn: Vector2 in rnodes:
+			if rn.length() < node.length():
+				node = rn
+		var m_pos := td.stack.from_deck_arc(crew_deck, node.x, node.y, 0.5)
+		td.mech.global_position = m_pos
+		td.mech.velocity = Vector3.ZERO
+		pt.global_position = m_pos
+		pt.repair_all()
+		await frames(2)
+		var wid := "xdeck_%d_to_%d" % [wave_deck, crew_deck]
+		var wv: Dictionary = waves[0].duplicate(true)
+		wv["id"] = wid
+		var order := {"wave": wid, "deck": wave_deck, "source": str(src["id"]), "open_at": w.now, "max_units": 4}
+		# Open the wave door as MissionFlow._open does (MissionFlow is paused here) and keep its clock running below.
+		var mw: MissionWorld = td.stack.mission
+		if mw != null:
+			mw.open_source(str(src["id"]), mw.now, 1.0e6)
+		EnemySpawner.spawn_wave(order, wv, src, {"stack": td.stack, "world": w, "squad": sq, "seed": 11, "crew": 1,
+			"pool": mplan.pool(wave_deck), "skip_meshes": true})
+		var units: Array[EnemyBase] = []
+		for e in sq.enemies:
+			# Ground walkers only: drones fly their own way (they stay awake, nothing walks them across decks).
+			if is_instance_valid(e) and e.wave == wid and not e.destroyed() and e.is_mobile() \
+					and not (e is EnemyDrone or e is EnemyGunship or e is EnemyDropDrone):
+				units.append(e)
+		check(not units.is_empty(), "%s spawned ground units" % wid)
+		var arrive_t := {}
+		var close_t := {}
+		var min_d := {}
+		for u in units:
+			arrive_t[u.target_id] = -1.0
+			close_t[u.target_id] = -1.0
+			min_d[u.target_id] = u.global_position.distance_to(m_pos)
+			print("[xdeck] %s %s (%s) start deck %d %.1f m from the mech" % [wid, u.target_id, u.enemy_type, u.spawn_deck,
+				float(min_d[u.target_id])])
+		for f in int(XDECK_TIME / DT):
+			pt.repair_all()
+			if mw != null:
+				mw.advance_to(mw.now + DT)
+			w.advance(DT)
+			var t := float(f + 1) * DT
+			var all_close := true
+			for u in units:
+				if not is_instance_valid(u) or u.destroyed():
+					continue
+				var d := u.global_position.distance_to(m_pos)
+				min_d[u.target_id] = minf(float(min_d[u.target_id]), d)
+				if float(arrive_t[u.target_id]) < 0.0 and u.spawn_deck == crew_deck:
+					arrive_t[u.target_id] = t
+				if float(close_t[u.target_id]) < 0.0 and u.spawn_deck == crew_deck and d <= CLOSE_DIST:
+					close_t[u.target_id] = t
+				if float(close_t[u.target_id]) < 0.0:
+					all_close = false
+			if all_close:
+				break
+		for u in units:
+			if not is_instance_valid(u) or u.destroyed():
+				continue
+			var a := td.stack.to_deck_arc(u.global_position)
+			print("[xdeck]   END %s %s (%s): deck=%d state=%s transit=%d arrive_t=%.1fs close_t=%.1fs min=%.1fm arc=(%.1f,%.1f)" % [
+				wid, u.target_id, u.enemy_type, u.spawn_deck, u.ai_state, u._transit_deck, float(arrive_t[u.target_id]),
+				float(close_t[u.target_id]), float(min_d[u.target_id]), float(a["x"]), float(a["s"])])
+			check(float(arrive_t[u.target_id]) >= 0.0, "%s unit %s (%s) walked from deck %d to the crew's deck %d" % [
+				wid, u.target_id, u.enemy_type, wave_deck, crew_deck])
+			check(float(close_t[u.target_id]) >= 0.0, "%s unit %s (%s) closed within %.0f m of the mech on deck %d (min %.1f m)" % [
+				wid, u.target_id, u.enemy_type, CLOSE_DIST, crew_deck, float(min_d[u.target_id])])
+		for e in sq.enemies:
+			if is_instance_valid(e) and e.wave == wid and not e.destroyed():
+				e.apply_damage(1.0e7, e.core_component(), "test")
+	td.queue_free()
+	await frames(3)
+
+
+## 4. Ramp turnaround (seed 1): a wave unit walking a ramp toward the crew's deck turns round when the crew comes back to
+## the deck it is leaving (the bot respawned on deck 0 and returned to deck 1 while the last two deck-1 units walked the
+## ~290 m ramp up to deck 0 and back, ~70 s of the sweep). After the crew returns it gets no farther from the ramp's
+## entry than one transit refresh of walking, and is back on the crew's deck and within CLOSE_DIST in time.
+func _probe_seed1_ramp_turnaround() -> void:
+	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td.city_mode = TestDrive.MODE_STACK
+	td.seed_value = 1
+	td.objectives = true
+	add_child(td)
+	await frames(6)
+	td.drive_override = true
+	td.mech.set_physics_process(false)
+	td.rig.set_physics_process(false)
+	td.combat.set_physics_process(false)
+	if td.mission != null:
+		td.mission.set_physics_process(false)
+	var mplan: MissionPlan = td.mission.plan
+	var sq: EnemySquad = td.combat.squad
+	var w: CombatWorld = td.combat.world
+	var pt: PlayerTarget = td.combat.player_target
+	var mw: MissionWorld = td.stack.mission
+	for e in sq.enemies.duplicate():
+		if is_instance_valid(e) and not e.destroyed():
+			e.apply_damage(1.0e7, e.core_component(), "test")
+	var wave_deck := 0
+	var away_deck := 1
+	var waves: Array = mplan.pool(wave_deck).get("waves", [])
+	var src := {}
+	for s: Dictionary in mplan.deck_sources(wave_deck):
+		if str(s["kind"]) in ["gate", "lift"]:
+			src = s.duplicate(true)
+			break
+	if not check(not waves.is_empty() and not src.is_empty(), "turnaround: deck 0 has a wave and a gate/lift source"):
+		td.queue_free()
+		await frames(3)
+		return
+	src["point"] = mw.source_point(str(src["id"])) if mw != null else {}
+	var place := func(k: int) -> Vector3:
+		var rnodes: Array = td.stack.decks[k].plan.road_graph()["nodes"]
+		var node: Vector2 = rnodes[0]
+		for rn: Vector2 in rnodes:
+			if rn.length() < node.length():
+				node = rn
+		var p := td.stack.from_deck_arc(k, node.x, node.y, 0.5)
+		td.mech.global_position = p
+		td.mech.velocity = Vector3.ZERO
+		pt.global_position = p
+		pt.repair_all()
+		return p
+	var m_pos: Vector3 = place.call(away_deck)
+	await frames(2)
+	var wid := "turn_0"
+	var wv: Dictionary = waves[0].duplicate(true)
+	wv["id"] = wid
+	if mw != null:
+		mw.open_source(str(src["id"]), mw.now, 1.0e6)
+	EnemySpawner.spawn_wave({"wave": wid, "deck": wave_deck, "source": str(src["id"]), "open_at": w.now, "max_units": 4},
+		wv, src, {"stack": td.stack, "world": w, "squad": sq, "seed": 11, "crew": 1, "pool": mplan.pool(wave_deck),
+		"skip_meshes": true})
+	var units: Array[EnemyBase] = []
+	for e in sq.enemies:
+		if is_instance_valid(e) and e.wave == wid and not e.destroyed() and e.is_mobile() \
+				and not (e is EnemyDrone or e is EnemyGunship or e is EnemyDropDrone):
+			units.append(e)
+	check(not units.is_empty(), "turnaround: the wave spawned ground units")
+	# Walk until the first unit is well onto the ramp (15 s on it), then bring the crew back to deck 0.
+	var walker: EnemyBase = null
+	var on_ramp_t := 0.0
+	for f in int(XDECK_TIME / DT):
+		pt.repair_all()
+		if mw != null:
+			mw.advance_to(mw.now + DT)
+		w.advance(DT)
+		for u in units:
+			if walker == null and is_instance_valid(u) and not u.destroyed() and u.is_on_transit_ramp():
+				walker = u
+		if walker != null:
+			on_ramp_t += DT
+			if on_ramp_t >= 15.0:
+				break
+	if not check(walker != null and walker.is_on_transit_ramp(), "turnaround: a unit is walking the ramp toward deck 1"):
+		td.queue_free()
+		await frames(3)
+		return
+	var entry: Vector3 = walker._transit_entry
+	m_pos = place.call(wave_deck)
+	var d0 := walker.global_position.distance_to(entry)
+	var d_max := d0
+	var back_t := -1.0
+	var close_t := -1.0
+	var limit := 15.0 + 40.0   # its 15 s back down the ramp + reaching the mech, at flank pace with headroom
+	for f in int(limit / DT):
+		pt.repair_all()
+		if mw != null:
+			mw.advance_to(mw.now + DT)
+		w.advance(DT)
+		if not is_instance_valid(walker) or walker.destroyed():
+			break
+		if back_t < 0.0:   # until it is off the ramp (then it walks on toward the mech, away from the entry)
+			d_max = maxf(d_max, walker.global_position.distance_to(entry))
+		var t := float(f + 1) * DT
+		if back_t < 0.0 and walker.spawn_deck == wave_deck and not walker.is_on_transit_ramp():
+			back_t = t
+		if close_t < 0.0 and walker.spawn_deck == wave_deck and walker.global_position.distance_to(m_pos) <= CLOSE_DIST:
+			close_t = t
+			break
+	print("[turn] %s (%s): from entry %.1f m at the crew's return, max %.1f m, off the ramp at %.1f s, close at %.1f s" % [
+		walker.target_id, walker.enemy_type, d0, d_max, back_t, close_t])
+	var spd := float(EnemyCatalog.unit(walker.enemy_type).get("flank_speed", 14.0))
+	check(d_max <= d0 + spd * 1.5, "turnaround: %s turned round on the ramp (%.1f m from its entry when the crew returned, max %.1f m)" % [
+		walker.target_id, d0, d_max])
+	check(close_t >= 0.0, "turnaround: %s came back down and closed within %.0f m of the mech on deck 0 in %.0f s" % [
+		walker.target_id, CLOSE_DIST, limit])
+	for e in sq.enemies:
+		if is_instance_valid(e) and e.wave == wid and not e.destroyed():
+			e.apply_damage(1.0e7, e.core_component(), "test")
 	td.queue_free()
 	await frames(3)
 

@@ -51,11 +51,11 @@ func setup() -> void:
 
 # --- Forced primary type (for the bot), primary_types(), find_seed() --------------------------------------------
 
-## Pinned checksums (re-recorded after round 2: wave counts 2 + 1 per two decks, cap 4; a sweep deck's free wave first): "" must leave every
-## plan identical to no option.
-const BEFORE := {"3:1": "34ef80ad6e3c9541", "3:2": "9ceb430263ec6f5b", "3:7": "b3a58d00071c9bd9",
-	"3:15": "763885e434962627", "3:30": "87545d017aba844c", "5:1": "9ef058d214e5d7f6", "5:4": "f192c7d994ebdb35",
-	"5:22": "270e4da28e2140b6"}
+## Pinned checksums (re-recorded after round 2: wave counts 2 + 1 per two decks, cap 4; a sweep deck's free wave first;
+## re-recorded 2026-11-23 when the section's road forms went live): "" must leave every plan identical to no option.
+const BEFORE := {"3:1": "9fd1d1211ed87916", "3:2": "66fe704827fcc8d6", "3:7": "e4118ba1010984a4",
+	"3:15": "23a0aa892e3ad6c9", "3:30": "e3985a73c00de43c", "5:1": "676383d1ed4b412b", "5:4": "b5870be92428d5c2",
+	"5:22": "20424ab95bd86de7"}
 
 
 ## Round 2: pools of waves_per_deck (2) + 1 per two decks of depth, at most 4; a defend has 2 waves on a pool of fewer

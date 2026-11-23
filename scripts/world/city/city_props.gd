@@ -121,8 +121,9 @@ static func layout(p: CityPlan) -> Array:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = p.cosmetic_seed() + 1
 	var out: Array = []
-	for b: Dictionary in p.blocks:
-		_block_items(out, b["rect"], rng)
+	for bi in p.blocks.size():
+		var sf: Array = [] if p.forms.is_empty() else [p.block_side_form(bi, 0), p.block_side_form(bi, 1), p.block_side_form(bi, 2), p.block_side_form(bi, 3)]
+		_block_items(out, p.blocks[bi]["rect"], rng, sf)
 	var av := p.avenue_x()
 	for road: Dictionary in p.roads_x:
 		if road["kind"] != "avenue" and road["kind"] != "spine":
@@ -138,6 +139,15 @@ static func layout(p: CityPlan) -> Array:
 	for l: Dictionary in p.lots:
 		if l["kind"] == "open":
 			_lot_items(out, l, rng)
+	# City variety (docs/design/city-variety.md): bins in the service alleys, then the road forms' street furniture.
+	# After everything else, so a plan without them lays out exactly as before.
+	for a: Dictionary in p.alleys:
+		_alley_items(out, a, rng)
+	var keys := p.forms.keys()
+	keys.sort()
+	for k: int in keys:
+		var axis := "x" if k >= 65536 else "s"
+		_form_items(out, str(p.forms[k]), p.seg_inner(axis, (k % 65536) / 256, k % 256), axis == "s", rng)
 	var kept: Array = []
 	for it: Dictionary in out:
 		if p.clear_at(Vector2(it["x"], it["s"])):
@@ -241,9 +251,13 @@ static func _edge_point(r: Rect2, side: int, t: float, d: float) -> Vector2:
 	return Vector2(r.position.x + t, r.position.y + d)
 
 
-static func _block_items(out: Array, r: Rect2, rng: RandomNumberGenerator) -> void:
+## `forms`: the form of the road beside each side ([] = all streets, CityPlan.block_side_form). The generator is drawn the
+## same whatever the forms, so one edge's form never moves another edge's props. Beside a lane: no street trees or
+## benches (its buildings carry wall lamps and hanging signs); beside a pedestrian street or a court: no signal pole.
+static func _block_items(out: Array, r: Rect2, rng: RandomNumberGenerator, forms: Array = []) -> void:
 	var h := CityPlan.CURB_H
 	for side in 4:
+		var form: String = forms[side] if side < forms.size() else "street"
 		var length := r.size.y if side < 2 else r.size.x
 		var a := 8.5
 		var n := maxi(int((length - a * 2.0) / 9.0), 0)
@@ -258,15 +272,75 @@ static func _block_items(out: Array, r: Rect2, rng: RandomNumberGenerator) -> vo
 					var q := _edge_point(r, side, t + 1.3, d)
 					_add(out, "bin", q.x, q.y, h, yaw)
 			else:
-				_tree(out, rng, pos.x, pos.y, h, 0.9, true)
-				if rng.randf() < 0.3:
+				if form == "lane":
+					rng.randf()
+					rng.randf_range(0.9, 1.1)
+					rng.randi_range(0, CityStreets.TREE_LEAVES.size() - 1)
+				else:
+					_tree(out, rng, pos.x, pos.y, h, 0.9, true)
+				if rng.randf() < 0.3 and form != "lane":
 					var q := _edge_point(r, side, t + 2.6, d + 0.1)
 					_add(out, "bench", q.x, q.y, h, yaw + PI)
 		# A signal pole by the crosswalk at the low end of each edge, a street sign just past the corner ramp.
-		var sp := _edge_point(r, side, 1.2, 0.8)
-		_add(out, "signal", sp.x, sp.y, h, yaw)
+		if form != "pedestrian" and form != "none":
+			var sp := _edge_point(r, side, 1.2, 0.8)
+			_add(out, "signal", sp.x, sp.y, h, yaw)
 		var sg := _edge_point(r, side, 5.6, 0.6)
 		_add(out, "sign", sg.x, sg.y, h, yaw)
+
+
+## The knockable furniture of a road form's segment (inner stretch r; `along_s`: its road runs along s): down the middle
+## of a pedestrian street trees, planters and pairs of benches in turn; in a superblock's court two trees and benches.
+static func _form_items(out: Array, form: String, r: Rect2, along_s: bool, rng: RandomNumberGenerator) -> void:
+	var a := 1 if along_s else 0          # the axis the segment runs along
+	var c := r.get_center()
+	var yaw_along := 0.0 if along_s else PI * 0.5
+	match form:
+		"pedestrian":
+			var length := r.size[a]
+			# Clear of the crossings at both ends (a walkway crossing runs 3 m in from each end, 3 m wide).
+			var n := maxi(int((length - 14.0) / 11.0), 1)
+			for i in n + 1:
+				var p := c
+				p[a] = r.position[a] + 7.0 + (length - 14.0) * float(i) / float(n)
+				match (i + rng.randi_range(0, 2)) % 3:
+					0: _tree(out, rng, p.x, p.y, 0.0, 1.0, false)
+					1: _add(out, "planter", p.x, p.y, 0.0, yaw_along)
+					_:
+						var q := p
+						q[1 - a] += 0.7
+						_add(out, "bench", q.x, q.y, 0.0, yaw_along + PI * 0.5)
+						q[1 - a] -= 1.4
+						_add(out, "bench", q.x, q.y, 0.0, yaw_along - PI * 0.5)
+		"none":
+			for k: float in [-0.25, 0.25]:
+				var p := c
+				p[a] += r.size[a] * k
+				_tree(out, rng, p.x, p.y, CityPlan.CURB_H, 1.1, false)
+				var q := p
+				q[1 - a] += 2.2
+				_add(out, "bench", q.x, q.y, CityPlan.CURB_H, yaw_along + PI * 0.5)
+
+
+## Bins along a service alley, close to its walls, alternating sides (props never block a mech).
+static func _alley_items(out: Array, a: Dictionary, rng: RandomNumberGenerator) -> void:
+	var r: Rect2 = a["rect"]
+	var along := int(a["axis"])
+	var length := r.size[along]
+	var t := 4.0 + rng.randf() * 4.0
+	var k := 0
+	while t < length - 3.0:
+		var pos := Vector2.ZERO
+		pos[along] = r.position[along] + t
+		pos[1 - along] = r.position[1 - along] + 0.9 if k % 2 == 0 else r.end[1 - along] - 0.9
+		var yaw := _yaw((2 if k % 2 == 0 else 3) if along == 0 else (0 if k % 2 == 0 else 1))
+		_add(out, "bin", pos.x, pos.y, CityPlan.CURB_H, yaw)
+		if rng.randf() < 0.5:
+			var q := pos
+			q[along] += 0.8
+			_add(out, "bin", q.x, q.y, CityPlan.CURB_H, yaw)
+		t += rng.randf_range(8.0, 13.0)
+		k += 1
 
 
 static func _lot_items(out: Array, l: Dictionary, rng: RandomNumberGenerator) -> void:

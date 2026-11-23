@@ -275,10 +275,20 @@ static func sum_of(sec: SectionPlan, plans: Array[CityPlan]) -> String:
 
 
 ## The deck whose floor is the nearest one below the point (by its distance from the shared axis).
+## The one frame query that also holds on a ROTATED stack (outside the FRAMES contract above, which deck_ring keeps):
+## AmbientLife hands pushers to a deck by it, and tests/test_life_section.gd checks life on an offset rotated stack.
+## Unrotated (the game): the same arithmetic as before, through ring(). (2026-11-23: on a rotated stack ring() ignored
+## the rotation, so a mech foot on deck 0 could be handed to deck 1 and kill nobody.)
 func deck_at(world_pos: Vector3) -> int:
 	if decks.is_empty():
 		return 0
-	var d := ring().dist_to_axis(world_pos)
+	var d: float
+	if is_inside_tree() and global_transform.basis != Basis.IDENTITY:
+		var last := decks.size() - 1
+		var local := global_transform.affine_inverse() * world_pos - section.deck_offset(last)
+		d = RingFrame.new(section.radius_of(last)).dist_to_axis(local)
+	else:
+		d = ring().dist_to_axis(world_pos)
 	for k in decks.size():
 		if d <= section.radius_of(k) + FOOT_SLACK:
 			return k

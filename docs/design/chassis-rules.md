@@ -127,8 +127,20 @@ and checked by tests, then compared with the concept by eye.
 1. **Biped** (Strider, Bulwark): `Gait` + `LegIK` + `MechRig` as built. Per chassis: segment lengths, bend sign,
    stance width, step length and rate, max step-up from the leg geometry (`rig.max_step()`), sag numbers.
 2. **Hover** (Wasp, new): no gait. Space / Ctrl climb and descend, full-speed strafe, a ceiling, body banks into
-   acceleration, fans tilt and spin up with thrust. On heat shutdown the fans stop and it falls (hard landing applies).
-   Landed pose: it rests on skids or the fan ducts, which therefore need a flat underside.
+   acceleration, fans tilt and spin up with thrust. **It has mini legs** (user, 2026-11-23: "mini legs so it can land in
+   overheat"): short landing legs folded under the hull in flight. On heat shutdown the fans wind down, the legs
+   unfold and it settles onto them (a fall from height is still a hard landing); it stands there, unable to move, until
+   it restarts and lifts off. The legs are joints like any other (section 3): a socket on a hull pad, a declared fold
+   range, clear of the chin gun, the stub guns and the fans both folded and down, and long enough that the chin gun
+   clears the ground when landed.
+   **Fans are damage components** (user, 2026-11-23: "min 3 required to fly"): each of the four fans has its own HP,
+   as legs do on the walkers. With one fan out it still flies, with reduced lift and speed and a visible list toward the
+   dead corner. With two out it cannot fly: it comes down onto the mini legs (a hard landing from height) and stays
+   there, still able to aim and fire, until a fan is repaired. A dead fan shows it: blades stopped, guard bent, smoke.
+   The fan's hit volume is its duct ring, so the four rings must be separate, targetable shapes.
+   **It needs its own AI** (user): the mission bot and route planner assume a walker on decks and ramps. A hover pilot
+   needs 3D routes (over obstacles, between decks through ceiling openings), altitude choice, landing before overheat,
+   and enemy AI needs to aim at and react to a flying target. Design that with the bot's owners before building.
 3. **The model exposes the same hooks whatever the system**: mount frames, muzzle points, the hatch, `twist_override`,
    the shutdown pose, a `lab_params` list. Weapons, HUD, pilot heads and puppets never ask which chassis they are on.
 
@@ -153,8 +165,11 @@ and checked by tests, then compared with the concept by eye.
   a split toe clamp in front and a heel spur behind.
 - Bulwark weapons: two shoulder-height side guns mounted like the Strider's, two back mounts (`pick_bulwark_concept.png`).
 - Wasp: four ducted fans, pod hull (`pick_wasp_four_fans_pod.png`).
+- Wasp mini legs: **two tiny mechanical chicken legs** (reverse knee, three toes and a spur, like the Strider's in
+  miniature), folded under the belly in flight (`pick_wasp_landed_chicken_legs.png`). Two legs under a wide hull: the
+  landed pose must balance (feet under the centre of mass, wide enough apart) and lift the chin gun clear of the ground,
+  so the real legs are longer and set wider than drawn. **Stand only** (user): no walking on them, so they need a
+  fold / unfold motion and a landing bounce, no gait.
 
 ## Open questions
-- Wasp: does it land (skids, a landed pose) or always hover? What happens at zero HP on a fan?
-- Does damage by component (legs today) map to fans on the Wasp?
 - `decisions.md` says one chassis for all four pilots: adding chassis is a decision for the user to record.

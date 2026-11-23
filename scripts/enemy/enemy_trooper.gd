@@ -418,6 +418,8 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 		_release_fire_token()
 		_align_to_ring()
 		return
+	if _transit_ramp and _step_transit(dt, space):
+		return   # walking a ramp to the crew's deck (EnemyBase._step_transit)
 
 	var target := _acquire_target(space)
 	if target == null:
@@ -434,7 +436,8 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 		else:
 			if ai_state in [STATE_ALERT, STATE_ENGAGE, STATE_FLANK, STATE_COOLDOWN]:
 				_emit_squad("alerted", {"id": target_id, "state": "lost", "pos": _world_pos()})
-			_step_patrol(dt, space)
+			if not _step_transit(dt, space):
+				_step_patrol(dt, space)
 		return
 
 	_target_id = target.target_id
