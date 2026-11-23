@@ -45,6 +45,11 @@ civic hall is the one building with columns; pillars are the only things touchin
 Open lots (density below 1): **garden** (raised lawn, trees), **plaza** (paving, planter, benches), **court** (parking
 court). One block per district is a **park** with crossing paths and a fountain; the civic hall faces it across the avenue.
 
+**Downtown zone** (`city-downtown.md`): on about two section decks in three, a seeded cluster of blocks next to the
+avenue whose lots carry ceiling-touching towers of one family (style `tower`: cream / sand frame, sky-blue glass, slab or
+point, the pillars' collar at the ceiling) on six bases (podium, stepped, plaza, corner cut, twin, arcade). Lab param
+`downtown`.
+
 ## Streets
 
 Grid in arc coordinates: a central **avenue** runs along the spin direction (it climbs the curve, the Cluckipede view),
@@ -66,6 +71,39 @@ The underside of the next deck: panels in three sand tones, girders along the ar
 long **light strip** per bay, service ducts, hatches, and openings where the deck above is cut. The strips are separate
 geometry with an emissive material that the light rig drives. Full design: `ceiling-and-pillars.md`.
 
+## Side walls: vertical farm
+
+**Decision (user, 2026-11-22):** the big window walls looking out at a backdrop of fake buildings never read as a real
+district, so a section's window walls become a **vertical farm**. Picked from the 3x3 grid `city-walls/grid_farm_walls.png`:
+number 4, "towers / warm white", `city-walls/farm_towers_white_s31.png`.
+
+**As built** (`CityStreets._farm_wall`, kind `"farm"` from `CityPlan.boundary()`): wherever the section plan gives a window
+wall with a backdrop (any side; the arc ends are windows more often), the wall is a solid farm floor to ceiling:
+- regular bays (8 m along the arc, 7 m across it) between pale concrete **buttress fins** (1.1 m, a dark kick plate at the foot and a dark service channel up the face) whose face leans
+  back from 0.6 m to 0.15 m in front of the wall plane, then a haunch flares out to meet the ceiling under a top beam;
+- in each bay one wide **hydroponic rack** (about two thirds of the bay): a dark-green core with overlapping faceted leaf tufts of three sizes (5-sided pyramids jittered in size, turn and offset, three greens
+  from the seeded cosmetic stream, never global random) up its face, a pale hood at the top, a planter at its foot;
+- three warm-white **light bars** across the whole wall at 36 / 58 / 80 % of the ceiling height: straight boxes in a
+  constant plane just proud of the fins, on dark brackets (node `FarmLights`, `CityPalette.farm_light_material`: the
+  strips' preset colour tinted warm at 55 % of their energy, set by the light rig; no Light3D, no shadows);
+- a **base band**: concrete plinth 2.6 m tall, two blue-grey feed pipes along the street, a riser into each planter;
+- a plain darker **backing** 1.6 m behind the wall plane, inside the wall's collision slab, so the farm fills that recess and
+  comes no further into the street than the window wall's mullions did (0.8 m). Cheeks close the recess at the wall's
+  ends and beside each gate; above a gate the farm stands on the portal frame's lintel.
+
+Looks only: collision (one flat slab per wall, `CityDistrict._col_walls`), gates, plan checksums and props layout are
+unchanged (`tests/test_city_farm_walls.gd` holds the before-collision of two decks). No backdrop is generated beyond a farm
+wall and the ceiling stops at the walls, which removed far more than the farm adds. Triangles per deck, window wall +
+backdrop + ceiling extension before -> farm after (whole deck): section 1 deck 0 353.9k -> 288.3k; deck 1 367.2k -> 328.5k;
+section 4 deck 0 423.4k -> 310.6k; deck 1 (all four walls farm) 519.0k -> 358.6k. The farm itself costs about 30 triangles
+per metre of wall (walls + bars): 52.4k for section 4 deck 1 (1750 m of farm). Each farm side is built in two chunks
+(`CityDistrict.FARM_PARTS`). Shots: `city-walls/farm_before_far.png`, `farm_after_far.png`,
+`farm_after_near.png`, `farm_after_gate.png` (lab cameras `farm_far`, `farm_near`, `farm_gate`).
+
+**Open question, the hull window:** a district on its own with `walls=1` (the test drive) has the habitat's hull on its two
+long sides: a window wall with no backdrop, a concrete sill, a cream mullion lattice and flat sky-blue glazing (no view
+through). It is unchanged; `city-walls/hull_window_now.png` shows it, for the user to decide whether it becomes a farm too.
+
 ## What is gameplay and what is cosmetic
 
 | Gameplay (in `CityPlan`, seeded, in the checksum, has collision) | Cosmetic (second seeded stream, no collision) |
@@ -78,7 +116,7 @@ Both streams come from the mission seed, so every machine shows the same city; o
 
 Seed, district width and length, block size, density, height bias, roof band step, ceiling height, roof clearance, pillar
 spacing, ceiling opening over the park, roof hop gap, ring radius, style mix (four weights); lighting preset; camera (`lab`
-orbit, `avenue`, `street`, `rooftop`, `plaza`, `pillar`, `park`).
+orbit, `avenue`, `street`, `rooftop`, `plaza`, `pillar`, `park`, ..., `farm_far`, `farm_near`, `farm_gate`).
 Screenshots: `.\run.ps1 --scene res://scenes/lab.tscn --subject city --shot out.png --city camera=avenue,lighting=dusk,seed=7`.
 
 ## Hooks for later variety

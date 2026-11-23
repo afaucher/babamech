@@ -144,6 +144,8 @@ func _audit_enemy_meshes() -> void:
 		"strider_chassis", "strider_breacher_chassis", "strider_sensor", "strider_leg",
 		"tank_hull", "tank_turret", "tank_turret_wreck", "tank_vents",
 		"drone_hull", "drone_optic", "drone_cone", "trooper_rifle", "trooper_at",
+		"gunship_hull", "gunship_pods", "gunship_thrusters",
+		"dropship_hull", "dropship_rotors", "dropship_bay",
 		"debris_plate", "debris_chunk", "rupture_core"]
 	for part: String in parts:
 		var m := EnemyMeshes.mesh(part)
@@ -152,6 +154,14 @@ func _audit_enemy_meshes() -> void:
 		# every other enemy mesh must be strictly watertight.
 		if part not in ["turret_base", "tank_hull"]:
 			eq(int(st["open_edges"]), 0, "EnemyMeshes.%s: watertight (0 open edges)" % part)
+	for gpart: String in ["gunship_hull", "gunship_pods", "gunship_thrusters"]:
+		var gm := EnemyGunship.placeholder_mesh(gpart)
+		var gst := _check_mesh_winding(gm, "EnemyGunship.%s" % gpart)
+		eq(int(gst["open_edges"]), 0, "EnemyGunship.%s: watertight (0 open edges)" % gpart)
+	for dpart: String in ["dropship_hull", "dropship_rotors", "dropship_bay"]:
+		var dm := EnemyDropDrone.placeholder_mesh(dpart)
+		var dst := _check_mesh_winding(dm, "EnemyDropDrone.%s" % dpart)
+		eq(int(dst["open_edges"]), 0, "EnemyDropDrone.%s: watertight (0 open edges)" % dpart)
 
 
 func _audit_combat_meshes() -> void:

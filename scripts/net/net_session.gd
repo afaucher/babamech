@@ -15,10 +15,11 @@ extends Node
 ## HANDSHAKE (all reliable events on NetWire, kinds "sys.*")
 ##   host -> joiner   sys.ask      {protocol, build}                   sent when the host sees the peer connect
 ##   joiner -> host   sys.hello    {protocol, build, name, head, chassis, accent, loadout, steam_id}
-##   host -> joiner   sys.welcome  {seat, peer, entries, host_unix, link}   or   sys.refuse {reason}
+##   host -> joiner   sys.welcome  {seat, peer, entries, host_unix, link, friendly_fire}   or   sys.refuse {reason}
 ##   host -> all      sys.roster   {entries}                            after every join, leave and profile change
 ##   joiner -> host   sys.profile  {name, head, chassis, accent, loadout}   the player changed name / head / chassis / accent / loadout
 ##   host -> all      sys.link     {preset}                             the host changed the simulated link
+##   host -> all      sys.crew_opts {friendly_fire}                     the host changed a crew option (also in sys.welcome)
 ##   host -> all      sys.bye      {reason}                             the host is leaving (closes once the crew has)
 ## The host speaks first, so it has always registered the peer before the joiner says anything. A refused joiner is told
 ## why ("Crew is full", "Different build") and dropped REFUSE_GRACE later; the transport admits a few more peers than
@@ -31,10 +32,12 @@ extends Node
 ## chassis on receipt (clean_loadout: MechCatalog.sanitize_loadout), so every machine builds the same weapons.
 ##
 ## MISSION (co-op step 1, cast's M1): NetMission, child "Mission". The host's Launch is start_mission(seed, mode): one
-##   reliable mission.launch {seed, mode, start_t, crew} to the crew (mode: "stack" or "district"); every machine (the host too) gets mission_started(params), plays
+##   reliable mission.launch {seed, mode, start_t, crew, friendly_fire} to the crew (mode: "stack" or "district"); every machine (the host too) gets mission_started(params), plays
 ##   the bay alert until start_t on the shared clock, then loads the mission. Each machine reports its city checksum
 ##   (report_mission_built), the host compares them behind a load barrier (a mismatch is sent out with DESYNC), then
 ##   mission.go {start_at}: mission_go(elapsed) fires on every machine at start_at. See net_mission.gd.
+##   Plan mode (DEV `objectives`, carried in mission.launch): the host's wave orders go out as reliable mission.wave
+##   {order} (send_mission_wave; mission_wave(order) on every client; mission.go carries the ones still to open).
 ##
 ## MECH SNAPSHOTS (co-op step 2, cast's M2): NetMechStream, child "Mechs" (`mechs`). Each machine streams its own mech
 ##   on NetWire.T_SNAP (unreliable, 30 Hz, client -> host; the host forwards the others' to each client) and shows the
@@ -56,6 +59,10 @@ extends Node
 ## LINK SIMULATOR: the host's Settings "Simulate a long link" (GameSettings link_sim: off / coast / rough) is the crew's
 ##   link: applied on the host when it opens the crew, carried in sys.welcome and re-sent as sys.link when it changes
 ##   (set_link); every machine applies it to what IT receives (NetLink on ENet, Steam's FakePacket* config on Steam).
+## CREW OPTIONS: chosen by the host in the hangar, shown read-only to the crew: `friendly_fire` (default true; the host's
+##   GameSettings crew friendly_fire). set_friendly_fire on the host (or offline) sends sys.crew_opts; sys.welcome carries
+##   the current value; crew_opts_changed fires on every machine. A client's own choice comes back when its session ends.
+##   mission.launch carries it, so every machine plays the mission with the same rule (TestDrive.friendly_fire).
 ## INVITES: Steam's join_requested (an overlay invite accepted while the game runs) becomes invite_received(lobby,
 ##   inviter) when a screen listens (it asks, then accept_invite() / decline_invite()), else it joins at once.
 ##   `+connect_lobby <id>` (Steam launching the game for an invite) joins at start. invite_crew() opens the overlay.
@@ -80,6 +87,8 @@ signal status_changed(text: String)
 ## Host: a crew member was dropped or sent out, with the reason ("c1 dropped: went silent while loading"). The mission HUD
 ## shows it; telemetry notes carry it too.
 signal crew_note(text: String)
+## A crew option changed (friendly_fire): the host chose it, or a client heard it from the host.
+signal crew_opts_changed()
 ## The host launched a mission: {seed, start_t, crew: [roster entries by seat]} (NetMission). Load it at start_t.
 signal mission_started(params: Dictionary)
 ## The load barrier passed: the mission starts now (`elapsed` seconds past start_at on the shared clock).
@@ -90,6 +99,9 @@ signal mission_ended(reason: String)
 ## A client: the host decided new mission progress (mission.state, MissionRules.state(): outcome, reason, done, left,
 ## current). Not emitted on the host (it decided it).
 signal mission_state_changed(state: Dictionary)
+## A client: the host ordered a reinforcement wave (mission.wave {order}: {wave, deck, source, open_at, max_units}, plan
+## mode). Also fired for each order mission.go carries whose open_at has not passed.
+signal mission_wave(order: Dictionary)
 ## A non-system reliable event from a crew member (gameplay events, test probes).
 signal event_received(from: int, kind: String, data: Dictionary, stamp: float)
 ## A non-system unreliable packet that passed the sequence check.
@@ -177,6 +189,13 @@ var refusals: Array = []
 var link_preset := "off"
 ## Host: take the crew's link from Settings when the crew opens (only the game's own Session; not with --net-link or tests).
 var link_from_settings := false
+## The crew's friendly fire option: the host decides (set_friendly_fire), the crew sees it (sys.crew_opts, sys.welcome) and
+## mission.launch carries it. On a client this is the host's value while online.
+var friendly_fire := true
+## DEV (docs/design/mission-objectives.md §7 phase 1): the host's next launches play the mission plan (objectives, waves,
+## the extraction hold) instead of clear + extract. Set by FrontEnd from `--objectives` / GameSettings dev objectives;
+## mission.launch carries it (params.objectives), so every machine agrees. Offline it is not used (solo_launch carries it).
+var objectives := false
 ## An overlay invite waiting for the player's answer: {lobby, inviter} ({} = none).
 var pending_invite: Dictionary = {}
 
@@ -208,6 +227,7 @@ var _prev_process_usec := 0        ## the last _process (any state but OFFLINE):
 var _last_service_usec := 0        ## the last service_transport()
 var _linger_peer: MultiplayerPeer = null   ## a host after sys.bye: the old transport, closed when the crew has gone
 var _linger_until_usec := 0
+var _own_friendly_fire := true     ## this machine's own choice (a client gets it back when its session ends)
 
 
 func _ready() -> void:
@@ -561,6 +581,23 @@ func send_mission_state(state_: Dictionary) -> void:
 	mission.host_state(state_)
 
 
+## Members of the launched mission that have reported their build (NetMission.ready_peers: the loading screen's crew
+## list). Everyone once the barrier has passed; [] offline.
+func mission_ready_peers() -> Array[int]:
+	return mission.ready_peers()
+
+
+## Host: a reinforcement wave order (WaveDirector.tick, plan mode): sent to the crew as a reliable mission.wave and kept
+## for mission.go (members reaching the barrier late get the orders whose door hasn't opened). Ignored on a client.
+func send_mission_wave(order: Dictionary) -> void:
+	mission.host_wave(order)
+
+
+## Every wave order of the mission this machine has (host: sent; client: heard), in order.
+func mission_waves() -> Array:
+	return mission.waves
+
+
 ## The latest mission progress the host decided ({} before the first, or between missions).
 func mission_state() -> Dictionary:
 	return mission.state
@@ -593,6 +630,31 @@ func set_members(peer: int, fields: Dictionary) -> void:
 				(roster[p] as Dictionary)[k] = fields[k]
 	_to_crew("sys.roster", {"entries": crew()})
 	roster_changed.emit()
+
+
+## The crew's friendly fire option, set on the host (sent to the crew) or offline (solo, and kept for the next crew this
+## machine hosts). False on a client: the host decides.
+func set_friendly_fire(on: bool) -> bool:
+	if state == State.ONLINE and not hosting:
+		return false
+	_own_friendly_fire = on
+	var changed := on != friendly_fire
+	friendly_fire = on
+	if hosting and state == State.ONLINE:
+		_to_crew("sys.crew_opts", {"friendly_fire": on})
+	if changed:
+		_log("friendly fire: %s" % ("on" if on else "off"))
+		crew_opts_changed.emit()
+	return true
+
+
+func _apply_crew_opts(data: Dictionary) -> void:
+	var on := bool(data.get("friendly_fire", true))
+	if on == friendly_fire:
+		return
+	friendly_fire = on
+	_log("friendly fire (host): %s" % ("on" if on else "off"))
+	crew_opts_changed.emit()
 
 
 # --- Link simulator, invites ------------------------------------------------------------------------
@@ -740,6 +802,9 @@ func _end(reason: String, close_now: bool = false, linger: bool = false) -> void
 	_deadline_usec = 0
 	crew_state = "lobby"
 	mission.reset()
+	if friendly_fire != _own_friendly_fire:
+		friendly_fire = _own_friendly_fire   # a client's view of the host's option ends with the session
+		crew_opts_changed.emit()
 	last_reason = reason
 	_log("session ended: %s (was %s)" % [reason, State.keys()[was]])
 	session_ended.emit(reason)
@@ -977,7 +1042,8 @@ func _admit(from: int, data: Dictionary) -> void:
 		"chassis": chassis, "accent": str(data.get("accent", DEFAULT_ACCENT)),
 		"loadout": clean_loadout(chassis, data.get("loadout", {})), "steam_id": int(data.get("steam_id", 0))}
 	wire.send_event(from, "sys.welcome", {"seat": seat, "peer": from, "entries": crew(),
-		"host_unix": Time.get_unix_time_from_system() - host_time(), "link": link_preset})
+		"host_unix": Time.get_unix_time_from_system() - host_time(), "link": link_preset,
+		"friendly_fire": friendly_fire})
 	_to_crew("sys.roster", {"entries": crew()})
 	_publish_lobby()
 	_log("%s joined (peer %d, seat %d, head %s, chassis %s)" % [name_, from, seat, roster[from]["head"], roster[from]["chassis"]])
@@ -1048,6 +1114,7 @@ func _client_sys(from: int, kind: String, data: Dictionary) -> void:
 			host_unix_epoch = float(data.get("host_unix", 0.0))
 			_set_roster(data.get("entries", []) as Array)
 			_apply_link(str(data.get("link", link_preset)))
+			_apply_crew_opts(data)
 			clock.start_client(Time.get_ticks_usec())
 			_pings_sent = 0
 			_next_ping_usec = 0
@@ -1065,6 +1132,9 @@ func _client_sys(from: int, kind: String, data: Dictionary) -> void:
 		"sys.link":
 			if state == State.ONLINE:
 				_apply_link(str(data.get("preset", "off")))
+		"sys.crew_opts":
+			if state == State.ONLINE:
+				_apply_crew_opts(data)
 		"sys.refuse":
 			FlowLog.say("session refused", str(data.get("reason", CONNECT_FAILED)))
 			_end(str(data.get("reason", CONNECT_FAILED)))

@@ -48,6 +48,15 @@ var aim_pitch := 0.0
 var aim_dir := Vector3.ZERO       ## the barrel's world direction (ZERO = not tracking / not ticked yet)
 var aim_from := Vector2.ZERO      ## hook: (aim_yaw, aim_pitch) at the start of this step (shots mid-step interpolate)
 var _arc_held := false            ## the fixed-weapon arc (Combat.FIXED_ARC_ENABLED) set hold_reason this step
+## SHUTDOWN (weapons.md §4.7): while `heat` can't act, update fires nothing (as always), never tracks the aim point (a
+## charge / spin-up still follows the trigger, so a charge is held through the shutdown) and parks a tracking barrel (pivoting weapons and the swivel) at PARK_YAW / PARK_PITCH in the body's frame (pitch
+## clamped to its own limits) at PARK_SLEW °/s, then holds; hold_reason is Combat.SHUTDOWN. On reboot it tracks again
+## from the parked pose at its normal slew (no snap). The parked angles are ordinary aim_yaw / aim_pitch (OWNER), so a
+## puppet shows the park from the snapshot alone.
+const PARK_YAW := 0.0
+const PARK_PITCH := -12.0
+const PARK_SLEW := 40.0
+var parked := false               ## this step ran shut down (the barrel is parking / parked)
 
 
 func net_fields() -> Dictionary:
@@ -56,7 +65,7 @@ func net_fields() -> Dictionary:
 		"spin": Net.OWNER, "bloom": Net.OWNER, "charge": Net.OWNER, "held": Net.PRIVATE, "muzzle_at": Net.PRIVATE,
 		"aim_at": Net.PRIVATE, "hold_reason": Net.PRIVATE, "heat_due": Net.PRIVATE,
 		"body_basis": Net.PRIVATE, "aim_yaw": Net.OWNER, "aim_pitch": Net.OWNER, "aim_dir": Net.OWNER, "aim_from": Net.PRIVATE,
-		"_arc_held": Net.PRIVATE}
+		"_arc_held": Net.PRIVATE, "parked": Net.PRIVATE}
 
 
 func setup(id: String, hp: String, shooter_id: String, shooter_peer: int, st: Dictionary) -> void:
@@ -155,6 +164,23 @@ func _track(dt: float) -> void:
 	aim_dir = Combat.arc_dir(body_basis, cur)
 
 
+## The parked pose in the body's frame: Vector2(PARK_YAW, PARK_PITCH), each clamped to this barrel's own limits (the
+## swivel's arc, else Combat.pivot_limits).
+func park_pose() -> Vector2:
+	var lim := SwivelBoom.limits(stats) if behaviour != null and behaviour.has_method("shape_record") else Combat.pivot_limits(stats)
+	return Vector2(clampf(PARK_YAW, -lim.x, lim.x), clampf(PARK_PITCH, -lim.y, lim.z))
+
+
+## One step of a shut-down barrel: ease toward park_pose at PARK_SLEW °/s (from the rest pose if it never tracked).
+func _park(dt: float) -> void:
+	var cur := Vector2(aim_yaw, aim_pitch)
+	aim_from = cur
+	cur = cur.move_toward(park_pose(), PARK_SLEW * dt)
+	aim_yaw = cur.x
+	aim_pitch = cur.y
+	aim_dir = Combat.arc_dir(body_basis, cur)
+
+
 ## A pivoting weapon's record leaves from the barrel's muzzle along the barrel at the shot's time (`into` s into this
 ## step: the barrel moved from aim_from toward its end-of-step angles at `slew` °/s). The seeded spread stays in the
 ## record (applied by the effect), so it is around the barrel's direction.
@@ -172,6 +198,10 @@ func _shape_pivot(rec: Dictionary, into: float) -> void:
 ## or anything with can_act() and add(amount) (WeaponRack.MechHeat: the MechController's gauge), or null.
 func update(dt: float, trigger: bool, heat: Variant, now: float, origin: Vector3, aim: Vector3) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
+	var was_parked := parked
+	parked = heat != null and not heat.can_act()
+	if not parked and was_parked and hold_reason == Combat.SHUTDOWN:
+		hold_reason = ""
 	var was_held := held or salvo_left > 0
 	held = trigger
 	muzzle_at = origin
@@ -182,10 +212,20 @@ func update(dt: float, trigger: bool, heat: Variant, now: float, origin: Vector3
 	if behaviour == null:
 		cooldown = maxf(cooldown, 0.0)
 		return out
-	behaviour.tick(self, trigger, dt)
-	if pivoting():
-		_track(dt)
-	_check_fixed_arc()
+	if parked:
+		# Charge / spin / release run as before (a charge is held through the shutdown; the fire loop below refuses to
+		# fire); the swivel's tick is its tracking, so it is skipped while parked.
+		if not behaviour.has_method("shape_record"):
+			behaviour.tick(self, trigger, dt)
+		if pivoting() or behaviour.has_method("shape_record"):
+			_park(dt)
+		hold_reason = Combat.SHUTDOWN
+		_arc_held = false
+	else:
+		behaviour.tick(self, trigger, dt)
+		if pivoting():
+			_track(dt)
+		_check_fixed_arc()
 	if heat_due > 0.0:
 		if heat != null and heat.can_act():    # a release while shut down is not a cancel: no heat on a dead mech
 			heat.add(heat_due)

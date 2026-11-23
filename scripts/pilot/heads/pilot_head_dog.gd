@@ -1,7 +1,7 @@
 class_name PilotHeadDog
 extends PilotFace
-## The dog pilot (art/picks/head_dog.png), rigged: the static MechHeadMeshes dog cut into rigid pieces (same sections,
-## snout, nose, girth and stern brow at rest), plus lids and moving pupils; the Jaw is the lower jaw bar hinged at its
+## The dog pilot (art/picks/head_dog.png), rigged: the static MechHeadMeshes dog's sections as one body mesh
+## (PilotFace.add_body; same snout, nose, girth and stern brow at rest), plus lids and moving pupils; the Jaw is the lower jaw bar hinged at its
 ## back, its top face and the snout's underside dark (the mouth shows when it drops), and a Tongue plate hidden inside it
 ## that slides out and droops when panting (overheated, the pant tic). mouth_curve tilts the jaw (a lopsided snarl).
 ## Flair = the two ears, each on two hinges (EarL / EarR at the root on the flair spring; EarTipL / EarTipR at the bend,
@@ -17,7 +17,6 @@ const TONGUE := Color(0.86, 0.42, 0.46)
 ## Neck-and-skull sections [y, centre z, half width, half depth] (as MechHeadMeshes._dog).
 const SECS := [[0.0, 0.08, 0.28, 0.29], [0.3, 0.06, 0.26, 0.28], [0.52, 0.0, 0.34, 0.36], [0.76, -0.01, 0.37, 0.38],
 	[0.97, 0.0, 0.32, 0.33], [1.08, 0.02, 0.2, 0.22]]
-const SLEEVE := 1.06
 ## Ears: root lift (rad of hinge roll per rad of flair raise), how far they swing back, the extra droop when dropped,
 ## and how much the tip straightens (rad) at full raise.
 const EAR_LIFT := 1.6
@@ -40,6 +39,8 @@ var _tic_t0 := 0.0
 
 func _init() -> void:
 	id = "dog"
+	# The neck bends along its whole length, up to just under the snout.
+	body_bend = Vector2(0.0, 0.48)
 	var g := float(MechHeadMeshes.GIRTH.get("dog", 1.0))
 	girth = Vector3(g, 1.0, g)
 	pendulums = 2
@@ -64,20 +65,14 @@ func _init() -> void:
 
 func build_pieces() -> void:
 	add_piece("NeckLow", "", Vector3(0.0, 0.0, 0.08))
-	var k := kit()
-	k.loft([_ring(SECS[0]), _ring(SECS[1])], FUR, false, false)
-	add_neck_plug(k, _ring(SECS[0]))
-	add_mesh("NeckLow", k)
-
 	add_piece("NeckHigh", "NeckLow", Vector3(0.0, 0.3, 0.06))
-	k = kit()
-	k.loft([_ring(_lerp_sec(SECS[0], SECS[1], 0.24), SLEEVE), _ring(SECS[2])], FUR, false, false)
-	add_mesh("NeckHigh", k)
-
 	add_piece("Skull", "NeckHigh", Vector3(0.0, 0.52, 0.0))
-	var ks := kit()
-	ks.loft([_ring(_lerp_sec(SECS[1], SECS[2], 0.46), SLEEVE), _ring(SECS[3]), _ring(SECS[4]), _ring(SECS[5])], FUR,
+	# The body: one loft from the neck base to the crown.
+	var shell := kit()
+	shell.loft([_ring(SECS[0]), _ring(SECS[1]), _ring(SECS[2]), _ring(SECS[3]), _ring(SECS[4]), _ring(SECS[5])], FUR,
 		false, true)
+	add_neck_plug(shell, _ring(SECS[0]))
+	var ks := kit()
 	# Snout and nose (as the static dog), and the snout's dark underside (inside the jaw at rest).
 	ks.loft([MeshKit.ring(Vector3(0, 0.64, -0.28), 0.19, 0.15, 6, "z", 2.6),
 		MeshKit.ring(Vector3(0, 0.6, -0.66), 0.14, 0.11, 6, "z", 2.6)], FUR.lightened(0.08), false, true)
@@ -88,12 +83,12 @@ func build_pieces() -> void:
 	build_eye_set(ks, Vector3(0.17, 0.83, -0.325), Vector3(0.35, 0.05, -0.93), 1.15,
 		{"brow": FUR.darkened(0.1), "lid": FUR.darkened(0.04), "iris": MechHeadMeshes.EYE_WHITE, "pupil": PUPIL},
 		{"eye": 0.06, "pupil": 0.03})
-	add_mesh("Skull", ks)
+	add_body(shell, ks)
 
 	# The jaw bar, hinged at its back, with the inside of the mouth on top: a dark plate narrower than the snout's
 	# underside, so it stays hidden at rest (the jaw bar is wider than the snout and its edges show).
 	add_piece("Jaw", "Skull", Vector3(0.0, 0.47, -0.3))
-	k = kit()
+	var k := kit()
 	k.seg(Vector3(0, 0.47, -0.3), Vector3(0, 0.47, -0.58), Vector2(0.13, 0.035), Vector2(0.1, 0.03), 4,
 		FUR.darkened(0.25), MeshKit.SQUARE)
 	k.quad(Vector3(-0.075, 0.509, -0.31), Vector3(0.075, 0.509, -0.31), Vector3(0.065, 0.504, -0.57),

@@ -1,7 +1,7 @@
 class_name PilotHeadChicken
 extends PilotFace
-## The chicken pilot (art/picks/head_chicken.png), rigged: the static MechHeadMeshes chicken cut into rigid pieces
-## (same sections, girth and stern brow at rest), plus lids, moving pupils on a dark eye, a hinged lower beak with a dark
+## The chicken pilot (art/picks/head_chicken.png), rigged: the static MechHeadMeshes chicken's sections as one body mesh
+## bent by the neck joints (PilotFace.add_body; same girth and stern brow at rest), plus lids, moving pupils on a dark eye, a hinged lower beak with a dark
 ## mouth behind it, the comb on one hinge (the flair) and two wattle pendulums. Movement style: snappy and stepped (bird
 ## saccades: the look only jumps once it moved step_deg, on a stiff neck). The reference head for PilotFace's contract.
 
@@ -14,14 +14,14 @@ const MOUTH := Color(0.26, 0.06, 0.05)
 ## Neck-and-skull sections [y, centre z, half width, half depth] (as MechHeadMeshes._chicken).
 const SECS := [[0.0, 0.06, 0.3, 0.31], [0.3, 0.05, 0.24, 0.26], [0.55, 0.0, 0.27, 0.3], [0.76, -0.03, 0.31, 0.35],
 	[0.96, -0.02, 0.29, 0.32], [1.1, 0.02, 0.19, 0.21]]
-## Each upper neck piece starts a little below its joint, this much wider, so it sleeves over the one below when bent.
-const SLEEVE := 1.06
 ## Degrees the lower beak twists per unit of mouth_curve (smirk / grim set).
 const MOUTH_TILT := 14.0
 
 
 func _init() -> void:
 	id = "chicken"
+	# The neck bends along its whole length (base to the skull), so its inner side never folds up.
+	body_bend = Vector2(0.0, 0.55)
 	var g := float(MechHeadMeshes.GIRTH.get("chicken", 1.0))
 	girth = Vector3(g, 1.0, g)
 	pendulums = 2
@@ -44,31 +44,25 @@ func _init() -> void:
 
 func build_pieces() -> void:
 	add_piece("NeckLow", "", Vector3(0.0, 0.0, 0.06))
-	var k := kit()
-	k.loft([_ring(SECS[0]), _ring(SECS[1])], WHITE, false, false)
-	add_neck_plug(k, _ring(SECS[0]))
-	add_mesh("NeckLow", k)
-
 	add_piece("NeckHigh", "NeckLow", Vector3(0.0, 0.3, 0.05))
-	k = kit()
-	k.loft([_ring(_lerp_sec(SECS[0], SECS[1], 0.24), SLEEVE), _ring(SECS[2])], WHITE, false, false)
-	add_mesh("NeckHigh", k)
-
 	add_piece("Skull", "NeckHigh", Vector3(0.0, 0.55, 0.0))
+	# The body: one loft from the neck base to the crown (a ring at each joint and one inside the upper bend).
+	var shell := kit()
+	shell.loft([_ring(SECS[0]), _ring(SECS[1]), _ring(_lerp_sec(SECS[1], SECS[2], 0.42)), _ring(SECS[2]), _ring(SECS[3]),
+		_ring(SECS[4]), _ring(SECS[5])], WHITE, false, true)
+	add_neck_plug(shell, _ring(SECS[0]))
 	var ks := kit()
-	ks.loft([_ring(_lerp_sec(SECS[1], SECS[2], 0.49), SLEEVE), _ring(SECS[3]), _ring(SECS[4]), _ring(SECS[5])], WHITE,
-		false, true)
 	# Upper beak, and the dark mouth behind the lower one.
 	ks.seg(Vector3(0, 0.8, -0.28), Vector3(0, 0.69, -0.68), Vector2(0.13, 0.095), Vector2.ZERO, 4, BEAK, 2.0, false, 0.0)
 	ks.seg(Vector3(0, 0.715, -0.27), Vector3(0, 0.69, -0.52), Vector2(0.06, 0.03), Vector2.ZERO, 4, MOUTH, 2.0, false, 0.0)
 	build_eye_set(ks, Vector3(0.2, 0.86, -0.275), Vector3(0.6, 0.05, -0.8), 1.1,
 		{"brow": WHITE.darkened(0.12), "lid": WHITE.darkened(0.04), "iris": IRIS, "pupil": PUPIL},
 		{"eye": 0.062, "pupil": 0.03})
-	add_mesh("Skull", ks)
+	add_body(shell, ks)
 
 	# Lower beak on its hinge.
 	add_piece("Jaw", "Skull", Vector3(0.0, 0.72, -0.28))
-	k = kit()
+	var k := kit()
 	k.seg(Vector3(0, 0.71, -0.28), Vector3(0, 0.66, -0.55), Vector2(0.09, 0.05), Vector2.ZERO, 4, BEAK.darkened(0.2), 2.0,
 		false, 0.0)
 	add_mesh("Jaw", k)

@@ -2,7 +2,7 @@ class_name LifePodGallery
 extends Node3D
 ## Lab subject `pod_gallery`: the nine candidate pod meshes (LifePodVariants) for the user to pick from, as a 3x3 on a
 ## patch of road (rows = body form cab / bubble / capsule, front to back; columns = stance a / b / c, left to right), each
-## with a 1.8 m civilian (LifeFigures' idle figure) on the kerb beside its nose for scale, lit by the city "day" preset.
+## with a 1.8 m civilian (the civilian figure standing still) on the kerb beside its nose for scale, lit by the city "day" preset.
 ## Options: view (grid / single: one pod, orbit it with the lab camera), pod, angle (orbit = the lab's camera; the others
 ## are fixed framings: front / rear three-quarter, side, mech_eye = 9 m up and 25 m out at the chase camera's 70 deg FOV,
 ## i.e. how a pilot sees a pod).
@@ -111,7 +111,7 @@ func _cell(ground: CityGeo, id: String, at: Vector3) -> void:
 	pod.position = at
 	_content.add_child(pod)
 	var fig := CityGeo.new()
-	LifeFigures.figure(fig, LifeFigures.IDLE, 0)
+	LifeAnimRig.static_figure(fig, 0)
 	var person := fig.instance("Person_" + id)
 	person.position = at + PERSON
 	person.rotation.y = 0.7

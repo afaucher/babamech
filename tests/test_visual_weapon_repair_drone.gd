@@ -1,10 +1,12 @@
 extends TestCase
 ## VISUAL: back-mount equipment on the weapon range stand (run with .\test_runner.ps1 -Visual -TestName
 ## test_visual_weapon_repair_drone).
-## 1. The repair drone (the Mech session's flying mesh in the lab mech's accent) over the stand, repairing the damaged lab
-##    mech and the repair dummy beside it: its green beams and the faint 15 m ground ring; the back mount shows the empty
-##    cradle while it is out. Shots: test_logs/shots/weapon_repair_drone.png (wide) and weapon_repair_drone_close.png
-##    (from behind: the drone above the empty cradle).
+## 1. The repair drone (the Mech session's flying mesh in the lab mech's accent) circling the stand 5 m out, repairing
+##    the damaged lab mech and the repair dummy beside it: its green beams and the faint 15 m ground ring round the
+##    launcher; the back mount shows the empty cradle while it is out. Shots: test_logs/shots/weapon_repair_drone.png
+##    (wide) and weapon_repair_drone_close.png (from behind: the drone on its orbit above the empty cradle).
+## 1c. Mid-return (its life cut short in the test): flying home to the dock, shrinking, NO green (no beams, no ring).
+##    Shot: test_logs/shots/weapon_repair_drone_return.png.
 ## 2. The radiator fins glowing near overheat, seen from behind the mech. Shot: test_logs/shots/weapon_radiator_hot.png.
 
 const VISUAL := true
@@ -37,6 +39,8 @@ func setup() -> void:
 		check(r.drone.flying_mesh, "drawn with the flying drone mesh")
 		check(r.drone.beamed().size() >= 2, "beams to the lab mech and the repair dummy (%d)" % r.drone.beamed().size())
 		check(r.drone.healed_total > 0.0, "it repairs (%.1f HP)" % r.drone.healed_total)
+		check(r.drone.ring_shown(), "the ground ring shows while it repairs")
+		near(r.drone.orbit_distance(), 5.0, 0.3, "on its orbit 5 m out (%.2f)" % r.drone.orbit_distance())
 	eq(r.world.equipment_look.shown(WeaponRangeLab.SHOOTER), "cradle", "the back mount shows the empty cradle")
 	var img := await sc.grab("weapon_repair_drone")
 	sc.not_blank(img, Rect2(0.3, 0.05, 0.7, 0.9), "repair drone")
@@ -48,6 +52,18 @@ func setup() -> void:
 	await frames(4)
 	var img_c := await sc.grab("weapon_repair_drone_close")
 	sc.not_blank(img_c, Rect2(0.3, 0.05, 0.7, 0.9), "repair drone close")
+	# 1c. Mid-return: cut this drone's life so it is halfway home now (fire stays "hold": the next launch waits until it
+	# has docked; changing an option would rebuild the lab and drop the drone).
+	if r.drone != null and is_instance_valid(r.drone):
+		var dr := r.drone
+		dr.stats["life"] = dr.age() - 0.6
+		await frames(3)
+		if is_instance_valid(dr):
+			check(dr.returning(), "flying home (%.2f of the way)" % dr.home_fraction())
+			check(dr.beamed().is_empty() and not dr.ring_shown(), "no green on the way home")
+			eq(r.world.equipment_look.shown(WeaponRangeLab.SHOOTER), "cradle", "the cradle is still empty")
+		var img_r := await sc.grab("weapon_repair_drone_return")
+		sc.not_blank(img_r, Rect2(0.3, 0.05, 0.7, 0.9), "repair drone return")
 	# 2. Radiator near overheat, from behind.
 	r.set_lab_option("fire", "off")
 	r.set_lab_option("weapon", "radiator")

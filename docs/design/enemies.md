@@ -60,6 +60,7 @@ Stored in `EnemyCatalog.WEAPONS` (separate from player `MechCatalog.WEAPONS`; `C
 - **Shared target board (`EnemySquad`):** Fed only by real physics LOS checks (or damage alerts). Sightings propagate to squadmates within 90 m after a `0.45 s` comm relay delay (killing the spotter first cancels the relay).
 - **Hears fire (`EnemySquad` hearing, `EnemyBase.hear_fire`):** an un-alerted enemy with live AI reacts to PLAYER fire near it (enemy fire never alerts enemies): a shot whose path (origin to aim point, clamped to the weapon's range) passes within `HEAR_SHOT_RADIUS` = 25 m of its eye (`CombatWorld.fired`; a slow shot is heard when it reaches the closest point, at the weapon's speed; hitscan at once; the lobbed mortar only at its muzzle), an impact or blast within `HEAR_IMPACT_RADIUS` = 30 m + its splash radius (`CombatWorld.impact_from`), or a player hit on a squadmate within 30 m of the hit point (`hit_landed`, also when the hit kills it). It alerts toward the shooter with the normal `ALERT_DELAY` (0.35 s) wind-up as a spotter ("spotted"), puts the shooter's position on the board as the heard position (so it turns / searches toward it without line of sight) and runs its own 0.45 s relay. Sound passes walls. Stack: only stimuli on its own deck, never while the deck sleeps. Host / solo only (a client's enemies are puppets); no network messages: the alert reaches clients through EnemySync. Killing a spotter still cuts its 52 m relay; only squadmates within hearing of the kill learn of it.
 - **Attack slots:** At most `max_attackers` (default 2) enemies may telegraph/fire at the same player target simultaneously, prioritized by unit weight and rotated fairly.
+- **Last-enemy hunt, reveal & safety valve (`EnemySquad`, host-only):** Never triggers while more than `HUNT_MAX_REMAINING = 3` enemies remain on a deck (counting both living enemies and queued/pending wave units on that deck), and never before the crew has had real combat contact on that deck (`_deck_engaged`). Once `<= 3` remain after contact and the deck stays quiet for `HUNT_QUIET_S = 75.0 s`, Step 1 pushes mobile stragglers into active hunt pursuit; if any straggler still has not engaged after a further `REVEAL_HUNT_DELAY_S = 50.0 s`, Step 2 marks `EnemyBase.revealed = true` (synced via `EnemySync` `"alert"` / `"revealed"` to Engine's HUD markers); `CULL_IDLE_S = 120.0 s` after reveal with zero damage dealt or taken, Step 3 culls unreachable stragglers cleanly (`"timeout"`).
 
 ## 6. Audio Integration Contract
 
@@ -67,3 +68,37 @@ Stored in `EnemyCatalog.WEAPONS` (separate from player `MechCatalog.WEAPONS`; `C
 - `EnemySquad` emits `enemy_event(kind: String, enemy: Node, payload: Dictionary)` forwarding:
   `telegraph_started`, `telegraph_cancelled`, `alerted`, `weapon_fired`, `component_damaged`, `component_destroyed`, `overheated`, `rebooted`, `destroyed`, `footstep`.
 - `CombatWorld` emits `impact_spawned(point: Vector3, radius: float, explosive: bool, is_energy: bool)` inside `spawn_impact()`.
+
+## 7. Art Direction (in progress, 2026-11-22)
+
+Enemy art pass, every choice from a 3x3 grid (`art/renders/enemy_concept_r*/`, `art/renders/enemy_colour_r*/`; in-engine
+colour probe `tools/enemy_style/`).
+- **Concept: "Repainted civic"** (concept r1 #1; user decision after exploring r1 #2 control crown, r2 crown variants, r3
+  subtle violet body beacon, r4 heraldic corruption): the units are the habitat's own civil-defence robots, simply
+  repainted in the invaders' livery: no alien grafts. The occupation shows in the city through **alien banners in the same
+  colours**: one livery shared by banners and units. Rounds r2-r4 kept in `art/renders/enemy_concept_r2..r4/` for later
+  (e.g. elite markers).
+- **Colour: picked L1 = A2 "slate / brick"** (livery r2, `art/renders/enemy_colour_r2/`): warm slate grey body `#6b6a6c`, plates `#807d7c`, steel `#939089`,
+  brick-red trim `#a2453a`, red optics `#ff4a36`, vents `#ff8a3a`. Mid value: findable against the warm city without
+  popping like the black/red placeholder.
+- **Banner: picked #9 "Descent"** (`art/renders/banner_r1/grid_banner_r1.png`): swallowtail banner, bold downward
+  arrowhead with three trailing bars ("they arrived from above"), two tones + border. Same emblem for unit stencils later.
+  Emblem as in the concept (`art/renders/banner_r1/b9_descent_s4242.png`): one broad arrowhead pointing diagonally
+  down-left with a thin slit, three parallel bars trailing to the upper right.
+- **Banner colouring: picked F2c3** (livery r3, `art/renders/enemy_colour_r3/`): dark slate field `#3e3c3e`, brick arrow
+  `#a2453a`, cream bars + border `#e8dcc0`. Reads on brick, sage and cream facades and matches the slate / brick units.
+- **Banner build: approved by the user** (reference, probe placeholder in `tools/enemy_style/enemy_style_probe.gd`): 4.0 m wide x 6.4 m tall
+  to the swallowtail points (about 1.6:1), cream border, emblem scaled 0.85 and centred (~0.55 m clear of the border),
+  bars drawn behind the arrowhead, slit on top. Shot: `art/renders/enemy_colour_r3/F2c3_banner_close.png`. Banners are
+  built as a game prop on 2026-11-23: `scripts/world/occupation/`, spec `docs/design/banners.md`.
+- **Applied (2026-11-22):** L1 palette + civic detail pass on every `EnemyMeshes` part (Descent stencils with slate backing
+  plates on brick faces, hazard bands, number plates, amber service lamps / light bars, headlights, hatches, antenna whips,
+  wreck debris); consts SLATE `#4a4a4e`, CIVIC_CREAM `#d8ccb0`, LAMP_AMBER `#c08a44`. Before / after:
+  `art/renders/enemy_detail_r1/grid_before_after.png`. §2's "obsidian & crimson" palette text is superseded by this.
+- **Detail pass B: adopted for ALL parts** (user, 2026-11-22; review `docs/design/enemy-detail/`, same method as the mech's
+  body / legs / weapons reviews). Plus final models for antigravity's `gunship` and `dropship` (part contracts on thread
+  `babamech-20261122-2000-enemy-art`), built to the same B level in the L1 livery.
+- **Trooper looks (2026-11-22):** 12 seeded variants per kit (rifle / AT): build slim / standard / heavy, helmet dome /
+  crest / flat-top, gear jump pack / radio + whip / pouch belt, chest mark, small L1 tint shifts; leaders (n 0, 4, 8) carry
+  cream marks. `EnemyMeshes.trooper_part(kit, look_seed)`; grid `docs/design/enemy-detail/trooper_variants_grid.png`.
+  Distinct at ~20 m, a group at ~40 m; user kept them as is (no extra per-trooper colour).

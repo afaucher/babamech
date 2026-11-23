@@ -7,6 +7,12 @@ extends Node
 ##   GOING somewhere is this layer. The mission's current objective (MissionRules.current(), the host's on a client)
 ##   picks a deck and a point: "clear_k", a COMMITTED live enemy of deck k (kept TARGET_HOLD s at least, swapped only for
 ##   one much nearer, or for the one PlayerBot is shooting); "extract", the extraction marker on the lowest deck.
+##   PLAN MODE (objectives on, MissionRules.plan): per deck in order its primary, its KNOWN bonuses (MissionBot.bonuses),
+##   then on the extraction deck the hold (_task). sweep = the clear above (waits at the deck's arrival for its waves);
+##   flag / defend / hold = walk to the zone (the rules' snapped site / the hold Rect2) and HOLD it (_zone_hold:
+##   PlayerBot aims and fires, its legs only near the centre), leaving to hunt what stalls it (a flag contested HUNT_AFTER
+##   s, a defend's wave units hanging back). Co-op: the standing crew by peer id, the first anchors the zone, the others
+##   escort (off-centre, hunt at once); friendly fire guard (_ff_guard). docs/design/player-ai.md §9.
 ##   BotRoutePlanner (scripts/game/bot_route_planner.gd) routes there over the decks: road lines on each deck, down a
 ##   ramp along its lane centre, or into an open-air shaft and down (a glide on the thrusters over a stacked atrium);
 ##   lifts don't move yet and are never used. The route is a list of legs followed by pure pursuit (LOOK m ahead on the
@@ -58,8 +64,28 @@ const DEV_STALL := 25.0       ## DEV --dev-bot-travel: s without 5 m of progress
 const DEV_FIGHT_STALL := 30.0 ## DEV: s fighting without a kill before a jump near the target
 const DEV_NEAR := 20.0        ## DEV: m from the target enemy a fight jump lands (each jump from another side)
 
+const ZONE_IN := 0.55          ## plan mode: closer than this share of a zone's radius, hold there...
+const ZONE_OUT := 0.85         ## ...and travel again only past this share (hysteresis)
+const HOLD_DRIFT := 0.4        ## holding: walk back toward the stand point past this share
+const LOCAL_R := 60.0          ## m from a zone: the last stretch is planned on a physics grid (_plan_local)
+const LOCAL_HALF := 66.0       ## m: half the side of that grid (around the zone's centre)
+const LOCAL_STEP := 3.0        ## m between its points
+const LOCAL_SIDE := 2.4        ## m either side of a grid edge its side rays run (the mech's capsule is ~2.2 m in radius)
+const STAND_IN := 0.45         ## share of the zone's radius a stand point may lie from the centre
+const DEFEND_HOLD_R := 20.0    ## m: a defend is held this close to its relay (its activation radius is 30)
+const HUNT_AFTER := 12.0       ## s holding with no progress (flag) / no engagement (defend) before hunting
+const HUNT_RANGE := 70.0       ## m from the site: enemies this close count for a hunt
+const HUNT_GIVE_UP := 40.0     ## s a hunt is kept at most before going back to the zone
+const BONUS_GIVE_UP := 240.0   ## s on one bonus before it is skipped
+const ESCORT_OFF := 0.4        ## co-op: an escort holds this share of the radius off the centre
+const FF_CLEAR := 4.0          ## m: a teammate this close to the line of fire holds the trigger...
+const FF_SPLASH := 8.0         ## m: ...or this close to the aim point
+const ADVANCE_WAIT := 1.5      ## s with nothing left on a deck before moving on (a chained bonus shows up a tick late)
+
 ## Tests: plan with ramps only (no shaft drops or glides), to exercise the ramp legs.
 static var ramps_only := false
+## Plan mode: do the known bonus objectives of a deck after its primary (tests may turn this off for speed).
+static var bonuses := true
 
 var drive: TestDrive
 var pilot: TestDriveBotPilot
@@ -80,7 +106,7 @@ var _seg_i := 0               ## the polyline segment of the current leg the mec
 var _route_key := ""          ## what the route was planned for
 var _route_goal := Vector3.INF
 var _route_t := 0.0           ## s since the route's goal was checked
-var _target: EnemyBase        ## the committed enemy (clear objectives)
+var _target: Variant = null   ## the committed enemy (clear objectives): an EnemyBase, untyped (it may be freed; _live_on)
 var _target_t := 0.0          ## s it has been held
 var _mode_t := 0.0            ## s in the current mode
 var _said := ""
@@ -89,6 +115,7 @@ var _last_pos := Vector3.INF
 var _stk_t := 0.0             ## s since the last progress check
 var _stk_rem := INF           ## remaining leg length at the last check
 var _stk_n := 0               ## stuck checks on this leg
+var _stk_pos := Vector3.INF   ## where the mech was at the last progress check
 var _backup_t := 0.0          ## s of backing up left
 var _backup_dir := Vector3.ZERO
 var _hop_t := 0.0             ## s of hop thrust left
@@ -103,6 +130,12 @@ var _roof_t := 0.0            ## s into a roof escape (0: not escaping)
 var _roof_anchor := Vector3.ZERO
 var _roof_tries := 0          ## roof escape: failed checks (each turns to the next-nearest side)
 var _roof_log_t := -99.0      ## t of the last "off the roof" line (contact flicker restarts the escape)
+var _roof_out := Vector2.INF   ## roof escape: where it heads (arc m)
+var _roof_span := 0.0         ## s into the current roof escape
+var roof_max := 0.0           ## the longest roof escape so far (s; tests)
+var stall_max := 0.0          ## the longest span pushing without getting 2 m anywhere (s; tests)
+var _stall_t := 0.0
+var _stall_anchor := Vector3.ZERO
 var last_dir := Vector3.ZERO  ## the last travel direction (status line)
 var t := 0.0                  ## s since the bot started
 var deck_changes: Array = []  ## [{t, from, to, by}] (tests, report)
@@ -116,6 +149,25 @@ var _prog_best := INF         ## DEV: the least route left so far
 var _prog_t := 0.0            ## DEV: s since it last got 5 m closer (or killed something, fighting)
 var _prog_alive := -1         ## DEV: live enemies on the target deck when the fight clock started
 var _last_dev_jump_t := -1.0  ## DEV: t of the last jump (a deck change right after it is "dev travel")
+var work_deck := 0            ## plan mode: the deck whose objectives it is doing (only moves on, never back)
+var task_id := ""             ## plan mode: the objective it is doing now
+var role := "solo"            ## plan mode: "solo" | "anchor" (holds the zone) | "escort" (clears threats near it)
+var task_log: Array = []      ## plan mode: [{t, id, type}] each task as it started (tests, report)
+var ff_holds := 0             ## frames the trigger was held because a teammate stood in the line of fire
+var _task_t := 0.0            ## s on the current task
+var _skipped: Dictionary = {} ## bonus ids given up on (BONUS_GIVE_UP)
+var _hunt: Variant = null     ## plan mode: the enemy hunted away from the zone (untyped: may be freed)
+var _hunt_t := 0.0            ## s into the hunt
+var _quiet_t := 0.0           ## s holding without PlayerBot engaging
+var _stuck_prog_t := 0.0      ## s holding a flag without its progress rising
+var _prog_last := -1.0
+var _holding := false         ## inside the zone hysteresis
+var role_index := 0           ## plan mode: this mech's place among the standing crew, by peer id
+var _advance_t := 0.0         ## plan mode: s with nothing left on work_deck (moves on after ADVANCE_WAIT)
+var _stand_key := ""          ## plan mode: the goal key + role the stand point was found for
+var _stand_pt := Vector3.INF  ## plan mode: a street-level point inside the zone the mech can walk to (_plan_local)
+var local_plans := 0          ## physics-grid plans made (tests)
+var local_fails := 0          ## ...of which found no stand point it could walk to
 
 
 func net_fields() -> Dictionary:
@@ -124,12 +176,17 @@ func net_fields() -> Dictionary:
 		"_seg_i": Net.PRIVATE, "_route_key": Net.PRIVATE, "_route_goal": Net.PRIVATE, "_route_t": Net.PRIVATE,
 		"_target": Net.LOCAL, "_target_t": Net.PRIVATE, "_mode_t": Net.PRIVATE, "_said": Net.PRIVATE,
 		"_status_t": Net.PRIVATE, "_last_pos": Net.PRIVATE, "_stk_t": Net.PRIVATE, "_stk_rem": Net.PRIVATE,
-		"_stk_n": Net.PRIVATE, "_backup_t": Net.PRIVATE, "_backup_dir": Net.PRIVATE, "_hop_t": Net.PRIVATE,
+		"_stk_n": Net.PRIVATE, "_stk_pos": Net.PRIVATE, "_backup_t": Net.PRIVATE, "_backup_dir": Net.PRIVATE, "_hop_t": Net.PRIVATE,
 		"_fight_t": Net.PRIVATE, "_no_los_t": Net.PRIVATE, "_alive_prev": Net.PRIVATE, "_vantage": Net.PRIVATE,
-		"_tried": Net.PRIVATE, "_vantage_cd": Net.PRIVATE, "_at_vantage_t": Net.PRIVATE, "_roof_t": Net.PRIVATE, "_roof_anchor": Net.PRIVATE, "_roof_tries": Net.PRIVATE, "_roof_log_t": Net.PRIVATE, "last_dir": Net.PRIVATE, "t": Net.PRIVATE, "deck_changes": Net.PRIVATE,
+		"_tried": Net.PRIVATE, "_vantage_cd": Net.PRIVATE, "_at_vantage_t": Net.PRIVATE, "_roof_t": Net.PRIVATE, "_roof_anchor": Net.PRIVATE, "_roof_tries": Net.PRIVATE, "_roof_log_t": Net.PRIVATE, "_roof_out": Net.PRIVATE, "_roof_span": Net.PRIVATE, "roof_max": Net.PRIVATE, "stall_max": Net.PRIVATE, "_stall_t": Net.PRIVATE, "_stall_anchor": Net.PRIVATE, "last_dir": Net.PRIVATE, "t": Net.PRIVATE, "deck_changes": Net.PRIVATE,
 		"stuck_events": Net.PRIVATE, "blocked_edges": Net.PRIVATE, "replans": Net.PRIVATE,
 		"dev_travel": Net.PRIVATE, "dev_jumps": Net.PRIVATE, "_prog_key": Net.PRIVATE, "_prog_best": Net.PRIVATE,
-		"_prog_t": Net.PRIVATE, "_prog_alive": Net.PRIVATE, "_last_dev_jump_t": Net.PRIVATE}
+		"_prog_t": Net.PRIVATE, "_prog_alive": Net.PRIVATE, "_last_dev_jump_t": Net.PRIVATE,
+		"work_deck": Net.PRIVATE, "task_id": Net.PRIVATE, "role": Net.PRIVATE, "task_log": Net.PRIVATE, "ff_holds": Net.PRIVATE,
+		"_task_t": Net.PRIVATE, "_skipped": Net.PRIVATE, "_hunt": Net.LOCAL, "_hunt_t": Net.PRIVATE, "_quiet_t": Net.PRIVATE,
+		"_stuck_prog_t": Net.PRIVATE, "_prog_last": Net.PRIVATE, "_holding": Net.PRIVATE, "role_index": Net.PRIVATE,
+		"_advance_t": Net.PRIVATE, "_stand_key": Net.PRIVATE, "_stand_pt": Net.PRIVATE, "local_plans": Net.PRIVATE,
+		"local_fails": Net.PRIVATE}
 
 
 ## TestDrive calls this once its scene is set up (and the stack built).
@@ -170,7 +227,9 @@ func stats() -> Dictionary:
 	for c: Dictionary in deck_changes:
 		by[c["by"]] = int(by.get(c["by"], 0)) + 1
 	return {"dev_jumps": dev_jumps, "deck_changes": deck_changes.duplicate(true), "by": by, "stuck": stuck_events,
-		"blocked": blocked_edges, "replans": replans, "t": t}
+		"blocked": blocked_edges, "replans": replans, "t": t, "roof_max": snappedf(roof_max, 0.1),
+		"stall_max": snappedf(stall_max, 0.1), "tasks": task_log.duplicate(true), "ff_holds": ff_holds,
+		"local_plans": local_plans, "local_fails": local_fails}
 
 
 func _physics_process(dt: float) -> void:
@@ -180,9 +239,17 @@ func _physics_process(dt: float) -> void:
 		return   # the barrier hasn't passed: stand still like everyone else
 	var mech := drive.mech
 	t += dt
+	_ff_guard()
 	var k := drive.stack.deck_at(mech.global_position)
 	var jumped := _last_pos != Vector3.INF and _last_pos.distance_to(mech.global_position) > 30.0
 	_last_pos = mech.global_position
+	# Trap watch (stats): the longest span the legs pushed (move input) without the mech getting 2 m anywhere.
+	if mech.global_position.distance_to(_stall_anchor) > 2.0 or jumped:
+		_stall_anchor = mech.global_position
+		_stall_t = 0.0
+	elif mech.move_input.length() > 0.5:
+		_stall_t += dt
+		stall_max = maxf(stall_max, _stall_t)
 	if k != _deck:
 		_deck_change(_deck, k, jumped)
 	elif jumped:
@@ -193,6 +260,7 @@ func _physics_process(dt: float) -> void:
 	_replan_tick(dt)
 	_target_t += dt
 	_mode_t += dt
+	_obj_tick(dt)
 	var goal := _goal(k)
 	if goal.is_empty():
 		_set_mode("idle", "no objective", "idle")
@@ -200,6 +268,11 @@ func _physics_process(dt: float) -> void:
 	var t_deck := int(goal["deck"])
 	var at: Vector3 = goal["at"]
 	var enemy := bool(goal.get("enemy", false))
+	var zone_key := ""
+	if goal.has("zone"):
+		zone_key = "%s/%s%d" % [str(goal["key"]), role, role_index]
+		if _stand_key == zone_key and _stand_pt != Vector3.INF:
+			at = _stand_pt   # the reachable point inside the zone found by _plan_local
 	_status(k, t_deck, at)
 	var dist := _flat(at - mech.global_position, mech.up()).length()
 	# DEV: one progress clock per objective: 5 m less route left, or a kill.
@@ -209,6 +282,19 @@ func _physics_process(dt: float) -> void:
 		var alive: int = per[t_deck] if t_deck < per.size() else 0
 		stall = _dev_clock(str(goal["key"]), _route_left() if mode == "travel" else dist, dt, alive if enemy else -1)
 	var in_special := _in_special()
+	# Plan mode: a zone to stand in (flag, defend, hold, a sweep's wait): hold it once inside (hysteresis), or once the
+	# walk there has run out on its deck.
+	if goal.has("zone") and not in_special and t_deck == k:
+		var zr := float(goal["zone"])
+		var walked := _route_key.begins_with(str(goal["key"]) + "@") and not _legs.is_empty() and _leg_i >= _legs.size()
+		if dist < zr * (ZONE_OUT if _holding else ZONE_IN) or walked:
+			if not _holding:
+				_clear_route()
+			_holding = true
+			_set_mode("hold", str(goal["text"]), "hold %s on deck %d" % [str(goal["key"]), k])
+			_zone_hold(k, at, zr, dt)
+			return
+	_holding = false
 	# Fight near the target (hysteresis: in at ENGAGE, out past ENGAGE_OUT), or once the road there has run out.
 	var road_done := mode == "travel" and _route_key.begins_with(str(goal["key"]) + "@") and not _legs.is_empty() \
 		and _leg_i >= _legs.size()
@@ -231,10 +317,16 @@ func _physics_process(dt: float) -> void:
 	if not in_special and _on_roof(k):
 		_roof_escape(k, dt)
 		return
-	_roof_t = 0.0
+	_roof_done()
 	var key := "%s@%d" % [str(goal["key"]), t_deck]
+	# The last stretch to a zone: the street graph doesn't know what stands inside a block (towers, podiums, a mast), so
+	# plan it on a physics grid to a stand point inside the zone (once per goal; the street route if none is found).
+	var local := zone_key != "" and t_deck == k and _flat(goal["at"] - mech.global_position, mech.up()).length() < LOCAL_R
+	if local:
+		key += "#local"
 	if key != _route_key or (_legs.is_empty() and _route_t > 1.0 and (t_deck != k or dist > ARRIVE * 2.0)):
-		_plan(k, t_deck, at, key, enemy)
+		if not local or not _plan_local(k, goal, key, zone_key):
+			_plan(k, t_deck, at, key, enemy)
 	if _legs.is_empty() and t_deck != k:
 		if dev_travel:
 			_dev_fallback(goal, k, t_deck, at)
@@ -260,6 +352,8 @@ func _goal(k: int) -> Dictionary:
 	var rules := drive.mission.rules
 	if rules == null or rules.outcome != "":
 		return {}
+	if rules.plan != null:
+		return _plan_goal(k)
 	var cur := rules.current()
 	if cur == "extract":
 		var m := rules.marker()
@@ -277,8 +371,144 @@ func _goal(k: int) -> Dictionary:
 	return {}
 
 
-func _live_on(e: EnemyBase, td: int) -> bool:
-	return e != null and is_instance_valid(e) and not e.destroyed() and not e.is_queued_for_deletion() and e.spawn_deck == td
+## The last stretch to a zone on deck k, planned on a LOCAL_STEP grid of street-level points around the zone's centre
+## (a point counts when a ray down from 3.5 m finds floor within 1.2 m of the deck's floor, not from inside a solid,
+## with headroom above it, outside floor
+## cuts; two neighbours connect when rays at 2.5 and 5.5 m between them, in the middle and LOCAL_SIDE to each side, are clear). Breadth-first from the mech to the
+## grid point within STAND_IN of the radius nearest the goal's point (an escort's offset). Sets the stand point (the hold
+## centre from then on) and one walk leg along the path. False when the mech is off the grid or nothing in the zone is
+## reachable (the caller plans on the street graph instead).
+func _plan_local(k: int, goal: Dictionary, key: String, zone_key: String) -> bool:
+	var st := drive.stack
+	var mech := drive.mech
+	var o := drive.mission.rules.objective(task_id)
+	var centre: Vector2 = _zone_of(o)[0] if not o.is_empty() and str(goal["key"]) == task_id else Vector2.INF
+	var ga := _arc_on(k, goal["at"])
+	var want := Vector2(float(ga["x"]), float(ga["s"]))
+	if centre == Vector2.INF:
+		centre = want
+	var r := float(goal["zone"])
+	var n := int(LOCAL_HALF * 2.0 / LOCAL_STEP) + 1
+	var org := centre - Vector2(LOCAL_HALF, LOCAL_HALF)
+	var ma := _arc_on(k, mech.global_position)
+	var mi := Vector2i(roundi((float(ma["x"]) - org.x) / LOCAL_STEP), roundi((float(ma["s"]) - org.y) / LOCAL_STEP))
+	local_plans += 1
+	if mi.x < 0 or mi.y < 0 or mi.x >= n or mi.y >= n:
+		local_fails += 1
+		return false
+	var space := mech.get_world_3d().direct_space_state
+	var floor_at := {}   # Vector2i -> Vector3 floor point, or null
+	var fl := func(c: Vector2i) -> Variant:
+		if floor_at.has(c):
+			return floor_at[c]
+		var v: Variant = null
+		var p2 := org + Vector2(c) * LOCAL_STEP
+		if c.x >= 0 and c.y >= 0 and c.x < n and c.y < n and not planner.in_cut(k, p2, 1.5):
+			var base := st.from_deck_arc(k, p2.x, p2.y, 0.0)
+			var up := st.deck_ring(k).up_at(base)
+			# From just above a mech's knee, counting a start inside something (a podium, a tower's solid base: their
+			# colliders are solid, a ray born inside them reports nothing without hit_from_inside).
+			var q := PhysicsRayQueryParameters3D.create(base + up * 3.5, base - up * 2.0)
+			q.exclude = [mech.get_rid()]
+			q.hit_from_inside = true
+			var h := space.intersect_ray(q)
+			if not h.is_empty() and (h["normal"] as Vector3).dot(up) > 0.8 and ((h["position"] as Vector3) - base).dot(up) < 1.2:
+				var f: Vector3 = h["position"]
+				var q2 := PhysicsRayQueryParameters3D.create(f + up * 0.5, f + up * 7.5)
+				q2.exclude = [mech.get_rid()]
+				q2.hit_from_inside = true
+				if space.intersect_ray(q2).is_empty():
+					v = f
+		floor_at[c] = v
+		return v
+	var start := Vector2i(-1, -1)
+	var best_d := INF
+	for dx in range(-2, 3):
+		for dy in range(-2, 3):
+			var c := mi + Vector2i(dx, dy)
+			if fl.call(c) != null and Vector2(dx, dy).length() < best_d:
+				best_d = Vector2(dx, dy).length()
+				start = c
+	if start.x < 0:
+		local_fails += 1
+		return false
+	var came := {start: start}
+	var queue: Array[Vector2i] = [start]
+	var best := Vector2i(-1, -1)
+	var best_score := INF
+	var dirs: Array[Vector2i] = [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1), Vector2i(1, 1), Vector2i(1, -1),
+		Vector2i(-1, 1), Vector2i(-1, -1)]
+	var qi := 0
+	while qi < queue.size():
+		var c: Vector2i = queue[qi]
+		qi += 1
+		var p2 := org + Vector2(c) * LOCAL_STEP
+		if p2.distance_to(centre) <= r * STAND_IN:
+			var sc := p2.distance_to(want)
+			if sc < best_score:
+				best_score = sc
+				best = c
+		var fa: Vector3 = fl.call(c)
+		var up := st.deck_ring(k).up_at(fa)
+		for d in dirs:
+			var nb := c + d
+			if came.has(nb):
+				continue
+			var fb: Variant = fl.call(nb)
+			if fb == null:
+				continue
+			# A mech's width, not a line: rays at both sides (LOCAL_SIDE) and the middle (a doorway slit isn't a way).
+			var clear := true
+			var side := ((fb as Vector3) - fa).cross(up).normalized() * LOCAL_SIDE
+			for hh: float in [2.5, 5.5]:
+				for off: Vector3 in [Vector3.ZERO, side, -side]:
+					var q := PhysicsRayQueryParameters3D.create(fa + up * hh + off, (fb as Vector3) + up * hh + off)
+					q.exclude = [mech.get_rid()]
+					q.hit_from_inside = true
+					if not space.intersect_ray(q).is_empty():
+						clear = false
+						break
+				if not clear:
+					break
+			if not clear:
+				continue
+			came[nb] = c
+			queue.append(nb)
+	if best.x < 0:
+		local_fails += 1
+		print("[Bot] no reachable stand point in %s's zone on deck %d (%d grid points reached)" % [str(goal["key"]), k, came.size()])
+		return false
+	var path: Array[Vector2i] = [best]
+	while path[-1] != start:
+		path.append(came[path[-1]])
+	path.reverse()
+	var pts: Array = [planner.xt(k, Vector2(float(ma["x"]), float(ma["s"])))]
+	for c in path:
+		pts.append(planner.xt(k, org + Vector2(c) * LOCAL_STEP))
+	var bp := org + Vector2(best) * LOCAL_STEP
+	_stand_key = zone_key
+	_stand_pt = fl.call(best)
+	_route_key = key
+	_route_goal = goal["at"]
+	_route_t = 0.0
+	_legs = [{"kind": "walk", "from": k, "to": k, "pts": pts, "edges": [], "connector": -1}]
+	_leg_i = 0
+	_seg_i = 0
+	_stk_t = 0.0
+	_stk_rem = INF
+	replans += 1
+	print("[Bot] stand point for %s on deck %d at x %.0f s %.0f (%.1f m from the centre, %d steps, %d grid points reached)" % [
+		str(goal["key"]), k, bp.x, bp.y, bp.distance_to(centre), path.size(), came.size()])
+	return true
+
+
+## Untyped on purpose: wrecks past MAX_WRECKS, culled enemies and kills elsewhere free them, and a freed object handed
+## to a typed `EnemyBase` parameter errors at the call itself. Only a live, valid enemy of deck td passes.
+func _live_on(e: Variant, td: int) -> bool:
+	if e == null or not is_instance_valid(e) or not (e is EnemyBase):
+		return false
+	var en := e as EnemyBase
+	return not en.destroyed() and not en.is_queued_for_deletion() and en.spawn_deck == td
 
 
 ## Commit to a target on deck td: keep it TARGET_HOLD s at least; then swap only for one clearly nearer. Fighting, follow
@@ -289,30 +519,272 @@ func _pick_target(td: int, k: int) -> void:
 		_target = null
 	var pb := pilot.bot if pilot != null else null
 	if mode == "fight" and k == td and pb != null and is_instance_valid(pb):
-		var pe: EnemyBase = pb._current_enemy
+		var pe: Variant = pb._current_enemy   # untyped: it may already be freed
 		if _live_on(pe, td) and pe != _target and (_target == null or _target_t > 3.0):
 			_target = pe
 			_target_t = 0.0
 			return
 	var best: EnemyBase = null
 	var best_d := INF
-	for e in drive.combat.squad.enemies:
+	for e: Variant in (drive.combat.squad.enemies as Array):   # untyped: the list may hold freed wrecks
 		if not _live_on(e, td):
 			continue
-		var d := e.global_position.distance_to(pos)
+		var en := e as EnemyBase
+		var d := en.global_position.distance_to(pos)
 		if d < best_d:
 			best_d = d
-			best = e
+			best = en
 	if _target == null:
 		_target = best
 		_target_t = 0.0
 		return
 	if _target_t < TARGET_HOLD or best == null or best == _target:
 		return
-	var cur_d := _target.global_position.distance_to(pos)
+	var cur_d: float = (_target as EnemyBase).global_position.distance_to(pos)
 	if best_d < cur_d * TARGET_SWAP and cur_d - best_d > TARGET_SWAP_MIN:
 		_target = best
 		_target_t = 0.0
+
+
+# --- Plan mode: objectives (docs/design/player-ai.md, "Mission bot: objectives") --------------------------------
+## Read like a player: the rules' replicated state on this machine (host or client), the objective records (snapped sites,
+## the hold zone) and the crew facts. Per deck in order: its primary, then its KNOWN bonuses in order (BONUS_GIVE_UP s
+## each at most), then on the extraction deck the hold; then the next deck. work_deck only moves on.
+
+func _plan_goal(k: int) -> Dictionary:
+	var rules := drive.mission.rules
+	var o := _task(rules)
+	if o.is_empty():
+		return {}
+	var id := str(o["id"])
+	var td := int(o["deck"])
+	var ty := str(o["type"])
+	if ty == "sweep":
+		_pick_target(td, k)
+		if _target != null:
+			return {"deck": td, "at": _target.global_position, "key": id, "text": "sweep deck %d (%s)" % [td, _target.name],
+				"enemy": true, "eye": _core(_target)}
+		# Nothing alive: wait for the deck's waves at its arrival (never the site: the departure is a hole in the floor).
+		var arr: Dictionary = drive.stack.section.arrival(td)
+		return {"deck": td, "at": drive.stack.from_deck_arc(td, float(arr["x"]), float(arr["s"])), "key": id + ":wait",
+			"text": "sweep deck %d: waiting for its waves" % td, "enemy": false, "zone": 30.0}
+	if _live_on(_hunt, td) and k == td:
+		var he := _hunt as EnemyBase
+		return {"deck": td, "at": he.global_position, "key": id + ":hunt", "text": "%s %s: hunting %s" % [ty, id, he.name],
+			"enemy": true, "eye": _core(he)}
+	var z := _zone_of(o)
+	var c: Vector2 = z[0]
+	var r: float = z[1]
+	if role == "escort":
+		var ang := float(role_index) * 2.4
+		c += Vector2(cos(ang), sin(ang)) * r * ESCORT_OFF
+	var txt := "%s %s" % [ty, id]
+	if rules.obj_state(id) != "hidden":
+		txt += " (%.0f / %.0f)" % [rules.obj_progress(id), float(rules._tot.get(id, 0.0))]
+	return {"deck": td, "at": drive.stack.from_deck_arc(td, c.x, c.y), "key": id, "text": txt, "enemy": false, "zone": r}
+
+
+## The place an objective is held: [centre (x, s) on its deck, radius m]. The rules' record: snapped sites, the zone.
+func _zone_of(o: Dictionary) -> Array:
+	var ro := drive.mission.rules.objective(str(o["id"]))
+	var c := Vector2(float(ro["site"]["x"]), float(ro["site"]["s"]))
+	var r := float(ro["radius"])
+	match str(o["type"]):
+		"hold":
+			var zr: Rect2 = ro["zone"]
+			c = zr.get_center()
+			r = minf(zr.size.x, zr.size.y) * 0.5
+		"defend":
+			r = minf(r, DEFEND_HOLD_R)
+	return [c, r]
+
+
+## The objective to do now ({} when nothing is left, or briefly between decks).
+func _task(rules: MissionRules) -> Dictionary:
+	var n := rules.deck_count
+	var hold := rules.objective("hold")
+	while work_deck < n:
+		var p := rules.objective("d%d_p" % work_deck)
+		if not p.is_empty() and not rules.is_done(str(p["id"])) and rules.obj_state(str(p["id"])) != "failed":
+			return _start_task(p)
+		if bonuses:
+			for o: Dictionary in rules.objectives:
+				var bid := str(o["id"])
+				if int(o["deck"]) != work_deck or o["role"] != "bonus" or _skipped.has(bid):
+					continue
+				var st := rules.obj_state(bid)
+				if st != "known" and st != "active":
+					continue
+				if bid == task_id and _task_t > BONUS_GIVE_UP:
+					_skipped[bid] = true
+					FlowLog.say("bot", "gave up on bonus %s after %.0f s" % [bid, _task_t])
+					continue
+				return _start_task(o)
+		if not hold.is_empty() and int(hold["deck"]) == work_deck and not rules.is_done("hold"):
+			return _start_task(hold)
+		if _advance_t < ADVANCE_WAIT:
+			return {}   # a bonus chained to what just finished may show up on the next evaluate
+		work_deck += 1
+		_advance_t = 0.0
+		FlowLog.say("bot", "deck %d's objectives done, on to deck %d" % [work_deck - 1, work_deck])
+	if not hold.is_empty() and not rules.is_done("hold"):
+		return _start_task(hold)
+	return {}
+
+
+func _start_task(o: Dictionary) -> Dictionary:
+	var id := str(o["id"])
+	if id != task_id:
+		task_id = id
+		_task_t = 0.0
+		_hunt = null
+		_quiet_t = 0.0
+		_stuck_prog_t = 0.0
+		_prog_last = -1.0
+		task_log.append({"t": snappedf(t, 0.1), "id": id, "type": str(o["type"])})
+		FlowLog.say("bot task", "%s (%s %s on deck %d), role %s" % [id, str(o["role"]), str(o["type"]), int(o["deck"]), role])
+	_advance_t = 0.0
+	return o
+
+
+## Once a frame (plan mode): the role, the timers, and whether to leave the zone to hunt.
+func _obj_tick(dt: float) -> void:
+	var rules := drive.mission.rules
+	if rules == null or rules.plan == null:
+		return
+	_task_t += dt
+	_advance_t += dt
+	_update_role()
+	var pb := pilot.bot if pilot != null else null
+	var engaged := pb != null and is_instance_valid(pb) and pb.ai_state == PlayerBot.STATE_ENGAGE
+	if engaged:
+		_quiet_t = 0.0
+	elif _holding:
+		_quiet_t += dt
+	if _hunt != null:
+		_hunt_t += dt
+		if not _live(_hunt) or _hunt_t > HUNT_GIVE_UP:
+			_hunt = null
+	var o := rules.objective(task_id)
+	if o.is_empty() or not _holding:
+		return
+	var ty := str(o["type"])
+	if ty == "flag":
+		var pr := rules.obj_progress(task_id)
+		if pr > _prog_last + 0.05:
+			_prog_last = pr
+			_stuck_prog_t = 0.0
+		else:
+			_stuck_prog_t += dt
+	if _hunt != null:
+		return
+	var want := false
+	match ty:
+		"flag":   # contested: something inside the ring stops the clock
+			want = _stuck_prog_t > (4.0 if role == "escort" else HUNT_AFTER)
+		"defend":   # wave units hanging back (the defend is done only once they are all dead); the escort goes at once
+			want = rules.obj_state(task_id) == "active" and (_quiet_t > HUNT_AFTER or role == "escort")
+	if want:
+		_hunt = _pick_hunt(o, ty == "defend", role == "escort" and _quiet_t <= HUNT_AFTER)
+		_hunt_t = 0.0
+		_stuck_prog_t = 0.0
+		_quiet_t = 0.0
+		if _hunt != null:
+			FlowLog.say("bot", "%s: leaving the zone to hunt %s" % [task_id, (_hunt as EnemyBase).name])
+			_said = ""
+
+
+## An enemy of the objective's deck worth leaving the zone for: wave units first on a defend (any distance: the defend
+## needs them dead; `near_only`: within HUNT_RANGE of the site), else the nearest to the site within HUNT_RANGE.
+## Only EnemySquad's enemies (banners and other scenery targets are never hunted).
+func _pick_hunt(o: Dictionary, waves_first: bool, near_only: bool) -> Variant:
+	var td := int(o["deck"])
+	var c: Vector2 = _zone_of(o)[0]
+	var best: Variant = null
+	var best_d := INF
+	for e: Variant in (drive.combat.squad.enemies as Array):
+		if not _live_on(e, td):
+			continue
+		var en := e as EnemyBase
+		var a := drive.stack.to_deck_arc(en.global_position)
+		var d := c.distance_to(Vector2(float(a["x"]), float(a["s"])))
+		var wave := waves_first and en.wave != ""
+		if (not wave or near_only) and d > HUNT_RANGE:
+			continue
+		var score := d - (1000.0 if wave else 0.0)
+		if score < best_d:
+			best_d = score
+			best = en
+	return best
+
+
+func _live(e: Variant) -> bool:
+	return e != null and is_instance_valid(e) and e is EnemyBase and not (e as EnemyBase).destroyed() \
+		and not (e as EnemyBase).is_queued_for_deletion()
+
+
+## Co-op split, the same on every machine: the standing crew sorted by peer id; the first holds the zone ("anchor"), the
+## others ("escort") hold off-centre and go after threats near it. Alone: "solo".
+func _update_role() -> void:
+	var peers: Array = []
+	for c: Dictionary in drive.mission.crew_facts():
+		if not bool(c["downed"]):
+			peers.append(int(c["peer"]))
+	peers.sort()
+	role_index = maxi(peers.find(MechSpawn.owner_of(drive.mech)), 0)
+	role = "solo" if peers.size() <= 1 else ("anchor" if role_index == 0 else "escort")
+
+
+## Stand in the zone (centre `at`, radius r): PlayerBot aims and fires; its legs only while it engages / dodges / takes
+## cover and stays near the centre; past HOLD_DRIFT of r, walk back (still facing the enemy when engaging).
+func _zone_hold(k: int, at: Vector3, r: float, _dt: float) -> void:
+	var mech := drive.mech
+	var up := mech.up()
+	var off := _flat(at - mech.global_position, up)
+	var d := off.length()
+	_roof_done()
+	var pb := pilot.bot if pilot != null else null
+	var st := pb.ai_state if pb != null and is_instance_valid(pb) else ""
+	if d > r * HOLD_DRIFT:
+		var dir := _nav.avoid_obstacles(mech, off.normalized(), mech.get_world_3d().direct_space_state, up)
+		dir = _veto(k, dir)
+		if st == PlayerBot.STATE_ENGAGE:
+			var b := mech.global_transform.basis
+			mech.move_input = Vector2(dir.dot(b.x), -dir.dot(b.z)).limit_length(1.0)
+			mech.running = false
+			mech.thrust_input = false
+		else:
+			_steer(dir, d > r, false)
+		return
+	if st in [PlayerBot.STATE_ENGAGE, PlayerBot.STATE_DODGE, PlayerBot.STATE_TAKE_COVER]:
+		_veto_inputs(k)
+		if st != PlayerBot.STATE_DODGE:
+			mech.thrust_input = false
+		return
+	mech.move_input = Vector2.ZERO   # hold still; PlayerBot keeps turning toward what it heard or saw
+	mech.running = false
+	mech.thrust_input = false
+
+
+## Friendly fire is on by default: hold the trigger (after PlayerBot chose it) while a teammate stands near the line from
+## the eye to the aim point, or near the aim point itself (splash).
+func _ff_guard() -> void:
+	if drive.crew_sync == null or drive.combat == null or drive.combat.rack == null:
+		return
+	var rack := drive.combat.rack
+	var mech := drive.mech
+	var eye := mech.global_position + mech.up() * PlayerBot.EYE_HEIGHT
+	var aim := rack.aim_point
+	for p: int in drive.crew_sync.puppets:
+		var pp := drive.crew_sync.puppets[p] as MechPuppet
+		if pp == null or not is_instance_valid(pp) or pp.mech == null or not is_instance_valid(pp.mech):
+			continue
+		var c: Vector3 = pp.mech.global_position + mech.up() * 4.0
+		var q := Geometry3D.get_closest_point_to_segment(c, eye, aim)
+		if q.distance_to(c) < FF_CLEAR or aim.distance_to(c) < FF_SPLASH:
+			rack.set_trigger(false)
+			ff_holds += 1
+			return
 
 
 # --- Routes ------------------------------------------------------------------------------------------------
@@ -341,7 +813,8 @@ func _plan(k: int, t_deck: int, at: Vector3, key: String, end_on_road: bool = fa
 	var me := _arc(drive.mech.global_position)
 	var goal_xt := _xt(at)
 	var r := drive.stack.section.radius_of(t_deck)
-	_legs = planner.plan(k, Vector2(float(me["x"]), float(me["s"])), t_deck, Vector2(goal_xt.x, goal_xt.y * r), end_on_road)
+	_legs = planner.plan(k, Vector2(float(me["x"]), float(me["s"])), t_deck, Vector2(goal_xt.x, goal_xt.y * r), end_on_road,
+		float(me["h"]))
 	replans += 1
 
 
@@ -563,7 +1036,10 @@ func _stuck_tick(dt: float, leg: Dictionary, left: float, me: Vector2, kind: Str
 	if _stk_t < STUCK_WIN:
 		return
 	_stk_t = 0.0
-	if _stk_rem - left >= STUCK_MIN or _stk_rem == INF:
+	# Progress is the leg getting shorter, or failing that the mech getting somewhere (a re-plan changes the leg).
+	var moved := mech.global_position.distance_to(_stk_pos)
+	_stk_pos = mech.global_position
+	if (_stk_rem - left >= STUCK_MIN and _stk_rem != INF) or moved >= STUCK_MIN * 2.0:
 		_stk_rem = left
 		return
 	_stk_rem = left
@@ -688,7 +1164,7 @@ func _fight(k: int, t_deck: int, at: Vector3, eye: Vector3, dt: float) -> void:
 	if engaging:
 		_clear_route()
 		_veto_inputs(k)
-		_roof_t = 0.0
+		_roof_done()
 		return
 	if not _perch.is_empty():
 		_perch_step(k, dt)
@@ -696,7 +1172,7 @@ func _fight(k: int, t_deck: int, at: Vector3, eye: Vector3, dt: float) -> void:
 	if _no_los_t > 3.0 and _on_roof(k):
 		_roof_escape(k, dt)   # nothing to shoot from up there: back to the streets
 		return
-	_roof_t = 0.0
+	_roof_done()
 	# No line of sight: this layer drives (PlayerBot exploring would wander off the objective): to the vantage, or
 	# toward the target until FIGHT_CLOSE / the road ends; there it holds, or lets PlayerBot advance on its own.
 	var goal := _vantage if _vantage != Vector3.INF else at
@@ -892,6 +1368,9 @@ static func _flat(v: Vector3, up: Vector3) -> Vector3:
 # --- DEV travel (fallback) -------------------------------------------------------------------------------------
 
 func _dev_fallback(goal: Dictionary, k: int, t_deck: int, at: Vector3) -> void:
+	if t_deck < k and _legs.is_empty():
+		FlowLog.say("bot", "no way up from deck %d to deck %d (no ramp; lifts don't move yet): DEV travel" % [k, t_deck])
+		_said = ""
 	if bool(goal.get("enemy", false)) and t_deck == k:
 		_dev_jump_near(t_deck, at, k)
 	elif str(goal["key"]) == "extract":
@@ -1023,12 +1502,6 @@ func _roof_escape(k: int, dt: float) -> void:
 	var mech := drive.mech
 	var a := _arc_on(k, mech.global_position)
 	var p := Vector2(float(a["x"]), float(a["s"]))
-	var ci := planner.cell_at(k, p)
-	var r: Rect2 = planner.cells[k][ci]
-	var sides := [[p.x - r.position.x, Vector2(r.position.x - ROOF_OUT, p.y)], [r.end.x - p.x, Vector2(r.end.x + ROOF_OUT, p.y)],
-		[p.y - r.position.y, Vector2(p.x, r.position.y - ROOF_OUT)], [r.end.y - p.y, Vector2(p.x, r.end.y + ROOF_OUT)]]
-	sides.sort_custom(func(u: Array, v: Array) -> bool: return float(u[0]) < float(v[0]))
-	var out: Vector2 = sides[_roof_tries % 4][1]
 	if _roof_t <= 0.0:
 		if t - _roof_log_t > 5.0:
 			_roof_log_t = t
@@ -1036,18 +1509,62 @@ func _roof_escape(k: int, dt: float) -> void:
 		_said = ""
 		_clear_route()
 		_roof_anchor = mech.global_position
+		_roof_out = _exit_side(k, p, float(a["h"]), mech.global_position, _roof_tries)
 	_roof_t += dt
-	if _roof_t > 1.2:
+	_roof_span += dt
+	if _roof_t > 1.0:
 		if mech.global_position.distance_to(_roof_anchor) < 1.0:
-			_roof_tries += 1   # try the next-nearest side, with a hop when the thrusters are cool enough
+			# Not moving: the next clear side, with a hop over whatever holds it (parapet, roof unit).
+			_roof_tries += 1
+			_roof_out = _exit_side(k, p, float(a["h"]), mech.global_position, _roof_tries)
 			if mech.heat / maxf(mech.heat_cap, 1.0) < 0.7:
-				_hop_t = 1.1
+				_hop_t = 0.9
 		_roof_t = 0.01
 		_roof_anchor = mech.global_position
 	var thrust := _hop_t > 0.0
 	if _hop_t > 0.0:
 		_hop_t -= dt
-	_steer(_arc_to_world(k, out - p).normalized(), true, thrust)
+	if _roof_out == Vector2.INF:
+		_stand(thrust)
+		return
+	_steer(_arc_to_world(k, _roof_out - p).normalized(), true, thrust)
+
+
+## Off the roof for now: remember the longest escape (stats: roof_max).
+func _roof_done() -> void:
+	if _roof_span > 0.0:
+		roof_max = maxf(roof_max, _roof_span)
+		if _roof_span > 3.0:
+			print("[Bot] off the roof after %.1f s" % _roof_span)
+	_roof_span = 0.0
+	_roof_t = 0.0
+	_roof_tries = 0
+
+
+## Where to walk off a roof (or the top of anything inside a block) at p, h m above deck k's floor: ROOF_OUT m past a
+## side of its block, onto the road. The sides are taken nearest first; one counts when a ray at a mech's chest height
+## from `from_w` to above that point hits nothing (nothing taller in the way). `skip` passes over that many clear sides
+## (the escape got stuck on the earlier ones). INF when no side is clear (the caller hops, or rejects the roof).
+func _exit_side(k: int, p: Vector2, h: float, from_w: Vector3, skip: int = 0) -> Vector2:
+	var ci := planner.cell_at(k, p)
+	if ci < 0:
+		return Vector2.INF
+	var r: Rect2 = planner.cells[k][ci]
+	var sides := [[p.x - r.position.x, Vector2(r.position.x - ROOF_OUT, p.y)], [r.end.x - p.x, Vector2(r.end.x + ROOF_OUT, p.y)],
+		[p.y - r.position.y, Vector2(p.x, r.position.y - ROOF_OUT)], [r.end.y - p.y, Vector2(p.x, r.end.y + ROOF_OUT)]]
+	sides.sort_custom(func(u: Array, v: Array) -> bool: return float(u[0]) < float(v[0]))
+	var st := drive.stack
+	var space := drive.mech.get_world_3d().direct_space_state
+	var up := st.deck_ring(k).up_at(from_w)
+	var clear: Array = []
+	for sd: Array in sides:
+		var q := PhysicsRayQueryParameters3D.create(from_w + up * 4.0, st.from_deck_arc(k, (sd[1] as Vector2).x, (sd[1] as Vector2).y, h + 4.0))
+		q.exclude = [drive.mech.get_rid()]
+		if space.intersect_ray(q).is_empty():
+			clear.append(sd[1])
+	if clear.is_empty():
+		return sides[skip % 4][1] if skip > 0 else Vector2.INF
+	return clear[skip % clear.size()]
 
 
 ## A roof of deck k (BotNavigator's jumpable roofs) 14-110 m from the target whose top sees `look` from a mech's eye,
@@ -1077,6 +1594,9 @@ func _pick_perch(k: int, look: Vector3) -> Dictionary:
 		var hit := space.intersect_ray(q)
 		if hit.is_empty() or eye.distance_to(hit["position"] as Vector3) >= eye.distance_to(look) - 2.6:
 			var a := _arc_on(k, cw)
+			# Only a roof it can walk off again: a side of its block with nothing taller in the way.
+			if _exit_side(k, Vector2(float(a["x"]), float(a["s"])), float(a["h"]), cw) == Vector2.INF:
+				continue
 			FlowLog.say("bot", "climbing a roof on deck %d (x %.0f s %.0f, %.0f m up) to see the target" % [k, float(a["x"]),
 				float(a["s"]), float((c[0] as Dictionary)["roof_h"])])
 			_said = ""

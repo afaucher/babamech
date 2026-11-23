@@ -7,9 +7,14 @@ extends NetTest
 
 const PEERS := 2
 const LINKS := ["off"]
-const NET_TIMEOUT := 340   # test_runner: this run gets 340 s (a whole mission), not the default 90
+const NET_TIMEOUT := 700   # test_runner: this run gets 700 s (a whole mission), not the default 90. Keep = WIN_TIMEOUT + 80
+#                            (load ~15 s, the end flow, slack): the runner reads this literal, so update both together.
 const SEED := 4
-const WIN_TIMEOUT := 260.0   # a crew of 2 faces about twice the enemies; the bot walks (shafts, ramps) instead of jumping
+const WIN_TIMEOUT := 620.0   # re-measured 2026-11-23 (Engine subagent): won at ~332 s with one death (respawn on deck 0 +
+#                              a DEV jump back); a -TestAll run was still walking to extraction at 400 s (464 m left,
+#                              ~415 s). Slower clears since the hunt / reveal tuning and the plan-mode waves; ~1.5x the
+#                              worst. Was 400 (measured 2026-11-22: dev travel on 213 s, off ~275 s). Re-measure when it
+#                              gets close: the test prints both bots' stats.
 
 var td: TestDrive
 

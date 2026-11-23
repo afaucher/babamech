@@ -28,7 +28,7 @@ signal healed(amount: float, component: String, src: String)
 
 var target_id := ""
 var owner_peer := 0
-var team := ""                    ## faction ("player", "enemy", or "" neutral); shots skip same non-empty team
+var team := ""                    ## faction ("player", "enemy", or "" neutral); same team spared (CombatWorld.spares)
 var mass_class := "mech"
 var max_hp := {"body": 1000.0}
 var hp := {}
@@ -41,6 +41,25 @@ var ground_y := 0.0
 var up := Vector3.UP              ## the ground frame's up (unit); ground_y is measured along it
 var probe_height := 1.0           ## m above the origin where wall probes start (the body's centre)
 var body_radius := 0.8            ## m: how close a wall stops it
+## Bumped by add_hit_sphere: with hit_shapes.size() it tells CombatWorld.first_hit its cached world spheres are stale.
+var shapes_rev := 0
+## CombatWorld.first_hit's cache of the hit spheres in world space (refresh_world_cache), valid while global_transform,
+## shapes_rev and hit_shapes.size() match what it was built from. Same maths as world_spheres(); local, never synced.
+var wc_xf := Transform3D()
+var wc_rev := -1
+var wc_n := -1
+var wc_centers := PackedVector3Array()
+var wc_radii := PackedFloat64Array()    ## float(radius) x scale, exactly as world_spheres computes it
+var wc_comps: Array = []
+var wc_bound_c := Vector3.ZERO          ## a sphere holding every hit sphere (broad-phase reject), padded
+var wc_bound_r := -1.0
+var wc_lc := PackedVector3Array()         ## hit_shapes' local centres / radii, unpacked at shapes_rev wc_lrev
+var wc_lr := PackedFloat64Array()
+var wc_lrev := -1
+## Bumped by every add_hit_sphere on any target: CombatWorld's packed target bounds (first_hit during advance's effect
+## step) are rebuilt when it changed, so a target that gains spheres mid-step is seen at once. (Removing spheres only
+## shrinks a target: the packed bound still holds it.)
+static var shapes_epoch := 0
 
 
 func _init() -> void:
@@ -52,7 +71,10 @@ func _init() -> void:
 func net_fields() -> Dictionary:
 	return {"target_id": Net.SPAWN, "owner_peer": Net.SPAWN, "team": Net.SPAWN, "mass_class": Net.SPAWN, "max_hp": Net.SPAWN, "hp": Net.OWNER,
 		"hit_shapes": Net.SPAWN, "heat": Net.OWNER, "knock": Net.OWNER, "aim_kick": Net.OWNER, "ground_y": Net.SPAWN, "up": Net.SPAWN,
-		"probe_height": Net.SPAWN, "body_radius": Net.SPAWN}
+		"probe_height": Net.SPAWN, "body_radius": Net.SPAWN,
+		"shapes_rev": Net.LOCAL, "wc_xf": Net.LOCAL, "wc_rev": Net.LOCAL, "wc_n": Net.LOCAL, "wc_centers": Net.LOCAL,
+		"wc_radii": Net.LOCAL, "wc_comps": Net.LOCAL, "wc_bound_c": Net.LOCAL, "wc_bound_r": Net.LOCAL,
+		"wc_lc": Net.LOCAL, "wc_lr": Net.LOCAL, "wc_lrev": Net.LOCAL}
 
 
 ## Set HP per component (also resets hp).
@@ -63,6 +85,45 @@ func set_max_hp(by_component: Dictionary) -> void:
 
 func add_hit_sphere(component: String, center: Vector3, radius: float) -> void:
 	hit_shapes.append({"component": component, "center": center, "radius": radius})
+	shapes_rev += 1
+	shapes_epoch += 1
+
+
+## Rebuild the world-space sphere cache (wc_*) from `xf` (= global_transform): CombatWorld.first_hit calls it when
+## wc_xf / wc_rev / wc_n no longer match. Centres and radii use world_spheres()' exact maths, so hits are unchanged.
+func refresh_world_cache(xf: Transform3D) -> void:
+	wc_xf = xf
+	wc_rev = shapes_rev
+	var n := hit_shapes.size()
+	wc_n = n
+	if wc_lrev != shapes_rev or wc_lc.size() != n:
+		# the local spheres unpacked once per shape change (no dictionary reads per transform change)
+		wc_lrev = shapes_rev
+		wc_lc.resize(n)
+		wc_lr.resize(n)
+		wc_comps.resize(n)
+		for i in n:
+			var hs: Dictionary = hit_shapes[i]
+			wc_lc[i] = hs["center"] as Vector3
+			wc_lr[i] = float(hs["radius"])
+			wc_comps[i] = hs["component"]
+	wc_centers.resize(n)
+	wc_radii.resize(n)
+	var sc := xf.basis.get_scale().x
+	var sum := Vector3.ZERO
+	for i in n:
+		var c: Vector3 = xf * wc_lc[i]
+		wc_centers[i] = c
+		wc_radii[i] = wc_lr[i] * sc
+		sum += c
+	if n == 0:
+		wc_bound_r = -1.0
+		return
+	wc_bound_c = sum / float(n)
+	var br := 0.0
+	for i in n:
+		br = maxf(br, wc_bound_c.distance_to(wc_centers[i]) + absf(wc_radii[i]))
+	wc_bound_r = br * 1.0001 + 0.01       # padded: the reject must never drop a sphere a shot would meet
 
 
 ## Hit spheres in world space: [{"component", "center", "radius"}]. CombatWorld.first_hit inlines this maths over

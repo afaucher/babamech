@@ -1,7 +1,7 @@
 class_name PilotHeadCorn
 extends PilotFace
-## The corn pilot (art/picks/head_corn.png), rigged: the static MechHeadMeshes corn cut into rigid pieces (same sections,
-## kernel banding, girth, nose and stern brow at rest), plus lids, moving pupils, the mouth line split into two half bars
+## The corn pilot (art/picks/head_corn.png), rigged: the static MechHeadMeshes corn's sections as one body mesh
+## (PilotFace.add_body; same kernel banding, girth, nose and stern brow at rest), plus lids, moving pupils, the mouth line split into two half bars
 ## hinged at the centre (MouthL / MouthR: mouth_curve turns the corners up / down, brow_skew makes it lopsided) and a lip
 ## plate under it (Jaw) that drops to show a dark mouth.
 ## Flair = the five husk leaves, each on a hinge at its base (Husk0..4, round the ring from the head's right): raised they
@@ -17,7 +17,6 @@ const MOUTH := Color(0.2, 0.09, 0.03)
 ## Cob sections [y, centre z, half width, half depth] (as MechHeadMeshes._corn).
 const SECS := [[0.0, 0.0, 0.2, 0.2], [0.2, 0.0, 0.32, 0.32], [0.5, 0.0, 0.34, 0.34], [0.82, 0.0, 0.31, 0.31],
 	[1.08, 0.0, 0.23, 0.23], [1.26, 0.0, 0.11, 0.11]]
-const SLEEVE := 1.04
 const HUSKS := 5
 ## Husk hinge: radians of flare per radian of flair pitch, the most they close in (they would cut into the cob), and the
 ## sideways lean per radian of flair roll.
@@ -41,6 +40,8 @@ var _dirs: Array[Vector3] = []
 
 func _init() -> void:
 	id = "corn"
+	# The stalk and the cob's bottom band take the bend (the stalk's top ring halfway); from the 0.5 ring up the cob is rigid.
+	body_bend = Vector2(0.0, 0.4)
 	var g := float(MechHeadMeshes.GIRTH.get("corn", 1.0))
 	girth = Vector3(g, 1.0, g)
 	flair_pieces = []
@@ -62,16 +63,14 @@ func _init() -> void:
 func build_pieces() -> void:
 	# The neck bends at the base: NeckLow is the stalk end, NeckHigh a bare joint, the Skull the cob above it.
 	add_piece("NeckLow", "", Vector3.ZERO)
-	var k := kit()
-	k.loft([_ring(SECS[0]), _ring(SECS[1])], _colour, false, false)
-	add_neck_plug(k, _ring(SECS[0]))
-	add_mesh("NeckLow", k)
 	add_piece("NeckHigh", "NeckLow", Vector3(0.0, 0.2, 0.0))
-
 	add_piece("Skull", "NeckHigh", Vector3(0.0, 0.2, 0.0))
+	# The body: one loft, stalk end to the cob's tip.
+	var shell := kit()
+	shell.loft([_ring(SECS[0]), _ring(SECS[1]), _ring(SECS[2]), _ring(SECS[3]), _ring(SECS[4]), _ring(SECS[5])], _colour,
+		false, true)
+	add_neck_plug(shell, _ring(SECS[0]))
 	var ks := kit()
-	ks.loft([_ring(_lerp_sec(SECS[0], SECS[1], 0.16), SLEEVE), _ring(SECS[2]), _ring(SECS[3]), _ring(SECS[4]),
-		_ring(SECS[5])], _colour, false, true)
 	build_eye_set(ks, Vector3(0.13, 0.66, -0.32), Vector3(0.3, 0.0, -0.95), 1.15,
 		{"brow": HUSK, "lid": YELLOW.darkened(0.08), "iris": MechHeadMeshes.EYE_WHITE, "pupil": PUPIL},
 		{"eye": 0.06, "pupil": 0.03})
@@ -81,8 +80,9 @@ func build_pieces() -> void:
 	for p: Vector2 in [Vector2(-0.1, 0.36), Vector2(0.1, 0.36), Vector2(0.1, 0.275), Vector2(-0.1, 0.275)]:
 		mouth.append(Vector3(p.x, p.y, -_face_r(p.y) * FLAT - 0.004))
 	ks.poly(mouth, MOUTH, Vector3(0.0, 0.32, 0.0))
-	add_mesh("Skull", ks)
+	add_body(shell, ks)
 
+	var k: MeshKit
 	for side: float in [-1.0, 1.0]:
 		var n := "MouthL" if side < 0.0 else "MouthR"
 		add_piece(n, "Skull", Vector3(0.0, 0.38, -0.33))

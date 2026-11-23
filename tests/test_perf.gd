@@ -26,11 +26,27 @@ func _profile_test_drive() -> void:
 	td.drive_override = true
 	td.combat.rack.read_input = false
 	td.combat.rack.manual_aim = true
+	# The loop below steps the mech, rig, rack and CombatWorld itself (to time each): their own physics callbacks would
+	# step them a second time every frame (the game at double speed, twice the shots and AI), so they are off here.
+	td.mech.set_physics_process(false)
+	td.rig.set_physics_process(false)
+	td.combat.set_physics_process(false)
 
-	# Alert enemies so AI pathing, steering, telegraphs, firing, and combat effects are all active!
+	# A REPRESENTATIVE ENCOUNTER (written reason): the garrison is spread over every deck (EnemySpawner, encounter
+	# sites, a 70 m safe bubble), so from the entry spawn the nearest awake enemy stands ~330 m off and nobody engages.
+	# A real fight is the crew ~70 m from the entry deck's garrison, that whole deck awake (EnemySquad.deck_awake) and
+	# the other decks asleep, as in a mission. Put the mech on the entry deck's road crossing nearest to 70 m from its
+	# closest live enemy.
+	var deck0 := td.stack.deck_at(td.mech.global_position) if td.stack != null else 0
+	if td.stack != null:
+		_place_near_garrison(td, deck0, 70.0)
+		await frames(2)
+	var me := td.combat.player_target.target_id if td.combat.player_target != null else "player1"
+	# Alert enemies (from the mech's own id, so the alert lands) so AI pathing, steering, telegraphs, firing, and combat
+	# effects are all active!
 	for e in td.combat.enemies:
 		if is_instance_valid(e) and not e.destroyed():
-			e.apply_damage(1.0, "", "player1")
+			e.apply_damage(1.0, "", me)
 
 	var frame_ms: Array[float] = []
 	var spikes: Array[String] = []
@@ -58,11 +74,14 @@ func _profile_test_drive() -> void:
 		td.mech.move_input = Vector2(1.0 if (f / 40) % 2 == 0 else -1.0, 0.5)
 		td.mech.running = (f % 80) > 40
 		td.mech.thrust_input = (f >= 45 and f < 80) or (f >= 150 and f < 185)
-		var aim_e: EnemyBase = null
+		var aim_e: EnemyBase = null   # the nearest live enemy on the mech's deck
+		var aim_d := INF
 		for e in td.combat.enemies:
-			if is_instance_valid(e) and not e.destroyed():
-				aim_e = e
-				break
+			if is_instance_valid(e) and not e.destroyed() and e.spawn_deck == deck0:
+				var d := e.global_position.distance_to(td.mech.global_position)
+				if d < aim_d:
+					aim_d = d
+					aim_e = e
 		if aim_e != null:
 			td.combat.rack.aim_point = aim_e.global_position + Vector3(0.0, 2.5, 0.0)
 			td.combat.rack.set_trigger(f >= 20 and f < 190)
@@ -132,3 +151,41 @@ func _profile_test_drive() -> void:
 		audio.bank.shutdown_async()
 	td.queue_free()
 	await frames(2)
+
+
+## The road crossing of deck `k` (CityPlan.road_graph: open street) whose distance to the nearest live enemy of that
+## deck is closest to `want` m; the mech goes there, keeping its heading.
+func _place_near_garrison(td: TestDrive, k: int, want: float) -> void:
+	var nodes: Array = td.stack.decks[k].plan.road_graph()["nodes"]
+	var best := td.mech.global_position
+	var best_err := INF
+	var best_d := INF
+	for n: Vector2 in nodes:
+		var p := td.stack.from_deck_arc(k, n.x, n.y, CityPlan.CURB_H + 0.3)
+		var dmin := INF
+		for e in td.combat.enemies:
+			if is_instance_valid(e) and not e.destroyed() and e.spawn_deck == k:
+				dmin = minf(dmin, p.distance_to(e.global_position))
+		if absf(dmin - want) < best_err:
+			best_err = absf(dmin - want)
+			best = p
+			best_d = dmin
+	var xf := td.mech.global_transform
+	xf.origin = best
+	td.mech.global_transform = xf
+	td.mech.velocity = Vector3.ZERO
+	td.rig.gait.reset([])
+	var awake := 0
+	for e in td.combat.enemies:
+		if is_instance_valid(e) and not e.destroyed() and td.combat.squad.deck_awake(e.spawn_deck):
+			awake += 1
+	print("[perf] encounter: deck %d crossing %.0f m from its nearest enemy; %d of %d enemies on that deck, %d awake" % [k,
+		best_d, _on_deck(td, k), td.combat.enemies.size(), awake])
+
+
+func _on_deck(td: TestDrive, k: int) -> int:
+	var n := 0
+	for e in td.combat.enemies:
+		if is_instance_valid(e) and not e.destroyed() and e.spawn_deck == k:
+			n += 1
+	return n

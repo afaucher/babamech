@@ -43,7 +43,13 @@ func run_host() -> void:
 	var up := td.stack.ring().up_at(pc)
 	var fwd := td.mech.forward()
 	fwd = (fwd - up * fwd.dot(up)).normalized()
+	# A straight 30 m step leaves the curved floor (it ends ~30^2/2R outside it, under deck k, where the host's deck
+	# re-home would move E to the sleeping deck below): drop the spot back onto deck k's floor.
 	var spot := pc + fwd * 30.0
+	var dr := td.stack.deck_ring(k)
+	up = dr.up_at(spot)
+	spot -= up * dr.height(spot)
+	fwd = (fwd - up * fwd.dot(up)).normalized()
 	e.global_transform = Transform3D(Basis(fwd.cross(up).normalized(), up, -fwd), spot)
 	e.ground_y = spot.dot(up)
 	e.sight_range = 1.0
@@ -52,6 +58,8 @@ func run_host() -> void:
 	e.ai_mode = "live"
 	await sleep(0.5)
 	if not check(not e.is_alerted(), "E is not alerted before the shot (%s)" % e.ai_state):
+		return
+	if not check(e.spawn_deck == k and sq.deck_awake(k), "E is still on the awake entry deck (deck %d)" % e.spawn_deck):
 		return
 	var checks0 := sq.hear_checks
 	command(c1, "fire", {"eye": e.eye_world(), "n": e.net_id})
@@ -98,12 +106,12 @@ func run_client() -> void:
 				var side := to_e.cross(up).normalized()
 				var aim := eye + side * PASS_BY
 				var rec := Combat.fire_record(td.combat.net.local_shooter, p, "side_l", "autocannon", from, aim, world.now, 9900, 0.0)
-				var shot := world.fire(rec)
+				var fired := world.fire(rec) != null    # now: the shell is freed once it lands
 				var miss := Geometry3D.get_closest_point_to_segment(eye, from, aim).distance_to(eye)
 				var puppet := sync.by_net.get(int(c["n"])) as EnemyBase
 				await until(func() -> bool: return puppet != null and is_instance_valid(puppet) and puppet.is_alerted(), 8.0)
 				var sq := td.combat.squad
-				report("fired", {"fired": shot != null, "miss": miss,
+				report("fired", {"fired": fired, "miss": miss,
 					"alerted": puppet != null and is_instance_valid(puppet) and puppet.is_alerted(),
 					"state": puppet.ai_state if puppet != null and is_instance_valid(puppet) else "missing",
 					"hear_checks": sq.hear_checks, "pending": sq.pending_hearings()})

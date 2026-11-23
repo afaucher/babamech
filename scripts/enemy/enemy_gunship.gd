@@ -1,0 +1,720 @@
+class_name EnemyGunship
+extends EnemyBase
+## Close-Range Valkyrie Rocket Gunship ("gunship"):
+##   - Aerial swoop-strafer hovering 8.5-15 m above its curved RingFrame deck (distinct from unarmed EnemyDrone).
+##   - Closes from afar via low cover-skim flanking (9.5-11.5 m, 17 m/s, EnemySquad.find_cover_path) into <= 68 m range.
+##   - Attack run: strafes laterally at 8.5-11 m banking into turns, telegraphs 0.70 s, fires 4-rocket alternating
+##     left/right pod salvo (enemy_gunship_rockets), then breaks off laterally & climbs (15 m/s) during 3.4 s cooldown.
+##   - Disarmable wing pods (95 HP -> disable_primary + 65 shock dmg + wing stub flame) & critical rear thrusters (85 HP, 1.5x).
+##   - Automatically uses EnemyMeshes art parts ("gunship_hull", "gunship_pods", "gunship_thrusters") once present,
+##     falling back cleanly to self-contained cached strictly watertight placeholder meshes in the meantime.
+
+const ALT_MIN := 8.0
+const ALT_ATTACK_LOW := 8.5
+const ALT_ATTACK_HIGH := 11.0
+const ALT_SKIM := 10.5
+const ALT_CRUISE := 12.0
+const ALT_BREAKOFF := 15.0
+const ALT_MAX := 17.5
+const CEILING_CAP := 34.0
+const CLOSE_ENGAGE_R := 68.0
+const MUZZLE_L := Vector3(-1.9, -0.25, -2.1)
+const MUZZLE_R := Vector3(1.9, -0.25, -2.1)
+
+static var _placeholder_cache: Dictionary = {}
+
+var _aim_yaw := 0.0
+var _aim_pitch := 0.0
+var _bank_roll := 0.0
+var _hover_t := 0.0
+var _cruise_alt := 11.5
+var _breakoff_t := 0.0
+var _breakoff_count := 0            ## telemetry / tests
+var _salvo_rounds_fired := 0
+var _avoid_sign := 1.0
+var _avoid_t := 0.0
+var _air_probe_t := 0.0
+var _air_climb_alt := 0.0
+var _air_steer_yaw := 0.0
+var _air_spd_scale := 1.0
+
+var _body_pivot: Node3D
+var _hull_mi: MeshInstance3D
+var _pods_mi: MeshInstance3D
+var _thrusters_mi: MeshInstance3D
+
+
+func _init() -> void:
+	super._init()
+	enemy_type = "gunship"
+
+
+func net_fields() -> Dictionary:
+	var f := super.net_fields()
+	f.merge({
+		"_aim_yaw": Net.OWNER, "_aim_pitch": Net.OWNER, "_bank_roll": Net.LOCAL,
+		"_hover_t": Net.LOCAL, "_cruise_alt": Net.SPAWN, "_breakoff_t": Net.PRIVATE,
+		"_breakoff_count": Net.PRIVATE, "_salvo_rounds_fired": Net.PRIVATE,
+		"_avoid_sign": Net.PRIVATE, "_avoid_t": Net.PRIVATE, "_air_probe_t": Net.PRIVATE,
+		"_air_climb_alt": Net.PRIVATE, "_air_steer_yaw": Net.PRIVATE, "_air_spd_scale": Net.PRIVATE,
+		"_body_pivot": Net.LOCAL, "_hull_mi": Net.LOCAL, "_pods_mi": Net.LOCAL, "_thrusters_mi": Net.LOCAL,
+	})
+	return f
+
+
+func _is_aerial_wreck() -> bool:
+	return true
+
+
+func _wreck_ground_radius() -> float:
+	return 1.25
+
+
+func _wreck_body_pivot() -> Node3D:
+	return _body_pivot
+
+
+func configure(type_id: String, id: String, w: CombatWorld, sq: Node = null, r: RingFrame = null,
+		seed_val: int = 1, hp_mult: float = 1.0) -> void:
+	super.configure(type_id, id, w, sq, r, seed_val, hp_mult)
+	_cruise_alt = clampf(float(_cfg.get("cruise_alt", 11.5)), ALT_MIN, ALT_MAX)
+	_cover_path_timer = _rng.randf_range(0.0, 0.45)
+
+
+# --- Art-Direction Mesh Deferral + Self-Contained Watertight Placeholders ---------------------------------
+
+## True once EnemyMeshes provides a real art-direction mesh for `part` (not its 1x1x1 36-vertex unknown fallback box).
+static func has_art_mesh(part: String) -> bool:
+	var m := EnemyMeshes.mesh(part)
+	if m == null or m.get_surface_count() == 0:
+		return false
+	var aabb := m.get_aabb()
+	var arrays := m.surface_get_arrays(0)
+	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX] if not arrays.is_empty() else PackedVector3Array()
+	return verts.size() > 36 or aabb.size.length() > 2.2
+
+
+## Cached, strictly watertight placeholder meshes matching the exact gunship geometry contract (5.6 W x 2.8 H x 6.8 L).
+static func placeholder_mesh(part: String) -> ArrayMesh:
+	if _placeholder_cache.has(part):
+		return _placeholder_cache[part] as ArrayMesh
+	var k := MeshKit.new()
+	match part:
+		"gunship_hull": _build_hull_mesh(k)
+		"gunship_pods": _build_pods_mesh(k)
+		"gunship_thrusters": _build_thrusters_mesh(k)
+		_:
+			k.box(Vector3.ONE, EnemyMeshes.ARMOR_DARK)
+	var m := k.commit(MechMeshes.materials())
+	_placeholder_cache[part] = m
+	return m
+
+
+static func _build_hull_mesh(k: MeshKit) -> void:
+	# Sleek armored forward-swept attack gunship fuselage (z = -3.4..+3.4 m).
+	k.loft([
+		MeshKit.ring(Vector3(0.0, 0.15, 3.30), 0.72, 0.42, 6, "z", 2.8),
+		MeshKit.ring(Vector3(0.0, 0.12, 1.40), 1.38, 0.88, 6, "z", 2.8),
+		MeshKit.ring(Vector3(0.0, 0.05, -0.80), 1.48, 0.92, 6, "z", 2.8),
+		MeshKit.ring(Vector3(0.0, -0.10, -2.65), 0.92, 0.56, 6, "z", 2.8),
+		MeshKit.ring(Vector3(0.0, -0.22, -3.40), 0.44, 0.28, 6, "z", 2.8),
+	], [EnemyMeshes.ARMOR_DARK, EnemyMeshes.ARMOR_PLATE, EnemyMeshes.ARMOR_DARK, EnemyMeshes.ARMOR_PLATE])
+	# Bold crimson nose & dorsal spine trim + armored cockpit visor glow.
+	k.box(Vector3(1.10, 0.22, 3.60), EnemyMeshes.TRIM_RED, Vector3(0.0, 0.96, 0.0))
+	k.box(Vector3(1.18, 0.44, 1.35), EnemyMeshes.ARMOR_DARK, Vector3(0.0, 0.52, -1.75))
+	k.glow = true
+	k.box(Vector3(1.02, 0.24, 0.22), EnemyMeshes.OPTIC_GLOW, Vector3(0.0, 0.44, -2.42))
+	k.glow = false
+	# Swept armored stub wings (span 5.2 m) + twin canted dorsal tail stabilizers (peaks y = +1.4 m -> 2.8 m H).
+	for side: float in [-1.0, 1.0]:
+		k.push(MeshKit.xf(Vector3(side * 1.85, 0.18, -0.35), Vector3(0.0, side * 12.0, -side * 8.0)))
+		k.box(Vector3(1.75, 0.28, 1.55), EnemyMeshes.ARMOR_PLATE)
+		k.box(Vector3(1.45, 0.12, 0.46), EnemyMeshes.TRIM_RED, Vector3(0.0, 0.16, -0.32))
+		k.pop()
+		k.push(MeshKit.xf(Vector3(side * 0.85, 0.92, 2.55), Vector3(-16.0, 0.0, -side * 22.0)))
+		k.box(Vector3(0.18, 1.15, 1.10), EnemyMeshes.ARMOR_DARK)
+		k.box(Vector3(0.22, 0.26, 0.85), EnemyMeshes.TRIM_RED, Vector3(0.0, 0.35, 0.05))
+		k.pop()
+	# Chin target sensor turret under nose.
+	k.box(Vector3(0.76, 0.42, 0.88), EnemyMeshes.STEEL, Vector3(0.0, -0.68, -2.05))
+
+
+static func _build_pods_mesh(k: MeshKit) -> void:
+	# Twin underslung wing rocket pods at (+/-1.9, -0.2, -0.8) with muzzles at (+/-1.9, -0.25, -2.1).
+	for side: float in [-1.0, 1.0]:
+		var px := side * 1.9
+		k.box(Vector3(0.95, 0.88, 2.35), EnemyMeshes.ARMOR_DARK, Vector3(px, -0.20, -0.85))
+		k.box(Vector3(1.02, 0.24, 1.65), EnemyMeshes.TRIM_RED, Vector3(px, -0.18, -0.80))
+		k.box(Vector3(0.32, 0.36, 1.10), EnemyMeshes.STEEL, Vector3(side * 1.55, 0.15, -0.75))
+		# 4 forward launch tubes per pod.
+		for r in 2:
+			for c in 2:
+				var ox := px + (float(c) - 0.5) * 0.40
+				var oy := -0.25 + (float(r) - 0.5) * 0.36
+				k.tube(Vector3(ox, oy, -1.80), Vector3(ox, oy, -2.14), 0.13, 6, EnemyMeshes.STEEL)
+		k.glow = true
+		k.box(Vector3(0.45, 0.12, 0.10), EnemyMeshes.OPTIC_GLOW, Vector3(px, 0.26, -2.04))
+		k.glow = false
+
+
+static func _build_thrusters_mesh(k: MeshKit) -> void:
+	# Twin rear ducted-fan VTOL thruster nacelles at (+/-2.2, 0.45, 1.1) — critical weak point!
+	for side: float in [-1.0, 1.0]:
+		var tx := side * 2.2
+		k.box(Vector3(1.15, 0.30, 0.90), EnemyMeshes.STEEL, Vector3(side * 1.50, 0.42, 1.10))
+		k.box(Vector3(1.05, 0.95, 2.15), EnemyMeshes.ARMOR_PLATE, Vector3(tx, 0.45, 1.10))
+		k.box(Vector3(1.10, 0.24, 1.45), EnemyMeshes.TRIM_RED, Vector3(tx, 0.78, 1.10))
+		k.tube(Vector3(tx, 0.45, 1.85), Vector3(tx, 0.45, 2.38), 0.38, 8, EnemyMeshes.STEEL)
+		k.glow = true
+		k.box(Vector3(0.66, 0.56, 0.18), EnemyMeshes.VENT_GLOW, Vector3(tx, 0.45, 2.40))
+		k.box(Vector3(0.62, 0.14, 0.95), EnemyMeshes.VENT_GLOW, Vector3(tx, -0.05, 1.10))
+		k.glow = false
+
+
+static func _make_part_instance(part: String) -> MeshInstance3D:
+	if has_art_mesh(part):
+		return EnemyMeshes.instance(part)
+	var mi := MeshInstance3D.new()
+	mi.name = part
+	mi.mesh = placeholder_mesh(part)
+	return mi
+
+
+func _build_visuals() -> void:
+	_body_pivot = Node3D.new()
+	_body_pivot.name = "BodyPivot"
+	add_child(_body_pivot)
+	_hull_mi = _make_part_instance("gunship_hull")
+	_body_pivot.add_child(_hull_mi)
+	_register_comp_mesh("hull", _hull_mi)
+	_pods_mi = _make_part_instance("gunship_pods")
+	_body_pivot.add_child(_pods_mi)
+	_register_comp_mesh("pods", _pods_mi)
+	_thrusters_mi = _make_part_instance("gunship_thrusters")
+	_body_pivot.add_child(_thrusters_mi)
+	_register_comp_mesh("thrusters", _thrusters_mi)
+
+
+func telegraph_orb_radius(_weapon_id: String) -> float:
+	return 1.05
+
+
+func muzzle_world(_weapon_id: String = "") -> Vector3:
+	var local_m := MUZZLE_L if (_shot_index % 2 == 0) else MUZZLE_R
+	if _body_pivot != null and _body_pivot.is_inside_tree():
+		return _body_pivot.global_transform * local_m
+	if is_inside_tree():
+		return global_transform * local_m
+	return position + local_m
+
+
+func puppet_aim() -> Vector2:
+	return Vector2(_aim_yaw, _aim_pitch)
+
+
+func set_puppet_aim(a: Vector2) -> void:
+	_aim_yaw = a.x
+	_aim_pitch = a.y
+
+
+## Aerial gunship holds its hover plane cleanly so Knockback gravity never pulls an idle/flying gunship down.
+func _update_dynamic_ground(pos: Vector3, _space: PhysicsDirectSpaceState3D) -> void:
+	ground_y = pos.dot(up)
+
+
+# --- AI State Machine: Cover-Skim Approach, Swoop-Strafe Salvo, Break-Off & Disarmed Evasion ---------------
+
+func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
+	move_speed_ratio = 0.0
+	turret_slew_speed = 0.0
+	if _cooldown > 0.0:
+		_cooldown = maxf(_cooldown - dt, 0.0)
+	if _breakoff_t > 0.0:
+		_breakoff_t = maxf(_breakoff_t - dt, 0.0)
+	if _relay_timer >= 0.0:
+		_relay_timer -= dt
+		if _relay_timer <= 0.0:
+			_relay_timer = -1.0
+			_fire_comms_relay()
+	if knock.moving():
+		knock.velocity = knock.velocity.move_toward(Vector3.ZERO, 12.0 * dt)
+
+	if ai_mode == "idle":
+		ai_state = STATE_IDLE
+		_aim_pitch = move_toward(_aim_pitch, 0.0, dt * 3.0)
+		_bank_roll = move_toward(_bank_roll, 0.0, dt * 3.0)
+		_align_to_ring()
+		return
+	if ai_mode == "overheat" or heat.shutdown:
+		if ai_mode == "overheat" and not heat.shutdown:
+			heat.add(heat.cap)
+		ai_state = STATE_OVERHEATED
+		_cancel_telegraph("overheat")
+		_release_slot()
+		_align_to_ring()
+		return
+	if knock.staggered():
+		ai_state = STATE_STAGGERED
+		_cancel_telegraph("stagger")
+		_release_slot()
+		_align_to_ring()
+		return
+
+	var target := _acquire_target(space)
+	if target == null:
+		_has_los = false
+		_no_los_time = 0.0
+		_cancel_telegraph("lost_los")
+		_release_slot()
+		var board_entry: Dictionary = _board_entry() if is_alerted() else {}
+		if not board_entry.is_empty():
+			_step_air_search(dt, board_entry["pos"] as Vector3, space)
+		else:
+			if ai_state in [STATE_ALERT, STATE_ENGAGE, STATE_FLANK, STATE_COOLDOWN]:
+				_emit_squad("alerted", {"id": target_id, "state": "lost", "pos": _world_pos()})
+			_step_air_patrol(dt, space)
+		return
+
+	_target_id = target.target_id
+	_last_target_ref = target
+	var target_pos := Vector3.ZERO
+	if _has_los:
+		target_pos = _target_aim_center(target)
+		_last_seen_pos = target_pos
+		_update_target_velocity(target, target_pos, dt)
+		_no_los_time = 0.0
+		_hunt_t = 0.0
+		if squad != null and squad.has_method("note_deck_activity"):
+			squad.note_deck_activity(spawn_deck)
+		if _relayed and squad != null and squad.has_method("report_sighting"):
+			squad.report_sighting(self, target, target_pos)
+	else:
+		if target is AssetTarget:
+			target_pos = _target_aim_center(target)
+			_last_seen_pos = target_pos
+		else:
+			var b_entry := _board_entry()
+			target_pos = (b_entry["pos"] as Vector3) if not b_entry.is_empty() else _last_seen_pos
+		_target_vel = Vector3.ZERO
+		_has_prev_pos = false
+		_no_los_time += dt
+	_aim_point = target_pos
+
+	if ai_state in [STATE_IDLE, STATE_PATROL]:
+		_enter_alert(target, "spotted")
+		return
+	if ai_state == STATE_ALERT:
+		_alert_timer -= dt
+		_track_gunship_aim(target_pos, dt)
+		if _alert_timer <= 0.0:
+			ai_state = STATE_ENGAGE
+		return
+
+	if ai_state == STATE_TELEGRAPH:
+		# Continue a shallow attack strafe while locking rockets!
+		_step_attack_strafe(dt, target_pos, 0.65, space)
+		_step_telegraph(dt, target, target_pos)
+		return
+
+	if ai_state == STATE_FIRE:
+		_step_attack_strafe(dt, target_pos, 0.55, space)
+		var prev_left := _burst_left
+		_step_firing(dt)
+		if prev_left > _burst_left:
+			_salvo_rounds_fired += 1
+		if _burst_left <= 0 and ai_state == STATE_COOLDOWN:
+			# Break off laterally & climb on every completed rocket salvo!
+			_flank_sign = -_flank_sign
+			_breakoff_t = maxf(_cooldown, 2.2)
+			_breakoff_count += 1
+		return
+
+	# Disarmed (wing pods shot off): evade & orbit high without firing.
+	if _primary_disabled:
+		ai_state = STATE_FLANK
+		_step_breakoff(dt, target_pos, space, true)
+		return
+
+	# Post-salvo break-off climb during cooldown.
+	if _breakoff_t > 0.0 and ai_mode == "live":
+		ai_state = STATE_COOLDOWN
+		_step_breakoff(dt, target_pos, space, false)
+		return
+
+	var pos := _world_pos()
+	var dist := pos.distance_to(target_pos)
+	if not _has_los or dist > CLOSE_ENGAGE_R:
+		# Low cover-skim approach (9.5-11.5 m, 17 m/s) flanking tall blocks via find_cover_path!
+		ai_state = STATE_FLANK
+		_step_cover_skim(dt, target_pos, space)
+	else:
+		# Close-range attack pass (24-68 m, 8.5-11 m alt, banking strafe).
+		ai_state = STATE_ENGAGE
+		_step_attack_strafe(dt, target_pos, 1.0, space)
+
+	var aim_err := _track_gunship_aim(target_pos, dt)
+	var w_id := _choose_weapon(target_pos) if dist <= CLOSE_ENGAGE_R else ""
+	if w_id != "" and _cooldown <= 0.0 and aim_err < 0.36:
+		if _request_slot(target.target_id):
+			_begin_telegraph(w_id, target_pos)
+
+
+func _step_air_patrol(dt: float, space: PhysicsDirectSpaceState3D) -> void:
+	if _patrol_points.is_empty():
+		ai_state = STATE_IDLE
+		_align_to_ring()
+		return
+	ai_state = STATE_PATROL
+	var goal_arc := _patrol_points[_patrol_idx % _patrol_points.size()]
+	var goal_w := _arc_to_world_alt(goal_arc, _cruise_alt)
+	var diff := goal_w - _world_pos()
+	diff -= up * diff.dot(up)
+	if diff.length() < 8.5:
+		_patrol_idx = (_patrol_idx + 1) % _patrol_points.size()
+		goal_w = _arc_to_world_alt(_patrol_points[_patrol_idx], _cruise_alt)
+	_fly_toward(goal_w, _cruise_alt, float(_cfg.get("move_speed", 11.5)) * speed_scale, dt, space)
+
+
+func _step_air_search(dt: float, lkp: Vector3, space: PhysicsDirectSpaceState3D) -> void:
+	ai_state = STATE_FLANK
+	if _world_pos().distance_to(lkp) > 18.0:
+		_step_cover_skim(dt, lkp, space)
+	else:
+		_align_to_ring()
+
+
+func _step_cover_skim(dt: float, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
+	_cover_path_timer -= dt
+	if _cover_path_timer <= 0.0 and squad != null:
+		if _hunting and squad.has_method("find_arc_path"):
+			_cover_path_timer = 2.0
+			_path_points = squad.find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(target_pos), spawn_deck)
+		elif squad.has_method("find_cover_path"):
+			if not squad.has_method("claim_cover_repath") or squad.claim_cover_repath():
+				_cover_path_timer = COVER_PATH_INTERVAL
+				var cur_arc := _world_to_arc2(_world_pos())
+				var goal_arc := _world_to_arc2(target_pos)
+				_path_points = squad.find_cover_path(cur_arc, goal_arc, goal_arc, spawn_deck, CLOSE_ENGAGE_R)
+			else:
+				_cover_path_timer = 0.05
+	var steer_goal := target_pos
+	while not _path_points.is_empty():
+		var wp := _arc_to_world_alt(_path_points[0], ALT_SKIM)
+		if _world_pos().distance_to(wp) < 8.5:
+			_path_points.pop_front()
+		else:
+			steer_goal = wp
+			break
+	var spd := float(_cfg.get("flank_speed", 17.0)) * speed_scale * _speed_mult
+	_fly_toward(steer_goal, ALT_SKIM, spd, dt, space, target_pos)
+
+
+func _step_attack_strafe(dt: float, target_pos: Vector3, spd_mult: float, space: PhysicsDirectSpaceState3D) -> void:
+	var pos := _world_pos()
+	var to_t := target_pos - pos
+	to_t -= up * to_t.dot(up)
+	var dist := to_t.length()
+	var fwd := to_t / dist if dist > 0.1 else (-global_basis.z if is_inside_tree() else Vector3.FORWARD)
+	var side := fwd.cross(up).normalized() * _flank_sign
+	var pref := float(_cfg.get("preferred_range", 48.0))
+	var min_r := float(_cfg.get("min_range", 24.0))
+	var radial_w := 0.0
+	if dist < min_r:
+		radial_w = -0.70
+	elif dist > pref + 8.0:
+		radial_w = 0.45
+	else:
+		radial_w = clampf((dist - pref) / 28.0, -0.35, 0.35)
+	var dir := (side * 0.88 + fwd * radial_w).normalized()
+	var want_alt := lerpf(ALT_ATTACK_LOW, ALT_ATTACK_HIGH, 0.5 + 0.5 * sin(_hover_t * 1.4))
+	var spd := 13.0 * spd_mult * speed_scale * _speed_mult
+	_fly_toward(pos + dir * 24.0, want_alt, spd, dt, space, target_pos)
+
+
+func _step_breakoff(dt: float, target_pos: Vector3, space: PhysicsDirectSpaceState3D, evasive: bool) -> void:
+	var pos := _world_pos()
+	var away := pos - target_pos
+	away -= up * away.dot(up)
+	var dist := away.length()
+	var radial := away / dist if dist > 0.1 else (-global_basis.z if is_inside_tree() else Vector3.FORWARD)
+	var tangent := radial.cross(up).normalized() * _flank_sign
+	var rad_w := 0.72 if (evasive and dist < 60.0) else 0.45
+	var dir := (tangent * 0.85 + radial * rad_w).normalized()
+	var alt := ALT_BREAKOFF + (1.2 if evasive else 0.0)
+	var spd := 15.0 * speed_scale * _speed_mult
+	_fly_toward(pos + dir * 26.0, alt, spd, dt, space, target_pos if not evasive else Vector3(NAN, NAN, NAN))
+
+
+func _fly_toward(goal_w: Vector3, want_alt: float, spd: float, dt: float, space: PhysicsDirectSpaceState3D,
+		look_target: Vector3 = Vector3(NAN, NAN, NAN)) -> void:
+	var pos := _world_pos()
+	if ring != null:
+		up = ring.up_at(pos)
+	if _avoid_t > 0.0:
+		_avoid_t = maxf(_avoid_t - dt, 0.0)
+	var to_g := goal_w - pos
+	to_g -= up * to_g.dot(up)
+	var dir := to_g.normalized() if to_g.length_squared() > 0.25 else (-global_basis.z if is_inside_tree() else Vector3.FORWARD)
+	var cur_alt := ring.height(pos) if ring != null else pos.y
+	var cur_arc := _world_to_arc2(pos)
+	var rep := _tall_obstacle_repulsion(cur_arc, cur_alt)
+	if rep.length_squared() > 1e-4:
+		dir = (dir + _arc_dir_to_world(pos, rep) * 2.0).normalized()
+	# Keep inside own deck's district boundary cleanly and reverse strafe direction near walls.
+	var d_plan: CityPlan = squad.deck_plan(spawn_deck) if (squad != null and squad.has_method("deck_plan")) else (squad.get("plan") as CityPlan if squad != null else null)
+	if d_plan != null:
+		var ext: Rect2 = d_plan.extent.grow(-12.0)
+		if not ext.has_point(cur_arc):
+			var cw := _arc_to_world_alt(ext.get_center(), want_alt)
+			var inward := cw - pos
+			inward -= up * inward.dot(up)
+			if inward.length_squared() > 1e-4:
+				dir = (dir * 0.30 + inward.normalized() * 0.95).normalized()
+				_flank_sign = -_flank_sign
+	var target_alt := clampf(want_alt, ALT_MIN, CEILING_CAP)
+	var eff_spd := spd
+	var climb_over := false
+	if space != null and world != null and world.use_physics:
+		_air_probe_t -= dt
+		if _air_probe_t <= 0.0:
+			_air_probe_t = 0.08
+			_air_climb_alt = 0.0
+			_air_steer_yaw = 0.0
+			_air_spd_scale = 1.0
+			# 1. Forward-downward ramp/roof slope ray.
+			_ray_query.from = pos + dir * 10.0 + up * 4.0
+			_ray_query.to = pos + dir * 10.0 - up * 16.0
+			var rh := space.intersect_ray(_ray_query)
+			if not rh.is_empty():
+				var hit_p: Vector3 = rh["position"]
+				var ground_ahead := ring.height(hit_p) if ring != null else hit_p.y
+				var want_clear := ground_ahead + 5.5
+				if want_clear > target_alt and want_clear <= CEILING_CAP:
+					if not _air_ray_hit(space, pos + up * 7.0, pos + up * 7.0 + dir * 16.0):
+						_air_climb_alt = clampf(want_clear, ALT_MIN, CEILING_CAP)
+			# 2. Forward obstacle ray (16 m).
+			_ray_query.from = pos
+			_ray_query.to = pos + dir * 16.0
+			var fh := space.intersect_ray(_ray_query)
+			if not fh.is_empty():
+				var hit_d := pos.distance_to(fh["position"] as Vector3)
+				var high_blocked := _air_ray_hit(space, pos + up * 7.0, pos + up * 7.0 + dir * 16.0)
+				if not high_blocked and cur_alt + 6.0 <= CEILING_CAP:
+					_air_climb_alt = clampf(maxf(_air_climb_alt, cur_alt + 6.5), ALT_MIN, CEILING_CAP)
+					if hit_d < body_radius + 4.5:
+						_air_spd_scale = 0.45
+				else:
+					if _avoid_t <= 0.0:
+						var left_d := dir.rotated(up, 0.85)
+						var right_d := dir.rotated(up, -0.85)
+						var lb := _air_ray_hit(space, pos, pos + left_d * 14.0)
+						var rb := _air_ray_hit(space, pos, pos + right_d * 14.0)
+						if not lb and rb:
+							_avoid_sign = 1.0
+						elif not rb and lb:
+							_avoid_sign = -1.0
+						else:
+							_avoid_sign = -_avoid_sign
+						_avoid_t = 1.5
+					_air_steer_yaw = _avoid_sign * 0.95
+		if _air_climb_alt > target_alt:
+			target_alt = _air_climb_alt
+			climb_over = true
+		if absf(_air_steer_yaw) > 0.01:
+			dir = dir.rotated(up, _air_steer_yaw)
+		eff_spd *= _air_spd_scale
+	var step_h := dir * eff_spd * dt
+	var climb_rate := 12.5 if (climb_over or target_alt > cur_alt + 1.0) else 7.5
+	var d_alt := clampf(target_alt - cur_alt, -7.5 * dt, climb_rate * dt)
+	var next_pos := pos + step_h + up * d_alt
+	if ring != null:
+		up = ring.up_at(next_pos)
+		var nh := clampf(ring.height(next_pos), ALT_MIN - 0.5, CEILING_CAP)
+		var a3 := ring.world_to_arc(next_pos)
+		next_pos = ring.arc_to_world(a3.x, a3.y, nh)
+	else:
+		next_pos.y = clampf(next_pos.y, ALT_MIN - 0.5, CEILING_CAP)
+	var want_fwd := dir
+	if not is_nan(look_target.x):
+		var lt := look_target - next_pos
+		lt -= up * lt.dot(up)
+		if lt.length_squared() > 1e-4:
+			want_fwd = lt.normalized()
+	var cur_fwd := (-global_basis.z) if is_inside_tree() else Vector3.FORWARD
+	cur_fwd = (cur_fwd - up * cur_fwd.dot(up)).normalized()
+	if cur_fwd.length_squared() < 1e-6:
+		cur_fwd = want_fwd
+	var turn_max := float(_cfg.get("turn_rate", 2.2)) * dt
+	var ang := cur_fwd.signed_angle_to(want_fwd, up)
+	var new_fwd := cur_fwd.rotated(up, clampf(ang, -turn_max, turn_max)).normalized()
+	if is_inside_tree():
+		global_position = next_pos
+		global_basis = Basis(new_fwd.cross(up).normalized(), up, -new_fwd)
+	else:
+		position = next_pos
+	var max_s := maxf(float(_cfg.get("flank_speed", 17.0)), 0.1)
+	move_speed_ratio = clampf(step_h.length() / maxf(dt, 1e-4) / max_s, 0.0, 1.0)
+	# Visual banking into lateral strafe direction!
+	var right_v := new_fwd.cross(up).normalized()
+	var lat := dir.dot(right_v)
+	var want_roll := clampf(-lat * 0.42 * move_speed_ratio, -0.45, 0.45)
+	_bank_roll = lerpf(_bank_roll, want_roll, clampf(dt * 5.0, 0.0, 1.0))
+
+
+func _air_ray_hit(space: PhysicsDirectSpaceState3D, a: Vector3, b: Vector3) -> bool:
+	_ray_query.from = a
+	_ray_query.to = b
+	return not space.intersect_ray(_ray_query).is_empty()
+
+
+func _track_gunship_aim(target_pos: Vector3, dt: float) -> float:
+	if not is_inside_tree():
+		return 0.0
+	var to_t := target_pos - global_position
+	var flat := to_t - up * to_t.dot(up)
+	if flat.length_squared() < 1e-4:
+		return 0.0
+	var cur_fwd := (-global_basis.z)
+	cur_fwd = (cur_fwd - up * cur_fwd.dot(up)).normalized()
+	if cur_fwd.length_squared() < 1e-6:
+		cur_fwd = flat.normalized()
+	var want_fwd := flat.normalized()
+	var yaw_err := cur_fwd.signed_angle_to(want_fwd, up)
+	var max_slew := float(_cfg.get("slew_rate", 2.8)) * dt
+	var step_y := clampf(yaw_err, -max_slew, max_slew)
+	var new_fwd := cur_fwd.rotated(up, step_y).normalized()
+	global_basis = Basis(new_fwd.cross(up).normalized(), up, -new_fwd)
+	_aim_yaw = atan2(new_fwd.x, new_fwd.z)
+	var horiz := flat.length()
+	var want_pitch := clampf(atan2(to_t.dot(up), maxf(horiz, 1.0)), -0.55, 0.35)
+	_aim_pitch = lerpf(_aim_pitch, want_pitch, clampf(dt * 5.5, 0.0, 1.0))
+	turret_slew_speed = absf(step_y) / maxf(dt, 1e-4)
+	return absf(yaw_err)
+
+
+func _track_aim(target_pos: Vector3, dt: float) -> float:
+	return _track_gunship_aim(target_pos, dt)
+
+
+func _tall_obstacle_repulsion(arc2: Vector2, cur_alt: float) -> Vector2:
+	if squad == null or not squad.has_method("deck_occluders"):
+		return Vector2.ZERO
+	var occs: Array = squad.deck_occluders(spawn_deck)
+	var rep := Vector2.ZERO
+	var margin := 5.2
+	for item: Dictionary in occs:
+		if float(item["h"]) < cur_alt - 2.0:
+			continue
+		var r: Rect2 = item["rect"]
+		if arc2.x < r.position.x - margin or arc2.x > r.end.x + margin \
+				or arc2.y < r.position.y - margin or arc2.y > r.end.y + margin:
+			continue
+		var d := arc2 - r.get_center()
+		if d.length_squared() > 1e-4:
+			rep += d.normalized()
+	return rep
+
+
+func _arc_to_world_alt(arc2: Vector2, alt: float) -> Vector3:
+	if ring != null:
+		return ring.arc_to_world(arc2.x, arc2.y, alt)
+	return Vector3(arc2.x, alt, arc2.y)
+
+
+func _arc_dir_to_world(pos: Vector3, arc_dir: Vector2) -> Vector3:
+	if ring != null:
+		var a := ring.world_to_arc(pos)
+		var p2 := ring.arc_to_world(a.x + arc_dir.x, a.y + arc_dir.y, a.z)
+		var d := p2 - pos
+		d -= up * d.dot(up)
+		return d.normalized() if d.length_squared() > 1e-6 else Vector3.ZERO
+	return Vector3(arc_dir.x, 0.0, arc_dir.y).normalized()
+
+
+# --- Component Break, Visual Update & Wreck FX ------------------------------------------------------------
+
+func _on_component_visual_broken(comp_id: String) -> void:
+	if comp_id == "pods":
+		if _pods_mi != null and is_instance_valid(_pods_mi):
+			_pods_mi.visible = false
+		if _body_pivot != null and is_instance_valid(_body_pivot):
+			_attach_flame_stream(_body_pivot, Vector3(1.75, -0.15, -0.8), Vector3(0.45, 0.85, 0.3),
+				2.4, 0.55, 10.0, 5, 0.65, -1.0, "pods_stub")
+
+
+func _spawn_component_debris(comp_id: String) -> void:
+	if comp_id == "pods" and _body_pivot != null and _body_pivot.is_inside_tree():
+		_pop_plates(_body_pivot.global_transform * Vector3(-1.9, -0.2, -0.8), 2, 2.0, 6.0, 4.0, 8.5)
+		_pop_plates(_body_pivot.global_transform * Vector3(1.9, -0.2, -0.8), 2, 2.0, 6.0, 4.0, 8.5)
+
+
+func _spawn_death_debris(_cause: String) -> void:
+	var at := _world_pos()
+	_pop_plates(at, 6, 3.0, 8.0, 5.0, 11.0)
+
+
+func _on_destroyed_visual() -> void:
+	if _pods_mi != null and is_instance_valid(_pods_mi):
+		_pods_mi.visible = false
+	if _thrusters_mi != null and is_instance_valid(_thrusters_mi):
+		_thrusters_mi.visible = false
+	if _hull_mi != null and is_instance_valid(_hull_mi):
+		_hull_mi.visible = true
+		_hull_mi.material_override = EnemyMeshes.charred_material()
+	if _body_pivot != null and is_instance_valid(_body_pivot):
+		_body_pivot.rotation = Vector3(-0.32, 0.2, 0.45)
+
+
+func _wreck_flame_specs() -> Array[Dictionary]:
+	return [{
+		"parent": _body_pivot if _body_pivot != null else self,
+		"pos": Vector3(0.0, 0.25, 0.5), "dir": Vector3(0.12, 1.0, 0.10),
+		"length": 4.2, "width": 1.05, "speed": 11.5, "count": 6, "root": 0.95, "duration": 8.0, "tag": "gunship_core",
+	}]
+
+
+func _core_rupture_pos() -> Vector3:
+	return Vector3(0.0, 0.15, 0.4)
+
+
+func _core_rupture_scale() -> float:
+	return 1.15
+
+
+func _update_visuals(dt: float) -> void:
+	_hover_t += dt
+	if _body_pivot != null and is_instance_valid(_body_pivot):
+		_body_pivot.position.y = sin(_hover_t * 2.8) * 0.22
+		_body_pivot.rotation = Vector3(_aim_pitch, 0.0, _bank_roll)
+	super._update_visuals(dt)
+
+
+func debug_info() -> Dictionary:
+	var d := super.debug_info()
+	d["breakoff_t"] = _breakoff_t
+	d["breakoff_count"] = _breakoff_count
+	d["primary_disabled"] = _primary_disabled
+	d["salvo_rounds"] = _salvo_rounds_fired
+	return d
+
+
+func _on_reset_visual() -> void:
+	_aim_yaw = 0.0
+	_aim_pitch = 0.0
+	_bank_roll = 0.0
+	_breakoff_t = 0.0
+	_breakoff_count = 0
+	_salvo_rounds_fired = 0
+	_avoid_t = 0.0
+	_air_probe_t = 0.0
+	_air_climb_alt = 0.0
+	_air_steer_yaw = 0.0
+	_air_spd_scale = 1.0
+	if _body_pivot != null and is_instance_valid(_body_pivot):
+		_body_pivot.position = Vector3.ZERO
+		_body_pivot.rotation = Vector3.ZERO
+	for mi: MeshInstance3D in [_hull_mi, _pods_mi, _thrusters_mi]:
+		if mi != null and is_instance_valid(mi):
+			mi.visible = true
+			mi.material_override = null
+			mi.material_overlay = null

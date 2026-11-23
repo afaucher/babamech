@@ -46,7 +46,20 @@ func setup(w: CombatWorld, rec: Dictionary) -> void:
 	_beam = Beam.new()
 	_beam.look = LOOK
 	add_child(_beam)
-	_beam.setup_cosmetic(w, origin, origin + Vector3.FORWARD, -1.0)
+	# Built once at the points the first advance_to shows (the live muzzle -> the dot), not at a 1 m placeholder that
+	# advance_to would rebuild at once. Track off, or a line within Beam's rebuild slack of 1 m: the placeholder, as before.
+	var from := origin
+	var to := origin + Vector3.FORWARD
+	var d: Dictionary = w.designators.get(shooter, {})
+	if bool(d.get("on", false)) and d.get("dot") is Vector3:
+		var m := w.muzzle_of(record)
+		var p: Variant = m.call() if m.is_valid() else null
+		var f2: Vector3 = p if p is Vector3 else origin
+		var t2: Vector3 = d["dot"]
+		if absf(f2.distance_to(t2) - 1.0) > 0.04:
+			from = f2
+			to = t2
+	_beam.setup_cosmetic(w, from, to, -1.0)
 	_dot = CombatMeshes.instance(CombatMeshes.ico(CombatMeshes.RED, true))
 	add_child(_dot)
 	_show(false)

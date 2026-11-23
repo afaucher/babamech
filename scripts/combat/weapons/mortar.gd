@@ -39,3 +39,7 @@ func spawn(world: CombatWorld, record: Dictionary, st: Dictionary) -> CombatEffe
 	p.look = look()
 	p.start(world, record, st)
 	return p
+
+
+func prewarm(st: Dictionary) -> void:
+	MortarShell.prewarm_mortar(st)

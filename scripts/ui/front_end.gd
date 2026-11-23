@@ -41,6 +41,7 @@ var accent_picks: Dictionary = {}   ## accent id -> Button (the swatches in Sett
 var chassis_pick: OptionButton
 var weapon_picks: Dictionary = {}   ## hardpoint id -> OptionButton
 var crew_list: VBoxContainer
+var ff_check: CheckBox               ## Hangar: the crew's friendly fire (host / solo edit it; a client sees the host's)
 var stats_label: Label
 
 var _shot_path := ""
@@ -104,8 +105,13 @@ func _ready() -> void:
 	Session.roster_changed.connect(_on_roster_changed)
 	Session.invite_received.connect(_on_invite)
 	Session.mission_started.connect(_on_mission_started)
+	Session.crew_opts_changed.connect(_on_crew_opts)
+	if not Session.is_client():
+		Session.set_friendly_fire(bool(settings["friendly_fire"]))   # the crew this machine hosts (or solo) uses its choice
 	CrewAuto.ensure(get_tree())   # --auto-launch / --auto-relaunch / --auto-quit, and the clients' hangar heartbeat
 	var args := OS.get_cmdline_user_args()
+	if not Session.is_client():
+		Session.objectives = MissionFlow.objectives_wanted(args, settings)   # DEV plan mode for the crews this machine hosts
 	_shot_path = Boot.arg_value(args, "--menu-shot")
 	if Boot.arg_value(args, "--menu-after").is_valid_float():
 		_shot_after = float(Boot.arg_value(args, "--menu-after"))
@@ -121,6 +127,11 @@ func _ready() -> void:
 	elif Session.busy():
 		first = "busy"
 	show_screen(first if first in ["main", "settings", "hangar", "busy"] else "main")
+	if LoadingScreen.handoff:   # back from a mission: its loading screen hands over to this one, which fades out
+		LoadingScreen.handoff = false
+		var cover := LoadingScreen.cover(self)
+		cover.set_phase(LoadingScreen.handoff_phase)
+		_uncover_later(cover)
 	if _shot_path != "":
 		_take_shot.call_deferred()
 	var audio := _audio()
@@ -160,6 +171,7 @@ func show_screen(s: String) -> void:
 	chassis_pick = null
 	weapon_picks.clear()
 	crew_list = null
+	ff_check = null
 	stats_label = null
 	match s:
 		"settings": _build_settings()
@@ -263,6 +275,16 @@ func _build_hangar() -> void:
 	crew_list = VBoxContainer.new()
 	panel_box.add_child(crew_list)
 	_fill_crew()
+	var client_ff := Session.online() and not Session.hosting
+	ff_check = _check(Session.friendly_fire if client_ff else bool(settings["friendly_fire"]), func(v: bool) -> void:
+		_set_setting("friendly_fire", v)
+		Session.set_friendly_fire(v)
+		_mark_friendly_fire())
+	ff_check.name = "FriendlyFire"
+	ff_check.disabled = client_ff
+	ff_check.tooltip_text = "The host's choice for the whole crew." if client_ff else "Your shots can hurt your crew."
+	_row("Friendly fire", ff_check)
+	_mark_friendly_fire()
 	_section("Mech")
 	chassis_pick = _option(MechCatalog.CHASSIS_ORDER.map(func(c: String) -> String: return str(MechCatalog.chassis(c)["name"])),
 		MechCatalog.CHASSIS_ORDER.find(str(settings["chassis"])),
@@ -356,7 +378,8 @@ func _on_launch() -> void:
 		if Session.hosting:
 			Session.start_mission(mission_seed(args), TestDrive.launch_mode(args))
 		return
-	TestDrive.solo_launch = {"seed": mission_seed(args), "mode": TestDrive.launch_mode(args)}
+	TestDrive.solo_launch = {"seed": mission_seed(args), "mode": TestDrive.launch_mode(args),
+		"friendly_fire": bool(settings["friendly_fire"]), "objectives": MissionFlow.objectives_wanted(args, settings)}
 	_play_launch(LAUNCH_ALERT_TIME)
 
 
@@ -391,7 +414,25 @@ func _play_launch(delay: float) -> void:
 		audio.play_2d("ui.hangar.alert", 0.0, 1.0, AudioDirector.BUS_SFX_TELEGRAPH)
 	await get_tree().create_timer(maxf(delay, 0.0)).timeout
 	if is_inside_tree() and launching:
-		get_tree().change_scene_to_file(TestDrive.SCENE)
+		# The mission's loading screen, already up here and drawn, so the scene change (a blocking load) shows it, not a
+		# frozen bay; the mission scene puts its own up in its first line.
+		var cover := LoadingScreen.cover(self)
+		var seed_value := int(Session.mission_params().get("seed", 0)) if Session.online() else int(TestDrive.solo_launch.get("seed", 0))
+		if seed_value > 0:
+			cover.set_mission(seed_value, str(Session.mission_params().get("mode", "")) if Session.online() else str(TestDrive.solo_launch.get("mode", "")))
+		cover.set_phase("launch")
+		await get_tree().process_frame
+		await get_tree().process_frame
+		if is_inside_tree() and launching:
+			get_tree().change_scene_to_file(TestDrive.SCENE)
+
+
+## Take a handed-over loading screen down once the menu has drawn a few frames behind it.
+func _uncover_later(cover: LoadingScreen) -> void:
+	for i in 3:
+		await get_tree().process_frame
+	if is_instance_valid(cover):
+		cover.finish()
 
 
 func _on_leave() -> void:
@@ -418,6 +459,20 @@ func _on_roster_changed() -> void:
 	if screen == "hangar" and crew_list != null:
 		_fill_crew()
 	_refresh_stage()
+
+
+## The host's crew option changed (a client hears sys.crew_opts): the hangar's box follows it.
+func _on_crew_opts() -> void:
+	if ff_check != null and is_instance_valid(ff_check):
+		ff_check.set_pressed_no_signal(Session.friendly_fire)
+		_mark_friendly_fire()
+
+
+## "On" / "Off" next to the friendly fire box (plus "(host)" on a client: read-only).
+func _mark_friendly_fire() -> void:
+	if ff_check == null or not is_instance_valid(ff_check):
+		return
+	ff_check.text = ("On" if ff_check.button_pressed else "Off") + ("   (host's choice)" if ff_check.disabled else "")
 
 
 func _on_invite(_lobby_id: int, _inviter: String) -> void:
@@ -642,6 +697,11 @@ func _row(label: String, w: Control) -> void:
 
 func _option(labels: Array, selected: int, cb: Callable) -> OptionButton:
 	var o := OptionButton.new()
+	# Long item labels (equipment notes) must not widen the menu panel: the button keeps the panel's width and clips its
+	# text (the popup list still shows each item in full). Without this the hangar panel grew to ~910 px and squeezed the bay.
+	o.fit_to_longest_item = false
+	o.clip_text = true
+	o.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	for t: Variant in labels:
 		o.add_item(str(t))
 	o.select(maxi(selected, 0))

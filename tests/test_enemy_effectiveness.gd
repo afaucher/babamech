@@ -36,15 +36,22 @@ func _spawn_calmness_and_pocket_isolation() -> void:
 	near(td.combat.player_target.total_hp(), hp0, 0.01, "player takes 0 damage on spawn")
 	var entry_k := int(td.stack.section.entry["deck"]) if td.stack != null else 0
 	var on_entry := td.combat.enemies.filter(func(e: EnemyBase) -> bool: return e.spawn_deck == entry_k)
-	check(on_entry.size() >= 5 and on_entry.size() <= 7,
-		"Test Drive spawns 5-7 spaced enemies on the entry deck (%d; every deck has its own encounter)" % on_entry.size())
+	check(on_entry.size() >= 6 and on_entry.size() <= 16,
+		"Test Drive spawns 6-16 spaced enemies on the entry deck (%d; every deck has its own encounter)" % on_entry.size())
 
-	# Alerting the avenue scout (enemies[0]) must NOT pull distant pockets (> 80 m away).
-	var scout := td.combat.enemies[0]
-	scout.apply_damage(10.0, "chassis", "player1")
+	# Alerting the nearest avenue enemy on the entry deck must NOT pull distant pockets (> 80 m away).
+	var p_pos := td.combat.player_target.global_position
+	var scout: EnemyBase = on_entry[0]
+	var best_d := scout.global_position.distance_squared_to(p_pos)
+	for e: EnemyBase in on_entry:
+		var d := e.global_position.distance_squared_to(p_pos)
+		if d < best_d:
+			best_d = d
+			scout = e
+	scout.apply_damage(10.0, scout.core_component(), "player1")
+	check(scout.is_alerted(), "shooting the avenue scout alerts it")
 	for _i in 50:   # past 0.45 s comm relay
 		td.combat.world.advance(DT)
-	check(scout.is_alerted(), "shooting the avenue scout alerts it")
 	var far_checked := 0
 	var far_alerted := 0
 	for e in td.combat.enemies:
@@ -319,20 +326,22 @@ func _multi_seed_spawn_and_patrol_audit() -> void:
 		var list := EnemySpawner.spawn_all(plan, ring, spawn_p, w, sq, seed_i, false)
 		await frames(2)
 		var sp := w.space()
-		var seed_ok := list.size() >= 6 and list.size() <= 7
+		var seed_ok := list.size() >= 6 and list.size() <= 16
 		total_enemies += list.size()
 
 		for e in list:
 			var arc := ring.world_to_arc(e.global_position)
 			var d_spawn := Vector2(arc.x, arc.y).distance_to(Vector2(0.0, 12.0))
-			var safe_r := EnemySpawner.DRONE_SAFE_RADIUS if e.enemy_type == "drone" else EnemySpawner.SPAWN_SAFE_RADIUS
+			var safe_r := EnemySpawner.DRONE_SAFE_RADIUS if e.enemy_type == "drone" else (
+				EnemySpawner.GUNSHIP_SAFE_RADIUS if e.enemy_type == "gunship" else EnemySpawner.SPAWN_SAFE_RADIUS)
 			if d_spawn < safe_r - 0.1:
 				seed_ok = false
 				check(false, "seed %d %s too close to spawn (%.1f m)" % [seed_i, e.target_id, d_spawn])
 			var clear_r := EnemySpawner.TURRET_CLEAR if e.enemy_type.begins_with("turret") else (
 				EnemySpawner.TANK_CLEAR if e.enemy_type == "tank" else (
 				EnemySpawner.DRONE_CLEAR if e.enemy_type == "drone" else (
-				EnemySpawner.TROOP_CLEAR if e.enemy_type.begins_with("troop") else EnemySpawner.STRIDER_CLEAR)))
+				EnemySpawner.GUNSHIP_CLEAR if e.enemy_type == "gunship" else (
+				EnemySpawner.TROOP_CLEAR if e.enemy_type.begins_with("troop") else EnemySpawner.STRIDER_CLEAR))))
 			if not EnemySpawner.clear_of_buildings(plan, Vector2(arc.x, arc.y), clear_r * 0.9, arc.z + 0.25):
 				seed_ok = false
 				check(false, "seed %d %s overlaps building/pillar at %s" % [seed_i, e.target_id, str(arc)])
@@ -340,6 +349,10 @@ func _multi_seed_spawn_and_patrol_audit() -> void:
 				if arc.z < 11.0 or arc.z > 22.0:
 					seed_ok = false
 					check(false, "seed %d %s drone altitude out of cruise band (%.1f m)" % [seed_i, e.target_id, arc.z])
+			elif e.enemy_type == "gunship":
+				if arc.z < 7.5 or arc.z > 19.0:
+					seed_ok = false
+					check(false, "seed %d %s gunship altitude out of cruise band (%.1f m)" % [seed_i, e.target_id, arc.z])
 			else:
 				# Real physics ground / rooftop surface check.
 				var u := ring.up_at(e.global_position)

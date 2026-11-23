@@ -1,8 +1,11 @@
 class_name MechStage
 extends SubViewportContainer
-## The 3D preview beside the menus: its own SubViewport and World3D (sky, sun, a hangar floor disc, a camera) holding one
-## mech on a turntable (the main menu, settings), or, in bay mode (the hangar screen), the crew's mechs in their cradles
-## inside the assault boat's vehicle bay (HangarBay, docs/design/hangar.md). Drag to turn. Mechs are MechModel.
+## The 3D preview beside the menus: its own SubViewport and World3D holding one mech on a turntable (the main menu,
+## settings) in an observation hall before a hull window onto the ring habitat (MenuBackdrop), or, in bay mode (the
+## hangar screen), the crew's mechs in their alcoves along one wall of the assault boat's vehicle bay (HangarBay,
+## docs/design/hangar.md), framed from this viewport's real size (HangarBay.camera_frame) so every mech fits the
+## preview at any window shape. Drag to turn (in the bay: a small orbit, clamped to HangarBay.ORBIT_MAX so it never
+## swings behind the wall). Mechs are MechModel.
 
 const SPACING := 4.2
 
@@ -16,10 +19,12 @@ var _drag := false
 var _last_key := ""
 var bay: HangarBay              ## the hangar set, built on first use of bay mode
 var in_bay := false
-var _turntable_set: Array[Node3D] = []   ## the sun, rim light and floor disc (hidden in the bay, which lights itself)
-var _orbit := 0.0               ## the bay camera's small drag orbit (rad)
+var backdrop: MenuBackdrop      ## the turntable's set: the observation hall and its hull window (hidden in the bay)
+var _turntable_set: Array[Node3D] = []   ## what the bay hides (it lights itself)
+var _orbit := 0.0               ## the bay camera's small drag orbit (rad, within +-HangarBay.ORBIT_MAX)
 var _env: Environment
 const AMBIENT := Color(0.55, 0.6, 0.7)
+const BAY_BG := Color(0.11, 0.13, 0.16)
 const AMBIENT_ALERT := Color(0.6, 0.25, 0.22)   ## the bay's ambient turns dim red in alert
 
 
@@ -36,7 +41,7 @@ func _init() -> void:
 	var env := WorldEnvironment.new()
 	var e := Environment.new()
 	e.background_mode = Environment.BG_COLOR
-	e.background_color = Color(0.11, 0.13, 0.16)
+	e.background_color = MenuBackdrop.BG
 	e.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	e.ambient_light_color = Color(0.55, 0.6, 0.7)
 	e.ambient_light_energy = 0.6
@@ -44,22 +49,10 @@ func _init() -> void:
 	env.environment = e
 	viewport.add_child(env)
 	_env = e
-	var sun := DirectionalLight3D.new()
-	sun.rotation = Vector3(-0.9, 0.7, 0.0)
-	sun.light_energy = 1.3
-	sun.shadow_enabled = true
-	viewport.add_child(sun)
-	var rim := OmniLight3D.new()
-	rim.position = Vector3(-4, 6, 5)
-	rim.light_color = Color(1.0, 0.7, 0.4)
-	rim.light_energy = 2.0
-	rim.omni_range = 18.0
-	viewport.add_child(rim)
-	var floor_disc := MechParts.cylinder(9.0, 0.1, Color(0.22, 0.24, 0.27), Vector3(0, -0.05, 0), false, -1.0, 24)
-	viewport.add_child(floor_disc)
-	var floor_rim := MechParts.cylinder(9.2, 0.06, Color(0.9, 0.48, 0.12), Vector3(0, -0.07, 0), false, -1.0, 24)
-	viewport.add_child(floor_rim)
-	_turntable_set = [sun, rim, floor_disc, floor_rim]
+	backdrop = MenuBackdrop.new()
+	backdrop.own_environment = false
+	viewport.add_child(backdrop)
+	_turntable_set = [backdrop]
 	turntable = Node3D.new()
 	viewport.add_child(turntable)
 	camera = Camera3D.new()
@@ -129,25 +122,31 @@ func _set_bay(on: bool) -> void:
 			bay.set_alert(false)
 	for n in _turntable_set:
 		n.visible = not on
+		n.process_mode = Node.PROCESS_MODE_DISABLED if on else Node.PROCESS_MODE_INHERIT
+	_env.background_color = BAY_BG if on else MenuBackdrop.BG
 
 
 func _process(delta: float) -> void:
 	if not _drag and spin > 0.0:
 		_yaw += spin * delta
 	turntable.rotation.y = 0.0 if in_bay else _yaw
-	var k := bay.alert_amount() if in_bay and bay != null else 0.0
-	_env.ambient_light_color = AMBIENT.lerp(AMBIENT_ALERT, k)
-	_env.ambient_light_energy = lerpf(0.6, 0.3, k)
+	if in_bay:
+		var k := bay.alert_amount() if bay != null else 0.0
+		_env.ambient_light_color = AMBIENT.lerp(AMBIENT_ALERT, k)
+		_env.ambient_light_energy = lerpf(0.6, 0.3, k)
+	else:
+		_env.ambient_light_color = MenuBackdrop.AMBIENT
+		_env.ambient_light_energy = MenuBackdrop.AMBIENT_ENERGY
 	_place_camera()
 
 
 func _place_camera() -> void:
 	if in_bay:
-		var cam: Array = HangarBay.camera_for(models.size())
-		var target: Vector3 = cam[1]
-		var pos: Vector3 = target + (cam[0] - target).rotated(Vector3.UP, _orbit)
-		camera.fov = 50.0
-		camera.transform = Transform3D(Basis.looking_at(target - pos, Vector3.UP), pos)
+		var vs := Vector2(viewport.size)
+		camera.fov = HangarBay.FOV
+		camera.keep_aspect = Camera3D.KEEP_HEIGHT
+		camera.transform = bay.camera_frame(vs.x / maxf(vs.y, 1.0), _orbit)
+		bay.scale_tags(camera.global_position if camera.is_inside_tree() else camera.position)
 		return
 	camera.fov = 40.0
 	var n := maxi(models.size(), 1)
@@ -163,6 +162,6 @@ func _gui_input(event: InputEvent) -> void:
 		_drag = (event as InputEventMouseButton).pressed
 	elif event is InputEventMouseMotion and _drag:
 		if in_bay:
-			_orbit = clampf(_orbit - (event as InputEventMouseMotion).relative.x * 0.004, -0.45, 0.45)
+			_orbit = clampf(_orbit - (event as InputEventMouseMotion).relative.x * 0.004, -HangarBay.ORBIT_MAX, HangarBay.ORBIT_MAX)
 		else:
 			_yaw += (event as InputEventMouseMotion).relative.x * 0.01

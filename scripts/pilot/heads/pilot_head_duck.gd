@@ -1,7 +1,8 @@
 class_name PilotHeadDuck
 extends PilotFace
-## The duck pilot (art/picks/head_duck.png, a mallard drake), rigged: the static MechHeadMeshes duck cut into rigid pieces
-## (same sections, bill, crest and girth: the constants live in MechHeadMeshes so both keep one silhouette), plus lids,
+## The duck pilot (art/picks/head_duck.png, a mallard drake), rigged: the static MechHeadMeshes duck's sections as one
+## body mesh bent and stretched by the neck joints (PilotFace.add_body; same bill, crest and girth: the constants live in
+## MechHeadMeshes so both keep one silhouette), plus lids,
 ## moving pupils on a white-ringed eye, the lower bill hinged at its root with a dark mouth behind it (wide and flat, so a
 ## generous jaw_open reads from far away), and the crest tuft (three shards) on one hinge (the flair: raised = shards up,
 ## dropped = flat).
@@ -13,9 +14,6 @@ extends PilotFace
 const IRIS := Color(0.27, 0.15, 0.07)
 const PUPIL := Color(0.05, 0.04, 0.03)
 const MOUTH := Color(0.24, 0.07, 0.05)
-## Each upper neck piece starts below its joint (hidden inside the piece below), so bending or stretching never opens a gap.
-const SLEEVE := 1.06
-const HIDDEN := 0.8
 ## Two-bend neck: lift of the upper neck at flair +1 (metres), S-bend collapse at flair -1 (degrees, lower / upper joint)
 ## and its sink (metres).
 const NECK_TALL := 0.08
@@ -26,6 +24,8 @@ const SLUMP_SINK := 0.03
 
 func _init() -> void:
 	id = "duck"
+	# The neck bends along its whole length (base to the skull), so its short white ring never folds up.
+	body_bend = Vector2(0.0, 0.44)
 	var g := float(MechHeadMeshes.GIRTH.get("duck", 1.0))
 	girth = Vector3(g, 1.0, g)
 	flair_pieces = ["Crest"]
@@ -52,24 +52,17 @@ func _init() -> void:
 func build_pieces() -> void:
 	var secs: Array = MechHeadMeshes.DUCK_SECS
 	var green: Callable = MechHeadMeshes._duck_green
-	# Lower neck: brown chest band and the white ring.
 	add_piece("NeckLow", "", Vector3(0.0, 0.0, 0.07))
-	var k := kit()
-	k.loft([_ring(secs[0]), _ring(secs[1]), _ring(secs[2])], [MechHeadMeshes.DUCK_BROWN, MechHeadMeshes.DUCK_RING],
-		false, false)
-	add_neck_plug(k, _ring(secs[0]))
-	add_mesh("NeckLow", k)
-
-	# Upper neck: starts hidden inside the ring, so it can stretch up without a gap.
 	add_piece("NeckHigh", "NeckLow", Vector3(0.0, 0.18, 0.045))
-	k = kit()
-	k.loft([_ring(_lerp_sec(secs[0], secs[1], 0.06), HIDDEN), _ring(secs[3])], green, false, false)
-	add_mesh("NeckHigh", k)
-
 	add_piece("Skull", "NeckHigh", Vector3(0.0, 0.44, 0.03))
-	var ks := kit()
-	ks.loft([_ring(_lerp_sec(secs[2], secs[3], 0.4), SLEEVE), _ring(secs[4]), _ring(secs[5]), _ring(secs[6])], green,
+	# The body: one loft from the neck base to the crown: brown chest band, the white ring (its top at NeckHigh's joint),
+	# the long green upper neck (a ring halfway, where it bends and stretches) and the head.
+	var shell := kit()
+	shell.loft([_ring(secs[0]), _ring(secs[1]), _ring(secs[2]), _ring(_lerp_sec(secs[2], secs[3], 0.31)), _ring(secs[3]),
+		_ring(secs[4]), _ring(secs[5]), _ring(secs[6])], [MechHeadMeshes.DUCK_BROWN, MechHeadMeshes.DUCK_RING, green],
 		false, true)
+	add_neck_plug(shell, _ring(secs[0]))
+	var ks := kit()
 	# Upper bill, nostrils, and the dark mouth behind the lower bill.
 	MechHeadMeshes.duck_bill(ks, MechHeadMeshes.DUCK_BILL_UP, 6, MechHeadMeshes.DUCK_BILL)
 	MechHeadMeshes.duck_nostrils(ks)
@@ -78,11 +71,11 @@ func build_pieces() -> void:
 		{"brow": MechHeadMeshes.DUCK_BROW, "lid": MechHeadMeshes.DUCK_GREEN, "iris": IRIS, "pupil": PUPIL,
 			"white": MechHeadMeshes.EYE_WHITE},
 		{"eye": 0.05, "pupil": 0.026})
-	add_mesh("Skull", ks)
+	add_body(shell, ks)
 
 	# Lower bill, hinged at the bill root.
 	add_piece("Jaw", "Skull", Vector3(0.0, 0.7, -0.24))
-	k = kit()
+	var k := kit()
 	MechHeadMeshes.duck_bill(k, MechHeadMeshes.DUCK_BILL_LOW, 4, MechHeadMeshes.DUCK_BILL.darkened(0.18))
 	add_mesh("Jaw", k)
 

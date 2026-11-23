@@ -38,6 +38,7 @@ func run_host() -> void:
 	check(not Session.start_mission(SEED + 1), "a second launch while one is under way is refused")
 	eq(Session.crew_state, "mission", "the crew is on a mission")
 	eq((Session.mission_params()["crew"] as Array).size(), crew_size, "the launch carries the whole crew")
+	eq(Session.mission_params().get("friendly_fire", null), true, "the default launch carries friendly fire on")
 	for e: Dictionary in Session.crew():
 		var i := 0 if int(e["peer"]) == 1 else int(str(e["name"]).trim_prefix("c"))
 		eq(loadout_signature(e["loadout"] as Dictionary), loadout_signature(loadout_for(i)), "%s's roster entry carries its loadout" % str(e["name"]))
@@ -60,6 +61,7 @@ func run_host() -> void:
 	eq(str(mine["mode"]), str(Session.mission_params().get("mode", "")), "the host built the launched city mode")
 	eq(str(mine["mechs"]), _expected_mechs(), "the host spawned one mech per crew member with its owner, head, accent and loadout")
 	check(bool(mine["local_driven"]), "the host drives its own mech")
+	eq(mine["friendly_fire"], true, "the host's test drive has friendly fire on (the default)")
 	if not check(await wait_reports("mission", expected - 1, 40.0), "every client reports its mission"):
 		return
 	for p in peers_with("mission"):
@@ -70,6 +72,7 @@ func run_host() -> void:
 		eq(str(theirs["crew_state"]), "mission", "peer %d knows the crew is on a mission" % p)
 		eq(str(theirs["mechs"]), str(mine["mechs"]), "peer %d has the same mechs (owners, heads, accents, loadouts)" % p)
 		check(bool(theirs["local_driven"]), "peer %d drives its own mech" % p)
+		eq(theirs.get("friendly_fire", null), true, "peer %d's test drive has friendly fire on (the default)" % p)
 		check(not bool(theirs["held"]), "peer %d's mech was released" % p)
 	if desync_index > 0:
 		check(await until(func() -> bool: return Session.refusals.any(func(r: Dictionary) -> bool: return str(r["reason"]) == NetSession.ON_MISSION), 30.0),
@@ -132,7 +135,7 @@ func _summary() -> Dictionary:
 		parts.append("%d:%d:%s:%s:%s" % [p, MechSpawn.owner_of(m), model.head_id, MechAccent.applied(model), loadout_signature(model.loadout)])
 	return {"seed": td.seed_value, "checksum": td.mission_checksum(), "mode": td.city_mode, "crew_state": Session.crew_state, "mechs": ";".join(parts),
 		"local_driven": td.mech != null and MechSpawn.owner_of(td.mech) == Session.local_id() and td.cam.target == td.mech,
-		"held": td._held}
+		"held": td._held, "friendly_fire": td.friendly_fire}
 
 
 ## The mechs the launch's crew should give, in seat order.

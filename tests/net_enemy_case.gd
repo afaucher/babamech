@@ -68,7 +68,7 @@ func run_host() -> void:
 		check(not e.puppet, "%s is a real enemy on the host" % e.target_id)
 		eq(td.stack.deck_at(e.global_position), e.spawn_deck, "%s stands on its own deck %d" % [e.target_id, e.spawn_deck])
 		var up := e.up
-		var drop := 24.0 if e.enemy_type == "drone" else 2.0
+		var drop := 24.0 if e.enemy_type in ["drone", "gunship"] else 2.0
 		var hit := sp.intersect_ray(PhysicsRayQueryParameters3D.create(e.global_position + up * 1.0, e.global_position - up * drop))
 		check(not hit.is_empty(), "%s has floor under it (deck %d)" % [e.target_id, e.spawn_deck])
 	for p in peers_with("ready"):
@@ -106,10 +106,11 @@ func run_host() -> void:
 	if turret != null:
 		turret.set_puppet_aim(Vector2(0.9, 0.25))
 	while Session.host_time() - t0 < 3.0:
-		var s := Session.host_time() - t0
-		var x := a0.x + 3.0 * sin(s * PI)
-		var p := ring.arc_to_world(x, a0.y + 5.0 * s, a0.z)
-		var nx := ring.arc_to_world(a0.x + 3.0 * sin((s + 0.05) * PI), a0.y + 5.0 * (s + 0.05), a0.z)
+		var w := _ease_path(Session.host_time() - t0)
+		var w2 := _ease_path(Session.host_time() - t0 + 0.05)
+		var x := a0.x + 3.0 * sin(w * PI)
+		var p := ring.arc_to_world(x, a0.y + 5.0 * w, a0.z)
+		var nx := ring.arc_to_world(a0.x + 3.0 * sin(w2 * PI), a0.y + 5.0 * w2, a0.z)
 		var up := ring.up_at(p)
 		var f := nx - p
 		f = (f - up * f.dot(up)).normalized()
@@ -430,3 +431,21 @@ func _peer_named(n: String) -> int:
 		if str(e["name"]) == n:
 			return int(e["peer"])
 	return -1
+
+
+## The POSE path's clock: speeds up from standstill over the first 0.4 s and slows to a stop over the last 0.4 s of the
+## 3 s run (w' ramps 0 -> 1 -> 0), so the path starts and ends like a unit that accelerates. Without it the skirmisher
+## jumped from 0 to ~10.7 m/s (5 m/s forward + 3*PI m/s sway) in one frame: one lost coast-link packet at that step
+## alone put a client 0.8 m off (worst samples at 0.07-0.10 s and 3.05 s, mean 0.03 m).
+static func _ease_path(s: float) -> float:
+	const R := 0.4
+	const T := 3.0
+	if s <= 0.0:
+		return 0.0
+	if s < R:
+		return s * s / (2.0 * R)
+	if s < T - R:
+		return s - R * 0.5
+	if s < T:
+		return (T - R) - (T - s) * (T - s) / (2.0 * R)
+	return T - R

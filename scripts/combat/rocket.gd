@@ -45,13 +45,23 @@ var _burst := false               ## on_expire ran
 var _body: Node3D
 var _flame: MeshInstance3D
 var _puffs: Array = []            ## pooled MeshInstance3D, one per live puff
-var _puff_looks: Array = []       ## per puff index: {jitter, axis, spin} (looks RNG) + {at, size} cached on first draw
+## Per puff index: jitter, axis, spin (looks RNG, drawn once in puff order) + where / how big it was left (set on its
+## first draw, _pl_set): packed, so the per-frame chain does no dictionary lookups.
+var _pl_jitter := PackedVector3Array()
+var _pl_axis := PackedVector3Array()
+var _pl_spin := PackedFloat64Array()
+var _pl_at := PackedVector3Array()
+var _pl_size := PackedFloat64Array()
+var _pl_set := PackedByteArray()
+var _puffs_borrowed := false      ## _puffs came from world.take_mesh
 
 
 func net_fields() -> Dictionary:
 	var f := super.net_fields()
 	f.merge({"launch": Net.SPAWN, "wobble": Net.SPAWN, "wobble_rate": Net.SPAWN, "wobble_phase": Net.SPAWN, "_side": Net.SPAWN,
-		"_up": Net.SPAWN, "_burst": Net.LOCAL, "_body": Net.LOCAL, "_flame": Net.LOCAL, "_puffs": Net.LOCAL, "_puff_looks": Net.LOCAL})
+		"_up": Net.SPAWN, "_burst": Net.LOCAL, "_body": Net.LOCAL, "_flame": Net.LOCAL, "_puffs": Net.LOCAL,
+		"_pl_jitter": Net.LOCAL, "_pl_axis": Net.LOCAL, "_pl_spin": Net.LOCAL, "_pl_at": Net.LOCAL, "_pl_size": Net.LOCAL,
+		"_pl_set": Net.LOCAL, "_puffs_borrowed": Net.LOCAL})
 	return f
 
 
@@ -153,6 +163,22 @@ func build_body() -> Node3D:
 	return root
 
 
+## Build ahead of time the cached look a Rocket draws (body, exhaust, smoke puffs, muzzle flash): see
+## Projectile.prewarm_look.
+static func prewarm_rocket() -> void:
+	rocket_mesh()
+	LowPolyFlame.jet()
+	for c: Color in PUFF_RAMP:
+		CombatMeshes.ico(c)
+	MuzzleFlash.mesh()
+
+
+## The mesh pool's warm-up plan for smoke puffs (CombatWorld.prewarm_mesh_pool): puff nodes are borrowed showing the
+## first puff colour.
+static func pool_plan() -> Array:
+	return [[CombatMeshes.ico(PUFF_RAMP[0]), 200]]
+
+
 static func rocket_mesh() -> ArrayMesh:
 	var key := "rocket_mesh"
 	if CombatMeshes._cache.has(key):
@@ -217,40 +243,71 @@ func _draw_puffs() -> void:
 		var age := elapsed - tk
 		if age < 0.0 or age >= PUFF_LIFE:
 			continue
-		var lk := _puff_look(k)
-		if not lk.has("at"):       # where and how big the puff was left: fixed per puff (the flight is a pure function of e)
-			lk["at"] = flight_pos(tk)
-			lk["size"] = puff_size(tk)
+		_puff_look(k)
+		if _pl_set[k] == 0:        # where and how big the puff was left: fixed per puff (the flight is a pure function of e)
+			_pl_set[k] = 1
+			_pl_at[k] = flight_pos(tk)
+			_pl_size[k] = puff_size(tk)
 		var a := age / PUFF_LIFE
 		var grow := clampf(age / PUFF_POP, 0.0, 1.0)
-		var size := float(lk["size"]) * lerpf(0.45, 1.0, grow) * lerpf(1.0, 0.35, a)
-		var p := (lk["at"] as Vector3) + (lk["jitter"] as Vector3) * (0.3 + a) + Vector3.UP * PUFF_RISE * age
+		var size := _pl_size[k] * lerpf(0.45, 1.0, grow) * lerpf(1.0, 0.35, a)
+		var p := _pl_at[k] + _pl_jitter[k] * (0.3 + a) + Vector3.UP * PUFF_RISE * age
 		var mi := _puff_node(used)
 		used += 1
 		var pm := CombatMeshes.ico(puff_color(a))
 		if mi.mesh != pm:
 			mi.mesh = pm
-		var rot := Basis(lk["axis"] as Vector3, float(lk["spin"]) * age + float(k))
+		var rot := Basis(_pl_axis[k], _pl_spin[k] * age + float(k))
 		mi.global_transform = Transform3D(rot * Basis.from_scale(Vector3.ONE * size), p)
-		mi.visible = true
+		if not mi.visible:
+			mi.visible = true
 	for i in range(used, _puffs.size()):
-		(_puffs[i] as MeshInstance3D).visible = false
+		var h := _puffs[i] as MeshInstance3D
+		if h.visible:
+			h.visible = false
 
 
-func _puff_look(k: int) -> Dictionary:
-	while _puff_looks.size() <= k:
+## A factor on every puff's jitter (the missile's chain hugs its line).
+func puff_jitter_scale() -> float:
+	return 1.0
+
+
+## Puff k's looks (drawn from the looks generator in puff order, once each, on first use), kept in the _pl_* arrays.
+func _puff_look(k: int) -> void:
+	while _pl_spin.size() <= k:
 		var r := world.looks_rng
 		var j := Vector3(r.randf_range(-1.0, 1.0), r.randf_range(-1.0, 1.0), r.randf_range(-1.0, 1.0)) * 0.18
 		var axis := Vector3(r.randf_range(-1.0, 1.0), r.randf_range(-1.0, 1.0), r.randf_range(-1.0, 1.0))
-		_puff_looks.append({"jitter": j, "axis": axis.normalized() if axis.length_squared() > 1e-4 else Vector3.UP,
-			"spin": r.randf_range(2.0, 5.0) * (1.0 if r.randf() < 0.5 else -1.0)})
-	return _puff_looks[k]
+		var js := puff_jitter_scale()
+		_pl_jitter.append(j * js if js != 1.0 else j)
+		_pl_axis.append(axis.normalized() if axis.length_squared() > 1e-4 else Vector3.UP)
+		_pl_spin.append(r.randf_range(2.0, 5.0) * (1.0 if r.randf() < 0.5 else -1.0))
+		_pl_at.append(Vector3.ZERO)
+		_pl_size.append(0.0)
+		_pl_set.append(0)
 
 
 func _puff_node(i: int) -> MeshInstance3D:
 	while _puffs.size() <= i:
-		var mi := CombatMeshes.instance(CombatMeshes.ico(PUFF_RAMP[0]))
-		mi.top_level = true
-		add_child(mi)
+		var m := CombatMeshes.ico(PUFF_RAMP[0])
+		var mi: MeshInstance3D = world.take_mesh(m) if world != null and is_instance_valid(world) else null
+		if mi != null:
+			_puffs_borrowed = true
+		else:
+			mi = CombatMeshes.instance(m)
+			mi.top_level = true
+			mi.visible = false
+			add_child(mi)
 		_puffs.append(mi)
 	return _puffs[i]
+
+
+## Puff nodes borrowed from the world's mesh pool go back when the rocket leaves.
+func _exit_tree() -> void:
+	if not _puffs_borrowed or world == null or not is_instance_valid(world):
+		return
+	_puffs_borrowed = false
+	for mi: MeshInstance3D in _puffs:
+		if is_instance_valid(mi) and mi.get_parent() != self:
+			world.give_mesh(mi)
+	_puffs.clear()

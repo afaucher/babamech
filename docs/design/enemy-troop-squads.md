@@ -1,7 +1,9 @@
 # Enemy Troop Squads & Drop Drones
 
-Status: **Phase 1 implemented & verified** (Phase 2 Drop Drones queued next), 2026-11-22.
+Status: **Individual-Trooper Redo + Drop Ship Phase 2 implemented & verified**, 2026-11-23.
 Parent: [enemies.md](enemies.md), [enemy-tactics-and-drones.md](enemy-tactics-and-drones.md), [ambient-life.md](ambient-life.md), `AGENTS.md`, [../networking.md](../networking.md).
+
+> **2026-11-23 Redesign Note:** Per user feedback ("they act like 1 unit because they are one unit"), troop squads were rebuilt as **variable-sized fireteams (seeded 3–6 ground, 2–4 roof, mixed `trooper_rifle` / `trooper_at`) of individual `EnemyTrooper extends EnemyBase` units** coordinated by a lightweight host-only `EnemyTroopSquad` (`RefCounted`) controller. Each trooper has its own position, HP (28–30), single hit sphere, death/charred prone body, independent unclaimed cover corner, seeded per-trooper behavioral jitter (pace, reaction delay, aim error, cadence, idle sway, formation offset), staggered single-shot firing, and deterministic `EnemyMeshes.trooper_part(kit, look_seed)` visual variant.
 
 ---
 
@@ -184,3 +186,9 @@ Designed cleanly now so Phase 1's `EnemyTroopSquad` plugs straight into it with 
 - **Watertight Meshes:** Built `trooper_rifle` and `trooper_at` (`~2.26 m` bulky obsidian/slate exo-troopers with crimson chest chevrons, glowing crimson visors, backpack jump-thrusters, and rifle vs. shoulder AT launcher) in `EnemyMeshes` — both strictly watertight (`0` open edges in `test_geometry_audit`).
 - **`EnemyTroopSquad` (`scripts/enemy/enemy_troop_squad.gd`):** Single `EnemyBase` managing `t0..t3` components, dynamic per-trooper `world_spheres()` (`R = 1.15 m`), multi-trooper splash distribution in `apply_hit()`, anti-cluster `4.0–6.0 m` spacing with splash/rush scatter + `1.4 s` jump-pack ascent onto adjacent standable low roofs (`<= 12 m`, `kind != "plant"`), host-only mech stomp (`3.0 m` horiz / `2.5 m` vert), `deploy_from_air(landing_pos, deck)` Phase 2 hook, and zero-wire-change co-op puppet sync (`puppet_aim` + `t0..t3` HP).
 - **Spawner, Lab, Audio & Tests:** Wired `troop_squad` & `troop_roof` into `EnemySpawner.plan_encounters()` (6–7 entries per deck solo, keeping 3-deck stacks safely under `NetEnemyCodec.MAX_ENTRIES = 32`), added `"troops"` and `"troops_roof"` to `EnemyLab`, mapped cues in `CombatAudio`, and added `tests/test_enemy_troops.gd`.
+
+## 10. As Built (Phase 2 — Carrier Drop Ship)
+
+- **Catalog & Watertight Placeholders (`EnemyCatalog`, `EnemyDropDrone`):** Added `CLASSES["dropship"]` ("Carrier Drop Ship", `hull: 140 HP`, `rotors: 55 HP` @ `1.5×` critical kill `"rotor_failure"`, `R = 6.5 m` explosion + `10 m` column). Built cached strictly watertight placeholder meshes (`dropship_hull`, `dropship_rotors`, `dropship_bay` — 0 open edges in `test_geometry_audit`) inside `EnemyDropDrone` that automatically defer to `EnemyMeshes.instance(part)` once Enemy Art Direction adds them (zero edits to `enemy_meshes.gd`).
+- **Flight, Telegraph, Deploy & Exfil (`scripts/enemy/enemy_drop_drone.gd`):** Lean curved-deck interpolation (`APPROACH -> DESCEND -> 1.5 s DROP_TELEGRAPH -> DEPLOY -> EXFIL & DESPAWN`) with zero per-frame raycasts/A*. `EnemyTelegraphFx.show_drop_ring()` projects a pulsing bay flare + ground drop-zone ring. Shooting down the Drop Ship during the `1.5 s` bay window destroys the carried squad mid-air with 0 troopers spawned; completing the drop spawns 1 `EnemyTroopSquad` (`troop_roof` on roofs, `troop_squad` on streets) via `squad.add_enemy()` + `deploy_from_air()`, then climbs to `28 m` and despawns cleanly (`remove_enemy` + `queue_free`, emitting `EnemySync` `"add"` and `"gone"`).
+- **Beacon Call-In & Deck Cap (`EnemySquad.request_dropship`, `EnemyDrone`):** Scout Drone beacon completion calls `request_dropship(target_pos, spawn_deck)` (host-only, strictly capped at `1` drop per deck solo / `2` at `crew >= 3`, only while living defenders already exist on that deck so `MissionRules` deck-clear never soft-locks). Verified by `tests/test_enemy_dropship.gd`.

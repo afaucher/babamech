@@ -401,11 +401,19 @@ func _test_combat_props_and_enemy_contract(a: AudioDirector) -> void:
 	a.advance_clock(0.2)
 	a.clear_events()
 	sq.enemy_event.emit("telegraph_started", sq, {"id": "e1", "weapon": "laser", "kind": "beam", "pos": Vector3(0, 2, -25), "target_pos": Vector3.ZERO, "duration": 0.6})
-	check(_has_cue(a, "enemy.telegraph.beam"), "EnemySquad telegraph_started plays enemy.telegraph.beam")
+	check(_has_cue(a, "enemy.telegraph.beam"), "EnemySquad physical weapon charge telegraph plays enemy.telegraph.beam")
 	sq.enemy_event.emit("telegraph_cancelled", sq, {"id": "e1", "reason": "staggered"})
 	eq(a.active_on_bus(AudioDirector.BUS_SFX_TELEGRAPH), 0, "telegraph_cancelled stops active telegraph immediately")
+	a.clear_events()
+	sq.enemy_event.emit("telegraph_started", sq, {"id": "d1", "weapon": "enemy_beacon", "kind": "beacon", "pos": Vector3(0, 12, -45), "target_pos": Vector3.ZERO, "duration": 0.65})
+	check(_has_cue(a, "enemy.alert.relay"), "Scout Drone Alert Beacon keeps its physical support-call siren")
+	a.clear_events()
+	sq.enemy_event.emit("telegraph_started", sq, {"id": "t1", "weapon": "enemy_troop_rifle", "kind": "troop_rifle", "pos": Vector3(0, 2, -25), "target_pos": Vector3.ZERO, "duration": 0.55})
+	check(not _has_prefix(a, "enemy.telegraph."), "non-charging rifle does not play non-diegetic warning sound")
 	sq.enemy_event.emit("alerted", sq, {"id": "e1", "state": "spotted", "pos": Vector3(0, 2, -25)})
-	check(_has_cue(a, "enemy.alert.spotted"), "EnemySquad alerted(spotted) plays enemy.alert.spotted")
+	check(not _has_cue(a, "enemy.alert.spotted"), "regular alerted(spotted) does not play non-diegetic warning chime")
+	sq.enemy_event.emit("alerted", sq, {"id": "e1", "state": "revealed", "pos": Vector3(0, 2, -25)})
+	check(not _has_cue(a, "ui.hangar.alert"), "revealed straggler does not play non-diegetic 2D HUD beep")
 	sq.enemy_event.emit("component_damaged", sq, {"id": "e1", "component": "core", "hp_ratio": 0.5, "weak_point": true, "pos": Vector3(0, 2, -25)})
 	check(_has_cue(a, "combat.hit.weak"), "EnemySquad weak_point hit plays combat.hit.weak")
 	sq.enemy_event.emit("overheated", sq, {"id": "e1", "pos": Vector3(0, 2, -25)})
@@ -505,11 +513,11 @@ func _test_real_end_to_end_firefight(a: AudioDirector) -> void:
 		if ma != null:
 			ma.step(dt)
 		a.advance_clock(dt)
-		if _has_cue(a, "combat.player.damaged") and _has_prefix(a, "enemy.telegraph.") and _has_cue(a, "enemy.alert.spotted"):
+		if _has_cue(a, "combat.player.damaged") and _has_prefix(a, "enemy.telegraph."):
 			got_player_hit = true
 			break
-	check(_has_cue(a, "enemy.alert.spotted"), "E2E real EnemySquad/EnemyBase emits enemy.alert.spotted")
-	check(_has_prefix(a, "enemy.telegraph."), "E2E real enemy plays >=0.3s telegraph cue")
+	check(not _has_cue(a, "enemy.alert.spotted"), "E2E real enemies omit non-diegetic spotted chime")
+	check(_has_prefix(a, "enemy.telegraph."), "E2E real enemy plays >=0.3s physical weapon charge cue")
 	check(_has_cue(a, "enemy.fire.accent"), "E2E real enemy fire layers alien accent")
 	check(got_player_hit, "E2E real enemy projectile hits PlayerTarget -> combat.player.damaged")
 	check(_has_prefix(a, "impact."), "E2E real enemy impact triggers impact.* audio")

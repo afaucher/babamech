@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-23T08:43:30	downtown_slabs_podium_s47.png	flux3_klein_t2i	47	1024x576			5.45	downtown_slabs_podium_prompt.txt
+2026-11-23T08:43:34	downtown_slabs_plaza_s47.png	flux3_klein_t2i	47	1024x576			3.27	downtown_slabs_plaza_prompt.txt
+2026-11-23T08:43:37	downtown_slabs_arcade_s47.png	flux3_klein_t2i	47	1024x576			3.26	downtown_slabs_arcade_prompt.txt
+2026-11-23T08:43:41	downtown_points_podium_s47.png	flux3_klein_t2i	47	1024x576			3.27	downtown_points_podium_prompt.txt
+2026-11-23T08:43:44	downtown_points_plaza_s47.png	flux3_klein_t2i	47	1024x576			3.25	downtown_points_plaza_prompt.txt
+2026-11-23T08:43:48	downtown_points_arcade_s47.png	flux3_klein_t2i	47	1024x576			3.29	downtown_points_arcade_prompt.txt
+2026-11-23T08:43:51	downtown_stepped_podium_s47.png	flux3_klein_t2i	47	1024x576			3.27	downtown_stepped_podium_prompt.txt
+2026-11-23T08:43:55	downtown_stepped_plaza_s47.png	flux3_klein_t2i	47	1024x576			3.31	downtown_stepped_plaza_prompt.txt
+2026-11-23T08:43:58	downtown_stepped_arcade_s47.png	flux3_klein_t2i	47	1024x576			3.29	downtown_stepped_arcade_prompt.txt

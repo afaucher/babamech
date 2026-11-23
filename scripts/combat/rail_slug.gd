@@ -4,7 +4,12 @@ extends Projectile
 ## record + stats + the shared clock) that PIERCES. Each target it meets takes damage × (1 - pierce_loss)^n (n = targets
 ## already pierced: 200 -> 150 -> 112.5), Δv stats.knockback along the flight, an entry burst and, when the slug goes on
 ## through, an exit burst on the far side. A target is hit at most once (Projectile.pierced); the slug stops in the
-## stats.pierce-th target, and at any world geometry or city prop.
+## stats.pierce-th target, and at any world geometry.
+## CITY PROPS: the slug punches through them. While it sweeps, CombatWorld.skip_props keeps props out of first_hit (a
+## prop never stops or shortens it and takes none of its damage), and after each sweep every prop on what it flew
+## (muzzle side -> the chord's end or where it stopped, CombatWorld.props_on_segment, r = Combat.PROJECTILE_RADIUS) is
+## knocked once per slug (`_knocked`) along the flight with stats.knockback through CombatWorld.hit_prop: only the
+## machine that decides the shot asks (prop.req to the host), every machine shows a small debris burst there.
 ##
 ## LOOK (cosmetic, a pure function of flight time): a long teal faceted spike; a wide faceted twisted ribbon trail (a
 ## flat band whose width turns about the flight line, TWIST_PITCH m a turn in TWIST_FACETS hard facets, so it reads as
@@ -19,6 +24,7 @@ const TWIST_FACETS := 8           ## flat facets per turn (the zig-zag)
 const RIBBON_HALF := 0.55         ## m: the ribbon's half-width at launch size (× the drawn growth)
 const CORE_SHARE := 0.45          ## the pale band's width as a share of the main band's
 const EXIT_SHARE := 0.6           ## an exit burst's radius as a share of impact_radius
+const PROP_SHARE := 0.3           ## the debris burst at a prop the slug goes through, as a share of impact_radius
 const MUZZLE_LIFE := 0.1          ## s
 const MUZZLE_LEN := 4.5           ## m: the muzzle star's length at its first step
 
@@ -28,12 +34,35 @@ static var _ribbon_shader: Shader
 
 var _muzzle: MeshInstance3D
 var _ribbon_mat: ShaderMaterial     ## this slug's ribbon material (its uniforms age the ribbon; see RIBBON_SHADER)
+var _knocked: Dictionary = {}       ## "props node instance id:prop id" -> true: props this slug went through (once each)
 
 
 func net_fields() -> Dictionary:
 	var f := super.net_fields()
-	f.merge({"_muzzle": Net.LOCAL, "_ribbon_mat": Net.LOCAL})
+	f.merge({"_muzzle": Net.LOCAL, "_ribbon_mat": Net.LOCAL, "_knocked": Net.LOCAL})
 	return f
+
+
+## Projectile's sweep with props left out of first_hit, then every prop on what was flown (flight times e0 -> the
+## stopping hit, or e1) knocked once: the slug punches through props.
+func _sweep(e0: float, e1: float) -> void:
+	world.skip_props = true
+	super._sweep(e0, e1)
+	world.skip_props = false
+	var e_end := end_time if end_time >= 0.0 else e1
+	if e_end > e0:
+		_through_props(flight_pos(e0), flight_pos(e_end))
+
+
+func _through_props(a: Vector3, b: Vector3) -> void:
+	var r := float(stats.get("impact_radius", 1.0)) * PROP_SHARE
+	for h: Dictionary in world.props_on_segment(a, b, Combat.PROJECTILE_RADIUS):
+		var key := "%d:%d" % [(h["prop_node"] as Node).get_instance_id(), int(h["prop"])]
+		if _knocked.has(key):
+			continue          # a prop astride two chords: knocked once
+		_knocked[key] = true
+		world.hit_prop(record, stats, h, dir)
+		world.spawn_impact(h["point"], h["normal"], r, h.get("color", MechMeshes.GREY), false, FLASH_COLOR)
 
 
 ## A target's damage share after `n` pierces.
@@ -45,8 +74,7 @@ func on_hit(h: Dictionary, e: float) -> bool:
 	var fdir := flight_dir(e)
 	var target: CombatTarget = h["target"]
 	var r := float(stats.get("impact_radius", 1.0))
-	if target == null:      # world geometry or a city prop: the slug stops here
-		world.hit_prop(record, stats, h, fdir)
+	if target == null:      # world geometry: the slug stops here (props never reach on_hit: see _sweep)
 		world.spawn_impact(h["point"], h["normal"], r, h.get("color", MechMeshes.GREY), false, FLASH_COLOR)
 		return true
 	var n := pierced.size()
@@ -74,6 +102,13 @@ func _exit_point(target: CombatTarget, p: Vector3, fdir: Vector3) -> Vector3:
 
 
 # --- Look ---------------------------------------------------------------------------------------------
+
+## Build ahead of time the cached look a RailSlug draws (spike, muzzle star, muzzle flash): see Projectile.prewarm_look.
+static func prewarm_slug(lk: Dictionary, st: Dictionary) -> void:
+	Projectile.prewarm_look(lk, st)
+	spike_mesh()
+	star_mesh()
+
 
 ## The spike: nose at the origin, 3.2 m long back along +Z (so it never pokes past what it hit), hexagonal facets.
 static func spike_mesh() -> ArrayMesh:

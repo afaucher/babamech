@@ -27,15 +27,17 @@ func _world(physics: bool = false) -> CombatWorld:
 
 func _catalog_and_meshes() -> void:
 	eq(EnemyCatalog.CLASS_ORDER, ["turret", "turret_sniper", "turret_missile", "strider", "strider_breacher", "tank", "drone",
-		"troop_squad", "troop_roof"], "all 9 enemy classes registered")
+		"trooper_rifle", "trooper_at", "gunship", "dropship"], "all 11 enemy classes registered")
 	for cid: String in EnemyCatalog.CLASS_ORDER:
 		var u := EnemyCatalog.unit(cid)
 		check(not u.is_empty(), "class %s in catalog" % cid)
 		var comps: Array = u["components"]
-		check(comps.size() >= 2, "%s has multiple components" % cid)
+		var min_c := 1 if cid.begins_with("trooper_") else 2
+		check(comps.size() >= min_c, "%s has >= %d component(s)" % [cid, min_c])
 		eq(str((comps[0] as Dictionary)["id"]), str(u["core"]), "%s core component is first" % cid)
 	for wid: String in ["enemy_bolter", "enemy_pulse", "enemy_siege_shell", "enemy_mortar",
-			"enemy_lance", "enemy_rockets", "enemy_scatter", "enemy_troop_rifle", "enemy_troop_at"]:
+			"enemy_lance", "enemy_rockets", "enemy_scatter", "enemy_troop_rifle", "enemy_troop_at",
+			"enemy_gunship_rockets"]:
 		check(not EnemyCatalog.weapon(wid).is_empty(), "enemy weapon %s in catalog" % wid)
 		check(WeaponRegistry.built(wid), "enemy weapon %s registered" % wid)
 		check(EnemyCatalog.telegraph_duration(wid, 1.0) >= EnemyCatalog.MIN_TELEGRAPH, "%s telegraph >= 0.3s" % wid)

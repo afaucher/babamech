@@ -301,3 +301,240 @@ While building: finished decks are in `decks` and in the tree, the deck being bu
 `build_begin` again mid-build throws the half away. Ambient life: 4 chunks per deck (plan + people, traffic, tram cars
 and barriers, first exact draw) + 1, 150-170 ms in all, max chunk ~31 ms; until `setup_done()` its `units` stay empty and
 `stack` null, the units do not run, and life.* events heard meanwhile are replayed when it finishes.
+
+## 9. Mission world (phase 1) (2026-11-22)
+
+The world side of mission objectives phase 1 (`docs/design/mission-objectives.md` §5.6, §7, §9): `MissionWorld`
+(`scripts/world/city/mission_world.gd`), its pieces in `mission_props.gd` (`MissionProps`), the lab driver
+`mission_lab.gd` (`MissionLab`). Presentation plus a little collision: no mission logic, no network, no global
+randomness (looks use a generator seeded from the section's cosmetic seed and the piece id). Tests:
+`tests/test_mission_world.gd`.
+
+**Setup.** `stack.setup_mission(plan) -> MissionWorld` once the stack is built (also kept as `stack.mission`; null until
+then; a second call replaces it; `build()` frees it). `plan` is a `MissionPlan` (`MissionPlan.make(sec)`) or a
+Dictionary with the same fields (`sources`, `objectives`; missing keys are tolerated). Only listed sources get a wave
+door: other blast doors stay baked as before. `MissionWorld.stand_in_plan(stack)` builds such a Dictionary when
+`MissionPlan` is missing. Pieces are children of their deck's `CityDistrict`, so `set_quality` hides them with the deck.
+`stack.set_quality` passes the level on (LOW: no warning light, no relay particles). Setup takes 125-140 ms in all on
+this PC (seed 1: 18 doors on 3 decks; it was 0.3-0.4 s before the site search went nearest-first).
+
+**Stepped setup** (like the stack build): `stack.setup_mission_begin(plan)`, then `stack.setup_mission_step(budget_ms :=
+8.0) -> bool` each frame (runs chunks until the budget is spent, at least one; true when finished),
+`stack.setup_mission_done()`, `stack.setup_mission_progress()` (0..1, never goes down). `stack.mission` is null until done,
+then the finished MissionWorld. `setup_mission(plan)` is begin + step to the end, with the same result (tested: snapshot,
+sites, nodes, walls and collision). Chunks (`MissionWorld.chunk_log`): plan (match sources to doors, ~2 ms), one per wave
+door (2-3 ms), each deck's walls in CityDistrict's own parts (one per side, a farm side in its parts; 0.4-10 ms), pose
+doors, per flag / defend its site search (0.5-3 ms) and its build (~1 ms), hold, portal, finish. Largest chunk ~9-10 ms.
+Before done, every call that changes state (open_source, set_flag, advance_to, restore, ...) returns at once. A rebuild,
+a second begin or a teardown mid-setup leaves nothing behind. Without `setup_mission` nothing
+changes: plan, props and stack checksums, every Walls mesh and every collision shape are the build's own. The test checks
+this, and checks it again after `teardown()`.
+
+**Clock.** `advance_to(t)` takes the shared mission clock and runs every frame on every machine. Everything is a
+scheduled effect: the calls store times, and the look at t is a pure function of those times
+(`MissionWorld.door_state`). Two machines given the same calls agree at any frame rate, and a late call or a late joiner
+snaps to the right state. Idle cost: one comparison (about 0.2-0.3 us) until the next stored moment, while nothing moves.
+
+**Wave doors** (sources of kind gate / lift; ramp, shaft and unknown ids are accepted and do nothing):
+- `open_source(id, open_at, hold := 12)`: the telegraph is timed backwards from `open_at`.
+  - Gate: amber beacons turn on both post tops (and mid-lintel on a gate wider than 20 m) and an amber strip flashes
+    under the lintel from `open_at - 5` (`source_event("warn")`: the klaxon). The leaves slide apart into the wall over
+    `open_at - 2 .. open_at`, and the gate is open at `open_at`.
+  - Lift: five lamps over the door count down from `open_at - 5`, one going out each second (`warn`: the chime). The
+    doors open over the last 1.5 s and the lamps turn green.
+  - The door stays open `hold` s, then closes over 2 s (`close`).
+  - Called again while the door is due to be open (the new `open_at` is not after the current close time): only the hold
+    is extended. The earlier `open_at` stays and there is no new warning. A later `open_at` starts a new cycle.
+- `hold_source(id, until_t)`: keep it open until at least `until_t`.
+- `close_source(id, at := now)`: sealed for good at clock time `at`, scheduled like `open_at`, so a late call snaps. A
+  door open (or opening) at `at` closes over its 2 s first; one already closing finishes. Then it is sealed (welded bars
+  in an X, a weld seam, scorch, beacons dead) and solid. `seal` fires once when the clock passes `at`. Later orders are
+  ignored.
+- `source_state(id) -> {state: shut | warn | opening | open | closing | sealed, t (when it began; the seal time once
+  sealed), open_at, close_at}`.
+- `source_point(id) -> {deck, x, s}` for every kind: where to spawn. A gate with its door: 3 m behind the wall plane, in
+  the door's recess. Every other source (lift, ramp, shaft): the plan's point. Unknown ids: `{}`.
+- Gate matching: the `blast_door` gate in the plan's `boundary()` on the wall named by `edge` (s0 / s1 / x0 / x1; any wall
+  when empty) nearest (x, s). The wall can be any kind (bulkhead, window, farm). Lift matching: the pillar of
+  `sec.connectors[connector]`, else the nearest lift core.
+- **Collision.**
+  - Before: a blast door was a baked leaf just inside the wall plane, with no collision of its own. What blocked was the
+    wall's slab, 6 m thick, behind the wall plane, floor to ceiling, unbroken across the door. Nothing was drawn behind
+    it, though floor and ceiling collision run on 14 m past the wall.
+  - With a mission, at each gate door:
+    - the baked leaf is left out of the Walls mesh (CityStreets reads the plan meta `mission_doors`);
+    - the slab boxes crossing the gate are disabled and rebuilt round it in the door's body (beside the gate, and the
+      lintel from the gate's height up);
+    - the door adds a recess 6 m deep (the wall's thickness; dark, faces turned inward, its own floor quad, a solid back
+      plate);
+    - leaves 1.8 m behind the wall plane (behind a farm wall's backing, so they stay hidden as they slide), and a door
+      box from the wall plane to the leaves' back (2.8 m).
+  - The door box is on while the door is shut, warning, opening or sealed. It goes off at `open_at` and comes back on
+    once the door has closed.
+  - Shut, the reachable area is the same as before (the box face is the wall plane). Open, a 6 m recess the width of the
+    gate is reachable.
+- **Where a source point lies.** `MissionPlan` puts a gate source on the gate's road line, 8 m inside the wall plane. That
+  is in the street, in plain view: a unit spawned there at `open_at` pops in 8 m in front of a door that has just opened.
+  A unit spawned at `source_point(id)` instead stands in the recess, 3 m behind the wall plane. The leaves hide it until
+  they open, and the door box holds it in until `open_at`. Recommendation: antigravity spawns gate waves at
+  `source_point(id)` (any time up to `open_at`) and walks them out toward `toward`.
+  - A lift source (the platform centre moved toward the spine by pillar radius + 4 m) has no hidden place, because the
+    core is solid. Units appear in front of the doors as they open.
+  - On seeds 1-8, no source point lies inside a footprint or behind its door, and every door faces its `toward` point.
+- **Which face the lift door is on.** The `front` of the lift pillar's building in `CityPlan`: the first face of its lot
+  that lies on the block's building line, in this order (`CityPlan._add_lot`):
+  1. the x side toward the avenue (the `-x` face when the lot's centre x is east of the avenue's centre line, `+x` when
+     west);
+  2. the other x side;
+  3. +s;
+  4. -s.
+
+  The door is centred on that face of the core (size from `core.size`). `source_point` gives the right point whichever
+  face it is.
+
+**Flag** (objectives of type `flag`):
+- A 16 m mast (0.55 m pole, yellow bands and finial) on a stepped base at the snapped site, readable from 80 m. Slim
+  collision: a pole cylinder of radius 0.6 and the base box. `flag_site(id) -> {deck, x, s, h, snapped, ok}`.
+- `set_flag(id, raised, at := now)`: a 2 s swap from `at`. The banner that is up comes down over 1 s, then the other goes
+  up over 1 s.
+- Banners, about 5 x 3.2 m, differ in shape as well as colour. The alien one is dark slate, torn and angular (a ragged
+  swallowtail), with a harsh dark-red emblem block and a glowing red slit. Ours is a clean rectangle in safety orange
+  (the default crew accent, `MechMeshes.ORANGE` / `MechAccent.DEFAULT`) with a bright cream stripe.
+- A zone ring of the objective's `radius` round the snapped point, 6 cm above the road or curb, left out over floor
+  cuts and inside buildings.
+  `set_zone(id, idle | contested | ours)` sets its glow (pale / red / orange).
+
+**Defend asset** (type `defend`):
+- A relay about 6 m to the dish's rim (plinth, cabinet with a bold cyan band blinking every 1.2 s, mast, big dish) with a
+  tall thin antenna to 8.6 m (glowing tip) that marks it above parked props, at the snapped site. A chained defend shares
+  its flag's site: the relay snaps beside the mast and never on it.
+- `asset_site(id)`. `asset_body(id) -> StaticBody3D`: a 4.2 x 5.4 x 4.2 box in group `mission_asset` with meta
+  `objective_id`, for Weapons to register as a host-owned target for enemy fire.
+- `set_asset(id, hp)`, hp 0..1, changes the look only:
+  - above 0.5: intact;
+  - 0.5 or less: damaged (dish knocked askew, antenna bent, sparks and smoke as CPUParticles3D, none at LOW);
+  - 0: wreck (cabinet slumped and scorched, mast snapped with its top on the ground, dish fallen on its rim, antenna down,
+    nothing glows).
+
+  The body never changes.
+
+**Snap rule** (`MissionProps.snap_site`; uses plan data and the props' initial layout only, so it is the same on every
+machine):
+- Candidates: the site and every point of a 1 m grid centred on it within the SNAP DISTANCE: the objective record's
+  `snap`, else `MissionPlan.SNAP`, else 45 m (`MissionWorld.snap_reach`). The objective's radius then applies round the
+  snapped point.
+- Score: distance from the site, plus 6 m when the point is not on a block (so sidewalk, plaza and park win).
+- The lowest score wins (ties: smaller s, then smaller x) among points whose disc is clear. The search runs nearest first
+  and stops once the distance passes the best score found, which gives the same pick as sorting every candidate. The disc is 2.5 m for a
+  flag and 3.5 m for a relay. Clear means inside the walls with 4 m to spare, and clear of:
+  - every building footprint and pillar core;
+  - floor cuts and their curbs (+0.5 m), ramps (+2 m) and park columns (+2 m);
+  - kept-clear rects and street props;
+  - the ground in front of every wall gate (12 m into the map, 1 m past each side: where waves walk in);
+  - the rail lane and the avenue median;
+  - pieces already placed on the deck (flags first, then relays).
+- When nothing is clear within the snap distance: the site itself, with `ok = false` and `snapped = false`. On seeds
+  1-30 every flag and defend objective finds clear ground.
+
+Missions calls `MissionRules.set_site(id, x, s)` with the result.
+
+**Extraction portal.**
+- Before: the extraction was the spine's `portal` gate in the lowest deck's end wall (a dark recess, open collision under
+  its lintel) plus a HUD waypoint (`MissionRules.marker()`, Engine's "EXTRACT"). There was no prop.
+- Now a charging frame stands in that gate: 12 pairs of segments up both posts and along the lintel to its middle, lit
+  pair by pair (the first `progress` of them), and an energy curtain across the opening: none below 0.15, then rising
+  from the floor with a bright top edge, thin until 1.0, where it fills the opening and turns solid.
+- `set_portal(progress)` takes 0..1 (clamped): dark at 0, every segment lit at 1.
+- The hold zone is the `hold` objective's `params.zone` (a Rect2 in that deck's arc coordinates; default
+  `MissionRules.extraction_zone(sec, 40)`), outlined on the ground. `set_hold_zone(idle | holding | contested | done)`
+  sets its glow (pale / orange / red / green).
+
+**Signals** (no audio here):
+- `source_event(kind: warn | open | close | seal, id, world_pos)`: once per scheduled moment, from `advance_to`. A moment
+  more than 1.5 s old when first seen fires nothing, so there is no stale klaxon after a jump or a restore.
+- `flag_event(id, raised, world_pos)`: on each change.
+- `asset_event(id, damaged | destroyed, world_pos)`: once each.
+- `portal_event(start | open, world_pos)`: once each.
+
+**Late join.** `snapshot()` returns `{now, doors: {id: [open_at, close_at, prev_close_at]}, sealed: {id: seal_at}, flags: {id:
+[raised, from, t0]}, zones, assets, portal, hold}`, and `restore(d)` applies it. `net_fields()` classifies every var:
+schedules and states are OWNER (the host decides them and Engine carries them), nodes are LOCAL, and the plan and the
+sites are SPAWN.
+
+**Who calls what.**
+- Engine (every machine):
+  - `setup_mission(plan)` once the stack and the plan exist;
+  - `advance_to(clock)` every frame;
+  - `open_source` for each `mission.wave` order, with the order's `open_at`;
+  - `close_source` when a source is closed;
+  - `set_flag`, `set_zone`, `set_asset`, `set_portal`, `set_hold_zone` from `mission.state`;
+  - `snapshot` / `restore` for a late joiner;
+  - the signals for the HUD.
+- antigravity: spawn gate waves at `source_point(id)` up to `open_at`, and lift waves in front of the doors at
+  `open_at`; play the klaxon / chime and door sounds from `source_event`.
+- Weapons: use `asset_body(id)` (or group `mission_asset`) as an enemy-fire target and report hp to the host, which feeds
+  `set_asset`.
+- Missions: pass `flag_site` / `asset_site` to `MissionRules.set_site`.
+
+**Lab and shots.** In the city lab with site "stack":
+- option `mission` (off / doors / flag / asset / portal / all) loops the pieces;
+- `mission_phase` pins one look;
+- cameras: `mission_gate`, `mission_lift`, `mission_flag` (45 m), `mission_flag_far` (80 m), `mission_asset`,
+  `mission_portal`.
+
+The shots are in `docs/design/city-shots/mission_*.png`.
+
+## 10. Bridges over a ramp, and the ramp's cut (2026-11-23)
+
+User: "the first bridge across the ramp is always too low and you pass through it" and "z-fighting on the cut for ramps".
+
+**How bridges were made.** Not in the section plan: the section cuts the whole ramp connector rect out of the floor of the
+deck the ramp leaves (`SectionPlan.is_hole`, `CitySite.for_deck`), and `CityPlan._bridged` cut every cross road back out
+of that hole, so each cross road over the ramp lane was a bridge: the full slab (8 m; the cut's faces and the soffit are
+drawn that deep) whose collision is only its top 1 m. Mesh (`CityStreets` ground, `_floor_hole`, `_soffits`) and
+collision (`CityDistrict._col_floor`, `_col_walls`) all read `plan.floor_cuts()`.
+
+**Rule** (`CityPlan.BRIDGE_CLEAR` = `MECH_TOP` 8 m (the mech's capsule, MechSpawn) + 1.5 m): a cross road may bridge a
+ramp's cut only where the clear height from the ramp's surface to the bridge's underside, on the ramp's centre line at
+the bridge's edge nearer the head (`CityPlan.bridge_clearance`), is at least 9.5 m (`bridge_allowed`, applied in
+`_bridged`, so plan data, mesh and collision agree). Where it fails, the cut runs on under the road: the road ends at the
+cut's curb (0.5 m, solid) and railing on both sides, like the rest of the cut's long sides. The head's own cross road
+stays the ramp's mouth (`floor_cuts`).
+
+Clearance on the centre line, section seeds 1-8 (`tests/test_city_ramp_bridges.gd` prints it):
+
+| ramp (seeds) | cross road past the head | from head | clear | before | after |
+|---|---|---|---|---|---|
+| deck 0 -> 1, ramp_a (1, 2, 4, 5, 8) | first | 83.0 m | 6.76 m | bridge | **removed** |
+| | second | 173.0 m | 22.76 m | bridge | bridge |
+| deck 1 -> 2, ramp_b (3, 4, 6, 7) | first | 93.8 m | 6.89 m | bridge | **removed** |
+| | second | 194.6 m | 22.89 m | bridge | bridge |
+
+With the default grade the rule removes exactly the first; a much gentler ramp (grade under about 0.1) would also lose
+the second, and the rule handles that. A mech walking down (`tests/test_city_stack_walk.gd` `_headroom`: the real capsule
+every 2 m from 20 m above the head to 10 m past the foot) touches no collision and stays under every drawn slab; with
+the rule disabled the same check finds 5 poses per ramp up to 1.4 m into the old first bridge.
+
+**Plan coherence.** `CityPlan.road_graph()` (EnemySquad, EnemySpawner, BotNavigator) drops every edge that crosses the
+inside of a floor cut (an edge along a cut's edge, the mouth, stays). Everything else already reads the cuts:
+`clear_at` (props, spawn slots, mission sites), LifePlan (spine crossings avoid the cut: none at that line now),
+LifeTraffic laps, BotRoutePlanner, MissionProps. Stand-alone plans have no holes: their checksums and goldens are
+unchanged; section deck checksums change (floor holes are in them).
+
+**For the section plan (Missions, not changed here).** `SectionPlan.road_graph()` / `route.vehicle` still link the spine
+across cross line `j = top_line + sign(foot_line - top_line)` on the ramp's upper deck (`from`). That crossing is gone
+for the ramp lane's width only (`x0..x1`; the rest of that cross street is unchanged); the edge to drop is the one
+`_crossing_blocked` already drops at the foot: `(spine_line - 1) <-> spine_line` for ramp_a, `spine_line <->
+spine_line + 1` for ramp_b, on deck `from`, at that line. In section terms: for each cross line `j` strictly between
+`top_line` and `foot_line`, near edge distance `d = |line_s(from, j) - line_s(from, top_line)| - line_width("x", j)/2`,
+clearance `pitch * d / |line_s(from, foot_line) - line_s(from, top_line)| - slab`; drop when under 9.5 m.
+
+**The cut's z-fighting.** Found by the geometry audit (`city-geometry-audit.md`): the parapet end blocks at the ramp's
+head straddled the floor hole's curb (centred on the parapet, 0.8 m wide), so their end faces lay in the curb's end face
+(concrete against curb colour, both sides of the head, at eye level); they now stand flush inside the ribbon
+(`CityStreets.end_blocks`, collision follows). The ceiling ribs below ended in the plane of the opening's inside faces
+and of the floor hole's cut faces above (no end face there now). The ramp's lines are layer 2 decals (4 cm). Not a
+z-fight: where the ramp's foot meets the road the two surfaces are 10 degrees apart (a sliver of millimetres), and the
+lower deck's ceiling sits 5 cm in front of the soffits above it by design. Shots: `city-shots/ramp_head_before.png` /
+`_after.png`, `ramp_cut_before.png` / `_after.png` (each with a `_b` frame from 0.7-1.5 m away), `ramp_foot_after.png`,
+`zfight_ramp_mouth.png`.

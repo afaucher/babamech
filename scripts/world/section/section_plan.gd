@@ -25,8 +25,13 @@ extends RefCounted
 ##                  footprint on a deck = connector_rect(); a lift's is its platform, centred on its pillar, the same
 ##                  size on every stop (its stored x0..theta1 are the platform on its top stop only)
 ##   roads        [{axis: "s" | "x", line, kind: spine | arterial | cross | perimeter, width}]
+##   forms        per deck: {segment key: street | lane | pedestrian | none}: what stands in each road SEGMENT's strip
+##                  (one stretch of a line between neighbouring crossings = one road-graph edge; key = seg_key(axis,
+##                  line, index)). Geometry never moves with a form. Read through segment_form / line_segments /
+##                  segments / carriageway (section "Road segments"). Rolled last from a generator of its own.
 ##   entry / extraction   {deck, i, j, col, row}
-##   route        {vehicle: [{deck, i, j}], mech: [{deck, col, row}], vehicle_len, mech_len}
+##   route        {vehicle: [{deck, i, j}], mech: [{deck, col, row}], vehicle_len, mech_len}   vehicle: over the segments
+##                  vehicles keep (road_graph), so it avoids pedestrian / none segments and unbridged ramp cuts
 ##   boundaries   [{deck, edge: s0 | s1 | x0 | x1, kind: bulkhead | window, backdrop, gates: [{kind: portal |
 ##                  blast_door | collapsed, role: entry | extraction | "", axis, line, x, s, width}]}]
 ##                  the four walls of every deck: s0 / s1 close the ends of the arc, x0 / x1 the sides (boundary_rect)
@@ -36,11 +41,13 @@ extends RefCounted
 ##   {deck, radius, clear_height, slab, extent: Rect2 (the ground inside the walls),
 ##    blocks [{col, row, rect, zone, region (index into decks[k].regions), pillar (id or -1)}]   row-major
 ##    pillars [{id, col, row, x, s, half, kind, lift}],
-##    road_strips [{rect, kind: perimeter | arterial | cross | avenue | rail | ramp_lane, axis, line, lane}]
-##                 blocks + strips tile the extent; strips overlap only where roads cross,
+##    road_strips [{rect, kind: perimeter | arterial | cross | avenue | rail | ramp_lane, axis, line, lane, index, form}]
+##                 one per road segment (the spine's split per lane), crossing centre to crossing centre; blocks +
+##                 strips tile the extent; strips overlap only where roads cross,
 ##    connectors [{id, kind, role, locked, part: hole | landing | stop, rect}]   a ramp's hole runs along its spine lane
-##                 across the cross-road strips (cross streets bridge the cut): builders cut it out of every strip it
-##                 intersects, or bridge it,
+##                 across the cross-road strips (cross streets bridge the cut, except at bridge_lines: there the cut runs
+##                 on under the road and the segment is `blocked`): builders cut it out of every strip it intersects,
+##                 or bridge it,
 ##    ceiling_openings [{connector, kind, rect}]   holes in the floor of the deck above, projected onto this deck,
 ##    keep_clear [Rect2], walls [{edge, kind, backdrop, rect, gates}]   in EDGES order}
 
@@ -65,11 +72,33 @@ const MIN_COL := 76.0           ## narrowest column: a spine-side or edge cell m
 const MIN_ROW := 60.0            ## shortest row on the top deck
 const MIN_DECKS := 2
 const MAX_DECKS := 5
+const SAFE_RADIUS := 70.0        ## encounter sites closer than this to a deck's arrival get no enemies (§16)
+const FIRST_CONTACT_DIST := 110.0   ## how far past the arrival the first enemy group waits, along the avenue (§16)
+const FIRST_CONTACT_SHARE := 0.4    ## ... but at most this fraction of the deck's arrival -> departure distance along s
+const MERGE_DIST := 40.0        ## encounter sites closer than this are one place (the more specific kind wins)
+## Encounter site kinds, most specific first: on a merge the earlier kind names the site (encounter_sites).
+const SITE_PRIORITY: Array[String] = ["extraction", "departure", "checkpoint", "shaft_exit", "branch_landing", "holding",
+		"station", "patrol", "cordon", "first_contact"]
+const SITE_WEIGHT := {"light": 1.0, "medium": 2.0, "heavy": 4.0}
+
+## A cross road bridges a ramp's cut only where a mech walking down the ramp clears the bridge's underside by this much
+## (CityPlan.BRIDGE_CLEAR: mech 8 m + 1.5 m); elsewhere the cut runs on under the road and nothing drives across it.
+const BRIDGE_CLEARANCE := 9.5
+## Road segment forms (what stands in a segment's reserved strip; the strip itself never moves).
+const FORMS: Array[String] = ["street", "lane", "pedestrian", "none"]
+## Carriageway width of each form; -1 = the road line's own width.
+const FORM_WIDTH := {"street": -1.0, "lane": 8.0, "pedestrian": 0.0, "none": 0.0}
+const FORM_CLUSTER := 3.0        ## a lane / pedestrian segment after one of the same form along its line: chance x this
+const CUT_TOUCH := 1.0           ## a segment this close to a floor cut / connector footprint stays a street
 
 const DEFAULTS := {
 	"seed": 1.0, "decks": 3.0, "arc": 540.0, "width": 270.0, "radius": 400.0, "pitch": 48.0, "slab": 8.0,
 	"cell": 90.0, "ramp_grade": 0.18, "shafts": 1.0, "express": 1.0,
 	"w_urban": 1.0, "w_park": 0.45, "w_industrial": 0.45,
+	# Road segment forms: share of the minor segments. DORMANT (0: every segment a street) until the city draws them;
+	# the intended mix is 0.20 / 0.10 / 0.08 (tests: FORM_MIX).
+	"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0,
+	"bridge_rule": 1.0,      # 1: no road across a ramp's cut where a mech would not fit under the bridge (bridge_lines)
 }
 
 var params: Dictionary = {}
@@ -89,8 +118,12 @@ var extraction: Dictionary = {}
 var route: Dictionary = {}
 var hooks: Array = []
 var boundaries: Array = []
+var forms: Array = []              ## per deck: segment key (seg_key) -> form, for every road segment of the deck
+var repair_stats := {}             ## {rolled, repaired, stubs}: how many minor segments forms() rolled / gave back to street
 
 var _rng := RandomNumberGenerator.new()
+var _minor: Array = []             ## per deck: segment key -> true where the form was rolled (not a forced street)
+var _cut: Array = []               ## per deck: segment key -> "bridge" | "foot": a cross segment nothing drives over
 var _pillar_of: Dictionary = {}    ## cell key -> pillar id
 var _omit: Dictionary = {}         ## cell key -> true: a long-span bay (no pillar on any deck)
 var _lift_cells: Dictionary = {}   ## cell key -> connector index of the lift housed in that cell's pillar
@@ -103,9 +136,11 @@ func net_fields() -> Dictionary:
 		"deck_count": Net.LOCAL, "cols": Net.LOCAL, "rows": Net.LOCAL, "span": Net.LOCAL, "spine_line": Net.LOCAL,
 		"col_x": Net.LOCAL, "row_theta": Net.LOCAL, "decks": Net.LOCAL, "pillars": Net.LOCAL, "connectors": Net.LOCAL,
 		"roads": Net.LOCAL, "entry": Net.LOCAL, "extraction": Net.LOCAL, "route": Net.LOCAL, "hooks": Net.LOCAL,
-		"boundaries": Net.LOCAL,
+		"boundaries": Net.LOCAL, "forms": Net.LOCAL,
 		# all of the above are recomputed from params on every machine and verified by checksum()
+		"repair_stats": Net.LOCAL,
 		"_rng": Net.LOCAL, "_pillar_of": Net.LOCAL, "_omit": Net.LOCAL, "_lift_cells": Net.LOCAL, "_reserved": Net.LOCAL,
+		"_minor": Net.LOCAL, "_cut": Net.LOCAL,
 	}
 
 
@@ -274,6 +309,12 @@ func generate(overrides: Dictionary = {}) -> void:
 	params["ramp_grade"] = clampf(p("ramp_grade"), 0.05, 0.5)
 	params["arc"] = clampf(p("arc"), MIN_ROW * 4.0, maxf(p("radius") * 4.5, MIN_ROW * 4.0))     # at most ~260 degrees of ring
 	params["width"] = maxf(p("width"), MIN_COL * 2.0)
+	for id: String in ["f_lane", "f_pedestrian", "f_none"]:
+		params[id] = clampf(p(id), 0.0, 1.0)
+	forms.clear()
+	_minor.clear()
+	_cut.clear()
+	repair_stats = {}
 	decks.clear()
 	pillars.clear()
 	connectors.clear()
@@ -310,9 +351,13 @@ func generate(overrides: Dictionary = {}) -> void:
 		_fill_zones(k)
 		_make_regions(k)
 	_make_roads()
-	_make_route()
+	_make_cuts()
+	_make_route()          # every segment a street here: the route forms() keeps a street
 	_make_boundaries()
 	_make_hooks()
+	# Segment forms come last, from a generator of their own: nothing rolled above moves for any seed.
+	_make_forms()
+	_make_route()          # the vehicle route again, over the segments vehicles keep (it may lengthen); mechs: unchanged
 
 
 func _make_grid() -> void:
@@ -661,8 +706,9 @@ func cell_of(id: int) -> Dictionary:
 	return {"deck": id / (rows * cols), "col": id % cols, "row": (id % (rows * cols)) / cols}
 
 
-## What vehicles (and civilians on foot) can use: the road grid of every deck plus ramps and lifts. Adjacency list:
-## node id -> [[other, cost, connector id or -1]]. `locked` adds the locked connectors (the express lift).
+## What vehicles can use: the road segments of every deck vehicles keep (`street` and `lane`; not `pedestrian` / `none`,
+## not across a ramp's cut where no bridge is (bridge_lines), not under a ramp's foot) plus ramps and lifts. Adjacency
+## list: node id -> [[other, cost, connector id or -1]]. `locked` adds the locked connectors (the express lift).
 func road_graph(locked: bool = true) -> Array:
 	var adj := []
 	adj.resize(deck_count * (rows + 1) * (cols + 1))
@@ -671,9 +717,9 @@ func road_graph(locked: bool = true) -> Array:
 	for k in deck_count:
 		for j in rows + 1:
 			for i in cols + 1:
-				if j < rows:
+				if j < rows and _drives(k, "s", i, j):
 					_link(adj, node_id(k, i, j), node_id(k, i, j + 1), absf(line_s(k, j + 1) - line_s(k, j)), -1)
-				if i < cols and not _crossing_blocked(k, i, j):
+				if i < cols and _drives(k, "x", j, i):
 					_link(adj, node_id(k, i, j), node_id(k, i + 1, j), col_x[i + 1] - col_x[i], -1)
 	for c: Dictionary in connectors:
 		if not c["vehicles"] or (c["locked"] and not locked):
@@ -704,6 +750,497 @@ func _crossing_blocked(k: int, i: int, j: int) -> bool:
 		if inside and h < VEHICLE_CLEARANCE:
 			return true
 	return false
+
+
+## The cross lines of ramp ci's upper (`from`) deck with no bridge over its cut: strictly between its head and foot,
+## where a mech walking down would not clear the road's underside (BRIDGE_CLEARANCE, measured on the ramp's centre line at
+## the road's edge nearer the head). Empty for anything but a ramp, or with param bridge_rule 0. Default grade: exactly
+## the first line past the head. (Never changes anything stored: the vehicle route keeps to the spine there.)
+func bridge_lines(ci: int) -> Array[int]:
+	var out: Array[int] = []
+	var c: Dictionary = connectors[ci]
+	if c["kind"] != "ramp" or p("bridge_rule") < 0.5:
+		return out
+	var k := int(c["from"])
+	var top := int(c["top_line"])
+	var foot := int(c["foot_line"])
+	var s_top := line_s(k, top)
+	var run := absf(line_s(k, foot) - s_top)
+	for j in range(mini(top, foot) + 1, maxi(top, foot)):
+		var d := absf(line_s(k, j) - s_top) - line_width("x", j) * 0.5
+		if p("pitch") * d / run - p("slab") < BRIDGE_CLEARANCE:
+			out.append(j)
+	return out
+
+
+## The cross segment of a ramp's lane: (spine_line - 1 <-> spine_line) for ramp_a, (spine_line <-> spine_line + 1) for B.
+func _lane_index(c: Dictionary) -> int:
+	return spine_line - 1 if c["lane"] == "ramp_a" else spine_line
+
+
+## Which cross segments vehicles cannot cross whatever their form: over a ramp's cut with no bridge, under a ramp's foot.
+func _make_cuts() -> void:
+	for k in deck_count:
+		var cut := {}
+		for j in rows + 1:
+			for i in cols:
+				if _crossing_blocked(k, i, j):
+					cut[seg_key("x", j, i)] = "foot"
+		_cut.append(cut)
+	for ci in connectors.size():
+		for j in bridge_lines(ci):
+			_cut[int(connectors[ci]["from"])][seg_key("x", j, _lane_index(connectors[ci]))] = "bridge"
+
+
+# --- Road segments ---------------------------------------------------------------------------------------
+# A SEGMENT is one stretch of a road line between two neighbouring crossings on one deck (an edge of the road graph):
+# axis "s" line i index j runs from node (i, j) to (i, j + 1); axis "x" line j index i from (i, j) to (i + 1, j). Its
+# FORM says what stands in its reserved strip (the strip never moves): street, lane (narrow, vehicles), pedestrian (no
+# vehicles), none (no street: the two blocks either side are one superblock). Spine, perimeter, gate, checkpoint / cordon,
+# ramp head / foot, lift lobby, floor-cut and vehicle-route segments are always streets; the rest (minor) are rolled from
+# a generator of their own, then repaired so vehicles still reach everything (_make_forms).
+
+## Key of a segment within its deck (forms[k]): axis bit * 65536 + line * 256 + index.
+func seg_key(axis: String, line: int, index: int) -> int:
+	return (65536 if axis == "x" else 0) + line * 256 + index
+
+
+func _seg_count(axis: String) -> int:
+	return rows if axis == "s" else cols
+
+
+func _seg_lines(axis: String) -> int:
+	return cols + 1 if axis == "s" else rows + 1
+
+
+func _seg_nodes(k: int, axis: String, line: int, index: int) -> Vector2i:
+	if axis == "s":
+		return Vector2i(node_id(k, line, index), node_id(k, line, index + 1))
+	return Vector2i(node_id(k, index, line), node_id(k, index + 1, line))
+
+
+## The segment between two neighbouring road nodes: {deck, axis, line, index}, or {} if they are not neighbours.
+func _seg_between(a: int, b: int) -> Dictionary:
+	var n := deck_count * (rows + 1) * (cols + 1)
+	if a < 0 or b < 0 or a >= n or b >= n:
+		return {}
+	var na := node_of(a)
+	var nb := node_of(b)
+	if int(na["deck"]) != int(nb["deck"]):
+		return {}
+	if na["i"] == nb["i"] and absi(int(na["j"]) - int(nb["j"])) == 1:
+		return {"deck": na["deck"], "axis": "s", "line": int(na["i"]), "index": mini(na["j"], nb["j"])}
+	if na["j"] == nb["j"] and absi(int(na["i"]) - int(nb["i"])) == 1:
+		return {"deck": na["deck"], "axis": "x", "line": int(na["j"]), "index": mini(na["i"], nb["i"])}
+	return {}
+
+
+## A segment's strip on deck k: the line's width across, crossing centre to crossing centre along (out to the deck's
+## edge at the ends), so the segments of a line tile its whole strip (deck_view road_strips).
+func seg_rect(k: int, axis: String, line: int, index: int) -> Rect2:
+	var hw := line_width(axis, line) * 0.5
+	if axis == "s":
+		var s0 := -arc_of(k) * 0.5 if index == 0 else line_s(k, index)
+		var s1 := arc_of(k) * 0.5 if index == rows - 1 else line_s(k, index + 1)
+		return Rect2(col_x[line] - hw, s0, hw * 2.0, s1 - s0)
+	var x0 := -p("width") * 0.5 if index == 0 else col_x[index]
+	var x1 := p("width") * 0.5 if index == cols - 1 else col_x[index + 1]
+	return Rect2(x0, line_s(k, line) - hw, x1 - x0, hw * 2.0)
+
+
+## The part of a segment's strip strictly between its two crossings (what a `none` segment gives to the superblock).
+func seg_inner(k: int, axis: String, line: int, index: int) -> Rect2:
+	var hw := line_width(axis, line) * 0.5
+	if axis == "s":
+		var s0 := line_s(k, index) + line_width("x", index) * 0.5
+		var s1 := line_s(k, index + 1) - line_width("x", index + 1) * 0.5
+		return Rect2(col_x[line] - hw, s0, hw * 2.0, s1 - s0)
+	var x0 := col_x[index] + line_width("s", index) * 0.5
+	var x1 := col_x[index + 1] - line_width("s", index + 1) * 0.5
+	return Rect2(x0, line_s(k, line) - hw, x1 - x0, hw * 2.0)
+
+
+## The cells a segment separates (one for a perimeter segment).
+func _seg_cells(axis: String, line: int, index: int) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	for side in [line - 1, line]:
+		var cell := Vector2i(side, index) if axis == "s" else Vector2i(index, side)
+		if cell.x >= 0 and cell.x < cols and cell.y >= 0 and cell.y < rows:
+			out.append(cell)
+	return out
+
+
+func _form_of(k: int, axis: String, line: int, index: int) -> String:
+	if k < 0 or k >= forms.size():
+		return "street"
+	return str((forms[k] as Dictionary).get(seg_key(axis, line, index), "street"))
+
+
+## Vehicles drive this segment: its form keeps them and no ramp cut / foot is in the way.
+func _drives(k: int, axis: String, line: int, index: int) -> bool:
+	if axis == "x" and k < _cut.size() and (_cut[k] as Dictionary).has(seg_key(axis, line, index)):
+		return false
+	var f := _form_of(k, axis, line, index)
+	return f == "street" or f == "lane"
+
+
+## Form of the segment between neighbouring road nodes a and b on deck k (node ids as in road_graph, either order):
+## street | lane | pedestrian | none; "" when a and b are not neighbours on deck k.
+func segment_form(k: int, a: int, b: int) -> String:
+	var sg := _seg_between(a, b)
+	if sg.is_empty() or int(sg["deck"]) != k:
+		return ""
+	return _form_of(k, sg["axis"], sg["line"], sg["index"])
+
+
+## Carriageway width of the segment a..b (FORM_WIDTH; a street is its line's width), 0 when not neighbours.
+func carriageway(k: int, a: int, b: int) -> float:
+	var sg := _seg_between(a, b)
+	if sg.is_empty() or int(sg["deck"]) != k:
+		return 0.0
+	var w := float(FORM_WIDTH[_form_of(k, sg["axis"], sg["line"], sg["index"])])
+	return line_width(sg["axis"], sg["line"]) if w < 0.0 else w
+
+
+func _seg_dict(k: int, axis: String, line: int, index: int) -> Dictionary:
+	var ab := _seg_nodes(k, axis, line, index)
+	var key := seg_key(axis, line, index)
+	return {"axis": axis, "line": line, "index": index, "a": ab.x, "b": ab.y, "form": _form_of(k, axis, line, index),
+			"rect": seg_rect(k, axis, line, index), "inner": seg_inner(k, axis, line, index),
+			"minor": k < _minor.size() and (_minor[k] as Dictionary).has(key),
+			"blocked": str((_cut[k] as Dictionary).get(key, "")) if k < _cut.size() else ""}
+
+
+## The segments of one road line on deck k, in order: [{axis, line, index, a, b, form, rect, inner, minor, blocked}].
+## rect tiles the line's strip; inner is the stretch between the crossings; blocked: "" | "bridge" (a ramp's cut runs
+## under, no bridge) | "foot" (a ramp's foot comes down on it): nothing drives across, whatever the form.
+func line_segments(k: int, axis: String, line: int) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for index in _seg_count(axis):
+		out.append(_seg_dict(k, axis, line, index))
+	return out
+
+
+## Every road segment of deck k (axis "s" lines first, then "x"; same shape as line_segments).
+func segments(k: int) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for axis: String in ["s", "x"]:
+		for line in _seg_lines(axis):
+			out.append_array(line_segments(k, axis, line))
+	return out
+
+
+## Segments that stay streets whatever is rolled: per deck, segment key -> true.
+func _forced_streets() -> Array:
+	var out := []
+	for k in deck_count:
+		out.append({})
+	var force := func(k: int, axis: String, line: int, index: int) -> void:
+		if line >= 0 and line < _seg_lines(axis) and index >= 0 and index < _seg_count(axis):
+			out[k][seg_key(axis, line, index)] = true
+	var force_node := func(k: int, i: int, j: int) -> void:
+		force.call(k, "s", i, j - 1)
+		force.call(k, "s", i, j)
+		force.call(k, "x", j, i - 1)
+		force.call(k, "x", j, i)
+	var force_touching := func(k: int, area: Rect2) -> void:
+		for axis: String in ["s", "x"]:
+			for line in _seg_lines(axis):
+				for index in _seg_count(axis):
+					if seg_rect(k, axis, line, index).intersects(area, true):
+						force.call(k, axis, line, index)
+	for k in deck_count:
+		# The spine and the perimeter.
+		for j in rows:
+			for i: int in [0, spine_line, cols]:
+				force.call(k, "s", i, j)
+		for i in cols:
+			force.call(k, "x", 0, i)
+			force.call(k, "x", rows, i)
+	for ci in connectors.size():
+		var c: Dictionary = connectors[ci]
+		match str(c["kind"]):
+			"ramp":
+				# Head and foot: every segment at the spine's node and its neighbours on those cross lines.
+				for i in [spine_line - 1, spine_line, spine_line + 1]:
+					force_node.call(int(c["from"]), i, int(c["top_line"]))
+					force_node.call(int(c["to"]), i, int(c["foot_line"]))
+			"lift":
+				# The lobby: the roads around the lift's cell and every segment at its spine node, on every stop.
+				var cc := int(c["col"])
+				var rr := int(c["row"])
+				for k: int in c["stops"]:
+					force.call(k, "x", rr, cc)
+					force.call(k, "x", rr + 1, cc)
+					force.call(k, "s", cc, rr)
+					force.call(k, "s", cc + 1, rr)
+					force_node.call(k, int(c["top"]["i"]), int(c["top"]["j"]))
+		# Floor cuts and footprints (ramp cut / viaduct, shaft opening / landing, lift platform), upper and lower ends.
+		var on: Array = c["stops"] if c["kind"] == "lift" else [int(c["from"]), int(c["to"])]
+		for k: int in on:
+			force_touching.call(k, connector_rect(ci, k).grow(CUT_TOUCH))
+	# Gates: every segment ending at a door, portal or collapsed tunnel in a wall.
+	for b: Dictionary in boundaries:
+		var k := int(b["deck"])
+		for g: Dictionary in b["gates"]:
+			if g["axis"] == "s":
+				force_node.call(k, int(g["line"]), 0 if b["edge"] == "s0" else rows)
+			else:
+				force_node.call(k, 0 if b["edge"] == "x0" else cols, int(g["line"]))
+	# Checkpoints and cordons: the segments their spot stands on (all of them where it is a crossing).
+	for h: Dictionary in hooks:
+		if h["kind"] == "checkpoint" or h["kind"] == "cordon":
+			var pt := Vector2(float(h["x"]), float(h["s"]))
+			force_touching.call(int(h["deck"]), Rect2(pt, Vector2.ZERO).grow(CUT_TOUCH))
+	# The vehicle route as planned with every segment a street.
+	var way: Array = route["vehicle"]
+	for n in range(1, way.size()):
+		var a: Dictionary = way[n - 1]
+		var b: Dictionary = way[n]
+		if int(a["deck"]) != int(b["deck"]):
+			continue
+		var sg := _seg_between(node_id(a["deck"], a["i"], a["j"]), node_id(b["deck"], b["i"], b["j"]))
+		if not sg.is_empty():
+			force.call(int(sg["deck"]), sg["axis"], sg["line"], sg["index"])
+	return out
+
+
+## True where cell (c, r) of deck k holds a connector's footprint or is a connector's own cell there.
+func _cell_has_connector(k: int, cell: Vector2i) -> bool:
+	var rect := cell_rect(k, cell.x, cell.y)
+	for ci in connectors.size():
+		var c: Dictionary = connectors[ci]
+		var on: Array = c["stops"] if c["kind"] == "lift" else [int(c["from"]), int(c["to"])]
+		if not on.has(k):
+			continue
+		var row := int(c["foot_row"]) if c["kind"] == "ramp" and int(c["to"]) == k else int(c["row"])
+		if Vector2i(int(c["col"]), row) == cell or connector_rect(ci, k).intersects(rect):
+			return true
+	return false
+
+
+## Roll every minor segment's form (own generator), then repair: vehicles keep one connected network over every node with
+## a vehicle segment (entry and extraction on it, both ways), every cell keeps a vehicle side, and no crossing is left
+## with exactly one drawn segment (a stub street). Repairs turn pedestrian / none segments back into streets.
+func _make_forms() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(p("seed")) * 2654435761 + 1442695041
+	var forced := _forced_streets()
+	var rolled := 0
+	for k in deck_count:
+		var f := {}
+		var minor := {}
+		forms.append(f)
+		_minor.append(minor)
+		for axis: String in ["s", "x"]:
+			for line in _seg_lines(axis):
+				for index in _seg_count(axis):
+					var key := seg_key(axis, line, index)
+					if (forced[k] as Dictionary).has(key):
+						f[key] = "street"
+						continue
+					minor[key] = true
+					rolled += 1
+					f[key] = _roll_form(rng, k, axis, line, index, str(f.get(seg_key(axis, line, index - 1), "street")))
+	# A restored stub can strand a street behind pedestrian segments, and a repair can make a stub: until both hold.
+	var repaired := 0
+	var stubs := 0
+	while true:
+		repaired += _repair_forms()
+		var more := _restore_stubs()
+		stubs += more
+		if more == 0:
+			break
+	repair_stats = {"rolled": rolled, "repaired": repaired, "stubs": stubs}
+
+
+func _roll_form(rng: RandomNumberGenerator, k: int, axis: String, line: int, index: int, prev: String) -> String:
+	var fl := p("f_lane")
+	var fp := p("f_pedestrian")
+	var fn := p("f_none")
+	var st := maxf(1.0 - fl - fp - fn, 0.0)
+	var zs := []
+	var holds := false
+	for cell in _seg_cells(axis, line, index):
+		zs.append(zone(k, cell.x, cell.y))
+		holds = holds or _cell_has_connector(k, cell)
+	if zs.has("park") or zs.has("transit"):
+		fp *= 2.0
+	if zs.count("industrial") == zs.size():
+		fn *= 2.0
+	if zs.has("park") or zs.has("open") or zs.has("transit") or holds:
+		fn = 0.0                       # a superblock only joins built blocks, never over a connector's cell
+	if zs.count("urban") == zs.size():
+		fl *= 1.5
+	if prev == "pedestrian":
+		fp *= FORM_CLUSTER
+	elif prev == "lane":
+		fl *= FORM_CLUSTER
+	var x := rng.randf() * (st + fl + fp + fn)     # always one roll per minor segment
+	if x < fl:
+		return "lane"
+	if x < fl + fp:
+		return "pedestrian"
+	if x < fl + fp + fn:
+		return "none"
+	return "street"
+
+
+func _uf_find(parent: PackedInt32Array, a: int) -> int:
+	while parent[a] != a:
+		parent[a] = parent[parent[a]]
+		a = parent[a]
+	return a
+
+
+func _uf_join(parent: PackedInt32Array, a: int, b: int) -> void:
+	var ra := _uf_find(parent, a)
+	var rb := _uf_find(parent, b)
+	if ra != rb:
+		parent[maxi(ra, rb)] = mini(ra, rb)
+
+
+## Greedy repair (deterministic): while a guarantee fails, the pedestrian / none segment whose return to street fixes the
+## most (stranded vehicle nodes + cells without a vehicle side; ties: lowest deck, axis, line, index) becomes a street.
+## Returns how many segments it gave back.
+func _repair_forms() -> int:
+	var segs := []        # [deck, axis, line, index, a, b, cell ids]
+	for k in deck_count:
+		for axis: String in ["s", "x"]:
+			for line in _seg_lines(axis):
+				for index in _seg_count(axis):
+					var ab := _seg_nodes(k, axis, line, index)
+					var cells := []
+					for cell in _seg_cells(axis, line, index):
+						cells.append(cell_id(k, cell.x, cell.y))
+					segs.append([k, axis, line, index, ab.x, ab.y, cells])
+	var n_nodes := deck_count * (rows + 1) * (cols + 1)
+	var restored := 0
+	while true:
+		var parent := PackedInt32Array()
+		parent.resize(n_nodes)
+		for i in n_nodes:
+			parent[i] = i
+		var deg := PackedInt32Array()
+		deg.resize(n_nodes)
+		var sides := PackedInt32Array()
+		sides.resize(deck_count * rows * cols)
+		for sg: Array in segs:
+			if _drives(sg[0], sg[1], sg[2], sg[3]):
+				_uf_join(parent, sg[4], sg[5])
+				deg[sg[4]] += 1
+				deg[sg[5]] += 1
+				for cid: int in sg[6]:
+					sides[cid] += 1
+		for c: Dictionary in connectors:
+			if not c["vehicles"] or c["locked"]:
+				continue
+			if c["kind"] == "ramp":
+				_uf_join(parent, node_id(c["top"]["deck"], c["top"]["i"], c["top"]["j"]),
+						node_id(c["bottom"]["deck"], c["bottom"]["i"], c["bottom"]["j"]))
+			else:
+				var st: Array = c["stops"]
+				for m in st.size() - 1:
+					_uf_join(parent, node_id(st[m], c["top"]["i"], c["top"]["j"]), node_id(st[m + 1], c["top"]["i"], c["top"]["j"]))
+		var main := _uf_find(parent, entry_node())
+		var cnt := {}       # component root -> nodes with a vehicle segment in it
+		var bad := 0
+		for i in n_nodes:
+			if deg[i] > 0:
+				var r := _uf_find(parent, i)
+				cnt[r] = int(cnt.get(r, 0)) + 1
+				if r != main:
+					bad += 1
+		if _uf_find(parent, extraction_node()) != main:
+			bad += 1
+		for cid in sides.size():
+			if sides[cid] == 0:
+				bad += 1
+		if bad == 0:
+			break
+		var best := -1
+		var best_fix := 0
+		var fallback := -1
+		for si in segs.size():
+			var sg: Array = segs[si]
+			var form := _form_of(sg[0], sg[1], sg[2], sg[3])
+			if form != "pedestrian" and form != "none":
+				continue
+			if sg[1] == "x" and (_cut[sg[0]] as Dictionary).has(seg_key("x", sg[2], sg[3])):
+				continue
+			var fix := 0
+			for cid: int in sg[6]:
+				if sides[cid] == 0:
+					fix += 1
+			var ra := _uf_find(parent, sg[4])
+			var rb := _uf_find(parent, sg[5])
+			var before := (int(cnt.get(ra, 0)) if ra != main else 0) + (int(cnt.get(rb, 0)) if rb != main and rb != ra else 0)
+			var joined := int(cnt.get(ra, 0)) + (int(cnt.get(rb, 0)) if rb != ra else 0) + (1 if deg[sg[4]] == 0 else 0) + (1 if deg[sg[5]] == 0 else 0)
+			var after := 0 if ra == main or rb == main else joined
+			fix += before - after
+			if fix > best_fix:
+				best_fix = fix
+				best = si
+			# Nothing fixes in one step (a stranded part two segments away): grow it toward the rest, lowest first.
+			if fallback < 0 and ra != rb and ((ra != main and cnt.has(ra)) or (rb != main and cnt.has(rb))):
+				fallback = si
+		if best < 0:
+			best = fallback
+		if best < 0:
+			# Last resort, never expected: the first pedestrian / none segment left.
+			for si in segs.size():
+				var form := _form_of(segs[si][0], segs[si][1], segs[si][2], segs[si][3])
+				if form == "pedestrian" or form == "none":
+					best = si
+					break
+		if best < 0:
+			break
+		var pick: Array = segs[best]
+		forms[pick[0]][seg_key(pick[1], pick[2], pick[3])] = "street"
+		restored += 1
+	return restored
+
+
+## No stub streets: a crossing whose drawn (not `none`) segments number exactly one gets its `none` segments back as
+## streets, lowest first, until it has two. Repeats until no crossing is a stub. Returns how many it gave back.
+func _restore_stubs() -> int:
+	var restored := 0
+	var changed := true
+	while changed:
+		changed = false
+		for k in deck_count:
+			for j in rows + 1:
+				for i in cols + 1:
+					var drawn := 0
+					var nones := []
+					for sg: Array in _node_segs(i, j):
+						if _form_of(k, sg[0], sg[1], sg[2]) == "none":
+							nones.append(sg)
+						else:
+							drawn += 1
+					if drawn != 1 or nones.is_empty():
+						continue
+					while drawn < 2 and not nones.is_empty():
+						var sg: Array = nones.pop_front()
+						forms[k][seg_key(sg[0], sg[1], sg[2])] = "street"
+						drawn += 1
+						restored += 1
+					changed = true
+	return restored
+
+
+## The segments meeting at crossing (i, j), as [axis, line, index], in seg order (s before x, lower line / index first).
+func _node_segs(i: int, j: int) -> Array:
+	var out := []
+	if j > 0:
+		out.append(["s", i, j - 1])
+	if j < rows:
+		out.append(["s", i, j])
+	if i > 0:
+		out.append(["x", j, i - 1])
+	if i < cols:
+		out.append(["x", j, i])
+	return out
 
 
 ## What a mech can use: every cell of every deck (walk, jump), ramps, lifts, and shafts as one-way drops.
@@ -928,25 +1465,28 @@ func deck_view(k: int) -> Dictionary:
 			"ceiling_openings": openings, "keep_clear": (decks[k]["keep_clear"] as Array).duplicate(), "walls": walls}
 
 
-## The road surface of deck k as strips: longitudinal lines run the whole arc, cross lines the whole width, and the
-## spine is split into its lanes (ramps, avenue and rail are built differently).
+## The road surface of deck k as strips, one per road segment (seg_rect: crossing centre to crossing centre, so a line's
+## strips run its whole length); the spine's segments are split into its lanes (ramps, avenue and rail are built
+## differently). Each strip carries its segment's `index` and `form` (a `none` strip's ground belongs to the superblock).
 func _road_strips(k: int, extent: Rect2) -> Array:
 	var out := []
 	for i in cols + 1:
-		if i == spine_line:
-			for l: Array in SPINE_LANES:
-				var lx := lane_x(str(l[0]))
-				var kind := "ramp_lane" if str(l[0]).begins_with("ramp") else str(l[0])
-				out.append({"rect": Rect2(lx.x, extent.position.y, lx.y - lx.x, extent.size.y), "kind": kind, "axis": "s",
-						"line": i, "lane": str(l[0])})
-			continue
-		var hw := line_width("s", i) * 0.5
-		out.append({"rect": Rect2(col_x[i] - hw, extent.position.y, hw * 2.0, extent.size.y),
-				"kind": "perimeter" if i == 0 or i == cols else "arterial", "axis": "s", "line": i, "lane": ""})
+		for j in rows:
+			var r := seg_rect(k, "s", i, j)
+			var form := _form_of(k, "s", i, j)
+			if i == spine_line:
+				for l: Array in SPINE_LANES:
+					var lx := lane_x(str(l[0]))
+					var kind := "ramp_lane" if str(l[0]).begins_with("ramp") else str(l[0])
+					out.append({"rect": Rect2(lx.x, r.position.y, lx.y - lx.x, r.size.y), "kind": kind, "axis": "s",
+							"line": i, "lane": str(l[0]), "index": j, "form": form})
+				continue
+			out.append({"rect": r, "kind": "perimeter" if i == 0 or i == cols else "arterial", "axis": "s", "line": i,
+					"lane": "", "index": j, "form": form})
 	for j in rows + 1:
-		var hw := line_width("x", j) * 0.5
-		out.append({"rect": Rect2(extent.position.x, line_s(k, j) - hw, extent.size.x, hw * 2.0),
-				"kind": "perimeter" if j == 0 or j == rows else "cross", "axis": "x", "line": j, "lane": ""})
+		for i in cols:
+			out.append({"rect": seg_rect(k, "x", j, i), "kind": "perimeter" if j == 0 or j == rows else "cross", "axis": "x",
+					"line": j, "lane": "", "index": i, "form": _form_of(k, "x", j, i)})
 	return out
 
 
@@ -1018,6 +1558,160 @@ func _make_hooks() -> void:
 			hooks.append({"kind": "holding", "deck": k, "x": mid.x, "s": mid.y, "col": int(cell["col"]), "row": int(cell["row"])})
 
 
+# --- Encounters (derived) ---------------------------------------------------------------------------------
+# The crossing of each deck as the enemy spawner sees it (docs/design/mission-section.md §16). Pure reads of the plan:
+# no rolls, no stored state, so they can never shift generation or checksum(), and every machine derives the same list.
+
+## Where the crew first sets foot on deck k following the critical path: {deck, kind: portal | ramp | lift | shaft, x, s,
+## connector (id, -1 for the portal)}, in deck k's (x, s). Deck 0: the entry road node on the avenue's centre (where
+## CityStack.entry_transform puts the crew). Below: the landing of the critical connector down from deck k-1 (a ramp's
+## foot end on deck k, a lift's platform centre).
+func arrival(k: int) -> Dictionary:
+	if k <= 0:
+		return _end_point(0, "portal", -1, _avenue_mid(), line_s(0, int(entry["j"])))
+	var ci := _critical_between(k - 1)
+	if ci < 0:
+		return _end_point(k, "portal", -1, _avenue_mid(), 0.0)
+	var c: Dictionary = connectors[ci]
+	var rect := connector_rect(ci, k)
+	if c["kind"] == "ramp":
+		return _end_point(k, "ramp", ci, rect.get_center().x, row_theta[int(c["foot_line"])] * radius_of(k))
+	return _end_point(k, str(c["kind"]), ci, rect.get_center().x, rect.get_center().y)
+
+
+## Where the crew leaves deck k: same shape as arrival(), kind ramp | lift | portal. The head of the critical connector
+## down from deck k (a ramp's top end of its cut on deck k, a lift's platform centre); on the lowest deck the extraction
+## road node, on the avenue's centre like the entry (kind "portal", connector -1).
+func departure(k: int) -> Dictionary:
+	if k >= deck_count - 1:
+		var last := deck_count - 1
+		return _end_point(last, "portal", -1, _avenue_mid(), line_s(last, int(extraction["j"])))
+	var ci := _critical_between(k)
+	if ci < 0:
+		return _end_point(k, "portal", -1, _avenue_mid(), 0.0)
+	var c: Dictionary = connectors[ci]
+	var rect := connector_rect(ci, k)
+	if c["kind"] == "ramp":
+		return _end_point(k, "ramp", ci, rect.get_center().x, row_theta[int(c["top_line"])] * radius_of(k))
+	return _end_point(k, str(c["kind"]), ci, rect.get_center().x, rect.get_center().y)
+
+
+## The places on deck k worth an enemy group, by `progress` ascending: [{deck, kind, x, s, progress, dist, weight, share,
+## safe}] (+ connector and size on a checkpoint, loop on a patrol, connector on a departure). Kinds: first_contact (a
+## synthetic site on the avenue, FIRST_CONTACT_DIST past the arrival), checkpoint / station / patrol / holding / cordon
+## (from hooks), shaft_exit (landing under a shaft from above), branch_landing (stop of a non-critical connector, e.g. the
+## locked express lift), departure (departure(k)) or, on the lowest deck, extraction. Sites closer than MERGE_DIST are one
+## (heavier weight, kind by SITE_PRIORITY). progress: 0..1 projection on arrival -> departure; dist: metres from the
+## arrival; safe: dist < SAFE_RADIUS (nothing spawns there, share 0); share: the site's fraction of the deck's enemy budget
+## (weight 1 / 2 / 4 x (0.6 + 0.8 x progress), normalised over the non-safe sites).
+func encounter_sites(k: int) -> Array[Dictionary]:
+	var a := arrival(k)
+	var d := departure(k)
+	var av := Vector2(float(a["x"]), float(a["s"]))
+	var dv := Vector2(float(d["x"]), float(d["s"]))
+	var raw: Array[Dictionary] = []
+	# First contact: up the avenue toward the way down, short enough to stay in the first third of the crossing.
+	var along := dv.y - av.y
+	var dir := signf(along) if absf(along) > 1.0 else float(_dir(k))
+	var reach := minf(FIRST_CONTACT_DIST, absf(along) * FIRST_CONTACT_SHARE)
+	raw.append({"kind": "first_contact", "x": _avenue_mid(), "s": av.y + dir * reach, "weight": "light"})
+	for h: Dictionary in hooks:
+		if int(h["deck"]) != k:
+			continue
+		match str(h["kind"]):
+			"checkpoint":
+				raw.append({"kind": "checkpoint", "x": float(h["x"]), "s": float(h["s"]), "weight": str(h["size"]),
+						"connector": int(h["connector"]), "size": str(h["size"])})
+			"station", "cordon":
+				raw.append({"kind": str(h["kind"]), "x": float(h["x"]), "s": float(h["s"]), "weight": "light"})
+			"patrol":
+				raw.append({"kind": "patrol", "x": float(h["x"]), "s": float(h["s"]), "weight": "light",
+						"loop": (h["loop"] as Array).duplicate()})
+			"holding":
+				raw.append({"kind": "holding", "x": float(h["x"]), "s": float(h["s"]), "weight": "medium"})
+	for ci in connectors.size():
+		var c: Dictionary = connectors[ci]
+		var mid := connector_rect(ci, k).get_center()
+		if c["kind"] == "shaft":
+			if int(c["to"]) == k:
+				raw.append({"kind": "shaft_exit", "x": mid.x, "s": mid.y, "weight": "medium"})
+		elif c["role"] != "critical" and (c["stops"] as Array).has(k):
+			raw.append({"kind": "branch_landing", "x": mid.x, "s": mid.y, "weight": "medium"})
+	raw.append({"kind": "extraction" if k == deck_count - 1 else "departure", "x": dv.x, "s": dv.y, "weight": "heavy",
+			"connector": int(d["connector"])})
+	# Merge: most specific first; a site within MERGE_DIST of one already kept folds into it.
+	var order := range(raw.size())
+	order.sort_custom(func(i: int, j: int) -> bool:
+		var pi := SITE_PRIORITY.find(str(raw[i]["kind"]))
+		var pj := SITE_PRIORITY.find(str(raw[j]["kind"]))
+		return pi < pj or (pi == pj and i < j))
+	var w := p("width")
+	var arc := arc_of(k)
+	var kept: Array[Dictionary] = []
+	for i: int in order:
+		var site: Dictionary = raw[i]
+		site["x"] = clampf(float(site["x"]), -w * 0.5, w * 0.5)
+		site["s"] = clampf(float(site["s"]), -arc * 0.5, arc * 0.5)
+		var at := Vector2(float(site["x"]), float(site["s"]))
+		var into := -1
+		var best := MERGE_DIST
+		for n in kept.size():
+			var gap := at.distance_to(Vector2(float(kept[n]["x"]), float(kept[n]["s"])))
+			if gap < best:
+				best = gap
+				into = n
+		if into < 0:
+			kept.append(site)
+		elif SITE_WEIGHT[site["weight"]] > SITE_WEIGHT[kept[into]["weight"]]:
+			kept[into]["weight"] = site["weight"]
+	# Place every site on the crossing, then split the budget.
+	var axis := dv - av
+	var len2 := axis.length_squared()
+	var total := 0.0
+	for site in kept:
+		var at := Vector2(float(site["x"]), float(site["s"]))
+		site["deck"] = k
+		site["dist"] = at.distance_to(av)
+		site["progress"] = clampf((at - av).dot(axis) / len2, 0.0, 1.0) if len2 > 1.0 else 0.0
+		site["safe"] = float(site["dist"]) < SAFE_RADIUS
+		site["share"] = 0.0 if site["safe"] else float(SITE_WEIGHT[site["weight"]]) * (0.6 + 0.8 * float(site["progress"]))
+		total += float(site["share"])
+	for site in kept:
+		site["share"] = float(site["share"]) / total if total > 0.0 else 0.0
+	kept.sort_custom(func(x: Dictionary, y: Dictionary) -> bool:
+		if x["progress"] != y["progress"]:
+			return x["progress"] < y["progress"]
+		if x["dist"] != y["dist"]:
+			return x["dist"] < y["dist"]
+		return SITE_PRIORITY.find(str(x["kind"])) < SITE_PRIORITY.find(str(y["kind"])))
+	return kept
+
+
+## The critical (route) connector that takes the crew from deck k down to deck k+1, or -1.
+func _critical_between(k: int) -> int:
+	var any := -1
+	for ci in connectors.size():
+		var c: Dictionary = connectors[ci]
+		if c["role"] != "critical" or c["kind"] == "shaft" or int(c["from"]) > k or int(c["to"]) < k + 1:
+			continue
+		if int(c["from"]) == k:
+			return ci
+		if any < 0:
+			any = ci
+	return any
+
+
+func _avenue_mid() -> float:
+	var av := lane_x("avenue")
+	return (av.x + av.y) * 0.5
+
+
+func _end_point(k: int, kind: String, ci: int, x: float, s: float) -> Dictionary:
+	var half := arc_of(k) * 0.5
+	return {"deck": k, "kind": kind, "x": clampf(x, -p("width") * 0.5, p("width") * 0.5), "s": clampf(s, -half, half),
+			"connector": ci}
+
+
 # --- Checksum --------------------------------------------------------------------------------------------
 
 ## Hex digest of everything in the plan. Equal on two machines = the same section.
@@ -1062,6 +1756,15 @@ func checksum() -> String:
 	for e: Dictionary in [entry, extraction]:
 		for v in [e["deck"], e["i"], e["j"], e["col"], e["row"]]:
 			buf.put_32(int(v))
+	# Segment forms: only the segments that are not streets, so an all-street plan hashes as it did before forms.
+	for k in forms.size():
+		for axis: String in ["s", "x"]:
+			for line in _seg_lines(axis):
+				for index in _seg_count(axis):
+					var f := FORMS.find(_form_of(k, axis, line, index))
+					if f > 0:
+						buf.put_32(seg_key(axis, line, index) + k * 1048576)
+						buf.put_8(f)
 	var ctx := HashingContext.new()
 	ctx.start(HashingContext.HASH_SHA256)
 	ctx.update(buf.data_array)

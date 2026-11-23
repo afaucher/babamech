@@ -8,13 +8,18 @@ extends NetTest
 ## 3. A never heals B's puppet target (A owns nothing of B: no healed signal there); A's puppet of B shows the repair only
 ##    through B's own snapshots (its HP goes up).
 ## 4. A repeated launch event is dropped on B (still one drone).
-## 5. Looks (EquipmentLook): A carries the drone on its back; on B, A's puppet shows the docked drone before the launch
-##    and the empty cradle while the drone is out (driven by the drone effect on B, not by A's rack).
+## 5. Looks (EquipmentLook): A carries the drone on its back; on B, A's puppet shows the docked drone before the launch,
+##    the empty cradle while the drone is out (driven by the drone effect on B, not by A's rack) and the docked drone
+##    again once it has flown home (life shortened to LIFE s on both machines through CombatWorld.overrides).
+## 6. Green only while it repairs: on B a beam goes to B's own damaged mech in range, and none once B's mech is full;
+##    on A a beam goes to B's puppet while its mirrored HP is below full.
 
 const PEERS := 2
 const SEED := 11
 const SAMPLES := [1.5, 2.5, 3.5]
-const POS_TOL := 1.0              ## m: the drone on B vs on A (puppet interpolation; both mechs stand still)
+const POS_TOL := 0.5              ## m: the drone on B vs on A (sampled the first frame after the same clock time: the
+                                  ## orbit moves ~5 m/s, so a frame apart is ~0.1 m; both mechs stand still)
+const LIFE := 8.0                 ## s: the drone's life in this test (overrides the catalog's 60 on both machines)
 const DAMAGE := 200.0
 
 var td: TestDrive
@@ -28,6 +33,9 @@ var puppet_heals := 0             ## healed signals on this machine's puppet tar
 var hp_after_damage := 0.0
 var shown_before := ""          ## B: A's puppet back mount before the launch (EquipmentLook.shown)
 var shown_out := ""             ## B: the same while A's drone is out
+var shown_home := ""            ## B: the same once A's drone has flown home (docked and removed)
+var drone_was_out := false
+var beam_damaged := false       ## B: a beam went to B's own (damaged) mech while A's drone repaired
 
 
 func run_host() -> void:
@@ -61,7 +69,9 @@ func run_host() -> void:
 	var d := world.launch_drone(rec)
 	if not check(d != null, "the host's drone launched"):
 		return
-	await sleep(0.3)
+	await sleep(1.0)
+	check(d.beamed().has(tb), "on A, a beam goes to B's puppet while its mirrored HP is below full")
+	check(d.ring_shown(), "on A, the ring shows while it repairs")
 	Session.send_event(0, CombatNet.DRONE, {"t": float(rec["t"]), "hp": "back"})   # the same launch again: dropped
 	await until(func() -> bool: return samples.size() == SAMPLES.size(), 6.0)
 	await sleep(0.4)
@@ -103,6 +113,24 @@ func run_host() -> void:
 	await sleep(0.3)
 	check(tb.total_hp() > puppet_hp0 + rate * 0.5, "A's puppet of B shows the repair through B's snapshots (%.1f -> %.1f)" % [
 		puppet_hp0, tb.total_hp()])
+	# 6. B's mech full: no beam on B (and, once the snapshots carry it, none on A).
+	command(b, "full", {})
+	if check(await wait_reports("full", 1, 10.0), "B reports after repairing its mech to full"):
+		var vf: Dictionary = reported(b, "full")
+		check(bool(vf["repairing"]), "A's drone still repairing on B")
+		check(bool(vf["beam_damaged"]), "on B, a beam went to B's own mech while it was damaged")
+		check(not bool(vf["beam_full"]), "on B, no beam to B's own mech once it is full")
+		check(not bool(vf["ring_full"]), "on B, no ring once nobody in range needs repair")
+	await sleep(0.5)
+	check(not d.beamed().has(tb), "on A, no beam to B's puppet once its mirrored HP is full")
+	# 5b. Home: after LIFE + dock s, A's puppet on B shows the docked drone again.
+	await until(func() -> bool: return world.drone_of(net.local_shooter) == null, LIFE + 4.0)
+	check(world.drone_of(net.local_shooter) == null, "A's drone flew home and was removed on A")
+	await sleep(0.5)
+	command(b, "report", {"key": "home"})
+	if check(await wait_reports("home", 1, 10.0), "B reports after the return"):
+		var vh: Dictionary = reported(b, "home")
+		eq(str(vh["shown_home"]), "docked", "on B, A's puppet shows the docked drone again after it flew home")
 	command(b, "finish", {})
 	check(await wait_done(peers - 1, 20.0), "the client is done")
 
@@ -124,6 +152,13 @@ func run_client() -> void:
 		match str(c["cmd"]):
 			"finish":
 				return
+			"full":
+				td.combat.player_target.repair_all()
+				await sleep(0.4)
+				var dn := world.drone_of("player1")
+				var own := td.combat.player_target
+				report("full", {"repairing": dn != null and dn.repairing(), "beam_damaged": beam_damaged,
+					"beam_full": dn != null and dn.beamed().has(own), "ring_full": dn != null and dn.ring_shown()})
 			"damage":
 				td.combat.player_target.apply_damage(DAMAGE, "torso", "test")
 				hp_after_damage = td.combat.player_target.total_hp()
@@ -137,7 +172,7 @@ func run_client() -> void:
 					"hp_after_damage": hp_after_damage, "hp_now": td.combat.player_target.total_hp(),
 					"max_hp": td.combat.player_target.total_max_hp(), "heals": heals.size(), "heal_src_ok": src_ok,
 					"puppet_heals": puppet_heals, "stats": net.stats, "shown_before": shown_before,
-					"shown_out": shown_out, "back": _puppet_back()})
+					"shown_out": shown_out, "shown_home": shown_home, "back": _puppet_back()})
 
 
 func _load_and_go() -> bool:
@@ -153,6 +188,7 @@ func _load_and_go() -> bool:
 	td.mech.move_input = Vector2.ZERO
 	world = td.combat.world
 	net = td.combat.net
+	world.overrides["repair_drone"] = {"life": LIFE}       # a short life on both machines: the return happens in the test
 	world.drone_launched.connect(_on_drone)
 	td.combat.player_target.healed.connect(_on_healed)
 	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
@@ -188,7 +224,12 @@ func _physics_process(_delta: float) -> void:
 		return
 	var d := world.drone_of("player1")
 	if d == null:
+		if drone_was_out and shown_home == "":
+			shown_home = world.equipment_look.shown("player1")
 		return
+	drone_was_out = true
+	if d.repairing() and d.beamed().has(td.combat.player_target):
+		beam_damaged = true
 	for s: float in SAMPLES:
 		if not samples.has(str(s)) and world.now >= d.t0 + s:
 			samples[str(s)] = d.pos

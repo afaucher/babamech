@@ -169,6 +169,18 @@ func build_body() -> Node3D:
 	return root
 
 
+## Build ahead of time the cached look a Missile draws (body, exhaust, the first puff node's mesh and its red puffs, the
+## laser line's dot, muzzle flash): see Projectile.prewarm_look.
+static func prewarm_missile() -> void:
+	missile_mesh()
+	LowPolyFlame.jet()
+	CombatMeshes.ico(PUFF_RAMP[0])
+	for c: Color in MISSILE_PUFFS:
+		CombatMeshes.ico(c)
+	CombatMeshes.ico(CombatMeshes.RED, true)
+	MuzzleFlash.mesh()
+
+
 ## 1 unit long along -Z (nose at -0.5): a slimmer, longer-reading body than the rocket, white with a red band, a red tip,
 ## four red tail fins and four small red canards, a dark nozzle.
 static func missile_mesh() -> ArrayMesh:
@@ -204,13 +216,6 @@ func puff_size(e: float) -> float:
 	return 0.12 + drawn_scale(e) * 0.15
 
 
-## The rocket's puff looks with the jitter scaled down: the chain stays on the flight line.
-func _puff_look(k: int) -> Dictionary:
-	var lk := super._puff_look(k)
-	for i in range(_puff_looks.size() - 1, -1, -1):
-		var p: Dictionary = _puff_looks[i]
-		if p.has("thin"):
-			break
-		p["jitter"] = (p["jitter"] as Vector3) * PUFF_JITTER
-		p["thin"] = true
-	return lk
+## The rocket's puff jitter scaled down: the chain stays on the flight line.
+func puff_jitter_scale() -> float:
+	return PUFF_JITTER

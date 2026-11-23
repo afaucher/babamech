@@ -18,6 +18,12 @@ extends Node3D
 ## work in the legs' frame: a strafe becomes forward or diagonal walking with full strides. Lean follows the travel
 ## direction, sway the planted foot in the legs' frame.
 ##
+## Heat shutdown sag: while the controller's `shutdown` is on (a puppet's comes from its owner's snapshot, MechPuppet)
+## the body slumps: it drops `sag_depth` (the knees bend deeper through the IK, the planted feet stay put), pitches
+## forward `sag_pitch` and lists a little to one side, easing in on an underdamped spring over about `sag_time` (it
+## overshoots, rebounds and settles); when the mech reboots it rises the same way with a short shudder. Not in the air.
+## Cosmetic only: no effect on the body, collision, speeds or the gait.
+##
 ## Presentation only (Net LOCAL): every machine runs it from the mech's synced motion (own mech or puppet alike).
 
 var mech_scale := 2.0
@@ -32,6 +38,11 @@ var air_tuck := 0.5          ## airborne feet hang this share of the max foot li
 var absorb := 0.35           ## landing dip (model units) at a landing of hard_land_speed; less for softer ones
 var absorb_time := 0.1       ## seconds to the bottom of the landing dip (it recovers over about five times that)
 
+var sag_depth := 0.42        ## heat shutdown: the body drops this far (model units; times mech_scale in metres)
+var sag_pitch := 0.17        ## and pitches forward this much (rad)
+var sag_roll := 0.035        ## and lists this much to one side (rad), so the slump isn't symmetric
+var sag_time := 0.65         ## seconds the slump (and the reboot rise) takes to settle, overshoot included
+
 var twist_max := deg_to_rad(90.0)    ## hip twist: the legs turn at most this far from the body facing (rad)
 var twist_rate := deg_to_rad(270.0)  ## and at most this fast (rad/s)
 
@@ -39,6 +50,10 @@ const AIR_DELAY := 0.15      ## seconds off the floor before the legs hang (brie
 const TWIST_SPEED := Vector2(1.0, 3.0)   ## ground speed (m/s) where the twist starts, and where it is full
 const TWIST_HYST := deg_to_rad(25.0)     ## the travel angle must pass the side line by this to swap forward / reversed
 const TWIST_PICK := deg_to_rad(100.0)    ## legs at the body facing: travel beyond this angle walks reversed
+const SAG_DAMP := 0.45       ## the slump spring's damping ratio (about 20 % overshoot past sag_depth)
+const RISE_DAMP := 0.4       ## the reboot rise's (it overshoots above standing a little)
+const SAG_PEAK := 1.3        ## the deepest the settle may reach, as a share of sag_depth (test_torso_clearance checks it)
+const SHUDDER := Vector2(0.05, 15.0)   ## reboot shudder: amplitude (share of sag_depth) and frequency (Hz); fades in 0.4 s
 
 var model: MechModel
 var gait := Gait.new()
@@ -46,6 +61,7 @@ var leg_yaw := 0.0           ## hip twist now (rad, + = legs turned toward the b
 var reached_fraction := 1.0  ## legs whose IK target was in reach last frame (diagnostics, tests)
 ## Co-op puppets: the owner's leg_yaw from its snapshots, used instead of the twist computed here (NAN = compute it).
 var twist_override := NAN
+var sag := 0.0               ## the shutdown slump now: 0 standing, 1 slumped (overshoots past either end while easing)
 
 var _body: MechController
 var _air_time := 0.0
@@ -56,6 +72,8 @@ var _land_depth := 0.0                 ## this landing's dip (model units)
 var _reversed := false                 ## the legs walk backward (travel more than ~90 deg from the body facing)
 var _pilot_facing := Vector3.ZERO      ## the body's facing last frame (the pilot head's yaw rate)
 var _pilot_steps: Array = [{}, {}]     ## each foot's last landed step info last frame (the pilot head's footfall)
+var _sag_v := 0.0                      ## the slump spring's velocity (share of sag_depth per second)
+var _rise_t := INF                     ## seconds since the reboot rise began (the shudder)
 
 
 ## Authority (scripts/net/net.gd): presentation, recomputed on every machine from the mech's motion, except `leg_yaw`,
@@ -64,10 +82,11 @@ func net_fields() -> Dictionary:
 	return {"mech_scale": Net.SPAWN, "bob": Net.SPAWN, "lean": Net.SPAWN, "sway": Net.SPAWN, "foot_gap": Net.SPAWN,
 		"step_margin": Net.SPAWN, "probe_up": Net.SPAWN, "probe_down": Net.SPAWN, "air_tuck": Net.SPAWN,
 		"absorb": Net.SPAWN, "absorb_time": Net.SPAWN, "twist_max": Net.SPAWN, "twist_rate": Net.SPAWN,
+		"sag_depth": Net.SPAWN, "sag_pitch": Net.SPAWN, "sag_roll": Net.SPAWN, "sag_time": Net.SPAWN,
 		"model": Net.LOCAL, "gait": Net.LOCAL, "leg_yaw": Net.OWNER, "reached_fraction": Net.LOCAL,
-		"twist_override": Net.LOCAL, "_body": Net.LOCAL, "_air_time": Net.LOCAL, "_airborne": Net.LOCAL,
+		"twist_override": Net.LOCAL, "sag": Net.LOCAL, "_body": Net.LOCAL, "_air_time": Net.LOCAL, "_airborne": Net.LOCAL,
 		"_prev_xf": Net.LOCAL, "_land_t": Net.LOCAL, "_land_depth": Net.LOCAL, "_reversed": Net.LOCAL,
-		"_pilot_facing": Net.LOCAL, "_pilot_steps": Net.LOCAL}
+		"_pilot_facing": Net.LOCAL, "_pilot_steps": Net.LOCAL, "_sag_v": Net.LOCAL, "_rise_t": Net.LOCAL}
 
 
 func _ready() -> void:
@@ -163,6 +182,10 @@ func update_pose(delta: float) -> void:
 	var go := travel if travel != Vector3.ZERO else Vector3.FORWARD
 	var leg_fwd := tw * Vector3.FORWARD
 	var rot := go.cross(Vector3.UP) * (-lean * k) + leg_fwd * (sway * planted_side * minf(k * 3.0, 1.0))
+	# Heat shutdown: slump (the feet stay planted; only the body and so the hips move).
+	_update_sag(delta, _body.shutdown and not airborne)
+	offset += sag_offset()
+	rot += sag_rot()
 	var lengths := model.leg_lengths()
 	var legs: Array = []
 	var reached := 0
@@ -217,6 +240,48 @@ func _update_twist(delta: float, flat: Vector3, on_ground: bool = true) -> Vecto
 		target = clampf(t, -twist_max, twist_max) * smoothstep(TWIST_SPEED.x, TWIST_SPEED.y, speed)
 	leg_yaw = twist_override if not is_nan(twist_override) else move_toward(leg_yaw, target, twist_rate * delta)
 	return travel if speed > TWIST_SPEED.x * 0.5 else Vector3.ZERO
+
+
+## Ease `sag` toward 1 (slumped) or 0 on an underdamped spring that settles in about sag_time; a rise starts the
+## reboot shudder.
+func _update_sag(delta: float, slumped: bool) -> void:
+	var target := 1.0 if slumped else 0.0
+	if not slumped and sag > 0.5 and _rise_t == INF:
+		_rise_t = 0.0   # the reboot: rising from the slump
+	elif slumped:
+		_rise_t = INF
+	if _rise_t != INF:
+		_rise_t += delta
+		if _rise_t > 0.6:
+			_rise_t = INF
+	if absf(sag - target) < 1e-4 and absf(_sag_v) < 1e-3:
+		sag = target
+		_sag_v = 0.0
+		return
+	var damp := SAG_DAMP if slumped else RISE_DAMP
+	# Natural frequency for the first peak at about 0.55 of sag_time.
+	var w := PI / (maxf(sag_time, 0.05) * 0.55 * sqrt(1.0 - damp * damp))
+	var n := maxi(1, ceili(delta * w / 0.25))   # sub-steps keep the spring stable at big deltas
+	var h := delta / float(n)
+	for i in n:
+		_sag_v += (w * w * (target - sag) - 2.0 * damp * w * _sag_v) * h
+		sag += _sag_v * h
+
+
+## The slump's body offset now (model units; zero standing): down by sag_depth, plus the reboot shudder.
+func sag_offset() -> Vector3:
+	var y := -sag_depth * sag
+	if _rise_t != INF:
+		y += sag_depth * SHUDDER.x * sin(_rise_t * TAU * SHUDDER.y) * exp(-_rise_t * 8.0)
+	return Vector3(0.0, y, 0.0)
+
+
+## The slump's body rotation now (rad, added to the body's euler rotation): forward pitch and a list to one side.
+func sag_rot() -> Vector3:
+	var r := Vector3(-sag_pitch * sag, 0.0, sag_roll * sag)
+	if _rise_t != INF:
+		r.z += sag_roll * 0.6 * sin(_rise_t * TAU * SHUDDER.y * 0.8 + 1.0) * exp(-_rise_t * 8.0)
+	return r
 
 
 ## Where foot `side` hangs in the air, in model space: under its hip, tucked up by air_tuck of the max lift.

@@ -59,12 +59,20 @@ static func shell(c: Color, width: float = 0.38, glow: bool = false) -> ArrayMes
 			k.tri(tail, a, b, c.darkened(0.15), Vector3(0, 0, -0.1)))
 
 
+## Colour -> the shard mesh already made for it: impacts ask for theirs per impact (same meshes as `_cache`).
+static var _shard_by: Dictionary = {}
+
+
 ## A shard: a tetrahedron about 1 m across.
 static func shard(c: Color) -> ArrayMesh:
-	return _mesh("shard|%s" % c.to_html(), func(k: MeshKit) -> void:
-		var p := [Vector3(0, 0.6, 0), Vector3(0.5, -0.3, 0.3), Vector3(-0.5, -0.3, 0.3), Vector3(0, -0.3, -0.55)]
-		for f: Array in [[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]]:
-			k.tri(p[f[0]], p[f[1]], p[f[2]], c, Vector3.ZERO))
+	var m: ArrayMesh = _shard_by.get(c)
+	if m == null:
+		m = _mesh("shard|%s" % c.to_html(), func(k: MeshKit) -> void:
+			var p := [Vector3(0, 0.6, 0), Vector3(0.5, -0.3, 0.3), Vector3(-0.5, -0.3, 0.3), Vector3(0, -0.3, -0.55)]
+			for f: Array in [[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]]:
+				k.tri(p[f[0]], p[f[1]], p[f[2]], c, Vector3.ZERO))
+		_shard_by[c] = m
+	return m
 
 
 ## A flat ring in XZ (facing +Y), outer radius 1, inner `inner`.

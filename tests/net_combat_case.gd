@@ -9,8 +9,9 @@ extends NetTest
 ## 3. MISSILE: with world geometry off everywhere, A's aim point sweeps 87 m sideways while a guided missile flies; on
 ##    every other machine the missile (steered by A's streamed aim point) stays within MISSILE_TOL of A's own and far off
 ##    the straight line.
-## 4. HIT: B's targets get the fixture team "rival" on every machine (player shots skip teammates: friendly fire is an
-##    open design question, weapons.md §7.3), A fires a shell into B. Only B applies it, once (a duplicate event is
+## 4. HIT: B's targets get the fixture team "rival" on every machine (this case runs with friendly fire OFF everywhere,
+##    `world.friendly_fire = false` at load, so steps 1-3 and 5 never clip a teammate; friendly fire itself is
+##    test_net_friendly_fire), A fires a shell into B. Only B applies it, once (a duplicate event is
 ##    dropped); A and C build no Hit, emit no remote_hit, and show the impact. Their puppet of B loses exactly that one
 ##    shell's HP, because B streams its component HP in its mech snapshot (never written by A / C's combat).
 ## 5. HOST-OWNED: a host-owned target "net_dummy" (owner_peer 0) exists everywhere; B shoots it. B decides and sends the
@@ -270,6 +271,7 @@ func _load_and_go() -> bool:
 	td.combat.enemies.clear()
 	td.drive_override = true
 	world = td.combat.world
+	world.friendly_fire = false     # this case's shots must never clip a teammate (B is hit as team "rival", step 4)
 	net = td.combat.net
 	net.remote_fired.connect(_on_remote_fired)
 	world.impact_spawned.connect(func(p: Vector3, _r: float, _x: bool, _en: bool) -> void: impacts.append([world.now, p]))

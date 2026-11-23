@@ -1,7 +1,8 @@
 extends TestCase
 ## VISUAL: the mech HUD draws. Two shots in test_logs/shots/: `hud_demo` (fixed sample data over a plain backdrop:
 ## every state at once, including the crew panel's three demo teammates and the mission layer's objective line and
-## extraction waypoint), `hud_demo_banner` (the same plus the MISSION COMPLETE end banner) and `hud_drive` (the live test
+## extraction waypoint, two revealed-enemy markers (one stuck to the right edge) and the "last hostiles
+## marked" line), `hud_demo_banner` (the same plus the MISSION COMPLETE end banner) and `hud_drive` (the live test
 ## drive: your mech, its weapon rack and heat, the objective line).
 ## Runs only under `.\test_runner.ps1 -Visual` (hidden desktop, takes the GPU lock).
 

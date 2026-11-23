@@ -383,3 +383,87 @@ Runs automatically in `.\test_runner.ps1 -TestAll` (target budget **< 3.5 s** he
 1. **Catalog Cooling Discrepancy:** Currently `MechController.cooling` defaults to `9.0` while `MechCatalog.CHASSIS["strider"]["cooling"]` is `6.0` (and isn't copied into `MechController` on spawn). Should the balance simulator use `MechController`'s live `9.0` as-is (measuring the real game today) and flag this separately, rather than altering `MechController` during M1? *(Recommended: measure live game as-is in M1, then tune once we have scorecard data.)*
 2. **Solo vs. Co-op `max_attackers`:** `TestDriveCombat` currently uses `max_attackers = 1`, `slot_stagger = 0.85` for solo play. Confirm that Tier 3 solo city scenarios should match `TestDriveCombat` exactly (`1` / `0.85`), while Tier 3 co-op sweeps `2` (2p) and `3` (4p).
 3. **Target Balance Bands:** Are the proposed win rates and HP-left bands in §5.2 aligned with the intended difficulty curve (especially `rookie` `40–80%` duel win rate vs. `average` `70–95%` full city clear), or should solo missions feel harsher/more forgiving?
+
+---
+
+## 9. Mission bot: objectives (`MissionBot`, plan mode)
+
+Added 2026-11-23 by the Engine session. `scripts/game/mission_bot.gd` (Engine's) is the `--bot` layer that GOES places
+(routes across decks with `BotRoutePlanner`); the fighting stays `PlayerBot` (§2, antigravity's, unchanged). With
+mission objectives on (`--objectives`, `TestDrive.objectives`, launch param `objectives`) it plays the mission's
+objectives so a whole mission can be won headless, and the tests below are the mission regression suite
+(docs/design/mission-objectives.md §7: a phase is done when the bot completes every objective type of that phase
+headless, without cheats).
+
+### 9.1 How it reads the mission
+Like a player, from what its own machine knows, so it works the same on the host and on a client: `MissionRules` on this
+machine (the host's evaluated state, or a client's copy applied from `mission.state`): `obj_state(id)`,
+`obj_progress(id)`, `is_done(id)`, `objective(id)` (the record with the site snapped by the world, the hold's zone
+`Rect2`), plus `MissionFlow.crew_facts()` (who is standing, for the co-op split) and EnemySquad's enemies (puppets on a
+client; `wave` tags replicate). It never reads hidden state: a bonus is worked only once it is `known` (found within
+150 m, as for a player). Banners and other scenery targets are not EnemySquad enemies and are never hunted.
+
+### 9.2 Order
+`work_deck` starts at 0 and only moves on: that deck's primary (`d<k>_p`), then its known bonuses in id order (each at most
+`BONUS_GIVE_UP` 240 s; `MissionBot.bonuses = false` skips them, which the per-type tests do), then on the extraction deck
+the hold; then the next deck (after `ADVANCE_WAIT` 1.5 s, so a bonus chained to what just finished can show up).
+
+### 9.3 Per objective type
+
+| Type | Status | What the bot does |
+|---|---|---|
+| sweep | **supported** | Kill every enemy of the deck: a committed target (the clear logic: travel, fight, vantage, perch). Nothing alive but waves still due: wait at the deck's **arrival** (never the site: a sweep's site is the departure, a hole in the floor). |
+| flag (raise a flag) | **supported** | Route to the mast's snapped site; inside `ZONE_IN` (0.55) of the 14 m radius of its stand point (below) it **holds** (hysteresis out at 0.85): PlayerBot aims and fires, its legs are used only while it engages / dodges / takes cover near it, past 0.4 r the bot walks back (still facing the enemy). The alarm wave is fought from the ring. Progress not rising for `HUNT_AFTER` 12 s (contested: an enemy inside the ring) -> hunt the nearest enemy within 70 m of the site, then back. |
+| defend (a position) | **supported** | Route to the relay; hold within 20 m of it (activation is 30 m): the wave units come at the relay, i.e. at the bot, and PlayerBot's distance scoring takes them first. No engagement for 12 s while active -> hunt the wave units (any distance: the defend is done only when they are all dead), else enemies within 70 m. Cover: PlayerBot's own take-cover only (no cover search of its own). |
+| hold (extraction) | **supported** | After every primary: route to the extraction zone's centre, hold inside (radius = half the zone's short side), fight the hold wave from there for `params.hold` s (60). |
+| artillery (kill guns / spotters) | not yet | |
+| local defense (break the attack near the holdout) | not yet | |
+| political center | not yet | |
+| military output | not yet | |
+| evac (order the truck, escort it) | not yet | |
+
+**Reaching a zone.** The street graph (`BotRoutePlanner`) knows roads and blocks, not what stands inside a block
+(downtown towers and podiums, a mast). Within `LOCAL_R` (60 m) of a zone the last stretch is planned on a physics grid
+instead (`_plan_local`, once per goal): 3 m points around the zone's centre that have street-level floor and headroom
+(rays born inside a solid count: `hit_from_inside`), joined where rays at 2.5 and 5.5 m between them are clear in the
+middle and 2.4 m to each side (a mech's width: a doorway slit is not a way). Breadth-first from the mech to the point
+within 0.45 r of the centre nearest the goal's point; that point becomes the **stand point** (the hold centre). None
+found: the street route as before. Found 2026-11-23 on seed 6 deck 1: the flag snapped to the south side of a downtown
+podium; the straight walk from the north ran into the podium wall through a slit only a ray fits through.
+
+### 9.4 Co-op split
+Every machine sorts the standing crew (`crew_facts`, not downed) by peer id. Alone: `solo`. Otherwise the first is the
+**anchor** (holds the zone centre, hunts only on the timers above), the others **escorts**: they hold `ESCORT_OFF`
+(0.4 r) off the centre at a per-index angle, hunt a contested flag after 4 s and on a defend go at once for wave units
+within 70 m of the site. A downed anchor drops out of the sort, so an escort takes over. Every bot works the same task
+list (the same replicated state). Sweeps: everyone sweeps.
+**Friendly fire** (on by default): after PlayerBot chose its trigger, `_ff_guard` holds it while a teammate's mech is within
+`FF_CLEAR` 4 m of the line from the eye to the aim point or within `FF_SPLASH` 8 m of the aim point (`stats().ff_holds`).
+
+### 9.5 Running it headless
+- Solo: `godot --headless -- --bot veteran --objectives` with a solo launch, or the tests: `.\test_runner.ps1 -TestName
+  test_bot_obj_flag` (`tests/bot_obj_case.gd` is the shared body: seed, objective to finish or the win, game-time limit,
+  `expect` types; 2x sim speed like the nav tests, `BOT_SPEED=1` for full fidelity).
+- Crew: `tests/test_net_bot_objectives.gd` (2 processes over ENet, real time).
+- No cheats in these tests: no `--dev-bot-travel`, no `--dev-fast-clear`, no teleport, full enemies.
+- Seeds are pinned (natural plans, checksums unchanged) and each test asserts its plan's types first, so a plan change
+  fails loudly instead of testing something else. To re-pick: `MissionPlan.find_seed(type)`, or force a type with
+  `MissionPlan.make(sec, {"primary": type})` (Missions, 2026-11-23; not wired as a launch param yet).
+
+### 9.6 Tests (mission regression suite)
+All headless, no cheats, `SERIAL` (alone after the batch). Solo runs at 2x sim speed under `--fixed-fps 60`: repeat
+runs on an unchanged tree give identical game times; they move when enemies, waves or the plan change (the first column
+below came before another session's edits landed). Limits are ~1.75x the worst; when one gets close, re-measure from the
+printed `[Test]` lines and update the test and this table. `TestCase`'s timer runs on scaled time, so `bot_obj_case`
+sets it in game seconds (limit + 120).
+
+| Test | Seed (primaries) | Plays until | Measured (3 runs, game s) | Limit |
+|---|---|---|---|---|
+| `test_bot_obj_flag` | 6 (flag / flag / flag) | d0_p (flag) done | 38.6 / 38.6 / 38.6 (~5 s wall); after downtown + stand points 38.6 x3 | 70 s |
+| `test_bot_obj_defend` | 7 (flag / defend / defend) | d1_p (defend, 2 waves) done: flag, shaft drop, defend | 205.3 / 149.8 / 149.8 (~20-26 s wall); after downtown + stand points 173.8 x3, relay kept 97 % | 360 s |
+| `test_bot_obj_sweep` | 4 (sweep / flag / flag) | d0_p (sweep, with its waves) done | 117.0 / 117.0 / 117.0 (~17 s wall); after downtown + stand points 111.7 x3 | 210 s |
+| `test_bot_obj_hold` | 6 | **won**: three flags, a shaft, a ramp, the 60 s hold | 247.7 / 321.0 / 321.0 (~32-43 s wall; 321: downed in the hold, respawn on deck 0, walk back); after downtown + stand points 249.0 x3 | 560 s |
+| `test_net_bot_objectives` | 6, 2 peers, real time | **won** on the host, client agrees | 247.5 s wall (two runs passed) | 420 s (`NET_TIMEOUT` 500) |
+
+The non-objective sweep missions keep their own tests (`test_net_bot_mission`, `test_bot_nav_*`; those use DEV fast clear).
+`test_mission_phase1` (teleport + lethal hits) stays the fast frame check of the rules and waves.

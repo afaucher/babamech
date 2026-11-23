@@ -7,6 +7,10 @@ extends CombatTarget
 ##     and exposes `component_fractions()` for MechHud + `is_slot_destroyed(hp)` for WeaponRack.
 ##   - Test Drive safety valve: if torso / head / leg_l / leg_r reaches 0 HP, emits `player_disabled(cause)` and
 ##     invokes `on_respawn` after `auto_respawn_delay` s (full HP + cold heat) so play never soft-locks.
+##   - Fall damage (docs/design/weapons.md "Fall damage"): the bound mech's `hard_landing` above FALL_DAMAGE_SPEED
+##     damages both legs (and the torso above FALL_TORSO_SPEED) through apply_damage, src "fall", on the owner's machine
+##     only (a puppet's controller never steps, and its landings are ignored here). Landing thrusters avoid it by keeping
+##     the impact low; a shut down mech has none. Component HP reaches the crew in the mech snapshots as usual.
 
 signal player_component_destroyed(component: String)
 signal player_disabled(cause: String)
@@ -14,6 +18,11 @@ signal player_disabled(cause: String)
 const CORE_COMPONENTS := ["torso", "head", "leg_l", "leg_r"]
 const COMPONENT_HP := {"torso": 400.0, "leg_l": 200.0, "leg_r": 200.0, "head": 100.0}
 const WEAPON_HP := 80.0
+const FALL_DAMAGE_SPEED := 20.0   ## m/s down at touchdown: below this no damage (a 9 m drop uncushioned is ~19.9)
+const FALL_LEG_PER_MS := 3.0      ## HP to EACH leg per m/s above FALL_DAMAGE_SPEED
+const FALL_LEG_MAX := 0.9         ## one fall takes at most this share of a leg's max HP (a healthy mech survives it)
+const FALL_TORSO_SPEED := 40.0    ## m/s: extreme falls also hit the torso above this
+const FALL_TORSO_PER_MS := 1.5    ## torso HP per m/s above FALL_TORSO_SPEED
 ## Local-space hit spheres for an 8 m Strider mech (mech_scale = 2.0, origin at feet).
 const BODY_SPHERES := [
 	{"component": "torso", "center": Vector3(0.0, 4.4, 0.0), "radius": 2.05},
@@ -58,7 +67,11 @@ func net_fields() -> Dictionary:
 
 func bind(w: CombatWorld, m: MechController, mm: MechModel = null, id: String = "player1", peer: int = 1) -> void:
 	world = w
+	if mech != null and is_instance_valid(mech) and mech.hard_landing.is_connected(_on_hard_landing):
+		mech.hard_landing.disconnect(_on_hard_landing)
 	mech = m
+	if mech != null:
+		mech.hard_landing.connect(_on_hard_landing)
 	model = mm
 	target_id = id
 	owner_peer = maxi(peer, 1)
@@ -115,6 +128,25 @@ func apply_damage(amount: float, component: String, src: String) -> void:
 			disable_cause = c
 			_respawn_left = auto_respawn_delay
 			player_disabled.emit(c)
+
+
+## Damage from a touchdown at `speed` m/s down: {"leg": HP to each leg, "torso": HP} (zeros at or below the threshold).
+static func fall_damage(speed: float) -> Dictionary:
+	var leg := minf(maxf(speed - FALL_DAMAGE_SPEED, 0.0) * FALL_LEG_PER_MS, float(COMPONENT_HP["leg_l"]) * FALL_LEG_MAX)
+	var torso := maxf(speed - FALL_TORSO_SPEED, 0.0) * FALL_TORSO_PER_MS
+	return {"leg": leg, "torso": torso}
+
+
+## MechController.hard_landing: the owner's own mech hit the ground hard (no thrust cushion, or not enough).
+func _on_hard_landing(speed: float, _severity: float) -> void:
+	if mech == null or mech.puppet or disabled:
+		return
+	var d := fall_damage(speed)
+	if float(d["leg"]) <= 0.0:
+		return
+	apply_damage(float(d["leg"]), "leg_l", "fall")
+	apply_damage(float(d["leg"]), "leg_r", "fall")
+	apply_damage(float(d["torso"]), "torso", "fall")
 
 
 func apply_impulse(dv: Vector3, src: String) -> void:

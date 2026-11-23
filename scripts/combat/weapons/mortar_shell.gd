@@ -181,7 +181,7 @@ func _build_look() -> void:
 	_shell.top_level = true
 	add_child(_shell)
 	if float(stats.get("trail", 0.0)) > 0.0:
-		_trail_mesh = ImmediateMesh.new()
+		_trail_mesh = ArrayMesh.new()
 		_trail = CombatMeshes.instance(_trail_mesh)
 		_trail.top_level = true
 		add_child(_trail)
@@ -191,6 +191,16 @@ func _build_look() -> void:
 	_ring_inner = CombatMeshes.instance(CombatMeshes.ring(CombatMeshes.RED, 0.8, SCATTER_RING_SIDES))
 	_ring_inner.top_level = true
 	add_child(_ring_inner)
+
+
+## Build ahead of time the cached look a MortarShell draws (shell, trail, scatter rings, muzzle flash): see
+## Projectile.prewarm_look.
+static func prewarm_mortar(st: Dictionary) -> void:
+	shell_mesh()
+	Projectile.prewarm_trail(st)
+	CombatMeshes.ring(MechMeshes.ORANGE, 0.93, SCATTER_RING_SIDES)
+	CombatMeshes.ring(CombatMeshes.RED, 0.8, SCATTER_RING_SIDES)
+	MuzzleFlash.mesh()
 
 
 ## A fat dark shell, 1 m long along -Z (nose at -0.5): a 6-sided lathe, an orange band, four tail fins.

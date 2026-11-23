@@ -1,13 +1,16 @@
 extends TestCase
 ## Back-mount equipment (docs/design/back-equipment.md): the catalog carries repair_drone / radiator / ammo_bin on the
 ## back slot only (not as hangar weapons); the radiator sheds +3 heat/s; the ammo bin adds +50 % to limited-ammo weapons,
-## rounded up to a whole salvo; the repair drone launches only on its key (never on LMB), costs 15 heat, has 2 charges,
-## one out at a time, lives 60 s, follows its launcher, and repairs 1 %/s of max HP only on targets this machine owns
-## within 15 m (horizontal), most damaged component first, never a destroyed component or a downed mech; it dies with
-## its launcher. slots() reports equipment / passive / active_left. CombatTarget.heal is the verb.
+## rounded up to a whole salvo; the repair drone slot is a selectable slot (deselected by default, key 5 toggles, double
+## tap solos, soloing another deselects it), a fresh trigger press with it selected launches exactly one drone (15 heat)
+## and deselects it; 2 charges, one out at a time; it circles its launcher 5 m out (one turn per 6 s, the same on two
+## worlds from one record), lives 60 s, then flies home to the dock in 1.5 s; it repairs 1 %/s of max HP only on targets
+## this machine owns within 15 m of the LAUNCHER (horizontal), most damaged component first, never a destroyed component
+## or a downed mech; beams / ring only while it repairs someone; it dies at once with its launcher. slots() reports
+## equipment / passive / active_left / hint. CombatTarget.heal is the verb.
 ## Looks (EquipmentLook, RepairDrone): the flying drone uses the Mech session's mesh (placeholder when the part is
-## missing) and leaves from the dock on the back mount; the back mount shows the empty cradle while a drone is out, docked
-## again after with charges left, empty with none (the owner's rack count; a remote shooter by counting launches), and the
+## missing) and leaves from the dock on the back mount; the back mount shows the empty cradle while a drone is alive
+## (also on its way home), docked again after (also after the last charge, on the owner and on a remote machine), and the
 ## swap survives a MechModel rebuild; the radiator's "heat" surface gets an emissive material that brightens with heat.
 
 const DT := 1.0 / 60.0
@@ -19,6 +22,8 @@ func setup() -> void:
 	await _radiator()
 	await _ammo_bin()
 	await _drone()
+	await _activate_direct()
+	await _orbit_shared()
 	await _passive_key()
 	await _drone_looks()
 	await _remote_cradle()
@@ -167,18 +172,22 @@ func _drone() -> void:
 	add_child(me)
 	me.bind(world, mech, r["model"], "medic", 1)
 	world.register(me)
-	# slots() before launch.
+	# slots() before launch: deselected by default.
 	var s5: Dictionary = rack.slots()[4]
-	for k in ["equipment", "passive", "active_left"]:
-		check(s5.has(k) and rack.slots()[0].has(k), "slots() has `%s` on every slot" % k)
+	for k in ["equipment", "passive", "active_left", "hint"]:
+		check(s5.has(k) and rack.slots()[0].has(k) and rack.slots()[1].has(k), "slots() has `%s` on every slot" % k)
 	check(bool(s5["equipment"]) and not bool(s5["passive"]), "slot 5: active equipment")
+	check(not rack.enabled[4] and not bool(s5["enabled"]), "the drone slot starts deselected")
+	check(rack.enabled[0], "the laser starts selected (weapons keep their default)")
+	eq(str(s5["hint"]), "PRESS 5", "hint: PRESS 5 while deselected")
+	eq(str(rack.slots()[0]["hint"]), "", "a weapon has no hint")
 	eq(int(s5["ammo"]), 2, "two drones")
 	eq(int(s5["ammo_max"]), 2, "of two")
 	near(float(s5["ready"]), 1.0, 1e-6, "ready to launch")
 	near(float(s5["active_left"]), 0.0, 1e-6, "none out")
-	check(bool(s5["built"]) and bool(s5["enabled"]), "built and enabled")
+	check(bool(s5["built"]) and bool(s5["usable"]), "built and usable")
 	check(not bool(rack.slots()[0]["equipment"]), "the laser slot is not equipment")
-	# LMB never launches it.
+	# The trigger while deselected launches nothing.
 	var weapons_fired: Array = []
 	world.fired.connect(func(rec: Dictionary) -> void: weapons_fired.append(str(rec["weapon"])))
 	rack.set_trigger(true)
@@ -186,51 +195,86 @@ func _drone() -> void:
 		rack.step(DT)
 		world.advance(DT)
 	rack.set_trigger(false)
-	check(world.drone_of("medic") == null, "holding the trigger launches no drone")
+	rack.step(DT)
+	check(world.drone_of("medic") == null, "the trigger with the drone deselected launches nothing")
 	eq(rack.charges[4], 2, "and spends no charge")
 	check(not "repair_drone" in weapons_fired, "no fire record for the equipment")
 	check(weapons_fired.has("laser"), "the laser fired")
-	# Solo / double tap never disables the equipment slot.
-	rack.press_slot(1, 10.0)
-	rack.press_slot(1, 10.1)
-	check(rack.enabled[4], "soloing slot 1 leaves the equipment slot enabled")
+	# Key 5 selects, key 5 again deselects; the key alone never launches.
+	rack.press_slot(5, 10.0)
+	check(rack.enabled[4] and bool(rack.slots()[4]["enabled"]), "key 5 selects the drone slot")
+	eq(str(rack.slots()[4]["hint"]), "CLICK TO LAUNCH", "hint: CLICK TO LAUNCH while selected")
+	rack.press_slot(5, 11.0)
+	check(not rack.enabled[4], "key 5 again deselects it")
+	check(world.drone_of("medic") == null and rack.charges[4] == 2, "the key alone launches nothing")
+	# Solo / double tap like a weapon slot.
+	rack.press_slot(5, 12.0)
+	rack.press_slot(5, 12.1)
+	eq(rack.enabled, [false, false, false, false, true] as Array[bool], "a double tap on 5 solos the drone slot")
+	rack.press_slot(1, 13.0)
+	rack.press_slot(1, 13.1)
+	eq(rack.enabled, [true, false, false, false, false] as Array[bool], "soloing the laser deselects the drone slot")
+	rack.set_enabled(5, true)
+	check(rack.enabled[4], "set_enabled selects it")
 	rack.set_enabled(5, false)
-	check(rack.enabled[4], "set_enabled can't switch equipment off")
-	rack.set_enabled(1, true)
-	rack.set_enabled(2, true)
-	rack.press_slot(1, 20.0)                       # 1 then 5 then 1 quickly: no solo of 1 (5 broke the double tap)
+	check(not rack.enabled[4], "set_enabled deselects it")
+	check(world.drone_of("medic") == null, "still nothing launched")
+	# The trigger while selected: exactly one drone, 15 heat, the slot deselects itself.
+	rack.set_enabled(1, false)
+	rack.set_enabled(5, true)
 	mech.heat = 0.0
 	var h0 := mech.heat
-	rack.press_slot(5, 20.1)
-	rack.press_slot(1, 20.2)
-	check(rack.enabled[0] and rack.enabled[1], "a press of 5 in between breaks a double tap (slot 1 toggled back on, not soloed)")
-	# Launch.
+	var passive := float(MechCatalog.weapon("laser").get("passive_heat", 0.0)) * DT
+	rack.set_trigger(true)
+	rack.step(DT)
 	var d := world.drone_of("medic")
-	if not check(d != null, "key 5 launched the drone"):
+	if not check(d != null, "the trigger launched the drone"):
 		await _free(r)
 		return
-	near(mech.heat - h0, 15.0, 1e-3, "the launch cost 15 heat")
+	near(mech.heat - h0, 15.0 + passive, 1e-3, "the launch cost 15 heat")
 	eq(rack.charges[4], 1, "one drone left")
+	check(not rack.enabled[4], "the slot deselected itself after the launch")
+	world.advance(DT)
+	for i in 60:                                   # keep holding: no second launch
+		rack.step(DT)
+		world.advance(DT)
+	check(world.drone_of("medic") == d and rack.charges[4] == 1, "holding the trigger does not launch a second drone")
+	rack.set_trigger(false)
 	s5 = rack.slots()[4]
 	eq(int(s5["ammo"]), 1, "slots() ammo = drones left")
 	near(float(s5["ready"]), 0.0, 1e-6, "not ready while a drone is out")
 	eq(str(s5["hold"]), "DRONE OUT", "hold says why")
-	check(float(s5["active_left"]) > 59.0, "active_left counts down from 60 (%.2f)" % float(s5["active_left"]))
-	rack.press_slot(5, 30.0)
-	eq(rack.charges[4], 1, "one at a time: a second press while it is out does nothing")
+	eq(str(s5["hint"]), "", "no hint while the drone is out")
+	check(float(s5["active_left"]) > 58.0, "active_left counts down from 60 (%.2f)" % float(s5["active_left"]))
+	rack.press_slot(5, 30.0)                       # selected while out: a pull does nothing (one at a time)
+	eq(str(rack.slots()[4]["hint"]), "", "selected while out: still no hint")
+	rack.set_trigger(true)
+	_run(rack, world, DT)
+	rack.set_trigger(false)
+	eq(rack.charges[4], 1, "one at a time: a pull while it is out does nothing")
 	check(world.drone_of("medic") == d, "still the same drone")
-	# Follow: rise, hover 6 m above the back mount, smoothed follow.
+	rack.set_enabled(5, false)
+	# Orbit: 5 m out at hover height, one turn per 6 s.
 	var hover_h := RepairDrone.back_height() + 6.0
-	_run(rack, world, 1.0)
-	near(d.pos.distance_to(Vector3(0, hover_h, 0)), 0.0, 0.05, "hovers 6 m above the back mount (%s)" % d.pos)
+	_run(rack, world, 0.5)
+	var u := Vector3.UP
+	near(d.orbit_distance(), 5.0, 0.05, "circles 5 m out from the launcher (%.3f)" % d.orbit_distance())
+	near(d.pos.dot(u), hover_h, 0.05, "at the hover height, 6 m above the back mount (%.2f)" % d.pos.dot(u))
+	var p1 := d.pos
+	_run(rack, world, 1.5)
+	var p2 := d.pos
+	var a1 := Vector2(p1.x, p1.z)
+	var a2 := Vector2(p2.x, p2.z)
+	near(absf(a1.angle_to(a2)), PI * 0.5, 0.06, "a quarter turn in 1.5 s (%.3f rad)" % absf(a1.angle_to(a2)))
+	_run(rack, world, 4.5)
+	near(d.pos.distance_to(p1), 0.0, 0.05, "one full turn in 6 s: back where it was")
+	check(d.beamed().is_empty() and not d.ring_shown(), "the launcher at full HP: no beam, no ring")
+	# Follows the launcher (smoothed centre).
 	mech.position = Vector3(10, 0, 0)
-	_run(rack, world, 0.4)
-	var moved := d.pos.x
-	check(moved > 5.0 and moved < 7.5, "follows with ~0.4 s smoothing (%.2f m of 10 after 0.4 s)" % moved)
 	_run(rack, world, 3.0)
-	near(d.pos.distance_to(Vector3(10, hover_h, 0)), 0.0, 0.1, "caught up after 3 s")
+	near(d.orbit_distance(), 5.0, 0.1, "after the launcher walked: still circling it 5 m out (%.3f)" % d.orbit_distance())
 	me.position = mech.position
-	# Repair: 1 %/s of max HP, most damaged first, never a destroyed component.
+	# Repair: 1 %/s of max HP, most damaged first, never a destroyed component; green only now.
 	me.apply_damage(200.0, "torso", "x")      # torso 0.5
 	me.apply_damage(20.0, "leg_l", "x")       # leg 0.9
 	me.apply_damage(80.0, "side_l", "x")      # the laser hardpoint destroyed
@@ -238,58 +282,146 @@ func _drone() -> void:
 	var leg0 := float(me.hp["leg_l"])
 	var rate := 0.01 * me.total_max_hp()
 	_run(rack, world, 1.0)
-	print("[equipment] follow %.2f m of 10 after 0.4 s; repaired %.3f HP in 1 s (want %.3f)" % [moved, float(me.hp["torso"]) - torso0, rate])
+	print("[equipment] repaired %.3f HP in 1 s (want %.3f)" % [float(me.hp["torso"]) - torso0, rate])
 	near(float(me.hp["torso"]) - torso0, rate, rate * 0.05, "1 %% of max HP per second into the torso (%.2f)" % rate)
 	near(float(me.hp["leg_l"]), leg0, 1e-6, "the less damaged leg waits")
 	eq(float(me.hp["side_l"]), 0.0, "the destroyed hardpoint stays destroyed")
 	check(d.beamed().has(me), "a beam points at the damaged mech")
-	# Only targets this machine owns, not enemies, only within 15 m horizontally.
+	check(d.ring_shown(), "the ground ring shows while it repairs")
+	# Only targets this machine owns, not enemies, only within 15 m of the LAUNCHER horizontally.
 	var remote := _target(world, "remote", 2, "player", mech.position + Vector3(4, 0, 0))
 	var enemy := _target(world, "foe", 0, "enemy", mech.position + Vector3(-4, 0, 0))
 	var far := _target(world, "far", 0, "", mech.position + Vector3(16, 0, 0))
 	var high := _target(world, "high", 0, "", mech.position + Vector3(0, -30, 14))
+	var dir := d.pos - mech.position
+	dir.y = 0.0
+	dir = dir.normalized()
+	var opp := _target(world, "opposite", 0, "", mech.position - dir * 14.0)        # 14 m from the launcher, ~19 from the drone
+	var by_drone := _target(world, "by_drone", 0, "", mech.position + dir * 16.0)   # 16 m from the launcher, ~11 from the drone
 	var hp0 := {}
-	for t: CombatTarget in [remote, enemy, far, high]:
+	for t: CombatTarget in [remote, enemy, far, high, opp, by_drone]:
 		hp0[t.target_id] = t.total_hp()
-	_run(rack, world, 1.0)
+	_run(rack, world, 0.1)
+	check(opp.total_hp() > float(hp0["opposite"]), "14 m from the launcher on the far side of the orbit: repaired")
+	near(by_drone.total_hp(), float(hp0["by_drone"]), 1e-6, "16 m from the launcher (11 m from the drone): not repaired")
+	_run(rack, world, 0.9)
 	near(remote.total_hp(), float(hp0["remote"]), 1e-6, "another machine's mech is not healed here")
 	near(enemy.total_hp(), float(hp0["foe"]), 1e-6, "an enemy is not healed")
 	near(far.total_hp(), float(hp0["far"]), 1e-6, "a target 16 m away is not healed")
 	check(high.total_hp() > float(hp0["high"]) + 1.0, "a target 14 m across (30 m below) is: the radius is horizontal")
-	check(d.beamed().has(remote), "the remote mech in range still gets a beam (its owner repairs it)")
+	check(d.beamed().has(remote), "the remote mech in range, below full: a beam (its owner repairs it)")
 	check(not d.beamed().has(enemy), "no beam to an enemy")
-	# 60 s life.
+	check(not d.beamed().has(by_drone), "no beam out of range")
+	for t: Node in [remote, enemy, far, high, opp, by_drone]:
+		world.unregister(t as CombatTarget)
+		t.queue_free()
+	# Everyone full: idle orbit, nothing green, no early return.
+	me.repair_all()
+	_run(rack, world, 0.2)
+	check(d.beamed().is_empty() and not d.ring_shown(), "everyone full: no beam, no ring")
+	check(d.active(), "and no early return")
+	me.apply_damage(100.0, "torso", "x")
+	# 60 s life, then home to the dock.
 	_run(rack, world, 60.0 - d.age() - 0.05)
 	check(d.active(), "still repairing just before 60 s")
 	_run(rack, world, 0.1)
-	check(not d.active(), "done after 60 s")
+	check(not d.active() and d.returning(), "after 60 s: flying home")
 	near(float(rack.slots()[4]["active_left"]), 0.0, 1e-6, "active_left 0")
+	eq(str(rack.slots()[4]["hold"]), "DRONE OUT", "hold DRONE OUT until it docks")
 	var torso1 := float(me.hp["torso"])
 	_run(rack, world, 0.5)
-	near(float(me.hp["torso"]), torso1, 1e-6, "no repair while it flies off")
-	_run(rack, world, RepairDrone.FLY_OFF)
-	check(not is_instance_valid(d) or not d in world.effects, "removed after flying off")
+	near(float(me.hp["torso"]), torso1, 1e-6, "no repair on the way home")
+	check(d.beamed().is_empty() and not d.ring_shown(), "nothing green on the way home (the launcher is damaged)")
+	var dock := world.equipment_look.dock(world, "medic", "back")
+	var steps := 0
+	while d in world.effects and steps < 200:
+		_run(rack, world, DT)
+		steps += 1
+	check(not d in world.effects, "removed once docked")
+	var home := world.now - (d.t0 + d.life())
+	near(home, float(MechCatalog.weapon("repair_drone")["dock"]), 2.0 * DT, "home in `dock` s (%.3f)" % home)
+	if dock.has("pos"):
+		near(d.pos.distance_to(dock["pos"]), 0.0, 0.02, "it ends at the dock (%s vs %s)" % [d.pos, dock["pos"]])
 	near(float(rack.slots()[4]["ready"]), 1.0, 1e-6, "ready again: the second drone")
-	# Second and last drone; dies with the launcher.
-	rack.press_slot(5, 100.0)
+	eq(str(rack.slots()[4]["hint"]), "PRESS 5", "deselected after its launch: PRESS 5")
+	# Second and last drone; dies with the launcher at once.
+	rack.set_enabled(5, true)
+	rack.set_trigger(true)
+	_run(rack, world, DT)
+	rack.set_trigger(false)
 	var d2 := world.drone_of("medic")
 	check(d2 != null and d2 != d, "the second drone launched")
 	eq(rack.charges[4], 0, "no drones left")
+	check(not rack.enabled[4] and not bool(rack.slots()[4]["usable"]), "no charges: deselected and unusable")
 	_run(rack, world, 1.0)
 	me.apply_damage(200.0, "head", "x")
 	check(me.disabled, "the launcher is downed")
-	_run(rack, world, DT * 2)
-	check(d2 == null or not is_instance_valid(d2) or d2.finished(), "the drone dies with its launcher")
+	_run(rack, world, DT)
+	check(d2 == null or not d2 in world.effects, "the drone dies with its launcher: removed at once (no return)")
 	me.repair_all()
 	_run(rack, world, 0.2)
 	rack.press_slot(5, 200.0)
-	check(world.drone_of("medic") == null, "no charges: nothing launches")
+	check(not rack.enabled[4], "no charges: its key can't select it")
+	rack.set_enabled(5, true)
+	check(not rack.enabled[4], "nor set_enabled")
+	check(rack.activate(5) == false and world.drone_of("medic") == null, "no charges: nothing launches")
 	eq(str(rack.slots()[4]["hold"]), "EMPTY", "hold EMPTY")
+	eq(str(rack.slots()[4]["hint"]), "", "no hint when empty")
 	near(float(rack.slots()[4]["ready"]), 0.0, 1e-6, "not ready when empty")
 	print("[equipment] drone section done")
-	for t: Node in [remote, enemy, far, high, me]:
-		t.queue_free()
+	me.queue_free()
 	await _free(r)
+
+
+## activate(n) launches regardless of selection (tests / bots).
+func _activate_direct() -> void:
+	var r := await _rack({"back": "repair_drone"}, "direct")
+	var rack: WeaponRack = r["rack"]
+	check(not rack.enabled[4], "deselected")
+	check(rack.activate(5), "activate(5) launches while deselected")
+	check((r["world"] as CombatWorld).drone_of("direct") != null, "the drone is out")
+	eq(rack.charges[4], 1, "one charge spent")
+	check(not rack.activate(5), "activate refuses a second while one is out")
+	await _free(r)
+
+
+## Two worlds, the same launch record and clock, different step sizes: the drone is at the same place (the orbit angle
+## is a pure function of the clock).
+func _orbit_shared() -> void:
+	var worlds: Array = []
+	var anchors: Array = []
+	for k in 2:
+		var w := CombatWorld.new()
+		w.use_physics = false
+		add_child(w)
+		var a := Node3D.new()
+		add_child(a)
+		a.position = Vector3(3, 0, -2)
+		var af := a
+		w.set_anchor("orb", func() -> Node3D: return af)
+		w.advance(0.25)
+		worlds.append(w)
+		anchors.append(a)
+	var rec := {"shooter": "orb", "peer": 3, "hardpoint": "back", "weapon": "repair_drone", "t": 0.1}
+	var da := (worlds[0] as CombatWorld).launch_drone(rec)
+	var db := (worlds[1] as CombatWorld).launch_drone(rec)
+	if not check(da != null and db != null, "both worlds launched"):
+		return
+	var worst := 0.0
+	for i in 40:                                     # world A in 1/60 s steps, world B in 0.1 s steps, compared at 0.1 s marks
+		for j in 6:
+			(worlds[0] as CombatWorld).advance(0.1 / 6.0)
+		(worlds[1] as CombatWorld).advance(0.1)
+		if da.age() > 1.0:
+			worst = maxf(worst, da.pos.distance_to(db.pos))
+	print("[equipment] two worlds: worst drone offset %.4f m" % worst)
+	check(worst < 0.01, "the same record and clock: the same orbit on both (%.4f m)" % worst)
+	near(da.orbit_distance(), 5.0, 0.01, "5 m out")
+	for n: Node in worlds + anchors:
+		n.queue_free()
+	await frames(1)
+
+
 
 
 func _passive_key() -> void:
@@ -301,8 +433,20 @@ func _passive_key() -> void:
 	eq(str(s5["hold"]), "PASSIVE", "hold PASSIVE")
 	near(float(s5["ready"]), 1.0, 1e-6, "always ready")
 	check(not rack.activate(5), "activate() refuses a passive")
+	check(rack.enabled[4] and bool(s5["enabled"]), "a passive is always enabled")
+	eq(str(s5["hint"]), "", "a passive has no hint")
 	rack.press_slot(5, 1.0)
 	check(rack.enabled[4] and (r["world"] as CombatWorld).drone_of("fins") == null, "its key does nothing")
+	rack.set_enabled(5, false)
+	check(rack.enabled[4], "set_enabled can't switch a passive off")
+	rack.press_slot(1, 2.0)
+	rack.press_slot(1, 2.1)
+	check(rack.enabled[4], "soloing another slot leaves a passive on")
+	rack.set_enabled(1, true)
+	rack.press_slot(1, 3.0)
+	rack.press_slot(5, 3.1)
+	rack.press_slot(1, 3.2)
+	check(rack.enabled[0], "a press of a passive's key breaks a pending double tap (slot 1 toggled back on)")
 	await _free(r)
 
 
@@ -321,7 +465,7 @@ func _drone_looks() -> void:
 	check(mi != null and mi.mesh == MechMeshes.mesh("weapon_repair_drone"), "the mount carries weapon_repair_drone")
 	var dock := look.dock(world, "looks", "back")
 	check(dock.has("pos"), "the dock is found on HP_back")
-	rack.press_slot(5, 1.0)
+	rack.activate(5)
 	var d := world.drone_of("looks")
 	if not check(d != null and mi != null and dock.has("pos"), "launched"):
 		await _free(r)
@@ -352,31 +496,41 @@ func _drone_looks() -> void:
 	var mi2 := _mount_mi(model, "repair_drone")
 	check(mi2 != null and mi2 != mi and mi2.mesh == MechMeshes.mesh("weapon_repair_drone_cradle"),
 		"after MechModel.rebuild the swap re-applies to the new node")
-	# Return: docked again with a charge left.
-	_run(rack, world, 60.0 + RepairDrone.FLY_OFF + 0.2 - d.age())
-	check(world.drone_of("looks") == null, "the first drone is gone")
-	eq(look.shown("looks"), "docked", "gone with a charge left: docked again")
+	# Home: the cradle stays empty on the way, the drone shrinks toward the mount's scale, then docked again.
+	_run(rack, world, 60.0 + 0.75 - d.age())
+	check(d.returning(), "flying home")
+	eq(look.shown("looks"), "cradle", "on its way home: still the empty cradle")
+	if body != null:
+		check(body.scale.x < RepairDrone.FLY_SCALE - 0.1 and body.scale.x > float(dock["scale"]),
+			"shrinking toward the docked size (%.2f)" % body.scale.x)
+	_run(rack, world, 0.75 + 2.0 * DT)
+	check(world.drone_of("looks") == null, "the first drone is docked and gone")
+	var dock2 := look.dock(world, "looks", "back")
+	near(d.pos.distance_to(dock2["pos"]), 0.0, 0.02, "it landed on the dock")
+	eq(look.shown("looks"), "docked", "docked again")
 	check(mi2 != null and mi2.mesh == MechMeshes.mesh("weapon_repair_drone"), "the mount mesh is back to weapon_repair_drone")
-	# Last charge: empty cradle out and after.
-	rack.press_slot(5, 100.0)
+	# Last charge: empty cradle while out, docked again after (it came home).
+	rack.activate(5)
 	eq(rack.charges[4], 0, "the last drone")
 	eq(look.shown("looks"), "cradle", "last drone out: cradle")
-	_run(rack, world, 60.0 + RepairDrone.FLY_OFF + 0.2)
+	_run(rack, world, 60.0 + 1.5 + 0.2)
 	check(world.drone_of("looks") == null, "the last drone is gone")
-	eq(look.shown("looks"), "cradle", "no charges left: the cradle stays empty")
+	eq(look.shown("looks"), "docked", "no charges left: the drone is docked again (it came home)")
+	eq(str(rack.slots()[4]["hold"]), "EMPTY", "and the HUD says EMPTY")
 	await _free(r)
 	# Fallback: a missing flying part draws the placeholder quad.
 	var keep := RepairDrone.flying_id
 	RepairDrone.flying_id = "no_such_part"
 	var r2 := await _rack({"back": "repair_drone"}, "fallback")
-	(r2["rack"] as WeaponRack).press_slot(5, 1.0)
+	(r2["rack"] as WeaponRack).activate(5)
 	var d2 := (r2["world"] as CombatWorld).drone_of("fallback")
 	check(d2 != null and not d2.flying_mesh and d2.get_child_count() > 4, "missing part: the placeholder drone (rotors)")
 	RepairDrone.flying_id = keep
 	await _free(r2)
 
 
-## A shooter with no rack here (a crew puppet on another machine): charges come from counting launches.
+## A shooter with no rack here (a crew puppet on another machine): the cradle follows the drone effect only (empty while
+## it is alive, docked again after each return, also after the last charge).
 func _remote_cradle() -> void:
 	var world := CombatWorld.new()
 	add_child(world)
@@ -390,10 +544,12 @@ func _remote_cradle() -> void:
 	for k in 2:
 		world.launch_drone({"shooter": "player7", "peer": 7, "hardpoint": "back", "weapon": "repair_drone", "t": world.now})
 		eq(look.shown("player7"), "cradle", "remote launch %d: cradle" % (k + 1))
-		for i in int((60.0 + RepairDrone.FLY_OFF + 0.2) / 0.1):
+		for i in int((60.0 + 0.7) / 0.1):
 			world.advance(0.1)
-		eq(look.shown("player7"), "docked" if k == 0 else "cradle",
-			"remote drone %d gone: %s" % [k + 1, "docked (1 left)" if k == 0 else "empty (2 launches seen)"])
+		eq(look.shown("player7"), "cradle", "remote drone %d on its way home: cradle" % (k + 1))
+		for i in int((0.8 + 0.2) / 0.1):
+			world.advance(0.1)
+		eq(look.shown("player7"), "docked", "remote drone %d home: docked" % (k + 1))
 	world.queue_free()
 	model.queue_free()
 	await frames(1)

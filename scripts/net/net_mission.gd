@@ -6,9 +6,11 @@ extends Node
 ## end_mission and listen to Session.mission_started / mission_go / mission_ended. Events ride Session's reliable events,
 ## kinds "mission.*".
 ##
-##   LAUNCH   The host's Launch: mission.launch {seed, mode, start_t, crew} to the crew (start_t = host_time() + LAUNCH_LEAD
+##   LAUNCH   The host's Launch: mission.launch {seed, mode, start_t, crew, friendly_fire, objectives} to the crew (start_t = host_time() + LAUNCH_LEAD
 ##            on the shared clock; mode = what the seed builds, MODE_STACK (the multi-deck section) or MODE_DISTRICT (one
-##            city district); crew = the roster by seat, each {peer, seat, name, head, chassis, accent, loadout}).
+##            city district); crew = the roster by seat, each {peer, seat, name, head, chassis, accent, loadout};
+##            friendly_fire = the host's crew option (Session.friendly_fire; absent = true): TestDrive.friendly_fire;
+##            objectives = DEV plan mode (Session.objectives; absent = false): TestDrive.objectives, MissionFlow).
 ##            Every machine, the host included, gets mission_started(params), plays the bay alert and loads the mission
 ##            when the shared clock reaches start_t. The crew goes to "mission" (lobby data; joiners are refused with
 ##            ON_MISSION until it ends).
@@ -22,6 +24,8 @@ extends Node
 ##            While a member is loading (launch until it reports, or until go on a client), the session's silence
 ##            watchdogs allow load_allowance() instead of CLIENT_SILENCE / HOST_SILENCE: a slow machine blocked in its
 ##            build is not "gone" (NetSession; docs/networking.md "Timeouts").
+##   WAIT     Whenever the set of members that reported changes, the host tells the crew who is ready: mission.wait
+##            {ready: [peer]} (the loading screen's crew list; ready_peers() on every machine).
 ##   PENDING  Every remaining member reported the host's checksum: mission.go {start_at} (START_LEAD ahead on the shared
 ##            clock, so every machine has it in time).
 ##   RUNNING  start_at reached: mission_go(elapsed) on every machine; the mechs are released.
@@ -29,7 +33,12 @@ extends Node
 ##            sends each change as a reliable mission.state {state} to the crew (host_state); clients keep the latest
 ##            (`state`) and get mission_state_changed(state). mission.go carries the latest state too, so a member that
 ##            (re)joins the barrier late starts from it. An outcome (won / lost) is followed, END_HOLD later, by the
-##            host's mission.end with the outcome's reason.
+##            host's mission.end with the outcome's reason. Plan mode: the state also carries "dir" (WaveDirector.state())
+##            and "assets" ({defend id: hp}).
+##   WAVES    Plan mode: each reinforcement order of the host's WaveDirector goes out as a reliable mission.wave
+##            {order: {wave, deck, source, open_at, max_units}} (host_wave); every machine keeps them in `waves` and a
+##            client gets mission_wave(order). mission.go carries "waves": the orders whose open_at is still ahead, so a
+##            member that reaches the barrier late opens the same doors at the same shared-clock time.
 ##   END      The host leaving the mission (Esc in the test drive) sends mission.end {reason}: every client gets
 ##            mission_ended(reason) and goes back to the hangar; the crew is back in "lobby". A client leaving the
 ##            mission only leaves it on its own machine (the host's mission goes on without its mech moving).
@@ -50,7 +59,7 @@ const MODE_STACK := "stack"          ## the multi-deck mission section (CityStac
 const MODE_DISTRICT := "district"    ## one city district (the pre-stack test drive)
 
 var phase := IDLE
-## {seed, mode, start_t, crew} of the launched mission ({} = none).
+## {seed, mode, start_t, crew, friendly_fire} of the launched mission ({} = none).
 var params: Dictionary = {}
 ## Shared-clock time the mission starts at (after mission.go).
 var start_at := 0.0
@@ -64,6 +73,8 @@ var desyncs: Array = []
 var slow: Array = []
 ## The mission's progress as last decided by the host (MissionRules.state()), {} before the first decision.
 var state: Dictionary = {}
+## Plan mode: every wave order of this mission, in order ({wave, deck, source, open_at, max_units}).
+var waves: Array = []
 
 ## The load barrier's timeout for this machine (LOAD_TIMEOUT; tests shorten it on every process).
 var load_timeout := LOAD_TIMEOUT
@@ -77,6 +88,8 @@ var _sums: Dictionary = {}   ## host: peer -> reported checksum
 var _judged: Dictionary = {}   ## host: peer -> true once its checksum was logged ok
 var _started := false
 var _busy := false
+var _ready_heard: Array[int] = []   ## client: the ready set from the host's last mission.wait
+var _ready_sent: Array[int] = []    ## host: the ready set last sent in mission.wait
 
 
 func _ready() -> void:
@@ -98,10 +111,30 @@ func reset() -> void:
 	start_at = 0.0
 	local_sum = ""
 	state = {}
+	waves = []
 	_sums = {}
 	_judged = {}
 	build_ms = {}
 	_started = false
+	_ready_heard = []
+	_ready_sent = []
+
+
+## Members of the launched mission that have reported their build (the loading screen's ready ticks): the host knows
+## from mission.ready, a client from the host's mission.wait (plus itself once it has reported). Everyone once the
+## barrier has passed.
+func ready_peers() -> Array[int]:
+	var out: Array[int] = []
+	if phase == PENDING or phase == RUNNING:
+		return members()
+	var s := _s()
+	for p: int in members():
+		if s != null and s.hosting:
+			if _sums.has(p):
+				out.append(p)
+		elif _ready_heard.has(p) or (s != null and p == s.local_id() and local_sum != ""):
+			out.append(p)
+	return out
 
 
 ## Launched and not yet past the barrier on this machine (LAUNCH or LOADING): the crew is (or may be) building.
@@ -154,7 +187,8 @@ func host_launch(seed_value: int, mode: String = MODE_STACK) -> bool:
 	reset()
 	desyncs.clear()
 	slow.clear()
-	params = {"seed": seed_value, "mode": clean_mode(mode), "start_t": s.host_time() + LAUNCH_LEAD, "crew": crew}
+	params = {"seed": seed_value, "mode": clean_mode(mode), "start_t": s.host_time() + LAUNCH_LEAD, "crew": crew,
+		"friendly_fire": s.friendly_fire, "objectives": s.objectives}
 	phase = LAUNCH
 	s.set_crew_state("mission")
 	s.send_event(0, "mission.launch", params)
@@ -206,6 +240,18 @@ func host_state(d: Dictionary) -> void:
 		_note("mission outcome: %s (%s)" % [state["outcome"], state.get("reason", "")])
 
 
+## Host: a wave order (plan mode): keep it and send it to the crew (reliable mission.wave).
+func host_wave(order: Dictionary) -> void:
+	var s := _s()
+	if s == null or not s.online() or not s.hosting or phase == IDLE:
+		return
+	var o := order.duplicate(true)
+	waves.append(o)
+	s.send_event(0, "mission.wave", {"order": o})
+	_note("mission wave %s: deck %d, %s opens at %.2f, %d units" % [str(o.get("wave", "")), int(o.get("deck", 0)),
+		str(o.get("source", "")), float(o.get("open_at", 0.0)), int(o.get("max_units", 0))])
+
+
 ## A known mission mode (anything else builds the stack).
 static func clean_mode(mode: String) -> String:
 	return MODE_DISTRICT if mode == MODE_DISTRICT else MODE_STACK
@@ -247,7 +293,8 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 				if e is Dictionary:
 					crew.append((e as Dictionary).duplicate(true))
 			params = {"seed": int(data.get("seed", 1)), "mode": clean_mode(str(data.get("mode", MODE_DISTRICT))),
-				"start_t": float(data.get("start_t", 0.0)), "crew": crew}
+				"start_t": float(data.get("start_t", 0.0)), "crew": crew,
+				"friendly_fire": bool(data.get("friendly_fire", true)), "objectives": bool(data.get("objectives", false))}
 			phase = LAUNCH
 			s.set_crew_state("mission")
 			_note("mission launch heard: seed %d, %s, crew %d, loads at %.3f" % [int(params["seed"]), params["mode"], crew.size(), float(params["start_t"])])
@@ -262,6 +309,12 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 				_started = false
 				if data.get("state") is Dictionary and not (data["state"] as Dictionary).is_empty():
 					_take_state(data["state"])
+				for o: Variant in data.get("waves", []) as Array:
+					if o is Dictionary:
+						_take_wave(o)
+		"mission.wave":
+			if phase != IDLE and data.get("order") is Dictionary:
+				_take_wave(data["order"])
 		"mission.state":
 			if phase != IDLE and data.get("state") is Dictionary:
 				_take_state(data["state"])
@@ -279,6 +332,15 @@ func _take_state(d: Dictionary) -> void:
 	if str(state.get("outcome", "")) != "":
 		_note("mission outcome heard: %s (%s)" % [state["outcome"], state.get("reason", "")])
 	_s().mission_state_changed.emit(state)
+
+
+func _take_wave(o: Dictionary) -> void:
+	var order := o.duplicate(true)
+	for w: Dictionary in waves:
+		if str(w.get("wave", "")) == str(order.get("wave", "")) and is_equal_approx(float(w.get("open_at", 0.0)), float(order.get("open_at", 0.0))):
+			return   # mission.go and mission.wave may both carry it
+	waves.append(order)
+	_s().mission_wave.emit(order)
 
 
 func _on_roster_changed() -> void:
@@ -315,9 +377,23 @@ func _judge() -> void:
 	for p: int in members():
 		if not _sums.has(p):
 			waiting = true
+	_send_wait()
 	if not waiting:
 		_send_go()
 	_busy = false
+
+
+## Host: tell the crew who has reported (mission.wait), when that set changed.
+func _send_wait() -> void:
+	var now := ready_peers()
+	now.sort()
+	if now == _ready_sent:
+		return
+	_ready_sent = now
+	var s := _s()
+	for p: int in members():
+		if p != 1:
+			s.send_event(p, "mission.wait", {"ready": now})
 
 
 func _send_go() -> void:
@@ -331,6 +407,12 @@ func _send_go() -> void:
 			var go := {"start_at": start_at}
 			if not state.is_empty():
 				go["state"] = state   # a member reaching the barrier late starts from the latest progress
+			var ahead: Array = []
+			for w: Dictionary in waves:
+				if float(w.get("open_at", 0.0)) > s.host_time():
+					ahead.append(w)
+			if not ahead.is_empty():
+				go["waves"] = ahead   # ... and opens the doors still to open at the same time
 			s.send_event(p, "mission.go", go)
 	_note("mission go: %d at the barrier, starts at %.3f" % [members().size(), start_at])
 

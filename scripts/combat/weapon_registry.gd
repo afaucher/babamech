@@ -13,6 +13,7 @@ const BEHAVIOURS := {
 	"flamer": preload("res://scripts/combat/weapons/flamer.gd"),
 	"railgun": preload("res://scripts/combat/weapons/railgun.gd"),
 	"swivel": preload("res://scripts/combat/weapons/swivel.gd"),
+	"flak": preload("res://scripts/combat/weapons/flak.gd"),
 	"enemy_bolter": preload("res://scripts/combat/weapons/enemy_bolter.gd"),
 	"enemy_pulse": preload("res://scripts/combat/weapons/enemy_pulse.gd"),
 	"enemy_siege_shell": preload("res://scripts/combat/weapons/enemy_siege_shell.gd"),
@@ -22,6 +23,7 @@ const BEHAVIOURS := {
 	"enemy_scatter": preload("res://scripts/combat/weapons/enemy_scatter.gd"),
 	"enemy_troop_rifle": preload("res://scripts/combat/weapons/enemy_troop_rifle.gd"),
 	"enemy_troop_at": preload("res://scripts/combat/weapons/enemy_troop_at.gd"),
+	"enemy_gunship_rockets": preload("res://scripts/combat/weapons/enemy_gunship_rockets.gd"),
 }
 
 static var _instances: Dictionary = {}

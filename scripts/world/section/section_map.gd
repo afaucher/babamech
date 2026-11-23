@@ -11,6 +11,7 @@ const ZONE_COLORS := {
 	"open": Color(0.5, 0.78, 0.92), "transit": Color(0.93, 0.78, 0.36), "": Color(0.4, 0.4, 0.4),
 }
 const C_ROAD := Color(0.24, 0.26, 0.29)
+const C_WALK := Color(0.6, 0.6, 0.58)      ## pedestrian paving (pedestrian segments, a lane's walkways)
 const C_SLAB := Color(0.42, 0.44, 0.48)
 const C_PILLAR := Color(0.88, 0.88, 0.84)
 const C_LIFT := Color(1.0, 0.55, 0.15)
@@ -204,6 +205,7 @@ func _draw_plans(area: Rect2) -> void:
 		for r in plan.rows:
 			for c in plan.cols:
 				_rect(at, plan.cell_rect(k, c, r), ZONE_COLORS[plan.zone(k, c, r)])
+		_draw_forms(at, k)
 		for kc: Rect2 in plan.decks[k]["keep_clear"]:
 			_outline(at, kc, C_SHAFT.darkened(0.2))
 		for ci in plan.connectors.size():
@@ -270,6 +272,34 @@ func _draw_plans(area: Rect2) -> void:
 				HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color.WHITE)
 
 
+## Road segment forms on a deck plan: a lane is a narrow carriageway with walkways, a pedestrian segment a light dotted
+## path, a `none` segment is not drawn (its strip takes the zone colour: one superblock); a ramp cut with no bridge, red.
+func _draw_forms(at: Callable, k: int) -> void:
+	for sg: Dictionary in plan.segments(k):
+		var inner: Rect2 = sg["inner"]
+		var along_s: bool = sg["axis"] == "s"
+		match str(sg["form"]):
+			"none":
+				var line := int(sg["line"])
+				var side := line if line < (plan.cols if along_s else plan.rows) else line - 1
+				var cell := Vector2i(side, int(sg["index"])) if along_s else Vector2i(int(sg["index"]), side)
+				_rect(at, inner, ZONE_COLORS[plan.zone(k, cell.x, cell.y)])
+			"pedestrian":
+				_rect(at, inner, C_WALK)
+				var mid := inner.get_center()
+				var a: Vector2 = at.call(mid.x, inner.position.y) if along_s else at.call(inner.position.x, mid.y)
+				var b: Vector2 = at.call(mid.x, inner.end.y) if along_s else at.call(inner.end.x, mid.y)
+				draw_dashed_line(a, b, C_ROAD, 1.0, 3.0)
+			"lane":
+				_rect(at, inner, C_WALK)
+				var w := float(SectionPlan.FORM_WIDTH["lane"])
+				var lane := Rect2(inner.get_center().x - w * 0.5, inner.position.y, w, inner.size.y) if along_s \
+						else Rect2(inner.position.x, inner.get_center().y - w * 0.5, inner.size.x, w)
+				_rect(at, lane, C_ROAD)
+		if sg["blocked"] == "bridge":
+			_outline(at, inner, C_EXIT)
+
+
 func _rect(at: Callable, r: Rect2, colr: Color) -> void:
 	var a: Vector2 = at.call(r.position.x, r.position.y)
 	var b: Vector2 = at.call(r.end.x, r.end.y)
@@ -288,7 +318,7 @@ func _draw_legend(at: Vector2) -> void:
 	var items := [["urban", ZONE_COLORS["urban"]], ["park", ZONE_COLORS["park"]], ["industrial", ZONE_COLORS["industrial"]],
 			["open air", ZONE_COLORS["open"]], ["transit", ZONE_COLORS["transit"]], ["pillar", C_PILLAR], ["lift", C_LIFT],
 			["ramp", C_RAMP], ["shaft", C_SHAFT], ["vehicles", C_VEHICLE], ["mechs", C_MECH], ["checkpoint", C_HOOK["checkpoint"]],
-			["patrol", C_HOOK["patrol"]], ["civilians", C_HOOK["holding"]], ["wall", C_WALL["bulkhead"]], ["window", C_WALL["window"]],
+			["patrol", C_HOOK["patrol"]], ["civilians", C_HOOK["holding"]], ["pedestrian", C_WALK], ["wall", C_WALL["bulkhead"]], ["window", C_WALL["window"]],
 			["sealed", C_GATE["blast_door"]], ["collapsed", C_GATE["collapsed"]]]
 	for it: Array in items:
 		draw_rect(Rect2(x, at.y - 8.0, 9.0, 9.0), it[1])

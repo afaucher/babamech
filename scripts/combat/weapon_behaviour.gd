@@ -13,6 +13,9 @@ extends RefCounted
 ##   on_shot(mount)               after each shot (grow bloom, reset charge)
 ##   spawn(world, record, stats)  the effect for one fire record (another CombatEffect, a flight subclass, a look)
 ##   look()                       colours for the default Projectile: {"color", "trail_color", "width"}
+##   prewarm(stats)               build the cached meshes / materials this weapon's shots draw (WeaponRack.rebuild calls it
+##                                at load), so the first shot doesn't build them mid-fight; cosmetic caches only, no
+##                                effect is spawned and no generator is drawn from. Default: the default Projectile's.
 
 
 func tick(_mount: WeaponMount, _held: bool, _dt: float) -> void:
@@ -41,3 +44,7 @@ func spawn(world: CombatWorld, record: Dictionary, st: Dictionary) -> CombatEffe
 	p.look = look()
 	p.start(world, record, st)
 	return p
+
+
+func prewarm(st: Dictionary) -> void:
+	Projectile.prewarm_look(look(), st)

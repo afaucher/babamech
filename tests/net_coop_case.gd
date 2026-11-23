@@ -684,11 +684,8 @@ func _kill_hit(id: String) -> bool:
 	var p := CombatWorld.local_peer()
 	var at := e.global_position + e.up * 2.0
 	var from := td.mech.global_position + td.mech.up() * 4.0
-	# One lethal hit per component: a troop squad is one EnemyBase with a component per trooper (each hit downs one; the
-	# host maps a hit on a downed trooper to the next live one), every other enemy dies on the first core hit.
-	for i in maxi(e.hp.size(), 1):
-		var rec := Combat.fire_record("player%d" % p, p, "side_l", "autocannon", from, at, world.now, 9900 + i, 0.0)
-		world.resolve_hit(rec, world.stats("autocannon"), e, e.core_component(), at, (from - at).normalized(), (at - from).normalized(), 100000.0)
+	var rec := Combat.fire_record("player%d" % p, p, "side_l", "autocannon", from, at, world.now, 9900, 0.0)
+	world.resolve_hit(rec, world.stats("autocannon"), e, e.core_component(), at, (from - at).normalized(), (at - from).normalized(), 100000.0)
 	return true
 
 

@@ -24,11 +24,17 @@ var dummies: Array[TargetDummy] = []     ## kept empty (WeaponRangeLab still use
 var _drive: Node = null
 var pilot_link: PilotCombatLink         ## cosmetic: heat / hp / hits / firing / aim -> the pilot head (scripts/pilot/)
 var net: CombatNet                      ## crew mission only: fire records across machines, host-owned hits to the host
+var assets: Dictionary = {}             ## mission asset id -> AssetTarget (add_asset, on every machine)
+## Hidden effect nodes made at load for the world's mesh pool (ImpactFx parts, rocket puffs: CombatWorld.take_mesh), about
+## the parts of ~50 live impacts, so a fight's first seconds don't create nodes; most already show the mesh their
+## borrower will ask for (ImpactFx.pool_plan + Rocket.pool_plan: no mesh swap on borrow), the rest are blank.
+const MESH_POOL_PREWARM := 2048
 
 
 func net_fields() -> Dictionary:
 	return {"world": Net.LOCAL, "rack": Net.LOCAL, "player_target": Net.LOCAL, "squad": Net.LOCAL,
-		"enemies": Net.LOCAL, "dummies": Net.LOCAL, "_drive": Net.LOCAL, "pilot_link": Net.LOCAL, "net": Net.LOCAL}
+		"enemies": Net.LOCAL, "dummies": Net.LOCAL, "_drive": Net.LOCAL, "pilot_link": Net.LOCAL, "net": Net.LOCAL,
+		"assets": Net.LOCAL}
 
 
 ## The paused-weapon swaps made for this drive ("LEFT SIDE: Flamer offline, using Side Laser"), [] when none.
@@ -41,7 +47,11 @@ func setup(td: TestDrive) -> void:
 	world = CombatWorld.new()
 	world.name = "CombatWorld"
 	world.mission_seed = td.seed_value
+	# Friendly fire (weapons.md §4.6): the crew's mission launch param when the drive carries one, else on (the default).
+	world.friendly_fire = bool(td.get("friendly_fire")) if "friendly_fire" in td else true
 	add_child(world)
+	world.prewarm_mesh_pool(MESH_POOL_PREWARM, ImpactFx.pool_plan() + Rocket.pool_plan())
+	CombatWorld.warm_target_scripts()    # splash's per-script check, at load instead of on a target's first splash
 	var crew := td.crewed and Net.online()
 	if crew:
 		world.set_clock(CombatNet.session_clock)   # fire records' t on the shared clock (before anything reads now)
@@ -97,6 +107,48 @@ func rebuild_encounters(td: TestDrive) -> void:
 	if player_target != null:
 		player_target.repair_all()
 	enemies = td.spawn_enemies(world, squad)   # solo: EnemySpawner as before; crew: host only (W4, TestDrive.spawn_enemies)
+
+
+## MISSION ASSETS (weapons.md §5 "Mission assets"): the mission layer calls this on EVERY machine with the same id. Makes
+## an AssetTarget ("asset_<id>", host-owned, team "player") as a child of `node` and registers it; on the machine that
+## owns it (host / solo) each applied hit goes to `td.mission.damage_asset(id, amount)` when the drive has a mission with
+## that method (duck-typed, looked up per hit). Calling it again with the same id and node returns the same target.
+func add_asset(id: String, node: Node3D, radius: float = 2.5, height: float = 6.0) -> AssetTarget:
+	if world == null or node == null:
+		return null
+	var old: AssetTarget = asset(id)
+	if old != null:
+		if old.get_parent() == node:
+			return old
+		remove_asset(id)
+	var t := AssetTarget.new(id, radius, height)
+	node.add_child(t)
+	world.register(t)
+	assets[id] = t
+	if world.owns(t):
+		t.asset_damaged.connect(_on_asset_damaged)
+	return t
+
+
+func remove_asset(id: String) -> void:
+	var t: Variant = assets.get(id)
+	assets.erase(id)
+	if t == null or not is_instance_valid(t):
+		return
+	if world != null:
+		world.unregister(t as AssetTarget)
+	(t as Node).queue_free()
+
+
+func asset(id: String) -> AssetTarget:
+	var t: Variant = assets.get(id)
+	return t as AssetTarget if t != null and is_instance_valid(t) else null
+
+
+func _on_asset_damaged(id: String, amount: float, _src: String) -> void:
+	var m: Variant = _drive.get("mission") if _drive != null and is_instance_valid(_drive) else null
+	if m != null and is_instance_valid(m) and m is Object and (m as Object).has_method("damage_asset"):
+		(m as Object).call("damage_asset", id, amount)
 
 
 func _bind_hud(td: Node) -> void:

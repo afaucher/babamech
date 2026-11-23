@@ -32,6 +32,13 @@ const FIRE_MODES := ["off", "single", "hold"]
 ## "Aim at" choice: a point on the ground close ahead, so a shoulder weapon visibly pitches down to it (weapons.md §4.4).
 const GROUND_AIM := "ground_10m"
 const GROUND_POINT := Vector3(1.5, 0.05, -10.0)
+## AIRBORNE dummy (the flak's proximity fuse, weapons.md §3.10): a static TargetDummy hovering AIR_DUMMY = [distance (m),
+## bearing (deg), height (m)] out, off every ground firing line; not in `dummies`. "Aim at" AIR_AIM shoots straight at it,
+## AIR_NEAR_AIM aims AIR_NEAR_OFFSET m beside it, so a flak shell passes it and the fuse bursts it alongside.
+const AIR_DUMMY := [80.0, 30.0, 20.0]
+const AIR_AIM := "air_80"
+const AIR_NEAR_AIM := "air_80_near"
+const AIR_NEAR_OFFSET := 4.0
 const DESIGNATOR_MODES := ["off", "hold", "drop"]
 const REPAIR_MODES := ["damaged", "full"]
 const REPAIR_DUMMY := Vector3(10.0, 0.0, -6.0)   ## within the drone's 15 m, clear of the firing lines
@@ -65,6 +72,7 @@ var mech: MechModel
 var mount: WeaponMount
 var heat: Heat
 var dummies: Array[TargetDummy] = []
+var air_dummy: TargetDummy        ## the airborne dummy (AIR_DUMMY)
 var _t := 0.0
 var _single_hold := false    ## "single": the trigger is down until the tap's shot has left
 var _hold_from := 0          ## mount.shot_index when the tap started
@@ -114,6 +122,15 @@ func _ready() -> void:
 		add_child(d)
 		world.register(d)
 		dummies.append(d)
+	air_dummy = TargetDummy.new()
+	air_dummy.name = AIR_AIM
+	air_dummy.target_id = AIR_AIM
+	air_dummy.mass_class = "static"      # hovers in place (its ground plane is its own height: never falls)
+	var ab := deg_to_rad(float(AIR_DUMMY[1]))
+	air_dummy.position = Vector3(sin(ab), 0, -cos(ab)) * float(AIR_DUMMY[0]) + Vector3.UP * float(AIR_DUMMY[2])
+	air_dummy.rotation.y = -ab
+	add_child(air_dummy)
+	world.register(air_dummy)
 	_rebuild()
 
 
@@ -167,7 +184,7 @@ func _rebuild() -> void:
 	var cool := float(c["cooling"]) + (float(world.stats(eq).get("cooling_bonus", 0.0)) if eq != "" else 0.0)
 	heat = Heat.new(float(c["heat_cap"]), cool, float(MechCatalog.weapon(weapon).get("passive_heat", 0.0)))
 	world.set_anchor(SHOOTER, _lab_anchor)
-	world.equipment_look.watch(SHOOTER, _lab_anchor, _lab_heat, _lab_charges)
+	world.equipment_look.watch(SHOOTER, _lab_anchor, _lab_heat)
 	if drone != null and is_instance_valid(drone):
 		world.remove_effect(drone)
 	drone = null
@@ -181,6 +198,8 @@ func _rebuild() -> void:
 	for d in dummies:
 		d.mass_class = mass
 		d.reset_dummy()
+	if air_dummy != null:
+		air_dummy.reset_dummy()
 
 
 func _lab_anchor() -> Node3D:
@@ -189,10 +208,6 @@ func _lab_anchor() -> Node3D:
 
 func _lab_heat() -> float:
 	return heat.fraction() if heat != null else 0.0
-
-
-func _lab_charges() -> int:
-	return 1      # the lab's drone has unlimited charges: the cradle docks again whenever none is out
 
 
 ## The equipment in use: `weapon` when it is back-mount equipment on a hardpoint that takes it, else "".
@@ -249,7 +264,7 @@ func _damage_demo() -> void:
 func _step_drone(tap: bool) -> void:
 	if drone != null and (not is_instance_valid(drone) or drone.finished()):
 		drone = null
-	var out := drone != null and drone.active()
+	var out := drone != null              # rising, circling or flying home: the next one waits until it has docked
 	if not out and (fire_mode == "hold" or (fire_mode == "single" and tap)) and heat.can_act():
 		heat.add(float(world.stats("repair_drone").get("active_heat", 0.0)))
 		drone = world.launch_drone({"shooter": SHOOTER, "peer": 1, "hardpoint": hardpoint, "weapon": "repair_drone",
@@ -270,6 +285,11 @@ func aim_dummy() -> TargetDummy:
 func aim_point() -> Vector3:
 	if aim == GROUND_AIM:
 		return GROUND_POINT
+	if (aim == AIR_AIM or aim == AIR_NEAR_AIM) and air_dummy != null:
+		var at := air_dummy.global_position + Vector3(0, 1.9, 0)
+		if aim == AIR_NEAR_AIM:      # beside it, across the line of fire
+			at += (at - rest_muzzle()).cross(Vector3.UP).normalized() * AIR_NEAR_OFFSET
+		return at
 	var d := aim_dummy()
 	return d.global_position + Vector3(0, 1.9, 0) if d != null else Vector3(0, 2, -50)
 
@@ -333,8 +353,8 @@ func step(dt: float) -> void:
 	if _single_hold and mount.shot_index > _hold_from:
 		_single_hold = false      # one shot (a salvo ripples on by itself) has left: release
 	world.advance(dt)
-	_glow.show_charge(from, ChargeGlow.fraction(mount), dt)
-	var des_on := designator == "hold" or (designator == "drop" and fmod(_t, DESIGNATOR_CYCLE) < 1.0)
+	_glow.show_charge(from, 0.0 if mount.parked else ChargeGlow.fraction(mount), dt)   # no glow while shut down
+	var des_on := (designator == "hold" or (designator == "drop" and fmod(_t, DESIGNATOR_CYCLE) < 1.0)) and heat.can_act()
 	world.designators[SHOOTER] = {"on": des_on, "dot": to}
 	var preview := des_on and weapon != "missiles"     # built missiles draw their own laser line (MissileLaser)
 	_beam.visible = preview
@@ -352,8 +372,11 @@ func step(dt: float) -> void:
 		_heat_label.text = "%s  %s\nHEAT %3d / %d   cooling %.0f/s%s" % [eq, hardpoint, int(heat.value), int(heat.cap),
 			heat.cooling, "  SHUTDOWN" if heat.shutdown else ""]
 		if eq == "repair_drone":
-			var live := drone != null and is_instance_valid(drone) and drone.active()
-			_heat_label.text += "\nDRONE " + ("%.0f s left, repaired %.0f HP" % [drone.time_left(), drone.healed_total] if live else "docked")
+			var live := drone != null and is_instance_valid(drone) and not drone.finished()
+			var state := "docked"
+			if live:
+				state = "returning" if drone.returning() else "%.0f s left, repaired %.0f HP" % [drone.time_left(), drone.healed_total]
+			_heat_label.text += "\nDRONE " + state
 		elif eq == "radiator":
 			_heat_label.text += "
 fins glow with heat (demo load %s)" % ("%.0f/s" % RADIATOR_DEMO_HEAT if fire_mode == "hold"
@@ -399,6 +422,8 @@ func lab_options() -> Array:
 	for d: Array in DUMMIES:
 		aims.append("dummy_%d" % int(d[0]))
 	aims.append(GROUND_AIM)
+	aims.append(AIR_AIM)
+	aims.append(AIR_NEAR_AIM)
 	return [
 		{"id": "weapon", "label": "Weapon", "choices": weapons, "value": weapon},
 		{"id": "hardpoint", "label": "Hardpoint", "choices": hps, "value": hardpoint},

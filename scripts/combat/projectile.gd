@@ -38,14 +38,20 @@ var pierced: Array = []        ## target ids already hit (a piercing subclass sk
 var _swept := 0.0              ## curved flights: flight time swept so far (a grid point, or max_time)
 var _shell: MeshInstance3D
 var _trail: MeshInstance3D
-var _trail_mesh: ImmediateMesh
+var _trail_mesh: ArrayMesh      ## rebuilt each frame from one vertex ring array + a cached index list (_draw_trail)
+var _trail_arrays: Array = []    ## the surface arrays handed to add_surface_from_arrays, reused
+var _trail_colors := PackedColorArray()
+
+## Segment count n -> the trail's triangle list over the (n + 1) × 4 ring corners (the same triangles, in the same
+## order, the ribbon always had); shared by every projectile.
+static var _trail_index: Dictionary = {}
 
 
 func net_fields() -> Dictionary:
 	var f := super.net_fields()
 	f.merge({"look": Net.SPAWN, "origin": Net.SPAWN, "dir": Net.SPAWN, "speed": Net.SPAWN, "max_time": Net.SPAWN,
 		"elapsed": Net.LOCAL, "end_time": Net.LOCAL, "pierced": Net.LOCAL, "_swept": Net.LOCAL, "_shell": Net.LOCAL, "_trail": Net.LOCAL,
-		"_trail_mesh": Net.LOCAL})
+		"_trail_mesh": Net.LOCAL, "_trail_arrays": Net.LOCAL, "_trail_colors": Net.LOCAL})
 	return f
 
 
@@ -164,7 +170,7 @@ func _build_look() -> void:
 	_shell.top_level = true
 	add_child(_shell)
 	if float(stats.get("trail", 0.0)) > 0.0:
-		_trail_mesh = ImmediateMesh.new()
+		_trail_mesh = ArrayMesh.new()
 		_trail = CombatMeshes.instance(_trail_mesh)
 		_trail.top_level = true
 		add_child(_trail)
@@ -220,17 +226,53 @@ func _draw_trail() -> void:
 		rings[i * 4 + 1] = p + side * w
 		rings[i * 4 + 2] = p - up * w
 		rings[i * 4 + 3] = p - side * w
-	_trail_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES, CombatMeshes.ribbon_material())
-	_trail_mesh.surface_set_color(col)
-	for i in n:
-		var a := i * 4
-		var b := a + 4
-		for k in 4:
-			var k2 := (k + 1) % 4
-			_trail_mesh.surface_add_vertex(rings[a + k])
-			_trail_mesh.surface_add_vertex(rings[b + k])
-			_trail_mesh.surface_add_vertex(rings[b + k2])
-			_trail_mesh.surface_add_vertex(rings[a + k])
-			_trail_mesh.surface_add_vertex(rings[b + k2])
-			_trail_mesh.surface_add_vertex(rings[a + k2])
-	_trail_mesh.surface_end()
+	if _trail_arrays.is_empty():
+		_trail_arrays.resize(Mesh.ARRAY_MAX)
+	if _trail_colors.size() != rings.size():
+		_trail_colors.resize(rings.size())
+	_trail_colors.fill(col)
+	_trail_arrays[Mesh.ARRAY_VERTEX] = rings
+	_trail_arrays[Mesh.ARRAY_COLOR] = _trail_colors
+	_trail_arrays[Mesh.ARRAY_INDEX] = trail_indices(n)
+	_trail_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, _trail_arrays)
+	_trail_mesh.surface_set_material(0, CombatMeshes.ribbon_material())
+
+
+## Build ahead of time the cached look a default Projectile with `lk` / `st` draws (its shell mesh, the trail material and
+## index lists, the muzzle flash star), so a weapon's FIRST shot doesn't build them mid-fight (WeaponBehaviour.prewarm,
+## from WeaponRack.rebuild). The same cached resources the shot would build on demand: nothing drawn changes.
+static func prewarm_look(lk: Dictionary, st: Dictionary) -> void:
+	CombatMeshes.shell(lk.get("color", MechMeshes.AMBER), float(lk.get("width", 0.38)), bool(lk.get("glow", false)))
+	prewarm_trail(st)
+	MuzzleFlash.mesh()
+
+
+## The trail's cached material and index lists for every segment count a trail of stats.trail s can have.
+static func prewarm_trail(st: Dictionary) -> void:
+	var trail := float(st.get("trail", 0.0))
+	if trail <= 0.0:
+		return
+	CombatMeshes.ribbon_material()
+	for n in range(1, int(ceil(trail / TRAIL_SEG)) + 2):
+		trail_indices(n)
+
+
+## The ribbon's triangles for n segments over ring corners 4 per ring: per segment, per side k, (a+k, b+k, b+k2) and
+## (a+k, b+k2, a+k2) with a = 4i, b = a + 4, k2 = (k + 1) % 4. Cached per n.
+static func trail_indices(n: int) -> PackedInt32Array:
+	var idx: Variant = _trail_index.get(n)
+	if idx == null:
+		var out := PackedInt32Array()
+		out.resize(n * 24)
+		var w := 0
+		for i in n:
+			var a := i * 4
+			var b := a + 4
+			for k in 4:
+				var k2 := (k + 1) % 4
+				for v: int in [a + k, b + k, b + k2, a + k, b + k2, a + k2]:
+					out[w] = v
+					w += 1
+		_trail_index[n] = out
+		idx = out
+	return idx

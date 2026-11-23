@@ -33,6 +33,12 @@ const COVER_PEEK_MIN := 3.2       ## s min bounding run before peeking to refres
 const COVER_PEEK_MAX := 4.5       ## s max bounding run before peeking
 const COVER_PEEK_DUR := 0.9       ## s max peek exposure before snapping back to bound
 const COVER_PEEK_STEP := 4.5      ## m lateral step out toward an open sightline edge
+const BASE_PERCEPTION_INTERVAL := 0.08  ## ~12.5 Hz staggered perception for base enemies (60 Hz in telegraph/fire)
+const FLOOR_CUT_KEEP := 0.5             ## m a walking unit's centre keeps outside its deck's floor cuts (ramp mouths)
+const FLOOR_CUT_FAR := 14.0             ## m beyond which the floor-cut guard sleeps for FLOOR_CUT_FAR_T
+const FLOOR_CUT_FAR_T := 0.4            ## s (catalog max 20 m/s -> 8 m, well inside FLOOR_CUT_FAR - FLOOR_CUT_KEEP)
+const STEER_RAY_INTERVAL := 0.05       ## 20 Hz obstacle & ground probe cadence while walking (60 Hz when knocked/airborne)
+const AI_LOD_DIST_SQ := 150.0 * 150.0   ## > 150 m from every crew mech -> 15 Hz AI LOD (dt * 4, staggered by id)
 
 signal alerted(enemy: EnemyBase, target_id: String)
 signal comms_relayed(enemy: EnemyBase)
@@ -61,6 +67,8 @@ var auto_remove_wreck := false   ## true in Test Drive to clean wrecks after WRE
 ## AI: CombatWorld never ticks it there; EnemySync shows it from the host's stream through the PUPPET API at the end).
 var net_id := 0
 var spawn_deck := 0
+var wave := ""                     ## wave id from MissionPlan / WaveDirector ("" = deck garrison; Net.SPAWN)
+var defend_target_id := ""         ## host-only defend objective id this wave may attack ("" = never target AssetTarget)
 var puppet := false
 
 # Owner gameplay state
@@ -99,6 +107,32 @@ var _cover_peek_goal := Vector3.ZERO
 var _cover_path_timer := 0.0
 var _zigzag_t := 0.0
 var _peek_count := 0               ## telemetry / tests: completed or started cover peeks
+var revealed := false              ## sticky straggler reveal marker (synced via EnemySync "alert" state "revealed")
+var _hunting := false              ## host-only Step 1 hunt-out active
+var _hunt_t := 0.0                 ## s hunting without LOS/combat (triggers Step 2 reveal at reveal_hunt_delay_s)
+var _revealed_idle_t := 0.0        ## s revealed with 0 damage dealt/taken (triggers Step 3 cull at cull_idle_s)
+var _reveal_flare_cd := 0.0        ## local visual flare pulse timer
+var _avoid_timer := 0.0            ## committed wall-avoidance direction timer (stops 60 Hz left/right pacing)
+var _stuck_anchor := Vector3.ZERO  ## ground unstick window origin
+var _stuck_t := 0.0                ## s accumulated in current travel window
+var _stuck_travel := 0.0           ## m raw travel attempted in window
+var _unstick_goal := Vector3.ZERO  ## nearest clear road-graph node to recover toward
+var _unstick_t := 0.0              ## s remaining in active unstick recovery
+# Perception / steering / AI LOD caches (A2-A6; host-private / local)
+var _perc_t := 0.0
+var _perc_valid := false
+var _cached_target: CombatTarget = null
+var _steer_ray_t := 0.0
+var _cached_avoid_dir := Vector3.ZERO
+var _cached_block_n := Vector3.ZERO
+var _cached_slide_blocked := false
+var _ground_probe_t := 0.0
+var _ground_h_off := 0.0
+var _has_ground_h := false
+var _lod_tick := 0
+var _lod_phase := 0
+var _lod_dt := 0.0
+var _cut_far_t := 0.0              ## s the floor-cut guard may skip (unit was > FLOOR_CUT_FAR from every cut)
 
 # Continuous read-only telemetry for Audio loops
 var move_speed_ratio := 0.0
@@ -131,6 +165,11 @@ var _core_cool_age := 0.0
 var _core_cooling := false
 var _smoke_puffs: Array = []        ## [{mi, age, life, start, vel, spin, size, done}]
 var _wreck_cooled := false
+var _wreck_falling := false         ## cosmetic deterministic falling-wreck physics for downed aerial enemies
+var _wreck_vel := Vector3.ZERO
+var _wreck_spin := Vector3.ZERO
+var _wreck_bounces := 0
+var _ray_query := PhysicsRayQueryParameters3D.new()  ## reused ray query (zero per-frame alloc)
 
 
 func _init() -> void:
@@ -146,7 +185,8 @@ func net_fields() -> Dictionary:
 		"enemy_type": Net.SPAWN, "world": Net.LOCAL, "squad": Net.LOCAL, "ring": Net.SPAWN,
 		"ai_mode": Net.SPAWN, "hp_scale": Net.SPAWN, "speed_scale": Net.SPAWN, "telegraph_scale": Net.SPAWN,
 		"sight_range": Net.SPAWN, "auto_remove_wreck": Net.SPAWN,
-		"net_id": Net.SPAWN, "spawn_deck": Net.SPAWN, "puppet": Net.SPAWN,
+		"net_id": Net.SPAWN, "spawn_deck": Net.SPAWN, "wave": Net.SPAWN,
+		"defend_target_id": Net.PRIVATE, "puppet": Net.SPAWN,
 		"ai_state": Net.OWNER, "_dead": Net.OWNER, "_dead_time": Net.PRIVATE,
 		"_primary_disabled": Net.OWNER, "_speed_mult": Net.OWNER, "_shot_index": Net.OWNER,
 		"_target_id": Net.OWNER, "_aim_point": Net.OWNER, "_locked_aim": Net.OWNER,
@@ -159,7 +199,15 @@ func net_fields() -> Dictionary:
 		"_grounded_now": Net.PRIVATE, "_cover_mode": Net.PRIVATE, "_cover_peek_cd": Net.PRIVATE,
 		"_cover_peek_left": Net.PRIVATE, "_cover_peek_goal": Net.PRIVATE, "_cover_path_timer": Net.PRIVATE,
 		"_zigzag_t": Net.PRIVATE, "_peek_count": Net.PRIVATE,
-		"move_speed_ratio": Net.LOCAL, "turret_slew_speed": Net.LOCAL, "heat_ratio": Net.LOCAL,
+		"revealed": Net.OWNER, "_hunting": Net.PRIVATE, "_hunt_t": Net.PRIVATE,
+		"_revealed_idle_t": Net.PRIVATE, "_reveal_flare_cd": Net.LOCAL,
+		"_avoid_timer": Net.PRIVATE, "_stuck_anchor": Net.PRIVATE, "_stuck_t": Net.PRIVATE,
+		"_stuck_travel": Net.PRIVATE, "_unstick_goal": Net.PRIVATE, "_unstick_t": Net.PRIVATE,
+		"_perc_t": Net.PRIVATE, "_perc_valid": Net.PRIVATE, "_cached_target": Net.LOCAL,
+		"_steer_ray_t": Net.PRIVATE, "_cached_avoid_dir": Net.PRIVATE, "_cached_block_n": Net.PRIVATE,
+		"_cached_slide_blocked": Net.PRIVATE, "_ground_probe_t": Net.PRIVATE, "_ground_h_off": Net.PRIVATE,
+		"_has_ground_h": Net.PRIVATE, "_lod_tick": Net.PRIVATE, "_lod_phase": Net.PRIVATE, "_lod_dt": Net.PRIVATE,
+		"_cut_far_t": Net.PRIVATE, "move_speed_ratio": Net.LOCAL, "turret_slew_speed": Net.LOCAL, "heat_ratio": Net.LOCAL,
 		"_cfg": Net.LOCAL, "_comp_meta": Net.LOCAL, "_comp_nodes": Net.LOCAL, "_flash_timers": Net.LOCAL,
 		"_telegraph_fx": Net.LOCAL, "_status_bar": Net.LOCAL, "_rng": Net.PRIVATE,
 		"_built_visuals": Net.LOCAL, "_was_shutdown": Net.PRIVATE, "_was_staggered": Net.PRIVATE,
@@ -168,6 +216,8 @@ func net_fields() -> Dictionary:
 		"_has_prev_pos": Net.PRIVATE, "_last_hit_dir": Net.LOCAL, "_flame_entries": Net.LOCAL,
 		"_core_glow_mi": Net.LOCAL, "_core_glow_mat": Net.LOCAL, "_core_cool_age": Net.LOCAL,
 		"_core_cooling": Net.LOCAL, "_smoke_puffs": Net.LOCAL, "_wreck_cooled": Net.LOCAL,
+		"_wreck_falling": Net.LOCAL, "_wreck_vel": Net.LOCAL, "_wreck_spin": Net.LOCAL, "_wreck_bounces": Net.LOCAL,
+		"_ray_query": Net.LOCAL,
 	})
 	return f
 
@@ -183,6 +233,19 @@ func configure(type_id: String, id: String, w: CombatWorld, sq: Node = null, r: 
 	hp_scale = maxf(hp_mult, 0.1)
 	_rng.seed = hash([seed_val, id, type_id])
 	_flank_sign = -1.0 if _rng.randi() % 2 == 0 else 1.0
+	var id_h := hash(id)
+	_lod_phase = posmod(id_h, 4)
+	_lod_tick = 0
+	_lod_dt = 0.0
+	_perc_valid = false
+	_cached_target = null
+	_perc_t = _perc_stagger_offset()
+	_steer_ray_t = (float(posmod(id_h, 3)) / 3.0) * STEER_RAY_INTERVAL
+	_ground_probe_t = (float(posmod(id_h + 1, 3)) / 3.0) * STEER_RAY_INTERVAL
+	_cached_avoid_dir = Vector3.ZERO
+	_cached_block_n = Vector3.ZERO
+	_cached_slide_blocked = false
+	_has_ground_h = false
 	_cfg = EnemyCatalog.unit(type_id)
 	mass_class = str(_cfg.get("mass_class", "mech"))
 	sight_range = float(_cfg.get("sight_range", 140.0))
@@ -214,6 +277,10 @@ func _ready() -> void:
 	_home_xf = global_transform
 	if ring != null:
 		up = ring.up_at(global_position)
+		_ground_h_off = ring.height(global_position)
+	else:
+		_ground_h_off = global_position.y
+	_has_ground_h = true
 	ground_y = global_position.dot(up)
 	if not _built_visuals:
 		_build_visuals()
@@ -260,6 +327,100 @@ func is_alerted() -> bool:
 	return ai_state in [STATE_ALERT, STATE_ENGAGE, STATE_FLANK, STATE_TELEGRAPH, STATE_FIRE, STATE_COOLDOWN]
 
 
+func is_mobile() -> bool:
+	return float(_cfg.get("move_speed", 0.0)) > 0.0
+
+
+## Mark or clear sticky straggler reveal (host emits reliable EnemySync "alert" state "revealed" -> clients mirror it).
+func set_revealed(on: bool = true) -> void:
+	if not on:
+		revealed = false
+		_revealed_idle_t = 0.0
+		if _telegraph_fx != null:
+			_telegraph_fx.hide_reveal_flare()
+		return
+	if revealed or _dead:
+		return
+	revealed = true
+	_revealed_idle_t = 0.0
+	_reveal_flare_cd = 0.0
+	if not puppet and Net.is_host():
+		_emit_squad("alerted", {"id": target_id, "state": "revealed", "pos": _world_pos()})
+
+
+## Host Step 1 hunt-out entry: push a mobile enemy out of patrol/cover toward the nearest crew mech on its deck.
+func begin_hunt_pursuit(target: CombatTarget, target_pos: Vector3) -> void:
+	if _dead or puppet or ai_mode != "live" or target == null or not is_instance_valid(target):
+		return
+	_hunting = true
+	_relayed = true
+	_target_id = target.target_id
+	_last_target_ref = target
+	_last_seen_pos = target_pos
+	_aim_point = target_pos
+	_cover_mode = ""
+	_on_alert_perception_hint(target)
+	if not is_alerted():
+		ai_state = STATE_FLANK
+
+
+func note_combat_activity(was_damage: bool = false) -> void:
+	_hunt_t = 0.0
+	if was_damage:
+		_revealed_idle_t = 0.0
+
+
+## Re-home this enemy onto `new_deck` after falling through a shaft/ramp or crossing between decks.
+## Updates spawn_deck, ring frame, clears stale old-deck nav/targeting, and syncs to clients via EnemySync "alert".
+func rehome_deck(new_deck: int, new_ring: RingFrame = null) -> void:
+	if new_deck < 0 or new_deck == spawn_deck:
+		return
+	spawn_deck = new_deck
+	if new_ring != null:
+		ring = new_ring
+	var pos := _world_pos()
+	if ring != null:
+		up = ring.up_at(pos)
+		ground_y = (pos - up * ring.height(pos)).dot(up)
+		_ground_h_off = ring.height(pos)
+	else:
+		_ground_h_off = pos.y
+	_has_ground_h = true
+	_ground_probe_t = 0.0
+	_steer_ray_t = 0.0
+	_cut_far_t = 0.0
+	_cached_avoid_dir = Vector3.ZERO
+	_cached_block_n = Vector3.ZERO
+	_cached_slide_blocked = false
+	_path_points.clear()
+	_path_timer = 0.0
+	_cover_path_timer = 0.0
+	_cover_mode = ""
+	_unstick_t = 0.0
+	_stuck_t = 0.0
+	_has_los = false
+	_perc_valid = false
+	_perc_t = 0.0
+	_cached_target = null
+	_last_target_ref = null
+	_target_id = ""
+	_release_slot()
+	if not puppet and Net.is_host():
+		_emit_squad("alerted", {"id": target_id, "state": "deck:%d" % new_deck, "pos": pos})
+
+
+func _is_aerial_wreck() -> bool:
+	return false
+
+
+func _wreck_ground_radius() -> float:
+	return 0.75
+
+
+func _wreck_body_pivot() -> Node3D:
+	return null
+
+
 func eye_world() -> Vector3:
 	var h := float(_cfg.get("eye_height", 4.2))
 	return global_transform * Vector3(0.0, h, 0.0) if is_inside_tree() else position + up * h
@@ -301,6 +462,9 @@ func apply_damage(amount: float, component: String, src: String) -> void:
 		return
 	hp[c] = maxf(before - eff, 0.0)
 	_trigger_hit_flash(c)
+	note_combat_activity(true)
+	if squad != null and squad.has_method("note_deck_activity"):
+		squad.note_deck_activity(spawn_deck)
 	damaged.emit(eff, c, src)
 	var ratio := float(hp[c]) / maxf(float(max_hp.get(c, 1.0)), 0.001)
 	component_damaged.emit(self, c, ratio, weak)
@@ -386,6 +550,13 @@ func _kill(cause: String) -> void:
 	_dead = true
 	_dead_time = 0.0
 	_wreck_cooled = false
+	revealed = false
+	_hunting = false
+	_hunt_t = 0.0
+	_revealed_idle_t = 0.0
+	_perc_valid = false
+	_cached_target = null
+	_lod_dt = 0.0
 	_cancel_telegraph("destroyed")
 	ai_state = STATE_DEAD
 	_release_slot()
@@ -395,6 +566,7 @@ func _kill(cause: String) -> void:
 	turret_slew_speed = 0.0
 	if _telegraph_fx != null:
 		_telegraph_fx.hide_telegraph()
+		_telegraph_fx.hide_reveal_flare()
 	if _status_bar != null:
 		_status_bar.visible = false
 	var pos := _world_pos()
@@ -407,6 +579,10 @@ func _kill(cause: String) -> void:
 	_spawn_death_debris(cause)
 	_on_destroyed_visual()
 	_start_wreck_fx()
+	if _is_aerial_wreck():
+		_start_aerial_crash()
+	if squad != null and squad.has_method("note_deck_activity"):
+		squad.note_deck_activity(spawn_deck)
 	if squad != null and squad.has_method("register_wreck"):
 		squad.register_wreck(self)
 	destroyed_enemy.emit(self, cause, pos)
@@ -680,11 +856,104 @@ func _tick_wreck_smoke(dt: float) -> bool:
 	return any_active
 
 
-func _tick_wreck_fx(dt: float) -> void:
+func _start_aerial_crash() -> void:
+	_wreck_falling = true
+	_wreck_bounces = 0
+	_wreck_cooled = false
+	var crng := RandomNumberGenerator.new()
+	crng.seed = hash([world.mission_seed if world != null else 1, target_id, "crash"])
+	var up_b := ImpactFx.basis_for_normal(up)
+	var ang := crng.randf_range(0.0, TAU)
+	var horiz := (up_b.x * cos(ang) + up_b.z * sin(ang)).normalized()
+	_wreck_vel = horiz * crng.randf_range(3.5, 6.8) + up * crng.randf_range(-2.2, 1.4)
+	_wreck_spin = Vector3(
+		crng.randf_range(-4.2, 4.2),
+		crng.randf_range(-3.2, 3.2),
+		crng.randf_range(-4.2, 4.2))
+	if _wreck_spin.length_squared() < 2.0:
+		_wreck_spin.x = 2.6
+
+
+func _step_aerial_crash(dt: float, space: PhysicsDirectSpaceState3D) -> void:
+	if not _wreck_falling:
+		return
+	var pos := _world_pos()
+	if ring != null:
+		up = ring.up_at(pos)
+	_wreck_vel -= up * 18.0 * dt
+	var next_pos := pos + _wreck_vel * dt
+	var piv := _wreck_body_pivot()
+	if piv != null and is_instance_valid(piv):
+		piv.rotation += _wreck_spin * dt
+	var rest_r := _wreck_ground_radius()
+	var hit_found := false
+	var hit_pos := Vector3.ZERO
+	var hit_n := up
+	if space != null:
+		_ray_query.from = pos + up * 0.25
+		_ray_query.to = next_pos - up * rest_r
+		var h := space.intersect_ray(_ray_query)
+		if not h.is_empty():
+			hit_found = true
+			hit_pos = h["position"] as Vector3
+			hit_n = (h["normal"] as Vector3).normalized()
+	else:
+		var cur_h := ring.height(next_pos) if ring != null else next_pos.y
+		if cur_h <= rest_r:
+			hit_found = true
+			hit_pos = next_pos - up * cur_h
+			hit_n = up
+	# Safety floor guard (e.g., crashing above an open shaft or physics-free void).
+	if not hit_found:
+		if ring != null and ring.height(next_pos) < -4.0:
+			hit_found = true
+			hit_pos = next_pos - up * ring.height(next_pos)
+			hit_n = up
+		elif ring == null and next_pos.y < -4.0:
+			hit_found = true
+			hit_pos = Vector3(next_pos.x, 0.0, next_pos.z)
+			hit_n = Vector3.UP
+	if hit_found:
+		var landed := hit_pos + hit_n * rest_r
+		if is_inside_tree():
+			global_position = landed
+		else:
+			position = landed
+		if ring != null:
+			up = ring.up_at(landed)
+		ground_y = landed.dot(up)
+		if _wreck_bounces == 0:
+			_wreck_bounces = 1
+			if world != null:
+				world.spawn_impact(hit_pos + hit_n * 0.15, hit_n, 3.0, EnemyMeshes.CHARRED, false)
+			var vn := _wreck_vel.dot(hit_n)
+			var vt := _wreck_vel - hit_n * vn
+			_wreck_vel = vt * 0.30 + hit_n * maxf(-vn * 0.28, 2.0)
+			_wreck_spin *= 0.45
+		else:
+			_wreck_falling = false
+			_wreck_vel = Vector3.ZERO
+			_wreck_spin = Vector3.ZERO
+	else:
+		if is_inside_tree():
+			global_position = next_pos
+		else:
+			position = next_pos
+		if ring != null:
+			up = ring.up_at(next_pos)
+		ground_y = next_pos.dot(up)
+
+
+func _tick_wreck_fx(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
+	if _wreck_falling:
+		var eff_space := space
+		if eff_space == null and world != null and world.use_physics:
+			eff_space = world.space()
+		_step_aerial_crash(dt, eff_space)
 	var flames_on := _tick_flames(dt)
 	var core_on := _tick_core_glow(dt)
 	var smoke_on := _tick_wreck_smoke(dt)
-	if not flames_on and not core_on and not smoke_on:
+	if not _wreck_falling and not flames_on and not core_on and not smoke_on:
 		_wreck_cooled = true
 
 
@@ -714,6 +983,10 @@ func _clear_destruction_fx() -> void:
 	_core_cool_age = 0.0
 	_core_cooling = false
 	_wreck_cooled = false
+	_wreck_falling = false
+	_wreck_vel = Vector3.ZERO
+	_wreck_spin = Vector3.ZERO
+	_wreck_bounces = 0
 
 
 func active_flame_streams() -> Array[LowPolyFlame.Stream]:
@@ -768,6 +1041,40 @@ func _on_damaged_alert(src: String) -> void:
 
 # --- Tick (Host-owned simulation + local presentation) ----------------------------------------------------
 
+func _perception_interval() -> float:
+	return BASE_PERCEPTION_INTERVAL
+
+
+func _perc_stagger_offset() -> float:
+	var iv := _perception_interval()
+	return iv * (0.25 + 0.125 * float(posmod(hash(target_id), 8)))
+
+
+func _on_alert_perception_hint(target: CombatTarget) -> void:
+	if target != null and is_instance_valid(target) and _cached_target == null:
+		_cached_target = target
+		_perc_valid = true
+	_perc_t = minf(_perc_t, _perc_stagger_offset())
+
+
+## True when this enemy should tick: either its deck has a standing crew mech (deck_awake), or it belongs to an
+## active defend wave whose target relay is live (so abandoning a defend deck doesn't freeze its waves).
+func _is_awake() -> bool:
+	if squad == null or not squad.has_method("deck_awake"):
+		return true
+	if squad.deck_awake(spawn_deck):
+		return true
+	if defend_target_id != "" and squad.has_method("is_defend_asset_live"):
+		return bool(squad.is_defend_asset_live(defend_target_id))
+	return false
+
+
+func _can_lod_throttle() -> bool:
+	return not _has_los and ai_state != STATE_TELEGRAPH and ai_state != STATE_FIRE \
+		and not knock.moving() and _grounded_now and enemy_type != "dropship" \
+		and ai_mode == "live"
+
+
 func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
 	if puppet:   # co-op (W4): a client's copy has no AI; it is only shown
 		puppet_tick(dt)
@@ -788,21 +1095,44 @@ func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
 			queue_free()
 			return
 		if not _wreck_cooled:
-			_tick_wreck_fx(dt)
+			_tick_wreck_fx(dt, space)
 		return
-	_tick_flashes(dt)
-	if squad != null and squad.has_method("deck_awake") and not squad.deck_awake(spawn_deck):
-		return   # stack (W4): no crew mech on this enemy's deck: it sleeps
+	if not _is_awake():
+		return   # stack (W4): no crew mech on this deck (and not an active defend wave): it sleeps
+
+	# A6 AI LOD: awake enemies > 150 m from every standing crew mech tick at 15 Hz (dt * 4, staggered by id).
+	# Never throttled while alerted with LOS, telegraphing/firing, knocked/airborne, or for dropships.
+	var eff_dt := dt
+	var pos := _world_pos()
+	if _can_lod_throttle() and squad != null and squad.has_method("min_crew_dist_sq"):
+		var d2 := float(squad.min_crew_dist_sq(pos, spawn_deck))
+		if d2 > AI_LOD_DIST_SQ:
+			_lod_dt += dt
+			_lod_tick += 1
+			if (_lod_tick & 3) != _lod_phase:
+				return
+			eff_dt = _lod_dt
+			_lod_dt = 0.0
+		elif _lod_dt > 0.0:
+			eff_dt += _lod_dt
+			_lod_dt = 0.0
+	elif _lod_dt > 0.0:
+		eff_dt += _lod_dt
+		_lod_dt = 0.0
+
+	_tick_flashes(eff_dt)
+	_perc_t -= eff_dt
+	_steer_ray_t -= eff_dt
+	_ground_probe_t -= eff_dt
 
 	# Update curved-deck local frame & ground plane BEFORE knockback step so rooftop shoves fall naturally!
-	var pos := _world_pos()
 	if ring != null:
 		up = ring.up_at(pos)
 	_update_dynamic_ground(pos, space)
 
 	var prev_vu := knock.velocity.dot(up)
 	var was_air := not _grounded_now
-	super.tick(dt, space)
+	super.tick(eff_dt, space)
 	pos = _world_pos()
 	if ring != null:
 		up = ring.up_at(pos)
@@ -839,26 +1169,48 @@ func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
 
 	# Step AI only when alive.
 	if not _dead:
-		_step_ai(dt, space)
-		_update_visuals(dt)
+		_step_ai(eff_dt, space)
+		if CombatWorld.profiling:
+			var tv := Time.get_ticks_usec()
+			_update_visuals(eff_dt)
+			CombatWorld.prof_add("ai.visuals", Time.get_ticks_usec() - tv)
+		else:
+			_update_visuals(eff_dt)
 		if not _flame_entries.is_empty():
-			_tick_flames(dt)
+			_tick_flames(eff_dt)
 
 
 func _update_dynamic_ground(pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
 	if mass_factor() <= 0.0:
 		return
+	var urgent := knock.moving() or not _grounded_now
+	# Standing grounded units do not shift vertically; skip redundant downward raycast until moving or knocked.
+	if not urgent and move_speed_ratio <= 0.001:
+		return
+	# A5: throttle walking ground probes to 20 Hz (reuse cached height offset); stay full 60 Hz while knocked/airborne.
+	if not urgent and _has_ground_h and _ground_probe_t > 0.0:
+		if ring != null:
+			ground_y = pos.dot(up) + (_ground_h_off - ring.height(pos))
+		else:
+			ground_y = _ground_h_off
+		return
+	_ground_probe_t = 0.0 if urgent else STEER_RAY_INTERVAL
 	var g := _probe_ground_point(pos, space)
 	if not is_nan(g.x):
 		ground_y = g.dot(up)
+		_ground_h_off = ring.height(g) if ring != null else g.y
+		_has_ground_h = true
 	elif ring != null:
 		ground_y = (pos - up * ring.height(pos)).dot(up)
+		_ground_h_off = 0.0
+		_has_ground_h = true
 
 
 func _probe_ground_point(pos: Vector3, space: PhysicsDirectSpaceState3D) -> Vector3:
 	if space != null:
-		var q := PhysicsRayQueryParameters3D.create(pos + up * 1.8, pos - up * 45.0)
-		var h := space.intersect_ray(q)
+		_ray_query.from = pos + up * 1.8
+		_ray_query.to = pos - up * 56.0
+		var h := space.intersect_ray(_ray_query)
 		if not h.is_empty():
 			return h["position"] as Vector3
 	if ring != null:
@@ -923,15 +1275,23 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 		_last_seen_pos = target_pos
 		_update_target_velocity(target, target_pos, dt)
 		_no_los_time = 0.0
+		_hunt_t = 0.0
+		if squad != null and squad.has_method("note_deck_activity"):
+			squad.note_deck_activity(spawn_deck)
 		if _relayed and squad != null and squad.has_method("report_sighting"):
 			squad.report_sighting(self, target, target_pos)
 	else:
-		# TRUE LKP MEMORY (zero wallhack): when LOS is lost, aim/move/mortar ONLY at the frozen shared LKP!
-		var b_entry := _board_entry()
-		if not b_entry.is_empty():
-			target_pos = b_entry["pos"] as Vector3
+		# TRUE LKP MEMORY (zero wallhack): when LOS is lost, aim/move/mortar ONLY at the frozen shared LKP
+		# (or a defend wave's own known objective relay position when pushing an active defend).
+		if target is AssetTarget:
+			target_pos = _target_aim_center(target)
+			_last_seen_pos = target_pos
 		else:
-			target_pos = _last_seen_pos
+			var b_entry := _board_entry()
+			if not b_entry.is_empty():
+				target_pos = b_entry["pos"] as Vector3
+			else:
+				target_pos = _last_seen_pos
 		_target_vel = Vector3.ZERO
 		_has_prev_pos = false
 		_no_los_time += dt
@@ -973,6 +1333,7 @@ func _enter_alert(target: CombatTarget, reason_state: String) -> void:
 	ai_state = STATE_ALERT
 	_target_id = target.target_id
 	_alert_timer = ALERT_DELAY
+	_on_alert_perception_hint(target)
 	if reason_state == "spotted" and not _relayed:
 		_relay_timer = RELAY_DELAY
 	alerted.emit(self, target.target_id)
@@ -981,7 +1342,7 @@ func _enter_alert(target: CombatTarget, reason_state: String) -> void:
 
 ## Called by EnemySquad when a squadmate finishes its 0.45 s comm relay.
 func receive_squad_alert(target: CombatTarget) -> void:
-	if _dead or is_alerted() or ai_mode == "idle":
+	if _dead or puppet or is_alerted() or ai_mode == "idle":
 		return
 	_relayed = true
 	_enter_alert(target, "relay")
@@ -1152,6 +1513,9 @@ func _fire_one_round(st: Dictionary) -> void:
 			world.fire(rec)
 	weapon_fired.emit(self, _active_weapon, muz, aim)
 	_emit_squad("weapon_fired", {"id": target_id, "weapon": _active_weapon, "pos": muz, "aim_point": aim})
+	note_combat_activity(false)
+	if squad != null and squad.has_method("note_deck_activity"):
+		squad.note_deck_activity(spawn_deck)
 
 
 func _cancel_telegraph(reason: String) -> void:
@@ -1186,47 +1550,96 @@ func _release_slot() -> void:
 
 # --- Perception & Movement Helpers ------------------------------------------------------------------------
 
+## Defend relay (AssetTarget) targeting rule (Missions):
+##   - A defend wave (defend_target_id != "") may attack ONLY its own defend relay (alongside crew mechs).
+##   - Garrisons and all other waves NEVER target AssetTargets in missions/gameplay (whenever a deck/plan or any crew
+##     mech exists). Standalone asset-only unit tests without a mission or crew still let a test turret acquire it.
+func _can_target_asset(t: AssetTarget) -> bool:
+	if defend_target_id != "":
+		return t.asset_id == defend_target_id
+	if wave != "":
+		return false
+	if squad != null and (squad.deck_of.is_valid() or squad.plan != null):
+		return false
+	if world != null:
+		for other: CombatTarget in world.targets:
+			if is_instance_valid(other) and other.team == "player" and not (other is AssetTarget):
+				return false
+	return true
+
+
 func _acquire_target(space: PhysicsDirectSpaceState3D) -> CombatTarget:
 	if world == null:
 		return null
+	# A2/A3: staggered 12.5-15 Hz perception (keeps cadence when nothing was seen via _perc_valid);
+	# full 60 Hz during STATE_TELEGRAPH / STATE_FIRE / telegraph_loop so LOS breaks cancel cleanly.
+	var force_scan := (ai_state == STATE_TELEGRAPH) or (ai_state == STATE_FIRE) or (ai_mode == "telegraph_loop") \
+		or not _perc_valid or _perc_t <= 0.0 \
+		or (_cached_target != null and (not is_instance_valid(_cached_target) or not _cached_target.is_hittable()))
+	if not force_scan:
+		return _cached_target
+	var t0 := Time.get_ticks_usec() if CombatWorld.profiling else 0
+	var was_valid := _perc_valid
+	_perc_valid = true
+	_perc_t = _perception_interval() if was_valid else _perc_stagger_offset()
 	var eye := eye_world()
 	var best: CombatTarget = null
 	var eff_range := sight_range
 	if not is_alerted() and ai_mode != "telegraph_loop":
 		eff_range = minf(sight_range, float(_cfg.get("patrol_sight_range", 65.0)))
-	var best_d := eff_range
+	var eff_range_sq := eff_range * eff_range
+	var best_d2 := eff_range_sq
 	var best_los := false
 	var fov_cos := cos(deg_to_rad(float(_cfg.get("fov_deg", 110.0)) * 0.5))
 	var fwd := -global_basis.z if is_inside_tree() else Vector3.FORWARD
+	var has_deck := squad != null and squad.has_method("on_deck")
+	var alerted_now := is_alerted() or ai_mode == "telegraph_loop"
 	for t: CombatTarget in world.targets:
 		if not is_instance_valid(t) or t == self or not t.is_hittable():
 			continue
 		if t.team == team or t.team == "":
 			continue
-		var tp := _target_aim_center(t)
-		var d := eye.distance_to(tp)
-		if d > eff_range:
+		if (t is AssetTarget) and not _can_target_asset(t as AssetTarget):
 			continue
-		if squad != null and squad.has_method("on_deck") and not squad.on_deck(t.global_position, spawn_deck):
+		if has_deck and not squad.on_deck(t.global_position, spawn_deck):
 			continue   # stack (W4): only targets on this enemy's own deck
-		var in_fov := is_alerted() or ai_mode == "telegraph_loop" or fwd.dot((tp - eye).normalized()) >= fov_cos
-		var los := in_fov and _check_los(eye, tp, space)
-		if los and (not best_los or d < best_d):
+		var tp := _target_aim_center(t)
+		var d2 := eye.distance_squared_to(tp)
+		if d2 > eff_range_sq:
+			continue
+		var in_fov := alerted_now or fwd.dot((tp - eye).normalized()) >= fov_cos
+		var los := in_fov and _check_los(eye, tp, space, t)
+		if los and (not best_los or d2 < best_d2):
 			best = t
-			best_d = d
+			best_d2 = d2
 			best_los = true
 	if best != null:
 		_has_los = true
+		_cached_target = best
+		if CombatWorld.profiling:
+			CombatWorld.prof_add("ai.acquire", Time.get_ticks_usec() - t0)
 		return best
 	# Fall back to shared squad target board only once this unit is alerted (prevents bypassing comm relay delay).
 	_has_los = false
+	var fallback: CombatTarget = null
 	if is_alerted():
 		var entry := _board_entry()
 		if not entry.is_empty():
 			var bt: Variant = entry.get("target")
 			if bt != null and is_instance_valid(bt) and (bt as CombatTarget).is_hittable():
-				return bt as CombatTarget
-	return null
+				if not (bt is AssetTarget) or _can_target_asset(bt as AssetTarget):
+					fallback = bt as CombatTarget
+	# Defend waves whose defend objective is active always know their target relay's location, so they keep
+	# pushing onto the relay even if the crew leaves the deck or the wave spawned > sight_range from the relay.
+	if fallback == null and defend_target_id != "" and squad != null and squad.has_method("live_defend_asset"):
+		var relay := squad.live_defend_asset(defend_target_id) as AssetTarget
+		if relay != null and (not has_deck or squad.on_deck(relay.global_position, spawn_deck)):
+			fallback = relay
+			_last_seen_pos = _target_aim_center(relay)
+	_cached_target = fallback
+	if CombatWorld.profiling:
+		CombatWorld.prof_add("ai.acquire", Time.get_ticks_usec() - t0)
+	return fallback
 
 
 func _board_entry() -> Dictionary:
@@ -1235,21 +1648,32 @@ func _board_entry() -> Dictionary:
 	return {}
 
 
+## A4: zero-allocation world-space aim center using CombatTarget's cached sphere array.
 func _target_aim_center(t: CombatTarget) -> Vector3:
 	if t.hit_shapes.size() > 0:
-		var sp: Dictionary = t.world_spheres()[0]
-		return sp["center"] as Vector3
-	return t.global_position + t.up * 3.5
+		var xf := t.global_transform if t.is_inside_tree() else t.transform
+		if t.wc_rev != t.shapes_rev or t.wc_xf != xf or t.wc_n != t.hit_shapes.size():
+			t.refresh_world_cache(xf)
+		if t.wc_n > 0:
+			return t.wc_centers[0]
+	return (t.global_position if t.is_inside_tree() else t.position) + t.up * 3.5
 
 
-func _check_los(from: Vector3, to: Vector3, space: PhysicsDirectSpaceState3D) -> bool:
+func _check_los(from: Vector3, to: Vector3, space: PhysicsDirectSpaceState3D, target: CombatTarget = null) -> bool:
 	if space == null or not world.use_physics:
 		return true
 	var d := from.distance_to(to)
 	if d < 2.0:
 		return true
-	var q := PhysicsRayQueryParameters3D.create(from, to)
-	var h := space.intersect_ray(q)
+	_ray_query.from = from
+	_ray_query.to = to
+	var excl := false
+	if target is AssetTarget and (target as AssetTarget).mech != null and is_instance_valid((target as AssetTarget).mech):
+		_ray_query.exclude = [(target as AssetTarget).mech.get_rid()]
+		excl = true
+	var h := space.intersect_ray(_ray_query)
+	if excl:
+		_ray_query.exclude = []
 	if h.is_empty():
 		return true
 	return from.distance_to(h["position"] as Vector3) >= d - 2.6
@@ -1281,24 +1705,32 @@ func _step_search(dt: float, lkp: Vector3, space: PhysicsDirectSpaceState3D) -> 
 
 
 func _step_engage_movement(dt: float, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
+	var t0 := Time.get_ticks_usec() if CombatWorld.profiling else 0
 	var base_spd := float(_cfg.get("move_speed", 0.0))
 	if base_spd <= 0.0:
 		_align_to_ring()
+		if CombatWorld.profiling:
+			CombatWorld.prof_add("ai.engage_move", Time.get_ticks_usec() - t0)
 		return
 	var pos := _world_pos()
 	var dist := pos.distance_to(target_pos)
 	var engage_r := EnemyCatalog.engage_range(enemy_type)
 	# Phase C Cover-Bounding (docs/design/enemy-tactics-and-drones.md §4): mobile ground units outside their effective
 	# weapon range advance via occluded side streets with periodic short peeks to refresh LKP instead of jogging down open lanes.
-	if dist > engage_r or (_cover_mode != "" and dist > engage_r * 0.95):
+	# While hunting straggler-mode (_hunting), leave cover and push straight toward the player!
+	if not _hunting and (dist > engage_r or (_cover_mode != "" and dist > engage_r * 0.95)):
 		_step_cover_bound(dt, pos, target_pos, engage_r, base_spd, space)
+		if CombatWorld.profiling:
+			CombatWorld.prof_add("ai.engage_move", Time.get_ticks_usec() - t0)
 		return
 	_cover_mode = ""
 	var pref := float(_cfg.get("preferred_range", 45.0))
 	var min_r := float(_cfg.get("min_range", 16.0))
-	if not _has_los:
+	if not _has_los or (_hunting and wave != "" and dist > 68.0):
 		ai_state = STATE_FLANK
 		_move_along_plan(target_pos, float(_cfg.get("flank_speed", base_spd)) * speed_scale * _speed_mult, dt, space)
+		if CombatWorld.profiling:
+			CombatWorld.prof_add("ai.engage_move", Time.get_ticks_usec() - t0)
 		return
 	if dist > pref * 1.25:
 		ai_state = STATE_ENGAGE
@@ -1320,10 +1752,13 @@ func _step_engage_movement(dt: float, target_pos: Vector3, space: PhysicsDirectS
 	else:
 		ai_state = STATE_ENGAGE
 		_align_to_ring()
+	if CombatWorld.profiling:
+		CombatWorld.prof_add("ai.engage_move", Time.get_ticks_usec() - t0)
 
 
 func _step_cover_bound(dt: float, pos: Vector3, target_pos: Vector3, engage_r: float, base_spd: float,
 		space: PhysicsDirectSpaceState3D) -> void:
+	var t0 := Time.get_ticks_usec() if CombatWorld.profiling else 0
 	ai_state = STATE_FLANK
 	var flank_spd := float(_cfg.get("flank_speed", base_spd)) * speed_scale * _speed_mult
 	if _cover_mode == "":
@@ -1345,6 +1780,8 @@ func _step_cover_bound(dt: float, pos: Vector3, target_pos: Vector3, engage_r: f
 				_cover_path_timer = 0.0
 			else:
 				_steer_toward(_cover_peek_goal, base_spd * 0.85 * speed_scale * _speed_mult, dt, space)
+				if CombatWorld.profiling:
+					CombatWorld.prof_add("ai.cover_bound", Time.get_ticks_usec() - t0)
 				return
 	# BOUND mode: sprint along cover-weighted road graph, peeking periodically if LOS has gone stale.
 	_cover_peek_cd -= dt
@@ -1354,18 +1791,26 @@ func _step_cover_bound(dt: float, pos: Vector3, target_pos: Vector3, engage_r: f
 		_peek_count += 1
 		_cover_peek_goal = _pick_peek_point(pos, target_pos, space)
 		_steer_toward(_cover_peek_goal, base_spd * 0.85 * speed_scale * _speed_mult, dt, space)
+		if CombatWorld.profiling:
+			CombatWorld.prof_add("ai.cover_bound", Time.get_ticks_usec() - t0)
 		return
 	_move_along_cover_plan(target_pos, flank_spd, engage_r, dt, space)
+	if CombatWorld.profiling:
+		CombatWorld.prof_add("ai.cover_bound", Time.get_ticks_usec() - t0)
 
 
 func _move_along_cover_plan(goal_w: Vector3, spd: float, engage_r: float, dt: float,
 		space: PhysicsDirectSpaceState3D) -> void:
+	var t0 := Time.get_ticks_usec() if CombatWorld.profiling else 0
 	_cover_path_timer -= dt
 	if _cover_path_timer <= 0.0 and squad != null and squad.has_method("find_cover_path"):
-		_cover_path_timer = COVER_PATH_INTERVAL
-		var cur_arc := _world_to_arc2(_world_pos())
-		var goal_arc := _world_to_arc2(goal_w)
-		_path_points = squad.find_cover_path(cur_arc, goal_arc, goal_arc, spawn_deck, engage_r)
+		if not squad.has_method("claim_cover_repath") or squad.claim_cover_repath():
+			_cover_path_timer = COVER_PATH_INTERVAL
+			var cur_arc := _world_to_arc2(_world_pos())
+			var goal_arc := _world_to_arc2(goal_w)
+			_path_points = squad.find_cover_path(cur_arc, goal_arc, goal_arc, spawn_deck, engage_r)
+		else:
+			_cover_path_timer = 0.05
 	var steer_goal := Vector3.ZERO
 	var has_wp := false
 	while not _path_points.is_empty():
@@ -1392,6 +1837,8 @@ func _move_along_cover_plan(goal_w: Vector3, spd: float, engage_r: float, dt: fl
 		else:
 			steer_goal = goal_w
 	_steer_toward(steer_goal, spd, dt, space)
+	if CombatWorld.profiling:
+		CombatWorld.prof_add("ai.cover_plan", Time.get_ticks_usec() - t0)
 
 
 func _pick_peek_point(pos: Vector3, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> Vector3:
@@ -1426,14 +1873,25 @@ func _pick_peek_point(pos: Vector3, target_pos: Vector3, space: PhysicsDirectSpa
 
 
 func _move_along_plan(goal_w: Vector3, spd: float, dt: float, space: PhysicsDirectSpaceState3D) -> void:
+	# Wave units spawned inside a hidden gate recess behind the boundary wall must step out through exit_pt
+	# (_patrol_points[0]) BEFORE starting road-graph A* so they never clip diagonally into the boundary wall!
+	if wave != "" and not _patrol_points.is_empty() and squad != null and squad.has_method("deck_plan"):
+		var dp: CityPlan = squad.deck_plan(spawn_deck)
+		if dp != null:
+			var cur_arc := _world_to_arc2(_world_pos())
+			if not dp.extent.grow(-4.0).has_point(cur_arc):
+				var exit_w := _arc_to_world_pos(_patrol_points[0])
+				if _world_pos().distance_to(exit_w) > 3.5:
+					_steer_toward(exit_w, spd, dt, space)
+					return
 	_path_timer -= dt
-	if _path_timer <= 0.0 and squad != null and squad.has_method("find_arc_path"):
-		_path_timer = 1.0
+	if (_path_points.is_empty() or _path_timer <= 0.0) and squad != null and squad.has_method("find_arc_path"):
+		_path_timer = 2.5
 		_path_points = squad.find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(goal_w), spawn_deck)
 	var steer_goal := goal_w
 	while not _path_points.is_empty():
 		var wp := _arc_to_world_pos(_path_points[0])
-		if _world_pos().distance_to(wp) < 6.0:
+		if _world_pos().distance_to(wp) < 6.5:
 			_path_points.pop_front()
 		else:
 			steer_goal = wp
@@ -1445,11 +1903,24 @@ func _steer_toward(goal_w: Vector3, spd: float, dt: float, space: PhysicsDirectS
 	if spd <= 0.05 or knock.moving() or not _grounded_now:
 		_align_to_ring()
 		return
+	var t0 := Time.get_ticks_usec() if CombatWorld.profiling else 0
+	if _avoid_timer > 0.0:
+		_avoid_timer = maxf(_avoid_timer - dt, 0.0)
 	var pos := _world_pos()
+	if _unstick_t > 0.0:
+		_unstick_t = maxf(_unstick_t - dt, 0.0)
+		if pos.distance_to(_unstick_goal) < 3.5:
+			_unstick_t = 0.0
+		else:
+			goal_w = _unstick_goal
 	var to_g := goal_w - pos
 	to_g -= up * to_g.dot(up)
 	if to_g.length_squared() < 0.25:
+		_stuck_t = 0.0
+		_stuck_travel = 0.0
 		_align_to_ring()
+		if CombatWorld.profiling:
+			CombatWorld.prof_add("ai.steer", Time.get_ticks_usec() - t0)
 		return
 	var dir := to_g.normalized()
 	# Soft sibling separation.
@@ -1457,22 +1928,47 @@ func _steer_toward(goal_w: Vector3, spd: float, dt: float, space: PhysicsDirectS
 		var sep: Vector3 = squad.separation_vector(self)
 		sep -= up * sep.dot(up)
 		dir = (dir + sep * 1.4).normalized()
-	# 3-whisker obstacle avoidance in local floor plane.
-	if space != null and world != null and world.use_physics:
-		var c := pos + up * probe_height
+	# A5: 20 Hz throttled obstacle/slide/ground rays with cached wall normal & ground height (staggered per enemy).
+	var has_phys := space != null and world != null and world.use_physics
+	var do_ray := has_phys and _steer_ray_t <= 0.0
+	var fwd_hit_n := Vector3.ZERO
+	if do_ray:
+		_steer_ray_t = STEER_RAY_INTERVAL
 		var look_d := body_radius + 4.5
-		if _ray_blocked(space, c, c + dir * look_d):
+		fwd_hit_n = _ground_hit_normal(space, pos, dir, look_d, true)
+		if fwd_hit_n != Vector3.ZERO:
 			var left_d := dir.rotated(up, 0.75)
 			var right_d := dir.rotated(up, -0.75)
-			var lb := _ray_blocked(space, c, c + left_d * look_d)
-			var rb := _ray_blocked(space, c, c + right_d * look_d)
+			var lb := _ground_hit_normal(space, pos, left_d, look_d, false) != Vector3.ZERO
+			var rb := _ground_hit_normal(space, pos, right_d, look_d, false) != Vector3.ZERO
 			if not lb and rb:
 				dir = left_d
+				_flank_sign = 1.0
+				_avoid_timer = 1.2
 			elif not rb and lb:
 				dir = right_d
+				_flank_sign = -1.0
+				_avoid_timer = 1.2
 			else:
-				dir = dir.rotated(up, _flank_sign * 1.2)
-				_flank_sign = -_flank_sign
+				# Broad building facade: slide cleanly along wall tangent (+ slight push away from wall) instead of pacing!
+				var wall_n := fwd_hit_n - up * fwd_hit_n.dot(up)
+				wall_n = wall_n.normalized() if wall_n.length_squared() > 1e-4 else -dir
+				var tan_dir := (wall_n.cross(up).normalized() * _flank_sign + wall_n * 0.18).normalized()
+				if _ground_hit_normal(space, pos, tan_dir, body_radius + 2.2, false) != Vector3.ZERO:
+					if _avoid_timer <= 0.0:
+						_flank_sign = -_flank_sign
+						_avoid_timer = 1.2
+					tan_dir = (wall_n.cross(up).normalized() * _flank_sign + wall_n * 0.18).normalized()
+				elif _avoid_timer <= 0.0:
+					_avoid_timer = 1.2
+				dir = tan_dir
+			_cached_avoid_dir = dir
+		else:
+			_cached_avoid_dir = Vector3.ZERO
+	elif has_phys and _avoid_timer > 0.0 and _cached_avoid_dir != Vector3.ZERO:
+		var cd := _cached_avoid_dir - up * _cached_avoid_dir.dot(up)
+		if cd.length_squared() > 1e-4:
+			dir = cd.normalized()
 	# Turn hull smoothly toward move direction in local tangent plane.
 	var cur_fwd := (-global_basis.z) if is_inside_tree() else Vector3.FORWARD
 	cur_fwd = (cur_fwd - up * cur_fwd.dot(up)).normalized()
@@ -1483,23 +1979,59 @@ func _steer_toward(goal_w: Vector3, spd: float, dt: float, space: PhysicsDirectS
 	var new_fwd := cur_fwd.rotated(up, clampf(signed_ang, -turn_max, turn_max)).normalized()
 	var move_align := clampf(cur_fwd.dot(dir), 0.25, 1.0)
 	var step_vec := new_fwd * spd * move_align * dt
-	# Check immediate collision before advancing.
-	if space != null and world != null and world.use_physics:
-		var c := pos + up * probe_height
-		if _ray_blocked(space, c, c + new_fwd * (body_radius + step_vec.length() + 0.4)):
-			step_vec = Vector3.ZERO
+	# Check immediate collision before advancing (reuses cached wall normal between 20 Hz probes; skips redundant ray when forward look was clear).
+	if has_phys:
+		var block_n := Vector3.ZERO
+		if do_ray:
+			if fwd_hit_n == Vector3.ZERO and new_fwd.dot(dir) > 0.96:
+				block_n = Vector3.ZERO
+			else:
+				block_n = _ground_hit_normal(space, pos, new_fwd, body_radius + step_vec.length() + 0.4, true)
+			_cached_block_n = block_n
+			_cached_slide_blocked = false
+		else:
+			block_n = _cached_block_n
+		if block_n != Vector3.ZERO:
+			var wn := block_n - up * block_n.dot(up)
+			if wn.length_squared() > 1e-4:
+				wn = wn.normalized()
+				var into := step_vec.dot(wn)
+				if into < 0.0:
+					step_vec -= wn * into
+				if step_vec.length_squared() > 1e-6:
+					if do_ray:
+						var slide_d := step_vec.normalized()
+						_cached_slide_blocked = _ground_hit_normal(space, pos, slide_d, body_radius + step_vec.length() + 0.35, false) != Vector3.ZERO
+					if _cached_slide_blocked:
+						step_vec = Vector3.ZERO
+			else:
+				step_vec = Vector3.ZERO
+	step_vec = _keep_out_of_floor_cuts(pos, step_vec, dt)
 	var next_pos := pos + step_vec
 	if ring != null:
 		up = ring.up_at(next_pos)
-	var g := _probe_ground_point(next_pos, space)
-	if not is_nan(g.x):
-		# Prevent mobile ground units from walking straight up tall walls (> 1.6 m step).
-		var dh := (g - next_pos).dot(up)
-		if dh <= 1.6 and dh >= -4.0:
-			next_pos = g
-		elif dh > 1.6:
-			next_pos = pos
-			step_vec = Vector3.ZERO
+	if not has_phys or do_ray or not _has_ground_h:
+		var g := _probe_ground_point(next_pos, space)
+		if not is_nan(g.x):
+			# Prevent mobile ground units from walking straight up tall walls (> 1.6 m step).
+			var dh := (g - next_pos).dot(up)
+			if dh <= 1.6 and dh >= -4.0:
+				next_pos = g
+				_ground_h_off = ring.height(g) if ring != null else g.y
+				_has_ground_h = true
+			elif dh > 1.6:
+				next_pos = pos
+				step_vec = Vector3.ZERO
+		if has_phys:
+			_ground_probe_t = STEER_RAY_INTERVAL
+	else:
+		# Between 20 Hz probes, track the curved ring surface smoothly at the cached ground height offset.
+		if ring != null:
+			next_pos += up * (_ground_h_off - ring.height(next_pos))
+		else:
+			next_pos.y = _ground_h_off
+	# Ground unstick detector (host-only): recover cleanly if pacing/wedged (< 1.8 m net travel in 3.5 s) or inside a building.
+	next_pos = _check_ground_unstick(next_pos, step_vec, dt)
 	ground_y = next_pos.dot(up)
 	if is_inside_tree():
 		global_position = next_pos
@@ -1510,10 +2042,123 @@ func _steer_toward(goal_w: Vector3, spd: float, dt: float, space: PhysicsDirectS
 		position = next_pos
 	var max_s := maxf(float(_cfg.get("flank_speed", _cfg.get("move_speed", 1.0))), 0.1)
 	move_speed_ratio = clampf(step_vec.length() / maxf(dt, 1e-4) / max_s, 0.0, 1.0)
+	if CombatWorld.profiling:
+		CombatWorld.prof_add("ai.steer", Time.get_ticks_usec() - t0)
+
+
+## A ground unit standing on its deck's floor never steps into a floor cut (a ramp mouth has no railing, so without this
+## a unit cutting a corner walks down the ramp, is re-homed to the deck below and sleeps there). The step slides along
+## the cut's edge instead (cuts are axis-aligned in arc space; arc x is world x). A unit already inside a cut (knocked
+## onto a ramp) moves freely so it can walk out.
+func _keep_out_of_floor_cuts(pos: Vector3, step_vec: Vector3, dt: float) -> Vector3:
+	if _cut_far_t > 0.0:
+		_cut_far_t -= dt   # known to be well clear of every cut: skip (cheap path for most frames)
+		return step_vec
+	if ring == null or squad == null or step_vec.length_squared() < 1e-8 or not squad.has_method("deck_cuts"):
+		return step_vec
+	var cuts: Array[Rect2] = squad.deck_cuts(spawn_deck)
+	if cuts.is_empty():
+		_cut_far_t = 1.0
+		return step_vec
+	var a := _world_to_arc2(pos)
+	var tan := ring.tangent_at(pos)
+	var dx := step_vec.x
+	var ds := step_vec.dot(tan)
+	var nxt := a + Vector2(dx, ds)
+	var hit := -1
+	var far := true
+	for i in cuts.size():
+		var o: Rect2 = cuts[i].grow(FLOOR_CUT_KEEP)
+		if o.has_point(a):
+			return step_vec   # already inside (on a ramp): let it walk out
+		if hit < 0 and o.has_point(nxt):
+			hit = i
+		if far and o.grow(FLOOR_CUT_FAR).has_point(a):
+			far = false
+	if hit < 0:
+		if far:
+			_cut_far_t = FLOOR_CUT_FAR_T   # a walker covers < FLOOR_CUT_FAR in this time
+		return step_vec
+	var o2: Rect2 = cuts[hit].grow(FLOOR_CUT_KEEP)
+	if not o2.has_point(Vector2(a.x + dx, a.y)):
+		return Vector3(dx, 0.0, 0.0)          # slide along x (across the cut's end)
+	if not o2.has_point(Vector2(a.x, a.y + ds)):
+		return tan * ds                        # slide along s (beside the cut)
+	return Vector3.ZERO
+
+
+func _ground_hit_normal(space: PhysicsDirectSpaceState3D, pos: Vector3, d: Vector3, dist: float, check_low: bool = true) -> Vector3:
+	var c_hi := pos + up * probe_height
+	_ray_query.from = c_hi
+	_ray_query.to = c_hi + d * dist
+	var h := space.intersect_ray(_ray_query)
+	if not h.is_empty():
+		var n: Vector3 = h["normal"]
+		if absf(n.dot(up)) < 0.72:
+			return n
+	if check_low and probe_height > 1.1:
+		var c_lo := pos + up * 0.8
+		_ray_query.from = c_lo
+		_ray_query.to = c_lo + d * dist
+		var h2 := space.intersect_ray(_ray_query)
+		if not h2.is_empty():
+			var n2: Vector3 = h2["normal"]
+			if absf(n2.dot(up)) < 0.72:
+				return n2
+	return Vector3.ZERO
+
+
+func _check_ground_unstick(next_pos: Vector3, step_vec: Vector3, dt: float) -> Vector3:
+	if puppet or not Net.is_host():
+		return next_pos
+	if _stuck_t <= 0.0:
+		_stuck_anchor = next_pos
+	_stuck_t += dt
+	_stuck_travel += step_vec.length()
+	if _stuck_t >= 2.8:
+		var inside_b := false
+		if squad != null and squad.has_method("deck_plan"):
+			var d_plan: CityPlan = squad.deck_plan(spawn_deck)
+			if d_plan != null:
+				var h_cur := ring.height(next_pos) if ring != null else next_pos.y
+				var a2 := _world_to_arc2(next_pos)
+				if h_cur < 2.0 and (not EnemySpawner.clear_of_buildings(d_plan, a2, 0.5, 0.0) or not EnemySpawner._clear_of_ramps(d_plan, a2, 0.5)):
+					inside_b = true
+		var net_d := next_pos.distance_to(_stuck_anchor)
+		if inside_b or net_d < 1.8:
+			if _path_points.size() >= 2:
+				_path_points.pop_front()
+			else:
+				_path_points.clear()
+				_path_timer = 0.0
+			_cover_path_timer = 0.0
+			_flank_sign = -_flank_sign
+			_avoid_timer = 1.2
+			_steer_ray_t = 0.0
+			_ground_probe_t = 0.0
+			_cached_avoid_dir = Vector3.ZERO
+			_cached_block_n = Vector3.ZERO
+			_cached_slide_blocked = false
+			if squad != null and squad.has_method("nearest_road_point"):
+				var rp: Vector2 = squad.nearest_road_point(_world_to_arc2(next_pos), spawn_deck, 8.0)
+				if not is_nan(rp.x):
+					_unstick_goal = _arc_to_world_pos(rp)
+					_unstick_t = 2.6
+					if inside_b:
+						var escape := _unstick_goal - next_pos
+						escape -= up * escape.dot(up)
+						if escape.length_squared() > 1e-4:
+							next_pos += escape.normalized() * minf(2.5, escape.length())
+		_stuck_t = 0.0
+		_stuck_travel = 0.0
+		_stuck_anchor = next_pos
+	return next_pos
 
 
 func _ray_blocked(space: PhysicsDirectSpaceState3D, a: Vector3, b: Vector3) -> bool:
-	var h := space.intersect_ray(PhysicsRayQueryParameters3D.create(a, b))
+	_ray_query.from = a
+	_ray_query.to = b
+	var h := space.intersect_ray(_ray_query)
 	return not h.is_empty() and absf((h["normal"] as Vector3).dot(up)) < 0.72
 
 
@@ -1533,6 +2178,15 @@ func _track_aim(_target_pos: Vector3, _dt: float) -> float:
 	return 0.0
 
 
+func _update_reveal_fx(dt: float) -> void:
+	if _telegraph_fx == null:
+		return
+	if revealed and not _dead:
+		_telegraph_fx.show_reveal_flare(eye_world(), up, dt)
+	else:
+		_telegraph_fx.hide_reveal_flare()
+
+
 func _update_visuals(dt: float) -> void:
 	if _telegraph_fx != null:
 		if ai_state == STATE_TELEGRAPH and _telegraph_dur > 0.0:
@@ -1545,9 +2199,10 @@ func _update_visuals(dt: float) -> void:
 		else:
 			_telegraph_fx.hide_telegraph()
 			_telegraph_fx.tick_only(dt)
+		_update_reveal_fx(dt)
 	if _status_bar != null:
 		var tag := "OVERHEAT" if heat.shutdown else ("STAGGER" if knock.staggered() else "")
-		_status_bar.refresh(core_hp_ratio(), heat_ratio, is_alerted(), ai_state == STATE_TELEGRAPH, tag, _dead, dt)
+		_status_bar.refresh(core_hp_ratio(), heat_ratio, is_alerted(), ai_state == STATE_TELEGRAPH, tag, _dead, dt, revealed)
 
 
 func _world_pos() -> Vector3:
@@ -1582,6 +2237,7 @@ func debug_info() -> Dictionary:
 		"id": target_id, "type": enemy_type, "state": ai_state, "hp": total_hp(), "core_hp": float(hp.get(core_component(), 0.0)),
 		"heat": heat.value, "has_los": _has_los, "has_slot": _has_slot, "aim": _aim_point, "locked_aim": _locked_aim,
 		"path": _path_points, "dead": _dead, "cover_mode": _cover_mode, "peek_count": _peek_count,
+		"revealed": revealed, "hunting": _hunting,
 	}
 
 
@@ -1601,6 +2257,29 @@ func reset_enemy() -> void:
 	_cover_path_timer = 0.0
 	_zigzag_t = 0.0
 	_peek_count = 0
+	revealed = false
+	_hunting = false
+	_hunt_t = 0.0
+	_revealed_idle_t = 0.0
+	_reveal_flare_cd = 0.0
+	_avoid_timer = 0.0
+	_stuck_anchor = Vector3.ZERO
+	_stuck_t = 0.0
+	_stuck_travel = 0.0
+	_unstick_goal = Vector3.ZERO
+	_unstick_t = 0.0
+	_perc_valid = false
+	_perc_t = 0.0
+	_cached_target = null
+	_steer_ray_t = 0.0
+	_cut_far_t = 0.0
+	_cached_avoid_dir = Vector3.ZERO
+	_cached_block_n = Vector3.ZERO
+	_cached_slide_blocked = false
+	_ground_probe_t = 0.0
+	_has_ground_h = false
+	_lod_tick = 0
+	_lod_dt = 0.0
 	_target_vel = Vector3.ZERO
 	_has_prev_pos = false
 	_last_seen_pos = Vector3.ZERO

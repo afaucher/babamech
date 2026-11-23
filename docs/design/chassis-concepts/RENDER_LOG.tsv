@@ -1,0 +1,50 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-23T08:39:32	chassis_1_bulwark_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		11.34	chassis_1_bulwark_prompt.txt
+2026-11-23T08:39:41	chassis_2_wasp_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.55	chassis_2_wasp_prompt.txt
+2026-11-23T08:39:50	chassis_3_sprinter_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.75	chassis_3_sprinter_prompt.txt
+2026-11-23T08:39:59	chassis_4_crawler_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.64	chassis_4_crawler_prompt.txt
+2026-11-23T08:40:08	chassis_5_treads_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.81	chassis_5_treads_prompt.txt
+2026-11-23T08:40:17	chassis_6_roller_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.02	chassis_6_roller_prompt.txt
+2026-11-23T08:40:26	chassis_7_hopper_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.8	chassis_7_hopper_prompt.txt
+2026-11-23T08:40:35	chassis_8_gunship_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.61	chassis_8_gunship_prompt.txt
+2026-11-23T08:40:44	chassis_9_hexapod_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.82	chassis_9_hexapod_prompt.txt
+2026-11-23T08:45:29	bulwark_a1_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		10.76	bulwark_a1_prompt.txt
+2026-11-23T08:45:38	bulwark_a2_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.59	bulwark_a2_prompt.txt
+2026-11-23T08:45:47	bulwark_a3_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.99	bulwark_a3_prompt.txt
+2026-11-23T08:45:56	bulwark_b1_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.99	bulwark_b1_prompt.txt
+2026-11-23T08:46:06	bulwark_b2_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9	bulwark_b2_prompt.txt
+2026-11-23T08:46:15	bulwark_b3_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.03	bulwark_b3_prompt.txt
+2026-11-23T08:46:24	bulwark_c1_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.02	bulwark_c1_prompt.txt
+2026-11-23T08:46:33	bulwark_c2_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.99	bulwark_c2_prompt.txt
+2026-11-23T08:46:43	bulwark_c3_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.99	bulwark_c3_prompt.txt
+2026-11-23T08:46:52	wasp_a1_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.07	wasp_a1_prompt.txt
+2026-11-23T08:47:01	wasp_a2_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.98	wasp_a2_prompt.txt
+2026-11-23T08:47:10	wasp_a3_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.63	wasp_a3_prompt.txt
+2026-11-23T08:47:19	wasp_b1_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.81	wasp_b1_prompt.txt
+2026-11-23T08:47:28	wasp_b2_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.68	wasp_b2_prompt.txt
+2026-11-23T08:47:37	wasp_b3_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.81	wasp_b3_prompt.txt
+2026-11-23T08:47:46	wasp_c1_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		8.68	wasp_c1_prompt.txt
+2026-11-23T08:47:55	wasp_c2_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9	wasp_c2_prompt.txt
+2026-11-23T08:48:04	wasp_c3_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.05	wasp_c3_prompt.txt
+2026-11-23T08:53:23	bulwark_leg_1_piston_s11.png	flux3_klein_refs	11	768x768	bulwark_a1_s11.png		10.9	bulwark_leg_1_piston_prompt.txt
+2026-11-23T08:53:32	bulwark_leg_2_greave_s11.png	flux3_klein_refs	11	768x768	bulwark_a1_s11.png		8.63	bulwark_leg_2_greave_prompt.txt
+2026-11-23T08:53:41	bulwark_leg_3_excavator_s11.png	flux3_klein_refs	11	768x768	bulwark_a1_s11.png		8.8	bulwark_leg_3_excavator_prompt.txt
+2026-11-23T08:53:50	bulwark_leg_4_strut_s11.png	flux3_klein_refs	11	768x768	bulwark_a1_s11.png		8.63	bulwark_leg_4_strut_prompt.txt
+2026-11-23T08:53:59	bulwark_leg_5_aframe_s11.png	flux3_klein_refs	11	768x768	bulwark_a1_s11.png		8.82	bulwark_leg_5_aframe_prompt.txt
+2026-11-23T08:54:08	bulwark_leg_6_linkage_s11.png	flux3_klein_refs	11	768x768	bulwark_a1_s11.png		8.98	bulwark_leg_6_linkage_prompt.txt
+2026-11-23T08:54:18	bulwark_leg_7_ball_s11.png	flux3_klein_refs	11	768x768	bulwark_a1_s11.png		9.07	bulwark_leg_7_ball_prompt.txt
+2026-11-23T08:54:27	bulwark_leg_8_sumo_s11.png	flux3_klein_refs	11	768x768	bulwark_a1_s11.png		9.01	bulwark_leg_8_sumo_prompt.txt
+2026-11-23T08:54:36	bulwark_leg_9_outrigger_s11.png	flux3_klein_refs	11	768x768	bulwark_a1_s11.png		9.04	bulwark_leg_9_outrigger_prompt.txt
+2026-11-23T08:56:37	bulwark_legstudy_1_piston_s11.png	flux3_klein_t2i	11	768x768			5.42	bulwark_legstudy_1_piston_prompt.txt
+2026-11-23T08:56:41	bulwark_legstudy_2_greave_s11.png	flux3_klein_t2i	11	768x768			3.3	bulwark_legstudy_2_greave_prompt.txt
+2026-11-23T08:56:45	bulwark_legstudy_3_excavator_s11.png	flux3_klein_t2i	11	768x768			3.29	bulwark_legstudy_3_excavator_prompt.txt
+2026-11-23T08:56:48	bulwark_legstudy_4_strut_s11.png	flux3_klein_t2i	11	768x768			3.28	bulwark_legstudy_4_strut_prompt.txt
+2026-11-23T08:56:52	bulwark_legstudy_5_aframe_s11.png	flux3_klein_t2i	11	768x768			3.3	bulwark_legstudy_5_aframe_prompt.txt
+2026-11-23T08:56:55	bulwark_legstudy_6_linkage_s11.png	flux3_klein_t2i	11	768x768			3.28	bulwark_legstudy_6_linkage_prompt.txt
+2026-11-23T08:56:59	bulwark_legstudy_7_ball_s11.png	flux3_klein_t2i	11	768x768			3.31	bulwark_legstudy_7_ball_prompt.txt
+2026-11-23T08:57:02	bulwark_legstudy_8_sumo_s11.png	flux3_klein_t2i	11	768x768			3.32	bulwark_legstudy_8_sumo_prompt.txt
+2026-11-23T08:57:06	bulwark_legstudy_9_outrigger_s11.png	flux3_klein_t2i	11	768x768			3.3	bulwark_legstudy_9_outrigger_prompt.txt
+2026-11-23T09:01:57	bulwark_full_s11.png	flux3_klein_refs	11	768x768	pick_bulwark_torso_barrel.png,pick_bulwark_legs_sumo.png		17.45	bulwark_full_prompt.txt
+2026-11-23T09:02:12	bulwark_full_s22.png	flux3_klein_refs	22	768x768	pick_bulwark_torso_barrel.png,pick_bulwark_legs_sumo.png		14.8	bulwark_full_prompt.txt
+2026-11-23T09:02:27	bulwark_full_s33.png	flux3_klein_refs	33	768x768	pick_bulwark_torso_barrel.png,pick_bulwark_legs_sumo.png		14.85	bulwark_full_prompt.txt
+2026-11-23T09:02:42	bulwark_full_s44.png	flux3_klein_refs	44	768x768	pick_bulwark_torso_barrel.png,pick_bulwark_legs_sumo.png		14.92	bulwark_full_prompt.txt

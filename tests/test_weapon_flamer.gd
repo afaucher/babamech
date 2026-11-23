@@ -64,7 +64,8 @@ func _shooter_heat() -> void:
 	var h := Heat.new(100000.0, 0.0, 0.0)
 	_drive(_mount(), 10.0, 1.0 / 60.0, true, 0.0, h)
 	near(h.value / 10.0, 6.0, 0.07, "a held flamer makes 6 heat/s on the shooter (%.2f)" % (h.value / 10.0))
-	# The real gauge (strider: cap 100, cooling 6, +1.0 passive from the flamer): how long a cold mech can hold it.
+	# The real gauge (strider: cap 100, cooling 9, +1.0 passive from the flamer): how long a cold mech can hold it.
+	# At cooling 9 the flamer alone (6 + 1) nets -2 /s, so it never overheats a standing shooter (weapons.md §7 q10).
 	var c := MechCatalog.chassis("strider")
 	var g := Heat.new(float(c["heat_cap"]), float(c["cooling"]), float(st["passive_heat"]))
 	var m := _mount()
@@ -76,7 +77,11 @@ func _shooter_heat() -> void:
 		t += dt
 	print("flamer: a cold strider holding only the flamer shuts down after %.1f s (net %+.1f heat/s)" %
 		[t, 6.0 + float(st["passive_heat"]) - float(c["cooling"])])
-	check(g.shutdown, "holding the flamer alone eventually overheats the shooter (%.1f s)" % t)
+	var net := 6.0 + float(st["passive_heat"]) - float(c["cooling"])
+	if net > 0.0:
+		check(g.shutdown, "holding the flamer alone eventually overheats the shooter (%.1f s)" % t)
+	else:
+		check(not g.shutdown, "the chassis cools faster than the flamer heats: holding it alone never overheats (net %+.1f /s)" % net)
 
 
 # --- In a world --------------------------------------------------------------------------------------

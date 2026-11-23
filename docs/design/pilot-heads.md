@@ -29,21 +29,54 @@ how it reads. Open questions for the user are at the end.
 So every expression is built in **three layers that say the same thing**: (a) the face, (b) the silhouette (neck, tilt,
 flair), (c) one effect or colour cue. An expression that only exists in the eyebrows is not finished.
 
-## 2. Rig: rigid faceted pieces, not blend shapes
+## 2. Rig: one body mesh on three joints, rigid faceted face pieces, no blend shapes
 
-Each head is a small tree of rigid low-poly pieces that rotate, slide and scale. No skeleton skinning, no blend shapes.
+Each head is a small tree of joints and rigid low-poly pieces that rotate, slide and scale. The neck and skull are ONE
+continuous mesh bent by the joints (below); the face and flair pieces are rigid. No blend shapes, no Skeleton3D.
 
 Why: with one flat colour and one normal per face, a blend shape bends facets and makes the shading swim; a rigid piece
 keeps every facet exactly as modelled, like a paper-craft puppet, which is the look. It is also the cheapest thing to
 build from `MeshKit` in GDScript (no Blender on this PC), costs a handful of transforms per head per frame, and a pose is
 plain data that blends linearly.
 
+**One mesh (2026-11-22, user bug "you can see a neck seam when the head moves around in multiplayer on the other
+player. We need one mesh").** The neck used to be three rigid pieces (NeckLow, NeckHigh, Skull) sleeved into each other;
+bent far enough, the sleeve edges stood proud or opened a light sliver (worst in a lean, seen from a teammate's front /
+side, which you never see on your own head from the chase camera behind it). Now `NeckLow`, `NeckHigh` and `Skull` are
+empty joint nodes and the collar plug, lower neck, upper neck and skull are one closed `PilotBody` mesh (one surface):
+- the head authors the whole neck-and-skull surface as ONE loft (a ring at each joint, plus one in the chicken's upper
+  bend and the duck's long green neck) closed by the collar plug, and the skull's rigid extras (beak, bill, snout, nose,
+  eye discs, dark mouth) in a second kit: `PilotFace.add_body(shell, extras)`;
+- every shell vertex is bound to NeckLow / NeckHigh / Skull by weights that depend only on its rest height
+  (`PilotBody.weights_at`): NeckLow -> NeckHigh on a linear ramp over the whole neck (`body_bend`: chicken 0-0.55, duck
+  0-0.44, dog 0-0.48, pickle 0-0.32, corn 0-0.4), so every band takes a share of a bend and none folds up; the skull's
+  squash blends in over 0.12 below the Skull pivot; at and above it everything is the Skull's alone, so the extras and
+  the face pieces sit on it exactly. A shared vertex always moves to one place, so the surface cannot open: faces that
+  span a joint stretch and shear instead (flat normals re-derived each frame, so they stay faceted);
+- CPU, no GPU skinning: the mesh hangs under the Skull joint in head-rest space, so the Skull-only vertices are constant;
+  each pose recomputes only the ~20-36 neck vertices as a linear blend of the joints' rest-to-pose transforms, their
+  ~46-78 faces' normals, and writes the vertex buffer (`ArrayMesh.surface_update_vertex_region`; falls back to
+  rebuilding the surface if the buffer layout is not the plain one). Cost about 30-50 us per head per frame (measured on
+  the shared, loaded test PC), so under 0.2 ms for a crew of 4. Works headless (`PilotBody.deformed`, `head_space()`),
+  so tests measure the real deformed vertices.
+- Flush, flash, first-person hide layer, `PilotFx` anchors (`PilotBody.skull_box`, `skull_colours`), `face_count()` and
+  `piece(name)` are unchanged; faces: chicken 186, duck 209, pickle 188, corn 198, dog 206 (+ 14 for the plug).
+- Puppets also got an input guard in `PilotHead.feed`: a yaw rate beyond 12 rad/s (a heading jump: teleport, an
+  extrapolation corrected) is ignored, the rest capped at 6 rad/s and low-passed (50 ms, smooths the 30 Hz steps), and
+  a velocity jump (> 30 units/s in a frame, or any change on a heading-jump frame) gives no acceleration. Without it a
+  respawn snapped a teammate's skull up to 26 degrees in one frame (chicken), more than any local input; with it puppet
+  inputs shake the neck no harder than local ones.
+Guarded by `tests/test_pilot_neck_seal.gd` (one surface, closed shell; no vertex split nor boundary edge in the deformed
+state through the local worst poses and puppet-style inputs; no face below 0.2 of its rest area or turned over; bend
+limits NeckLow 40, NeckHigh 65, total 90 degrees, measured worst 33 / 56 / 82), shots `tests/test_pilot_onemesh_visual.gd`
+(an offline puppet fed 30 Hz states; before / after in `test_logs/shots/pilot_onemesh_[before_]<head>_<pose>[_side|_high].png`).
+
 Common pieces (every head):
 
 | Piece | Moves | Used for |
 | --- | --- | --- |
-| `NeckLow`, `NeckHigh` | two joints, pitch / yaw / roll | all body motion (section 4), nods, recoil, slump |
-| `Skull` | carried by `NeckHigh`; scale Y for squash | landing, wobble |
+| `NeckLow`, `NeckHigh` | two joints, pitch / yaw / roll (no mesh: they bend the body) | all body motion (section 4), nods, recoil, slump |
+| `Skull` | joint carried by `NeckHigh`; scale Y for squash; carries the body mesh and every face piece | landing, wobble |
 | `BrowL`, `BrowR` | roll (angry in / worried out), slide up / down | the main face signal; stern = low and angled in |
 | `LidL`, `LidR` (new plates, skin colour) | slide down over the eye | blink, squint, wide eyes, dazed half-lids |
 | `PupilL`, `PupilR` | slide in the eye plane, scale | gaze, pin-prick fear, big dazed |
@@ -66,8 +99,8 @@ heads land at **about 180-210 faces** (question 1).
 **Neck seal (2026-11-22, user bug "you can see up the head's neck in some poses, it separates from the mech").** The
 neck's base sits in the hatch below its dark floor; the lean, the push and the squash used to lift its open bottom ring
 up to the floor or rim (0.14 above the floor on the chicken) and slide it across the opening (up to 0.08). Now:
-(1) every `NeckLow` closes with a collar plug (`PilotFace.add_neck_plug`: a dark `COLLAR` frustum `PLUG_DEPTH` 0.18
-below the base, capped, 14 faces on top of the head's budget), so there is no open edge to look into and the neck runs
+(1) the body closes with a collar plug (`PilotFace.add_neck_plug`: a dark `COLLAR` frustum `PLUG_DEPTH` 0.18
+below the base, bound to `NeckLow`, capped, 14 faces on top of the head's budget), so there is no open edge to look into and the neck runs
 down past the floor in every pose; standalone (lab, crew panel) it reads as a dark collar under the neck; (2) the push
 (focused, effort, peck...) no longer slides `NeckLow`: it leans it about its base and `NeckHigh` turns back by the same
 angle (`PilotFace.pose_neck_joints`); `NeckLow` tilt is capped at 24 degrees, the rest bends higher. The sink still slides
@@ -226,8 +259,8 @@ enemies' shots striking a teammate are not seen (W4).
   `look_at_point(global_pos)` / `clear_look()`, `expressions()`, `time_scale`.
 - `pilot_expressions.gd` (the channel tables, section 3), `pilot_face.gd` (channels -> pieces per head),
   `pilot_neck.gd` (spring chain), `pilot_idle.gd` (seeded blinks, glances, tics), `pilot_fx.gd` (stars, steam, sweat,
-  chips: tiny flat-shaded meshes, no textures), `pilot_head_parts.gd` (the per-piece meshes for all five heads, built
-  with `MeshKit`).
+  chips: tiny flat-shaded meshes, no textures), `pilot_body.gd` (the one neck-and-skull mesh bent by the joints,
+  section 2), `heads/pilot_head_<id>.gd` (each head's meshes, built with `MeshKit`).
 - `MechModel` builds a `PilotHead` in the cockpit seat instead of the static head mesh, and `MechRig` feeds it once per
   frame. Hook agreed with the mech-meshes session; the static `head_<id>.res` files stay as the neutral-pose export.
 - Lab subject `pilot` ("Pilot expressions"): head, mood, reaction trigger, look target, a scripted **mech moves** loop
@@ -240,7 +273,8 @@ enemies' shots striking a teammate are not seen (W4).
 
 ## 9. Questions for the user
 
-1. ~~Face budget~~: ~180-210 faces is fine (user, 2026-11-21).
+1. ~~Face budget~~: ~180-210 faces is fine (user, 2026-11-21); the collar plug's 14 faces on top of that are accepted
+   (user, 2026-11-22).
 2. ~~Effects~~: kept as built, "looks good for now" (user, 2026-11-22).
 3. ~~Colour flush~~: red when hot and pale when afraid kept as built, "looks good for now" (user, 2026-11-22). Grey
    when disabled was dropped by the user the same day: "lose the grey look".

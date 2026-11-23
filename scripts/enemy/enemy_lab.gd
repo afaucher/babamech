@@ -5,7 +5,7 @@ extends Node3D
 ## arena with cover blocks, a 9 m roof perch, a moving target bot, tunable AI sliders, and a 3D debug overlay.
 
 const PRESETS := ["showcase", "skirmish", "turret_only", "strider_only", "tank_only", "drone", "long_range", "breacher_cover",
-	"troops", "troops_roof"]
+	"troops", "troops_roof", "gunship", "dropship"]
 const AI_MODES := ["live", "idle", "telegraph_loop", "overheat"]
 const TARGET_MODES := ["strafe", "stationary", "hidden", "bot_rookie", "bot_average", "bot_veteran", "bot_brawler"]
 const DEBUG_MODES := ["on", "off"]
@@ -256,13 +256,22 @@ func _rebuild() -> void:
 			var b2 := _spawn("strider_breacher", "lab_breacher_2", Vector3(14.0, 0.0, -46.0), PI, ai_mode)
 			b2.set_patrol_points([Vector2(18.0, -44.0), Vector2(4.0, -44.0)])
 		"troops":
-			_spawn("troop_squad", "lab_troops_1", Vector3(-10.0, 0.0, -34.0), PI, ai_mode)
-			_spawn("troop_squad", "lab_troops_2", Vector3(12.0, 0.0, -40.0), PI, ai_mode)
+			_spawn_fireteam("lab_sq1", ["trooper_rifle", "trooper_rifle", "trooper_rifle", "trooper_at"],
+				Vector3(-12.0, 0.0, -34.0), PI, ai_mode, false)
+			_spawn_fireteam("lab_sq2", ["trooper_rifle", "trooper_rifle", "trooper_at"],
+				Vector3(14.0, 0.0, -40.0), PI, ai_mode, false)
 		"troops_roof":
-			var tr := _spawn("troop_roof", "lab_troops_roof", Vector3(-22.0, 9.4, -38.0), PI, ai_mode) as EnemyTroopSquad
-			if tr != null:
-				tr.set_formation_spacing(4.2, 5.6)
-			_spawn("troop_squad", "lab_troops_street", Vector3(12.0, 0.0, -38.0), PI, ai_mode)
+			_spawn_fireteam("lab_roof_sq", ["trooper_at", "trooper_rifle", "trooper_at"],
+				Vector3(-22.0, 9.4, -38.0), PI, ai_mode, true, 5.2)
+			_spawn_fireteam("lab_street_sq", ["trooper_rifle", "trooper_rifle", "trooper_rifle", "trooper_at"],
+				Vector3(12.0, 0.0, -38.0), PI, ai_mode, false)
+		"gunship":
+			var g := _spawn("gunship", "lab_gunship_1", Vector3(0.0, 11.5, -42.0), PI, ai_mode)
+			g.set_patrol_points([Vector2(-24.0, -32.0), Vector2(24.0, -32.0), Vector2(24.0, -56.0), Vector2(-24.0, -56.0)])
+		"dropship":
+			var ds := _spawn("dropship", "lab_dropship_1", Vector3(-22.0, 20.0, -68.0), PI, ai_mode) as EnemyDropDrone
+			if ds != null:
+				ds.configure_drop(Vector3(0.0, 0.0, -36.0), false, 6.0, Vector3(28.0, 28.0, -70.0))
 	_sync_params()
 
 
@@ -274,6 +283,21 @@ func _spawn(type_id: String, id: String, at: Vector3, yaw: float, mode: String) 
 	e.rotation.y = yaw
 	squad.add_enemy(e)
 	return e
+
+
+func _spawn_fireteam(sq_id: String, comp: Array, center: Vector3, yaw: float, mode: String,
+		roof: bool, half_span: float = 6.5) -> void:
+	var ft := EnemyTroopSquad.make(sq_id, 0, center, roof)
+	squad.register_fireteam(ft)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash([42, sq_id])
+	var offs := EnemyTroopSquad.member_arc_offsets(rng, comp.size(), roof, half_span)
+	for i in comp.size():
+		var off := offs[i]
+		var tr := _spawn(str(comp[i]), "%s_t%d" % [sq_id, i], center + Vector3(off.x, 0.0, off.y), yaw, mode) as EnemyTrooper
+		if tr != null:
+			tr.on_roof = roof
+			tr.attach_fireteam(ft, i)
 
 
 func _sync_params() -> void:
@@ -348,7 +372,7 @@ func _draw_debug() -> void:
 			var c: Vector3 = sp["center"]
 			var r: float = float(sp["radius"])
 			var comp := str(sp["component"])
-			var is_wp := comp in ["gun", "sensor", "vents", "optic"]
+			var is_wp := comp in ["gun", "sensor", "vents", "optic", "thrusters", "rotors"]
 			_draw_circle(c, r, Color(1.0, 0.85, 0.2) if is_wp else Color(0.25, 0.85, 0.95))
 		# LOS ray to current aim point (green = clear LOS, red = blocked).
 		if e.is_alerted():

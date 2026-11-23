@@ -4,7 +4,9 @@ extends TestCase
 ## (MechModel.SOCKET_TILT / SOCKET_FOLLOW). Pure geometry, no clock: in the standing pose and in the worst leg pose of
 ## each of the ring-walk bot's motion cases (walk, run, strafe with the hip twist, curbs, landing; recorded with the
 ## envelope probe), no thigh or knee-cap vertex gets inside the torso skin; across the thigh's whole fore-aft swing no
-## thigh vertex outside the hip ball gets into the socket's cup.
+## thigh vertex outside the hip ball gets into the socket's cup. The hull grown for the hardpoints (arm pads, shoulder
+## shelves, back plinth: MechMeshes.hardpoint_pads) is checked the same way, as triangles (the pads hang over the
+## thighs' sideways swing). The heat-shutdown slump (MechRig.sag_*) is checked settled and at its deepest overshoot.
 
 const SKIN_MARGIN := 0.02     ## torso units; the shape clears these poses by about 0.04
 const CUP_MARGIN := 0.01      ## socket units
@@ -28,11 +30,17 @@ const POSES := [
 	["jump + landing dip", [{"hip": Vector3(-0.6750, 1.9167, 0.0000), "knee": Vector3(-0.6750, 1.2035, 0.8375), "ankle": Vector3(-0.6750, 0.8540, -0.2056), "foot": Vector3(-0.6750, 0.3313, -0.0345)}, {"hip": Vector3(0.6750, 1.9167, 0.0000), "knee": Vector3(0.6750, 1.2035, 0.8375), "ankle": Vector3(0.6750, 0.8540, -0.2056), "foot": Vector3(0.6750, 0.3313, -0.0345)}], Vector3(0.0000, -0.2885, 0.0000), Vector3(0.0000, 0.0000, -0.0000), 0.0000],
 ]
 
+const HC := preload("res://tests/test_hardpoint_contact.gd")   ## its triangle-soup helpers (tris, inside, closest_on_tri)
+
 var _skin: Array = []   ## per gap between torso sections: [z0, z1, [[a, b, c, outward normal], ...]]
+var _pads := PackedVector3Array()   ## MechMeshes.hardpoint_pads, flat triangles (torso space)
+var _pad_box := AABB()
 
 
 func setup() -> void:
 	_build_skin()
+	_pads = HC.tris(MechMeshes.hardpoint_pads(), Transform3D.IDENTITY)
+	_pad_box = HC._bounds(_pads).grow(0.1)
 	var m := MechModel.new()
 	m.configure("chicken", "strider", {})
 	add_child(m)
@@ -41,6 +49,13 @@ func setup() -> void:
 	for p: Array in POSES:
 		m.set_external_pose(p[1], p[2], p[3], p[4])
 		_check(m, str(p[0]), true)
+	# Heat shutdown slump (MechRig.sag_*), feet planted under the hips: settled, and the deepest the settle may reach.
+	var rig := MechRig.new()
+	for f: float in [1.0, MechRig.SAG_PEAK]:
+		m.set_external_pose(_slump_legs(m, rig, f), Vector3(0, -rig.sag_depth * f, 0),
+				Vector3(-rig.sag_pitch * f, 0, rig.sag_roll * f), 0.0)
+		_check(m, "shutdown slump x%.2f" % f, true)
+	rig.free()
 	# The thigh's whole fore-aft swing (the motion cases reach -49 to +98 degrees from straight down, + = back).
 	var l := m.leg_lengths()
 	for deg in range(-50, 101, 10):
@@ -63,13 +78,21 @@ func _check(m: MechModel, tag: String, torso: bool) -> void:
 		var t := m.find_child("Torso", true, false) as MeshInstance3D
 		var inv := t.global_transform.affine_inverse()
 		var worst := -INF
+		var worst_pad := -0.1
 		for n: String in ["thigh_l", "thigh_r", "knee_l", "knee_r"]:
 			var mi := m.find_child(n, true, false) as MeshInstance3D
 			var xf := inv * mi.global_transform
 			for v in _points(mi.mesh as ArrayMesh):
-				worst = maxf(worst, _skin_depth(xf * v))
-		print("  %-22s torso skin  %+.3f" % [tag, worst])
+				var q := xf * v
+				worst = maxf(worst, _skin_depth(q))
+				if _pad_box.has_point(q):
+					var pd := _pad_depth(q)
+					if pd > 0.0:
+						print("    in pad: %s %s %+.3f" % [n, q, pd])
+					worst_pad = maxf(worst_pad, pd)
+		print("  %-22s torso skin  %+.3f   pads %+.3f" % [tag, worst, worst_pad])
 		check(worst < -SKIN_MARGIN, "%s: thighs and knee caps clear the torso skin (deepest %+.3f)" % [tag, worst])
+		check(worst_pad < -SKIN_MARGIN, "%s: thighs and knee caps clear the hardpoint pads (deepest %+.3f)" % [tag, worst_pad])
 	for side: String in ["l", "r"]:
 		var so := m.find_child("socket_" + side, true, false) as Node3D
 		var th := m.find_child("thigh_" + side, true, false) as MeshInstance3D
@@ -81,6 +104,20 @@ func _check(m: MechModel, tag: String, torso: bool) -> void:
 				worst = maxf(worst, _cup_depth(u))
 		print("  %-22s socket_%s    %+.3f" % [tag, side, worst])
 		check(worst < -CUP_MARGIN, "%s: thigh_%s clears its hip socket cup (deepest %+.3f)" % [tag, side, worst])
+
+
+## The legs solved as MechRig does with the body slumped by `f` of the rig's sag (feet on the ground under the hips).
+static func _slump_legs(m: MechModel, rig: MechRig, f: float) -> Array:
+	var off := Vector3(0, -rig.sag_depth * f, 0)
+	var rot := Vector3(-rig.sag_pitch * f, 0, rig.sag_roll * f)
+	var l := m.leg_lengths()
+	var legs: Array = []
+	for side: float in [-1.0, 1.0]:
+		var hip := m.hip_posed(side, off, rot)
+		var foot := Vector3(m.hip_local(side).x, 0.0, 0.0)
+		var r := LegIK.solve_leg(hip, foot, l.x, l.y, l.z, Vector3.UP, Vector3.FORWARD, m.tarsus_lean(), m.leg_bend)
+		legs.append({"hip": hip, "knee": r["knee"], "ankle": r["ankle"], "foot": r["foot"]})
+	return legs
 
 
 ## A mesh's vertices and face centres.
@@ -128,6 +165,16 @@ func _skin_depth(q: Vector3) -> float:
 				best = d
 				sign = 1.0 if (q - cp).dot(t[3]) < 0.0 else -1.0
 	return -1.0 if best == INF else sqrt(best) * sign
+
+
+## Signed distance from the hardpoint pads' surface (+ = inside), capped at -0.1 outside.
+func _pad_depth(q: Vector3) -> float:
+	var best := 0.1
+	for i in range(0, _pads.size(), 3):
+		best = minf(best, q.distance_to(HC.closest_on_tri(q, _pads[i], _pads[i + 1], _pads[i + 2])))
+	if best >= 0.1:
+		return -0.1
+	return best if HC.inside(q, _pads) else -best
 
 
 ## Depth inside the socket cup (socket mesh space): the 8-sided lathe between its bottom cap and its top.

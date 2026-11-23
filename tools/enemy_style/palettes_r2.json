@@ -1,0 +1,16 @@
+{
+  "title": "Enemy livery r2 (units + banners)",
+  "seed": 9,
+  "note": "Repainted civic robots: each option is the invaders' livery on the units AND the city's banners. Unit keys map onto EnemyMeshes: body=ARMOR_DARK plate=ARMOR_PLATE steel=STEEL trim=TRIM_RED optic=OPTIC_GLOW vent=VENT_GLOW (optional scanner = drone cone, default vent). Banner keys: banner_field / banner_sigil / banner_trim (defaults: body darkened 45 %, trim, steel). A missing unit key keeps the current colour.",
+  "options": [
+    {"id": "L1", "label": "L1 slate / brick", "body": "6b6a6c", "plate": "807d7c", "steel": "939089", "trim": "a2453a", "optic": "ff4a36", "vent": "ff8a3a", "banner_field": "a2453a", "banner_sigil": "3e3c3e", "banner_trim": "6b6a6c"},
+    {"id": "L2", "label": "L2 slate / violet", "body": "6b6a6c", "plate": "807d7c", "steel": "939089", "trim": "6a3f8c", "optic": "b070ff", "vent": "c08aff", "banner_field": "5e3a80", "banner_sigil": "e8dcc0", "banner_trim": "3e3c3e"},
+    {"id": "L3", "label": "L3 slate / ochre", "body": "6b6a6c", "plate": "807d7c", "steel": "939089", "trim": "b8862e", "optic": "ffb040", "vent": "ffb050", "banner_field": "3e3c3e", "banner_sigil": "c8963a", "banner_trim": "b8862e"},
+    {"id": "L4", "label": "L4 plum / gold", "body": "6e4f6e", "plate": "836483", "steel": "8f8a86", "trim": "b8923a", "optic": "ffc860", "vent": "ffb050", "banner_field": "5a3a5a", "banner_sigil": "d0a84a", "banner_trim": "b8923a"},
+    {"id": "L5", "label": "L5 violet / brick", "body": "5d5070", "plate": "726585", "steel": "8e8a8a", "trim": "a2453a", "optic": "b070ff", "vent": "ff8a3a", "banner_field": "4e3e66", "banner_sigil": "b04a3c", "banner_trim": "a2453a"},
+    {"id": "L6", "label": "L6 oxblood / slate", "body": "7a4a46", "plate": "8e5c56", "steel": "8a8682", "trim": "4a4a50", "optic": "ff4a36", "vent": "ff8a3a", "banner_field": "7a2e2a", "banner_sigil": "d8ccb0", "banner_trim": "3a3a40"},
+    {"id": "L7", "label": "L7 teal-grey / magenta", "body": "5c6f70", "plate": "718586", "steel": "8e9090", "trim": "a83a72", "optic": "ff4aa0", "vent": "ff7aa0", "banner_field": "8e2e62", "banner_sigil": "dfe0d8", "banner_trim": "3e4a4c"},
+    {"id": "L8", "label": "L8 olive / violet", "body": "676650", "plate": "7c7b64", "steel": "8c8a80", "trim": "6a3f8c", "optic": "b070ff", "vent": "c08aff", "banner_field": "4e3e66", "banner_sigil": "c8c090", "banner_trim": "676650"},
+    {"id": "L9", "label": "L9 bone / violet", "body": "a8a090", "plate": "bab2a2", "steel": "7a7670", "trim": "6a3f8c", "optic": "b070ff", "vent": "c08aff", "banner_field": "5e3a80", "banner_sigil": "e8dcc0", "banner_trim": "a8a090"}
+  ]
+}

@@ -148,7 +148,7 @@ func _direct(weapon: String) -> void:
 	var shards_coloured := false
 	for fx: ImpactFx in spawned:
 		for p: Dictionary in fx._parts:
-			if str(p["kind"]) == "shard" and (p["node"] as MeshInstance3D).mesh == CombatMeshes.shard(props.color):
+			if str(p["kind"]) == "shard" and p["mesh"] == CombatMeshes.shard(props.color):   # (a part over gives its node back)
 				shards_coloured = true
 	if weapon != "laser":      # the laser's shards are always molten orange
 		check(shards_coloured, "%s: the debris takes the prop's colour" % weapon)

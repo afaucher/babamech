@@ -64,7 +64,8 @@ func _drone_hearing_standoff_and_beacon() -> void:
 	var other_deck := EnemyStrider.new()
 	other_deck.configure("strider", "def_deck1", w, sq, null, 3)
 	other_deck.spawn_deck = 1
-	other_deck.position = Vector3(20.0, 0.0, -102.0)
+	other_deck.position = Vector3(20.0, 60.0, -102.0)
+	other_deck.ground_y = 60.0
 	other_deck.rotation.y = 0.0
 	sq.add_enemy(other_deck)
 	sq.deck_of = func(pos: Vector3) -> int:

@@ -30,7 +30,8 @@ func _init() -> void:
 	name = "Cars"
 
 
-func build(vehicles: Array, bounds: AABB) -> void:
+## render_layer is set on every instance before it enters the tree (see LifeFigures.build).
+func build(vehicles: Array, bounds: AABB, render_layer: int = 1) -> void:
 	for c in get_children():
 		remove_child(c)
 		c.queue_free()
@@ -66,6 +67,7 @@ func build(vehicles: Array, bounds: AABB) -> void:
 				var mi := MultiMeshInstance3D.new()
 				mi.name = "%s%s" % [KINDS[k], VARIANTS[lit]]
 				mi.multimesh = mm
+				mi.layers = render_layer
 				add_child(mi)
 		_mms.append(pair)
 

@@ -16,9 +16,25 @@ extends Node3D
 ## "shaft" at the railing of the first open-air shaft; both fall back to "avenue" where there is none. On the lower deck:
 ## "ramp_foot" stands on the road 30 m past the first ramp's foot looking back up it (embankment, piers, ceiling opening),
 ## "ramp_under" beside it where it is 12-20 m up, looking along the underside and the row of piers (cockpit height, 9 m).
+## "ramp_head" stands on the first ramp just past its head at a mech's eye (8 m) looking down it; "ramp_cut" looks across
+## the cut from the side at the first cross road past the head (where the too-low first bridge was). `--city nudge=m`
+## (command line only) moves every camera's eye m metres along x and s: a second frame of a view, as z-fighting shimmers.
 ##   --city site=stack,seed=4,camera=ramp
 ## Option "quality" (high / medium / low): CityQuality's draw level (CityStack.set_quality; a district's own rig only
 ## changes its lights and extras). `--city site=stack,camera=avenue,quality=low`.
+## Side walls (docs/design/city-styles.md "Side walls: vertical farm"): "farm_far" looks across the district at the first
+## farm wall from 12 m up, "farm_near" stands at mech eye height on the lane beside it looking along it, "farm_gate" faces
+## the first gate in it. With no farm wall they use a window wall (the hull's, `walls=1` on its own), else the avenue.
+##   --city site=section,seed=1,deck=0,camera=farm_far
+## Mission world (MissionLab, site "stack" only): option "mission" puts MissionWorld's doors, flag, relay and portal in the
+## stack and loops them; "mission_phase" pins one look; cameras mission_gate / _lift / _flag / _asset / _portal.
+##   --city site=stack,seed=1,mission=all,mission_phase=warn,camera=mission_gate
+## Downtown (docs/design/city-downtown.md): param "downtown" is the zone's share of the blocks on its own; on a section
+## or stack 0 leaves the zone to the seed (CityPlan.for_deck), more forces that share. Cameras (the first deck with a
+## zone): downtown_avenue (10 m up along a street through the zone), downtown_perch (on a 6.5 m podium roof at a mech's
+## eye, across the block), downtown_plaza (ground, mech eye, at a plaza or corner cut), downtown_arcade (along an arcade's
+## gallery), downtown_top (from above over the zone, the ceiling and the decks above hidden).
+##   --city downtown=0.5,camera=downtown_avenue       --city site=stack,seed=4,camera=downtown_top
 
 const PARAMS := [
 	{"id": "seed", "label": "Seed", "min": 1.0, "max": 200.0},
@@ -40,9 +56,11 @@ const PARAMS := [
 	{"id": "w_sage", "label": "Mix: sage panel blocks", "min": 0.0, "max": 2.0},
 	{"id": "w_shops", "label": "Mix: shop rows", "min": 0.0, "max": 2.0},
 	{"id": "deck", "label": "Section deck (site: section / stack)", "min": 0.0, "max": 4.0},
+	{"id": "downtown", "label": "Downtown zone share (section / stack: 0 = by seed)", "min": 0.0, "max": 1.0},
 ]
 const CAMERAS := ["lab", "avenue", "street", "rooftop", "plaza", "pillar", "park", "gate", "props", "ramp", "shaft", "ramp_foot",
-		"ramp_under"]
+		"ramp_under", "ramp_head", "ramp_cut", "farm_far", "farm_near", "farm_gate", "mission_gate", "mission_lift", "mission_flag", "mission_flag_far",
+		"mission_asset", "mission_portal", "downtown_avenue", "downtown_perch", "downtown_plaza", "downtown_arcade", "downtown_top"]
 const SETTLE_FRAMES := 8         ## rebuild once the sliders have been still this long
 const DOZER_SPEED := 12.0        ## m/s: a mech's walk
 const DOZER_RADIUS := 1.6
@@ -51,15 +69,19 @@ const DOZER_RUN_OUT := 8.0       ## the lap starts and ends this far past the bl
 var time_scale := 1.0
 var params: Dictionary = {}
 var options := {"lighting": "day", "camera": "lab", "ceiling": "auto", "backdrop": "auto", "props": "idle", "site": "alone",
-		"quality": "high"}
+		"quality": "high", "mission": "off", "mission_phase": "loop"}
 var district: CityDistrict      ## the district on show: on its own, or the stack's deck the cameras stand on
 var stack: CityStack
+var mission_lab := MissionLab.new()     ## options mission / mission_phase and the mission cameras (MissionLab)
 
 var _alone: CityDistrict
 var _cam: Camera3D
 var _dirty := -1
 var _dozer: CharacterBody3D
 var _dozer_s := 0.0
+var _hid_decks := false         ## downtown_top hid the other decks of the stack
+var _nudge := 0.0               ## --city nudge=m (command line only): every camera's eye moves this far along x and s, for a
+                                ## second frame of the same view (z-fighting shimmers as the camera moves)
 
 
 func _init() -> void:
@@ -72,6 +94,8 @@ func _init() -> void:
 			continue
 		if params.has(kv[0]) and kv[1].is_valid_float():
 			params[kv[0]] = float(kv[1])
+		elif kv[0] == "nudge" and kv[1].is_valid_float():
+			_nudge = float(kv[1])
 		elif options.has(kv[0]):
 			options[kv[0]] = kv[1]
 
@@ -96,7 +120,7 @@ func rebuild() -> void:
 			stack = CityStack.new()
 			stack.name = "Stack"
 			add_child(stack)
-		stack.build(SectionPlan.make({"seed": params["seed"]}), params)
+		stack.build(SectionPlan.make({"seed": params["seed"]}), _deck_overrides())
 		_pick_deck()
 	else:
 		if stack != null:
@@ -110,17 +134,26 @@ func rebuild() -> void:
 		district = _alone
 		if options["site"] == "section":
 			var section := SectionPlan.make({"seed": params["seed"]})
-			district.build_deck(section, clampi(int(params["deck"]), 0, section.deck_count - 1), params)
+			district.build_deck(section, clampi(int(params["deck"]), 0, section.deck_count - 1), _deck_overrides())
 		else:
 			district.build(params)
 	_rig().apply(str(options["lighting"]))
 	_apply_quality()
+	mission_lab.apply(self)
 	_apply_view()
 	_apply_props()
 	if stack != null:
 		print("[city] seed %d  stack checksum %s  %s" % [int(params["seed"]), stack.checksum(), str(stack.stats)])
 	else:
 		print("[city] seed %d  checksum %s  %s" % [int(params["seed"]), district.plan.checksum(), str(district.stats)])
+
+
+## The params as a section deck's overrides: downtown 0 is left out (the deck rolls its own zone by seed).
+func _deck_overrides() -> Dictionary:
+	var out := params.duplicate()
+	if float(out.get("downtown", 0.0)) <= 0.0:
+		out.erase("downtown")
+	return out
 
 
 ## Option "quality" (CityQuality, local presentation): the stack's decks, lights and ranges, or a district's own rig.
@@ -150,7 +183,8 @@ func _districts() -> Array[CityDistrict]:
 	return out
 
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+	mission_lab.tick(delta * time_scale)
 	if _dirty >= 0:
 		_dirty -= 1
 		if _dirty < 0:
@@ -201,6 +235,8 @@ func lab_options() -> Array:
 		{"id": "props", "label": "Street props", "choices": ["idle", "demo"], "value": options["props"]},
 		{"id": "site", "label": "Site", "choices": ["alone", "section", "stack"], "value": options["site"]},
 		{"id": "quality", "label": "Draw quality (CityQuality)", "choices": ["high", "medium", "low"], "value": options["quality"]},
+		{"id": "mission", "label": "Mission world (site: stack)", "choices": MissionLab.MODES, "value": options["mission"]},
+		{"id": "mission_phase", "label": "Mission look", "choices": MissionLab.PHASES, "value": options["mission_phase"]},
 	]
 
 
@@ -218,6 +254,9 @@ func set_lab_option(id: String, value: String) -> void:
 		_apply_props()
 	elif id == "quality":
 		_apply_quality()
+	elif id == "mission" or id == "mission_phase":
+		mission_lab.apply(self)
+		_apply_view()
 	else:
 		_apply_view()
 
@@ -238,9 +277,16 @@ func _apply_view() -> void:
 	var inside: bool = options["camera"] != "lab"
 	var ceil_opt := str(options["ceiling"])
 	var back_opt := str(options["backdrop"])
+	var top_view: bool = options["camera"] == "downtown_top"     # from above: no ceiling, no deck above in the way
+	var dv := _downtown_view(str(options["camera"])) if str(options["camera"]).begins_with("downtown_") else {}
 	for d in _districts():
-		d.set_ceiling_visible(ceil_opt == "on" or (ceil_opt == "auto" and inside))
+		d.set_ceiling_visible(ceil_opt == "on" or (ceil_opt == "auto" and inside and not top_view))
 		d.set_backdrop_visible(back_opt == "on" or (back_opt == "auto" and inside))
+		if top_view and not dv.is_empty():
+			d.visible = d == dv["district"]
+		elif _hid_decks:
+			d.visible = true      # the quality pass (set_active_deck below) hides again what it hides
+	_hid_decks = top_view and not dv.is_empty()
 	if not inside:
 		_cam.clear_current(true)
 		return
@@ -295,6 +341,30 @@ func _apply_view() -> void:
 				var mid := (float(r["x0"]) + float(r["x1"])) * 0.5
 				eye = Vector3(mid, float(r["s_top"]) - down * 12.0, 7.0)
 				target = Vector3(mid, float(r["s_top"]) + down * 60.0, -10.0)
+		"ramp_head", "ramp_cut":      # the first ramp's head on the upper deck: down the ramp from a mech's eye; across the cut
+			var found := _first_ramp_top()
+			if not found.is_empty():
+				on = found["district"]
+				var r: Dictionary = found["ramp"]
+				var top := float(r["s_top"])
+				var down := signf(float(r["s_foot"]) - top)
+				var mid := (float(r["x0"]) + float(r["x1"])) * 0.5
+				if str(options["camera"]) == "ramp_head":
+					eye = Vector3(mid, top + down * 3.0, CityPlan.ramp_height(r, top + down * 3.0) + 8.0)
+					target = Vector3(mid, top + down * 95.0, -12.0)
+				else:
+					# The first cross road past the head (where the first bridge over the cut used to be), from the side.
+					var line := top + down * 90.0
+					for road: Dictionary in on.plan.roads_s:
+						var c := (float(road["a"]) + float(road["b"])) * 0.5
+						if (c - top) * down > 20.0 and absf(c - top) < absf(line - top):
+							line = c
+					var lane := on.plan.avenue_x()
+					var side := signf((lane.x + lane.y) * 0.5 - mid)
+					if side == 0.0:
+						side = 1.0
+					eye = Vector3(mid + side * 30.0, line - down * 22.0, 9.0)
+					target = Vector3(mid, line, -3.0)
 		"ramp_foot", "ramp_under":     # on the lower deck, looking back up at the first ramp's bottom part
 			var found := _first_ramp("bottom")
 			if not found.is_empty():
@@ -312,6 +382,51 @@ func _apply_view() -> void:
 				else:
 					eye = Vector3(mid + side * 14.0, CityPlan.ramp_s(r, 15.0), 9.0)
 					target = Vector3(mid + side * 2.0, CityPlan.ramp_s(r, 30.0), 17.0)
+		"farm_far", "farm_near", "farm_gate":     # at the first farm wall (else a window wall)
+			var w := _farm_wall()
+			if not w.is_empty():
+				var side := int(w["side"])
+				var at := float(w["at"])
+				var inward := -1.0 if side % 2 == 0 else 1.0
+				var u0 := e.position.x if side >= 2 else e.position.y
+				var u1 := e.end.x if side >= 2 else e.end.y
+				var um := (u0 + u1) * 0.5
+				var longest := 0.0
+				for sp: Array in CityStreets.wall_spans(u0, u1, w["gates"]):     # the middle of the longest stretch without a gate
+					if float(sp[1]) - float(sp[0]) > longest:
+						longest = float(sp[1]) - float(sp[0])
+						um = (float(sp[0]) + float(sp[1])) * 0.5
+				var cam := str(options["camera"])
+				# Look along the wall the way that puts it on the right of the picture (the lab panel is on the left).
+				var dir := 1.0 if side == 1 or side == 2 else -1.0
+				# (distance off the wall, along it, height) for the eye and the target
+				var ev := Vector3(95.0, um - dir * 70.0, 12.0)
+				var tv := Vector3(0.0, um + dir * 35.0, 20.0)
+				if cam == "farm_near":
+					ev = Vector3(7.0, um - dir * 20.0, 8.0)
+					tv = Vector3(2.0, um + dir * 30.0, 6.5)
+				elif cam == "farm_gate" and not (w["gates"] as Array).is_empty():
+					var g: Dictionary = w["gates"][0]
+					var gm := (float(g["a"]) + float(g["b"])) * 0.5
+					ev = Vector3(30.0, gm - dir * 24.0, 8.0)
+					tv = Vector3(0.0, gm + dir * 4.0, 12.0)
+				if side >= 2:
+					eye = Vector3(ev.y, at + inward * ev.x, ev.z)
+					target = Vector3(tv.y, at + inward * tv.x, tv.z)
+				else:
+					eye = Vector3(at + inward * ev.x, ev.y, ev.z)
+					target = Vector3(at + inward * tv.x, tv.y, tv.z)
+		"downtown_avenue", "downtown_perch", "downtown_plaza", "downtown_arcade", "downtown_top":
+			if not dv.is_empty():
+				on = dv["district"]
+				eye = dv["eye"]
+				target = dv["target"]
+		"mission_gate", "mission_lift", "mission_flag", "mission_flag_far", "mission_asset", "mission_portal":     # MissionLab
+			var mv := mission_lab.view(str(options["camera"]))
+			if not mv.is_empty():
+				on = mv["district"]
+				eye = mv["eye"]
+				target = mv["target"]
 		"shaft":       # at the railing of the first open-air shaft, looking down it
 			var found := _first_shaft()
 			if not found.is_empty():
@@ -321,6 +436,7 @@ func _apply_view() -> void:
 				target = Vector3(o.get_center().x, o.get_center().y, -30.0)
 	if stack != null:
 		stack.set_active_deck(stack.decks.find(on))
+	eye += Vector3(_nudge, _nudge, 0.0)
 	var ring := on.ring
 	var p := on.global_transform * ring.arc_to_world(eye.x, eye.y, eye.z)
 	var q := on.global_transform * ring.arc_to_world(target.x, target.y, target.z)
@@ -342,6 +458,185 @@ func _first_ramp(role: String) -> Dictionary:
 			if r["role"] == role:
 				return {"district": d, "ramp": r}
 	return {}
+
+
+## A downtown camera (docs/design/city-downtown.md) on the deck on show if it has a zone, else the first deck that does:
+## {district, eye, target} in arc coordinates (x, s, h), framed right of the lab's panel; {} when no deck has a zone.
+func _downtown_view(cam: String) -> Dictionary:
+	var list: Array[CityDistrict] = [district]
+	list.append_array(_districts())
+	for d in list:
+		if d == null or d.plan == null:
+			continue
+		var plan := d.plan
+		var zone := plan.downtown_blocks()
+		if zone.is_empty():
+			continue
+		var box: Rect2 = plan.blocks[zone[0]]["rect"]
+		for bi in zone:
+			box = box.merge(plan.blocks[bi]["rect"])
+		var c := box.get_center()
+		# The overview: from above the zone, looking down at it (the default when a view finds nothing to stand at).
+		var eye := Vector3(c.x, box.position.y - box.size.y * 0.25, 125.0)
+		var target := Vector3(c.x, c.y + box.size.y * 0.05, 0.0)
+		match cam:
+			"downtown_avenue":
+				var v := _downtown_street(plan, zone)
+				if not v.is_empty():
+					eye = v["eye"]
+					target = v["target"]
+			"downtown_perch":
+				for bi in zone:
+					var found := false
+					for i in plan.buildings_in(bi):
+						var b: Dictionary = plan.buildings[i]
+						if b["style"] != "tower" or not (b["base"] in ["podium", "twin", "corner", "stepped"]):
+							continue
+						var t: Dictionary = b["tiers"][0]
+						var r := plan.tier_rect(i, t).grow(-2.5)
+						var shaft := Vector2.ZERO
+						for u: Dictionary in b["tiers"]:
+							if str(u.get("kind", "")) == "tower":
+								shaft = plan.tier_rect(i, u).get_center()
+						# The roof's corner farthest from its shaft, looking along the roof's longer edge past it over the
+						# block's other roofs.
+						var at := r.position
+						for cn: Vector2 in [r.position, Vector2(r.end.x, r.position.y), r.end, Vector2(r.position.x, r.end.y)]:
+							if cn.distance_to(shaft) > at.distance_to(shaft):
+								at = cn
+						var along := Vector2(signf(r.get_center().x - at.x), 0.0) if r.size.x >= r.size.y else Vector2(0.0, signf(r.get_center().y - at.y))
+						eye = Vector3(at.x, at.y, float(t["y1"]) + CityPlan.MECH_TOP)
+						var far := at + along * 70.0
+						target = Vector3(far.x, far.y, 9.0)
+						found = true
+						break
+					if found:
+						break
+			"downtown_plaza":
+				var v := _downtown_plaza(plan, zone)
+				if not v.is_empty():
+					eye = v["eye"]
+					target = v["target"]
+			"downtown_arcade":
+				for i in plan.buildings.size():
+					var b: Dictionary = plan.buildings[i]
+					if b["style"] != "tower" or b["base"] != "arcade" or not zone.has(int(plan.lots[b["lot"]]["block"])):
+						continue
+					var g: Rect2 = b["dt"]["gallery"]
+					var f := int(b["dt"]["front"])
+					var axis := 0 if f < 2 else 1           # the street's normal
+					var out := 1.0 if f % 2 == 0 else -1.0
+					var line := (g.end[axis] if f % 2 == 0 else g.position[axis]) + out * 6.0
+					var mid := g.get_center()[axis] + out * 1.0
+					var a := Vector2.ZERO
+					var bb := Vector2.ZERO
+					a[axis] = line
+					a[1 - axis] = g.position[1 - axis] + 2.0
+					bb[axis] = mid
+					bb[1 - axis] = g.end[1 - axis] + 6.0
+					eye = Vector3(a.x, a.y, 5.0)
+					target = Vector3(bb.x, bb.y, 4.5)
+					break
+		return {"district": d, "eye": eye, "target": _right_of_panel(eye, target)}
+	return {}
+
+
+## Along the road with the most zone blocks beside it: 10 m up, from just before the zone to past its far end.
+func _downtown_street(plan: CityPlan, zone: Array[int]) -> Dictionary:
+	var best := {}
+	var best_n := 0
+	for axis in 2:
+		var roads: Array = plan.roads_x if axis == 0 else plan.roads_s
+		for road: Dictionary in roads:
+			if road["kind"] == "spine":      # ramps and the rail run down it: a cross street or arterial reads better
+				continue
+			var n := 0
+			var lo := INF
+			var hi := -INF
+			var sides := {}
+			for bi in zone:
+				var r: Rect2 = plan.blocks[bi]["rect"]
+				var before := absf(r.end[axis] - float(road["a"])) < 0.5
+				if before or absf(r.position[axis] - float(road["b"])) < 0.5:
+					n += 1 if sides.has(before) else 3     # zone blocks on both sides first
+					sides[before] = true
+					lo = minf(lo, r.position[1 - axis])
+					hi = maxf(hi, r.end[1 - axis])
+			if n > best_n:
+				best_n = n
+				var mid := (float(road["a"]) + float(road["b"])) * 0.5
+				var e := Vector2.ZERO
+				var t := Vector2.ZERO
+				e[axis] = mid - 2.0
+				e[1 - axis] = lo - 22.0
+				t[axis] = mid + 1.0
+				t[1 - axis] = hi + 10.0
+				best = {"eye": Vector3(e.x, e.y, 10.0), "target": Vector3(t.x, t.y, 15.0)}
+	return best
+
+
+## At a plaza base's plaza from the street at a mech's eye (else at a corner cut's plaza, from its street corner).
+func _downtown_plaza(plan: CityPlan, zone: Array[int]) -> Dictionary:
+	for i in plan.buildings.size():
+		var b: Dictionary = plan.buildings[i]
+		if b["style"] != "tower" or b["base"] != "plaza" or not zone.has(int(plan.lots[b["lot"]]["block"])):
+			continue
+		var lot: Dictionary = plan.lots[b["lot"]]
+		var r: Rect2 = lot["rect"]
+		for side in 4:
+			if not lot["faces"][side]:
+				continue
+			var n: Vector2 = CityPlan.SIDE_N[side]
+			var edge := r.get_center() + Vector2(n.x * r.size.x, n.y * r.size.y) * 0.5
+			var e := edge + n * 16.0 + Vector2(n.y, n.x) * 6.0
+			var c: Vector2 = b["center"]
+			return {"eye": Vector3(e.x, e.y, CityPlan.MECH_TOP), "target": Vector3(c.x, c.y, 9.0)}
+	for bi in zone:
+		var z: Rect2 = (plan.blocks[bi]["rect"] as Rect2).grow(-CityPlan.SIDEWALK)
+		for l: Dictionary in plan.lots:
+			if int(l["block"]) != bi or l["open"] != "plaza":
+				continue
+			var faces: Array = l["faces"]
+			if not ((faces[0] or faces[1]) and (faces[2] or faces[3])):
+				continue
+			var r: Rect2 = l["rect"]
+			var corner := Vector2(r.end.x if faces[0] else r.position.x, r.end.y if faces[2] else r.position.y)
+			var out := (corner - z.get_center()).normalized()
+			var e := corner + out * 14.0
+			var t := r.get_center() - out * 8.0
+			return {"eye": Vector3(e.x, e.y, CityPlan.MECH_TOP), "target": Vector3(t.x, t.y, 7.0)}
+	return {}
+
+
+## The target turned about 21 degrees to the side, so what the camera looks at sits in the middle of the picture's right
+## two thirds (the lab's panel covers the left third).
+func _right_of_panel(eye: Vector3, target: Vector3) -> Vector3:
+	var d := Vector2(target.x - eye.x, target.y - eye.y)
+	if d.length() < 0.01:
+		return target
+	var side := Vector2(d.y, -d.x).normalized() * Vector3(target - eye).length() * tan(deg_to_rad(21.0)) * PANEL_SIDE
+	return target + Vector3(side.x, side.y, 0.0)
+
+
+const PANEL_SIDE := 1.0          ## which way _right_of_panel turns (checked on a shot)
+
+
+## The wall the farm cameras look at on the deck on show: the first farm wall (a side along the arc before an end, one
+## with a gate first for "farm_gate"), else the first window wall; {} when there is neither.
+func _farm_wall() -> Dictionary:
+	var best := {}
+	var best_score := -1
+	for w: Dictionary in district.plan.boundary():
+		var kind := str(w["kind"])
+		if kind != "farm" and kind != "window":
+			continue
+		var score := (4 if kind == "farm" else 0) + (2 if int(w["side"]) < 2 else 0)
+		if options["camera"] == "farm_gate" and not (w["gates"] as Array).is_empty():
+			score += 8
+		if score > best_score:
+			best = w
+			best_score = score
+	return best
 
 
 ## The first open-air shaft cut in a floor, found the same way. {district, rect}

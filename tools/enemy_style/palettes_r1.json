@@ -1,0 +1,15 @@
+{
+  "title": "Enemy colour schemes r1",
+  "note": "rows = colour family (A graphite/red, B civic blue/crimson, C aubergine/acid), columns = value: 1 dark-lifted, 2 mid, 3 light. Keys map onto EnemyMeshes: body=ARMOR_DARK plate=ARMOR_PLATE steel=STEEL trim=TRIM_RED optic=OPTIC_GLOW vent=VENT_GLOW. A missing key keeps the current colour.",
+  "options": [
+    {"id": "A1", "label": "A1 graphite / oxblood", "body": "3a3c42", "plate": "4d5058", "steel": "6a6d72", "trim": "8e2a2a", "optic": "ff3a30", "vent": "ff7a2a"},
+    {"id": "A2", "label": "A2 slate / brick", "body": "6b6a6c", "plate": "807d7c", "steel": "939089", "trim": "a2453a", "optic": "ff4a36", "vent": "ff8a3a"},
+    {"id": "A3", "label": "A3 concrete / rust", "body": "a29d94", "plate": "b4ada2", "steel": "8a8780", "trim": "a5523f", "optic": "ff5a3c", "vent": "ff9a4a"},
+    {"id": "B1", "label": "B1 navy / magenta", "body": "3d4a5c", "plate": "56637a", "steel": "6f7782", "trim": "a8324f", "optic": "ff3d6a", "vent": "ff7a4a"},
+    {"id": "B2", "label": "B2 civic blue / crimson", "body": "6f8092", "plate": "8696a6", "steel": "5f6670", "trim": "b03a3e", "optic": "ff4048", "vent": "ff8a3a"},
+    {"id": "B3", "label": "B3 ivory / crimson", "body": "cfc6b2", "plate": "b8af9b", "steel": "6d7176", "trim": "b23a3a", "optic": "ff3a3a", "vent": "ff8a3a"},
+    {"id": "C1", "label": "C1 aubergine / acid", "body": "3e3046", "plate": "55445f", "steel": "6a6470", "trim": "8b3f86", "optic": "b8ff4a", "vent": "9dff6a"},
+    {"id": "C2", "label": "C2 mauve / acid", "body": "75647a", "plate": "8b7b90", "steel": "6c6872", "trim": "7a3c6e", "optic": "b8ff4a", "vent": "9dff6a"},
+    {"id": "C3", "label": "C3 lilac / plum", "body": "b2a8b4", "plate": "c4bbc6", "steel": "7c7682", "trim": "6e2f64", "optic": "a8ff3a", "vent": "9dff6a"}
+  ]
+}

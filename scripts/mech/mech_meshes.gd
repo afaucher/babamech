@@ -49,7 +49,7 @@ const ACCENT_ORDER := ["orange", "blue", "green", "red", "yellow", "purple"]
 const BODY_PARTS := ["torso", "nose", "hatch", "back_plate", "pelvis", "shoulder_pylon", "shoulder_pod", "side_mount"]
 const LEG_PARTS := ["thigh", "shin", "tarsus", "hip_socket", "hip_cap", "knee_cap", "ankle_cap", "foot", "toe", "spur"]
 ## Weapon looks from the concept art. The catalog (MechCatalog.WEAPONS) decides which ones the game uses.
-const WEAPONS := ["laser", "autocannon", "rockets", "missiles", "flamer", "mortar", "railgun", "gatling", "swivel"]
+const WEAPONS := ["laser", "autocannon", "rockets", "missiles", "flamer", "mortar", "railgun", "gatling", "swivel", "flak"]
 ## Back-mount equipment looks (docs/design/back-equipment.md; MechCatalog.EQUIPMENT_ORDER), built and named like the
 ## weapons ("weapon_<id>", origin at the back mount): the docked drone in its cradle, the empty cradle (shown while the
 ## drone is out) and the flying drone alone (origin at its centre; it sits at DRONE_DOCK in the docked mesh).
@@ -375,7 +375,7 @@ static func _torso_box(k: MeshKit, z: float, angle: float, lift: float, size: Ve
 
 ## The torso pod: the egg-shaped shell, amber running lights in hooded grey housings, stepped orange shoulder plates on
 ## dark under-plates, a waist seam, a rear belly grille, orange unit plates, the back-mount saddle and cable runs.
-static func _torso(k: MeshKit) -> void:
+static func _torso(k: MeshKit, pad: Dictionary = ARM_PAD) -> void:
 	# The egg-shaped pod.
 	var rings: Array = []
 	for s: Array in TORSO:
@@ -443,6 +443,180 @@ static func _torso(k: MeshKit) -> void:
 	for z: float in [0.57, 0.81]:
 		for a: float in [-21.0, 21.0]:
 			_torso_box(k, z, a, 0.04, Vector3(0.06, 0.06, 0.05), STEEL)
+	_hardpoint_pads(k, pad)
+
+
+## The torso with another arm-pad style (ARM_PAD's keys; the style grid in docs/design/hardpoints/ renders these).
+static func build_torso(pad: Dictionary) -> ArrayMesh:
+	var k := MeshKit.new()
+	k.accent_key = ORANGE
+	_torso(k, pad)
+	return k.commit(materials())
+
+
+## Only the hull volume grown for the hardpoints (arm pads, shoulder shelves, back plinth): the tests check the legs and
+## the pivoting weapons against it.
+static func hardpoint_pads(pad: Dictionary = ARM_PAD) -> ArrayMesh:
+	var k := MeshKit.new()
+	k.accent_key = ORANGE
+	_hardpoint_pads(k, pad)
+	return k.commit(materials())
+
+
+# --- Hardpoint mounting surfaces --------------------------------------------------------------------------
+# docs/design/hardpoints/hardpoints_before_after.png. The torso grows a flat surface under every hardpoint so the mount hardware bolts on
+# instead of hanging off the egg (the hardpoints themselves, MOUNTS / PYLON_TOP / SIDE_REACH, stay put: combat, the
+# weapon pivots and the hit spheres use them):
+#   arm pads        a sponson out of each lower flank with a flat outer pad the side mount's disc sinks 1 cm into; its
+#                   underside slopes up into the keel (room for the thighs) and its back stays ahead of where a weapon's
+#                   rear swings in at full pivot
+#   shoulder shelves  a flat ledge under each pylon's base plate, filling the shoulder's slope above the shoulder pod
+#   back plinth     a raised deck under the back items' base plate where the rear deck falls away toward the tail
+
+## The arm pad style: "shape" box (squared, a short flat underside before the chin) | wedge (chamfered, the underside one
+## slope up into the keel) | boss (round sections), "size" the pad face's half width and how far it rises above the disc
+## centre, "flare" how much further back the inner sections reach (a fairing into the flank, behind where a pivoting
+## weapon's receiver swings in), "flare_fwd" the same forward (wedge only) (the disc is 0.232 round; the face always ends 0.21 below the centre, where a strafing thigh passes just under
+## it, so the disc's rim shows 2 cm below the pad there).
+const ARM_PAD := {"shape": "wedge", "size": 0.35, "flare": 0.12, "flare_fwd": 0.1}
+## Where the pad's root section sits, buried in the flank (x); where its chin section sits, and how high the underside
+## is there and at the root: the thighs swing out sideways under the pad when strafing (test_torso_clearance), so the
+## underside climbs steeply from the face into the keel.
+const ARM_PAD_ROOT := Vector2(0.4, 0.55)
+const ARM_PAD_CHIN := Vector2(0.66, 0.5)
+## The pad sits this much ahead of the disc: a weapon's receiver swings in behind the disc at full yaw.
+const ARM_PAD_AFT := 0.025
+
+static func _hardpoint_pads(k: MeshKit, pad: Dictionary) -> void:
+	for side: float in [-1.0, 1.0]:
+		_arm_pad(k, side, pad)
+		_shoulder_shelf(k, side)
+	_back_plinth(k)
+
+
+## A section across X at `x`: a rectangle z0..z1 by y0..y1 with its corners cut by `ch` (8 points), or with `round`
+## an n-gon inscribed in it.
+static func _pad_ring(x: float, z0: float, z1: float, y0: float, y1: float, ch: float, round: int = 0) -> PackedVector3Array:
+	if round > 0:
+		return MeshKit.ring_uv(Vector3(x, (y0 + y1) * 0.5, (z0 + z1) * 0.5), Vector3(0, 0, (z1 - z0) * 0.5), Vector3(0, (y1 - y0) * 0.5, 0), round)
+	var out := PackedVector3Array()
+	for p: Vector2 in [Vector2(z0 + ch, y1), Vector2(z1 - ch, y1), Vector2(z1, y1 - ch), Vector2(z1, y0 + ch), Vector2(z1 - ch, y0),
+			Vector2(z0 + ch, y0), Vector2(z0, y0 + ch), Vector2(z0, y1 - ch)]:
+		out.append(Vector3(x, p.y, p.x))
+	return out
+
+
+static func _pad_colour(c: Vector3, n: Vector3) -> Color:
+	if n.y < -0.8:
+		return GREY          # the flat underside, like the belly (the steep chin stays hull white, so the pad reads as hull
+		                     # against the dark keel)
+	if n.y > 0.6:
+		return ORANGE        # the top, an accent block like the shoulder plates
+	return WHITE
+
+
+## The arm pad on one side (+1 right): sections from the flat face (where the side mount's disc back face, at the mount
+## minus SIDE_REACH minus 0.06, sinks 1 cm in) inward to a root buried in the flank.
+static func _arm_pad(k: MeshKit, side: float, pad: Dictionary) -> void:
+	var m: Vector3 = (MOUNTS["side_r"] as Vector3) - SIDE_REACH
+	var x0 := m.x - 0.05
+	var h := float(pad.get("size", 0.29))
+	var shape := str(pad.get("shape", "wedge"))
+	var cz := m.z
+	var cy := m.y
+	var yb := cy - 0.21
+	var yt := cy + h
+	var rx := ARM_PAD_ROOT.x
+	var ry := ARM_PAD_ROOT.y
+	var chx := ARM_PAD_CHIN.x
+	var chy := ARM_PAD_CHIN.y
+	var secs: Array = []   # [x, half z ahead, half z behind, y0, y1, chamfer]
+	var rnd := 0
+	var back := float(pad.get("flare", 0.12))   # how much further the inner sections reach back (a fairing into the flank)
+	var fwd := float(pad.get("flare_fwd", 0.0))   # and forward (wedge only)
+	match shape:
+		"box":
+			secs = [[x0, h, h, yb, yt, 0.04], [x0 - 0.04, h + 0.03, h + 0.03, yb + 0.03, yt + 0.03, 0.05],
+				[x0 - 0.08, h + 0.03, h + 0.03, yb + 0.06, yt + 0.03, 0.05], [chx - 0.02, h + 0.06, h + 0.06 + back, chy, yt + 0.1, 0.06],
+				[rx, h + 0.1, h + 0.1 + back * 1.6, ry, yt + 0.24, 0.06]]
+		"boss":
+			rnd = 10
+			secs = [[x0, h, h, yb, yt, 0.0], [x0 - 0.04, h + 0.035, h + 0.035, yb + 0.03, yt + 0.035, 0.0],
+				[chx, h + 0.07, h + 0.07 + back, chy, yt + 0.1, 0.0], [rx, h + 0.12, h + 0.12 + back * 1.6, ry, yt + 0.24, 0.0]]
+		_:
+			secs = [[x0, h, h, yb, yt, 0.09], [x0 - 0.04, h + 0.03, h + 0.03, yb + 0.03, yt + 0.03, 0.1],
+				[chx, h + 0.06 + fwd, h + 0.06 + back, chy, yt + 0.1, 0.12], [rx, h + 0.12 + fwd * 1.6, h + 0.12 + back * 1.6, ry, yt + 0.26, 0.15]]
+	var rings: Array = []
+	for s: Array in secs:
+		var r := _pad_ring(float(s[0]), cz - ARM_PAD_AFT - float(s[1]), cz - ARM_PAD_AFT + float(s[2]), s[3], s[4], s[5], rnd)
+		for i in r.size():
+			r[i] = r[i] * Vector3(side, 1, 1)
+		rings.append(r)
+	# The bevel band round the face dark (a panel line framing the pad), the body white / orange top / grey underside.
+	var cols: Array = [DARK]
+	for i in rings.size() - 2:
+		cols.append(_pad_colour)
+	k.loft(rings, cols, false, true)
+	k.poly(rings[0], GREY, MeshKit.centroid(rings[1]))
+	# Four steel bolts in the face's corners, outside the disc.
+	var bolts := [Vector3(0, yt - 0.06, h - 0.06), Vector3(0, yb + 0.08, h - 0.06)]
+	if shape == "boss":
+		bolts = [Vector3(0, cy + (h - 0.05) * 0.68, (h - 0.05) * 0.72), Vector3(0, cy - 0.17, (h - 0.05) * 0.72)]
+	for bp: Vector3 in bolts:
+		for sz: float in [-1.0, 1.0]:
+			k.box(Vector3(0.02, 0.05, 0.05), STEEL, Vector3(side * (x0 + 0.005), bp.y, cz + sz * bp.z))
+
+
+## The ledge under a shoulder pylon's base plate (base at the shoulder mount minus PYLON_TOP; its 0.3 x 0.34 plate's
+## underside at -0.05 sinks 1 cm into the ledge's top): a flat chamfered top a little larger than the plate, its outer
+## face sloping in and down into the flank above the shoulder pod.
+static func _shoulder_shelf(k: MeshKit, side: float) -> void:
+	var b: Vector3 = (MOUNTS["shoulder_r"] as Vector3) - PYLON_TOP
+	var top := b.y - 0.04
+	var rings: Array = []
+	for s: Array in [[top, 0.185, 0.205, 0.035], [top - 0.04, 0.2, 0.22, 0.04], [b.y - 0.36, 0.06, 0.205, 0.04]]:
+		# [y, outer half x, half z, chamfer]; the inner half stays 0.2 (buried under the shoulder's dome).
+		var r := PackedVector3Array()
+		var y: float = s[0]
+		var xo: float = s[1]
+		var hz: float = s[2]
+		var ch: float = s[3]
+		for p: Vector2 in [Vector2(-0.2 + ch, -hz), Vector2(xo - ch, -hz), Vector2(xo, -hz + ch), Vector2(xo, hz - ch), Vector2(xo - ch, hz),
+				Vector2(-0.2 + ch, hz), Vector2(-0.2, hz - ch), Vector2(-0.2, -hz + ch)]:
+			r.append(Vector3(side * (b.x + p.x), y, b.z + p.y))
+		rings.append(r)
+	k.loft(rings, [GREY, _shelf_colour])
+
+
+static func _shelf_colour(_c: Vector3, n: Vector3) -> Color:
+	return GREY if n.y > 0.6 else WHITE
+
+
+## The plinth under the back items (MOUNTS["back"]; the equipment base plate's underside is at -0.04, the mortar's at
+## -0.06): a flat dark top 0.5 cm under the plate from the deck back to the tail, a chamfered rear edge and a face sloping
+## forward into the tail cap, white sides with an accent stripe, two steel rails on top.
+static func _back_plinth(k: MeshKit) -> void:
+	var mb: Vector3 = MOUNTS["back"]
+	var top := mb.y - 0.045
+	var prof := [Vector2(-0.12, top), Vector2(0.25, top), Vector2(0.28, top - 0.035), Vector2(0.21, top - 0.45), Vector2(-0.12, top - 0.1)]
+	var rings: Array = []
+	for sx: float in [-1.0, 1.0]:
+		var r := PackedVector3Array()
+		for p: Vector2 in prof:
+			r.append(Vector3(sx * 0.27, p.y, mb.z + p.x))
+		rings.append(r)
+	k.loft(rings, _plinth_colour)
+	for sx: float in [-1.0, 1.0]:
+		k.box(Vector3(0.04, 0.015, 0.3), STEEL, Vector3(sx * 0.12, top + 0.003, mb.z + 0.09))
+		k.box(Vector3(0.012, 0.05, 0.22), ORANGE, Vector3(sx * 0.274, top - 0.07, mb.z + 0.1))
+
+
+static func _plinth_colour(_c: Vector3, n: Vector3) -> Color:
+	if n.y > 0.9:
+		return DARK
+	if n.z > 0.3:
+		return GREY
+	return WHITE
 
 
 ## The nose under the hatch: a snout with the sensor port (bezel, bolts, visor hood) and framed lights. Origin on the
@@ -955,6 +1129,7 @@ static func _weapon(k: MeshKit, id: String) -> void:
 		"railgun": _weapon_railgun(k)
 		"gatling": _weapon_gatling(k)
 		"swivel": _weapon_swivel(k)
+		"flak": _weapon_flak(k)
 		"repair_drone":
 			_drone_cradle(k)
 			k.push(MeshKit.xf(DRONE_DOCK))
@@ -1202,6 +1377,61 @@ static func _weapon_swivel(k: MeshKit) -> void:
 			k.box(Vector3(0.02, 0.03, 0.18), BLACK, Vector3(s * 0.104, -0.04 - float(i) * 0.07, -0.72))
 		k.tube(Vector3(s * 0.05, -0.08, -0.91), Vector3(s * 0.05, -0.08, -1.0), 0.05, 6, GUN)
 	k.box(Vector3(0.21, 0.21, 0.03), DARK, Vector3(0, -0.08, -0.9))
+
+
+## The Flak Cannon (docs/design/weapons.md §3.10): a twin anti-aircraft gun, told apart from the autocannon (one long
+## barrel) and the gatling (a round six-barrel cluster) by two short side-by-side barrels on steel recoil sleeves with
+## flared conical flash hiders (their tips' midpoint at z -1.46, MechCatalog "muzzle"), a flat pan drum on top of a boxy
+## breech, and a ring-and-spider AA sight on a post ahead of the drum. Same receiver footprint as the autocannon over the
+## mount block.
+const FLAK_BX := 0.095   ## the barrels' x (either side of the centre line)
+const FLAK_BY := 0.03    ## the barrels' height
+
+
+static func _weapon_flak(k: MeshKit) -> void:
+	var bx := FLAK_BX
+	var by := FLAK_BY
+	# Breech: a boxy receiver, a wider belly block over the mount, the cradle face the barrels come out of.
+	k.box(Vector3(0.34, 0.3, 0.56), GUN, Vector3(0, 0, 0.08))
+	k.box(Vector3(0.38, 0.12, 0.24), DARK, Vector3(0, -0.07, 0.06))
+	k.box(Vector3(0.36, 0.22, 0.1), DARK, Vector3(0, by, -0.24))
+	k.box(Vector3(0.355, 0.315, 0.06), ORANGE, Vector3(0, 0, -0.13))
+	# Twin barrels: a thick steel recoil sleeve with a dark collar, a thin barrel, a flared flash-hider cone.
+	for s: float in [-1.0, 1.0]:
+		var x := s * bx
+		k.tube(Vector3(x, by, -0.29), Vector3(x, by, -0.68), 0.06, 8, STEEL)
+		k.tube(Vector3(x, by, -0.5), Vector3(x, by, -0.55), 0.07, 8, DARK)
+		k.tube(Vector3(x, by, -0.68), Vector3(x, by, -1.26), 0.034, 6, DARK)
+		k.tube(Vector3(x, by, -1.26), Vector3(x, by, -1.46), 0.04, 8, GUN, 0.08)
+		k.tube(Vector3(x, by, -1.46), Vector3(x, by, -1.465), 0.055, 6, BLACK)
+	# A yoke clamping the two barrels together ahead of the sleeves.
+	k.box(Vector3(0.26, 0.05, 0.06), GUN, Vector3(0, by, -0.98))
+	# The pan drum on top (axis Y) with a dark hub and three radial ribs, on a steel feed neck.
+	var dc := Vector3(0, 0.15, 0.1)
+	k.box(Vector3(0.12, 0.04, 0.12), STEEL, dc + Vector3(0, 0.01, 0))
+	k.tube(dc + Vector3(0, 0.02, 0), dc + Vector3(0, 0.12, 0), 0.16, 10, GREY)
+	k.tube(dc + Vector3(0, 0.12, 0), dc + Vector3(0, 0.15, 0), 0.05, 6, DARK)
+	for i in 3:
+		var a := TAU * float(i) / 3.0 + 0.5
+		var d := Vector3(sin(a), 0, cos(a))
+		k.push(Transform3D(Basis(Vector3.UP, a), dc + Vector3(0, 0.125, 0) + d * 0.1))
+		k.box(Vector3(0.025, 0.02, 0.11), DARK)
+		k.pop()
+	# The ring-and-spider AA sight on a post ahead of the drum.
+	var sc := Vector3(0, 0.33, -0.2)
+	k.box(Vector3(0.03, 0.14, 0.03), DARK, Vector3(0, 0.2, -0.2))
+	k.push(MeshKit.xf(sc, Vector3(90, 0, 0)))
+	_band(k, Vector3.ZERO, 0.09, 0.07, -0.012, 0.012, 8, STEEL)
+	k.pop()
+	k.box(Vector3(0.15, 0.014, 0.012), STEEL, sc)
+	k.box(Vector3(0.014, 0.15, 0.012), STEEL, sc)
+	# Side armour with two cooling slots each, and an elevation handwheel on the right.
+	for s: float in [-1.0, 1.0]:
+		k.box(Vector3(0.03, 0.18, 0.24), GREY, Vector3(s * 0.18, 0.02, 0.2))
+		for i in 2:
+			k.box(Vector3(0.02, 0.035, 0.18), BLACK, Vector3(s * 0.197, 0.06 - float(i) * 0.08, 0.2))
+	k.tube(Vector3(0.195, -0.02, 0.0), Vector3(0.225, -0.02, 0.0), 0.075, 8, DARK)
+	k.tube(Vector3(0.225, -0.02, 0.0), Vector3(0.245, -0.02, 0.0), 0.03, 6, STEEL)
 
 
 # --- Back-mount equipment -------------------------------------------------------------------------------

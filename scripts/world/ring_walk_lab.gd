@@ -32,13 +32,18 @@ const PARAMS := [
 	{"id": "crouch", "label": "Crouch", "min": 0.0, "max": 1.0, "value": 0.475},
 	{"id": "thigh", "label": "Thigh length (model units)", "min": 0.5, "max": 2.0, "value": 1.1},
 	{"id": "scale", "label": "Mech scale", "min": 1.0, "max": 3.0, "value": 2.0},
+	{"id": "sag_depth", "label": "Shutdown sag depth (model units)", "min": 0.0, "max": 0.45, "value": 0.42},
+	{"id": "sag_pitch", "label": "Shutdown sag pitch (rad)", "min": 0.0, "max": 0.3, "value": 0.17},
+	{"id": "sag_time", "label": "Shutdown sag ease (s)", "min": 0.2, "max": 1.5, "value": 0.65},
 ]
+const SHUTDOWN := ["off", "on"]   ## lab option "shutdown": hold the mech in heat shutdown (to watch the sag)
 
 var time_scale := 1.0:
 	set(v):
 		time_scale = v
 		Engine.time_scale = maxf(v, 0.0)
 var mode := "patrol"
+var force_shutdown := false      ## lab option "shutdown" on: the mech is held in heat shutdown
 var bot_enabled := true          ## false: leave the mech's inputs to someone else (tests)
 var params: Dictionary = {}
 var ring: RingFrame
@@ -113,6 +118,9 @@ func _apply_params() -> void:
 	rig.twist_rate = deg_to_rad(float(params["twist_rate"]))
 	rig.bob = float(params["bob"])
 	rig.lean = float(params["lean"])
+	rig.sag_depth = float(params["sag_depth"])
+	rig.sag_pitch = float(params["sag_pitch"])
+	rig.sag_time = float(params["sag_time"])
 	rig.set_scale_factor(float(params["scale"]))
 	if rig.model != null:
 		rig.model.params["crouch"] = float(params["crouch"])
@@ -195,6 +203,9 @@ func _ramp(parent: StaticBody3D, x: float, s0: float, length: float, rise: float
 # --- Bot --------------------------------------------------------------------------------------------
 
 func _physics_process(delta: float) -> void:
+	if mech != null and force_shutdown:
+		mech.shutdown = true   # held: hot enough that it never starts the reboot
+		mech.heat = mech.heat_cap
 	if mech == null or not bot_enabled:
 		return
 	_t += delta
@@ -297,6 +308,7 @@ func lab_options() -> Array:
 		{"id": "head", "label": "Head", "choices": MechCatalog.HEAD_ORDER, "value": head},
 		{"id": "legs", "label": "Leg bend", "choices": MechModel.BEND_ORDER,
 			"value": rig.model.bend_id() if rig != null and rig.model != null else "chicken"},
+		{"id": "shutdown", "label": "Heat shutdown", "choices": SHUTDOWN, "value": "on" if force_shutdown else "off"},
 	]
 
 
@@ -308,6 +320,12 @@ func set_lab_option(id: String, v: String) -> void:
 		rig.model.configure(v, rig.model.chassis_id, rig.model.loadout)
 	elif id == "legs" and rig != null and rig.model != null:
 		rig.model.set_bend_id(v)
+	elif id == "shutdown" and v in SHUTDOWN:
+		var was := force_shutdown
+		force_shutdown = v == "on"
+		if was and not force_shutdown and mech != null:
+			mech.shutdown = false   # reboot now
+			mech.heat = 0.0
 
 
 func lab_focus() -> Vector3:

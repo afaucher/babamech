@@ -1,0 +1,21 @@
+{
+ "title": "Enemy detail pass r1",
+ "seed": 9,
+ "note": "Detail pass on scripts/enemy/enemy_meshes.gd. 'current' = the file's own palette (no remap); L1 = the picked slate / brick livery remapped onto it (an identity remap once the file carries L1).",
+ "options": [
+  {
+   "id": "L1",
+   "label": "L1 slate / brick",
+   "body": "6b6a6c",
+   "plate": "807d7c",
+   "steel": "939089",
+   "trim": "a2453a",
+   "optic": "ff4a36",
+   "vent": "ff8a3a",
+   "banner_field": "a2453a",
+   "banner_sigil": "e8dcc0",
+   "banner_sigil2": "e8dcc0",
+   "banner_trim": "6b6a6c"
+  }
+ ]
+}

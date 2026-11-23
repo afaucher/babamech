@@ -396,13 +396,31 @@ func _attach(k: int, p: Vector2, reverse: bool) -> Array:
 ## (consecutive walk edges merged into one walk leg that starts at p0 and ends at p1). Empty when there is no way
 ## (last_error says why). `end_on_road`: the goal may be off the walkable ground (an enemy in a block, on a roof): the
 ## route ends on the road node that best trades path length against straight distance to it, never walking into the block.
-func plan(k0: int, p0: Vector2, k1: int, p1: Vector2, end_on_road: bool = false) -> Array:
+## `h0`: the start's height above deck k0's floor (on the floor beside a ramp's lower part, the route first steps out of
+## its lane; up on the ramp itself it does not).
+func plan(k0: int, p0: Vector2, k1: int, p1: Vector2, end_on_road: bool = false, h0: float = 0.0, _depth: int = 0) -> Array:
 	last_error = ""
 	var own0 := cell_at(k0, p0)
-	if own0 >= 0 and not (k0 == k1 and cell_at(k1, p1) == own0):
+	for u: Dictionary in unders[k0]:
+		var ur: Rect2 = u["rect"]
+		if _depth < 2 and h0 < 2.0 and ur.has_point(p0) and not ur.has_point(p1):
+			# Beside / under a ramp's lower part (its foot, its parapets): out to the nearer side of the lane first.
+			var near_x := ur.position.x - 2.5 if p0.x - ur.position.x < ur.end.x - p0.x else ur.end.x + 2.5
+			var far_x := ur.end.x + 2.5 if near_x < ur.position.x else ur.position.x - 2.5
+			var ex := Vector2(near_x, p0.y)
+			if cell_at(k0, ex) >= 0 or in_cut(k0, ex, CUT_GROW):
+				ex = Vector2(far_x, p0.y)   # the nearer side is a block or a hole: the other side of the lane
+			var rest2 := plan(k0, ex, k1, p1, end_on_road, 0.0, _depth + 1)
+			if not rest2.is_empty():
+				if rest2[0]["kind"] == "walk" and int(rest2[0]["from"]) == k0:
+					(rest2[0]["pts"] as Array).push_front(xt(k0, p0))
+				else:
+					rest2.push_front({"kind": "walk", "from": k0, "to": k0, "pts": [xt(k0, p0), xt(k0, ex)], "edges": [], "connector": -1})
+			return rest2
+	if _depth < 2 and own0 >= 0 and not (k0 == k1 and cell_at(k1, p1) == own0):
 		# Inside a block (a plaza, a park, between buildings): out by its nearest side first, never across it.
 		var e := exit_point(k0, own0, p0)
-		var rest := plan(k0, e, k1, p1, end_on_road)
+		var rest := plan(k0, e, k1, p1, end_on_road, 0.0, _depth + 1)
 		if rest.is_empty():
 			return rest
 		var first: Dictionary = rest[0]
@@ -559,10 +577,22 @@ func summary() -> Dictionary:
 	return c
 
 
-## Just outside (EXIT_OUT m, on the road) the side of block `ci` of deck k nearest to p.
+## Just outside (EXIT_OUT m, on the road) the side of block `ci` of deck k nearest to p that is open road.
 func exit_point(k: int, ci: int, p: Vector2) -> Vector2:
 	var r: Rect2 = cells[k][ci]
 	var sides := [[p.x - r.position.x, Vector2(r.position.x - EXIT_OUT, p.y)], [r.end.x - p.x, Vector2(r.end.x + EXIT_OUT, p.y)],
 		[p.y - r.position.y, Vector2(p.x, r.position.y - EXIT_OUT)], [r.end.y - p.y, Vector2(p.x, r.end.y + EXIT_OUT)]]
 	sides.sort_custom(func(u: Array, v: Array) -> bool: return float(u[0]) < float(v[0]))
+	for sd: Array in sides:   # the nearest side that comes out on open road (not into a cut or beside a ramp's foot)
+		var q: Vector2 = sd[1]
+		if in_cut(k, q, CUT_GROW) or _in_under(k, q):
+			continue
+		return q
 	return sides[0][1]
+
+
+func _in_under(k: int, q: Vector2) -> bool:
+	for u: Dictionary in unders[k]:
+		if (u["rect"] as Rect2).has_point(q):
+			return true
+	return false

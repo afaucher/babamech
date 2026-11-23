@@ -60,6 +60,19 @@ var _block_rects: Array[Rect2] = []
 var _cuts: Array[Rect2] = []      ## section mode: the floor cuts, grown by the curb and a person (nobody walks in one)
 var _split: Dictionary = {}       ## section mode: Vector2i(corner a, corner b) of a cross-street crossing -> the node the
                                   ## spine crossing leaves it from
+## Crowd spacing (docs/design/ambient-life.md "Crowd spacing"): all derived from the plan, the timetable and the person's
+## id, so every machine computes the same with no messages.
+var _props: Array = []            ## street-level props [Vector2 at, radius] (standing slots keep clear of them)
+var _foot: Array[Rect2] = []      ## building footprints
+var _node_slots: Dictionary = {}  ## node -> {next node -> PackedVector2Array standing slots} (memo, whole node at once)
+var _bench_slots: Dictionary = {} ## bench -> [seats PackedVector2Array (2), standing PackedVector2Array] (memo)
+var _index: Dictionary = {}       ## index window -> {group key (Vector3i) -> Array of [t0, id], sorted} (memo)
+var _index_wip: Dictionary = {}   ## index window being built ahead -> [people done PackedByteArray, groups so far]
+var _wishes: Dictionary = {}      ## Vector2i(id, slot) -> the wished trip, before the bench capacity (memo)
+var _wish_index: Dictionary = {}  ## index window -> {bench -> [[arrival, id]] sorted}: who wishes to stop there (memo)
+var _wish_wip: Dictionary = {}    ## ... being built ahead
+var _obst: Dictionary = {}        ## Vector2i 4 m cell -> [[kind, data...]] what a standing slot keeps clear of (memo)
+var _open_lots: Array = []        ## the open lots (parks, plazas, gardens)
 
 
 func net_fields() -> Dictionary:
@@ -70,13 +83,18 @@ func net_fields() -> Dictionary:
 		"junctions": Net.LOCAL, "people": Net.LOCAL, "riders": Net.LOCAL, "tram": Net.LOCAL, "rail_edges": Net.LOCAL,
 		"_edge_at": Net.LOCAL, "_trees": Net.LOCAL, "_trips": Net.LOCAL, "_block_rects": Net.LOCAL, "_cuts": Net.LOCAL,
 		"_split": Net.LOCAL,
+		# crowd spacing: pure functions of the plan / timetable, the same on every machine
+		"_props": Net.LOCAL, "_foot": Net.LOCAL, "_node_slots": Net.LOCAL, "_bench_slots": Net.LOCAL, "_index": Net.LOCAL,
+		"_index_wip": Net.LOCAL, "_obst": Net.LOCAL, "_open_lots": Net.LOCAL, "_wishes": Net.LOCAL, "_wish_index": Net.LOCAL,
+		"_wish_wip": Net.LOCAL,
 	}
 
 
-## `people` < 0: PEOPLE_DEFAULT scaled by the district's area. Always capped at PEOPLE_CAP.
-static func make(p: CityPlan, people_count: int = -1) -> LifePlan:
+## `people` < 0: PEOPLE_DEFAULT scaled by the district's area. Always capped at PEOPLE_CAP (`cap`: only the crowd lab
+## passes a higher one, through AmbientLife.debug_people_cap; the game never does).
+static func make(p: CityPlan, people_count: int = -1, cap: int = PEOPLE_CAP) -> LifePlan:
 	var lp := LifePlan.new()
-	lp.build(p, people_count)
+	lp.build(p, people_count, cap)
 	return lp
 
 
@@ -84,10 +102,10 @@ static func default_count(p: CityPlan) -> int:
 	return clampi(int(round(float(PEOPLE_DEFAULT) * p.p("size_x") * p.p("size_s") / (220.0 * 240.0))), 1, PEOPLE_CAP)
 
 
-func build(p: CityPlan, people_count: int = -1) -> void:
+func build(p: CityPlan, people_count: int = -1, cap: int = PEOPLE_CAP) -> void:
 	plan = p
 	seed = int(p.p("seed")) * 15485863 + 7
-	count = clampi(people_count if people_count >= 0 else default_count(p), 0, PEOPLE_CAP)
+	count = clampi(people_count if people_count >= 0 else default_count(p), 0, maxi(cap, 0))
 	nodes.clear()
 	edges.clear()
 	adj.clear()
@@ -103,9 +121,23 @@ func build(p: CityPlan, people_count: int = -1) -> void:
 	rail_edges.clear()
 	_cuts.clear()
 	_split.clear()
+	_props.clear()
+	_foot.clear()
+	_node_slots.clear()
+	_bench_slots.clear()
+	_index.clear()
+	_index_wip.clear()
+	_wishes.clear()
+	_wish_index.clear()
+	_wish_wip.clear()
+	_obst.clear()
+	_open_lots.clear()
 	tram = null
 	for b: Dictionary in p.blocks:
 		_block_rects.append(b["rect"])
+	for b: Dictionary in p.buildings:
+		if not (b["tiers"] as Array).is_empty():
+			_foot.append(Rect2((b["center"] as Vector2) - (b["size"] as Vector2) * 0.5, b["size"]))
 	if p.section != null:
 		tram = LifeTram.make(p, h(9100, p.deck))
 		for o in p.floor_cuts():
@@ -268,7 +300,10 @@ func _build_graph() -> void:
 	# whose straight way in misses the planter).
 	var park_ring := {}            # lot index -> [ring nodes N E S W, chord midpoints (+x+s, +x-s, -x-s, -x+s)]
 	for it: Dictionary in CityProps.layout(plan):
-		if it["type"] != "bench" or int(it.get("building", -1)) >= 0:      # roof props are not on the street
+		if int(it.get("building", -1)) >= 0:      # roof props are not on the street
+			continue
+		if it["type"] != "bench":
+			_props.append([Vector2(it["x"], it["s"]), float(PROP_R.get(it["type"], 0.5)) * (1.5 if it.get("pit", false) else 1.0)])
 			continue
 		var at := Vector2(it["x"], it["s"])
 		for bi in plan.blocks.size():
@@ -597,6 +632,25 @@ func tree(root: int) -> Array:
 	return out
 
 
+## Build the trees rooted at the door nodes of doors i with i % parts == part (not built yet). The same trees as when
+## they are built on demand.
+func warm_trees(part: int, parts: int) -> void:
+	for i in range(part, doors.size(), parts):
+		tree(int(doors[i]["node"]))
+
+
+## Lay out the standing slots of the crossing nodes and benches with i % parts == part (the same whenever laid out).
+func warm_slots(part: int, parts: int) -> void:
+	for b in range(part, benches.size(), parts):
+		bench_slots(b)
+	var k := 0
+	for u in nodes.size():
+		if _has_cross(u):
+			if k % parts == part:
+				wait_slots_all(u)
+			k += 1
+
+
 ## Nodes from `from` to `root` (both included), following the tree rooted at `root`. Empty if unreachable.
 func chain(from: int, root: int) -> PackedInt32Array:
 	var t := tree(root)
@@ -696,9 +750,71 @@ func trip(id: int, k: int) -> Dictionary:
 		return _trips[key]
 	if _trips.size() > 4000:
 		_trips.clear()
-	var out := _plan_trip(id, k)
+	var out := _bench_cap(id, k, wish(id, k))
+	out["id"] = id
 	_trips[key] = out
 	return out
+
+
+## The trip person id wishes for in slot k (memo), before the bench capacity: its bench stop, if any, may be dropped
+## (trip()), the rest is the same.
+func wish(id: int, k: int) -> Dictionary:
+	var key := Vector2i(id, k)
+	if _wishes.has(key):
+		return _wishes[key]
+	if _wishes.size() > 4000:
+		_wishes.clear()
+	var out := _plan_trip(id, k)
+	out["id"] = id
+	_wishes[key] = out
+	return out
+
+
+## Crowd spacing at benches: a bench takes 1 sitter and bench_cap(b) - 1 standers by it per INDEX_W window parity. The
+## first who wish to stop there in a window (by arrival, then id: a pure function of everyone's wished trips, which do
+## not depend on each other) stop; the others walk on to their door without stopping (the same door, the same start).
+func _bench_cap(id: int, k: int, w_tr: Dictionary) -> Dictionary:
+	var b := int(w_tr["bench"])
+	if b < 0:
+		return w_tr
+	var legs: PackedFloat64Array = w_tr["legs"]
+	var t_sit := INF
+	for i in int(w_tr["n"]):
+		if int(legs[i * LEG + 6]) == SIT:
+			t_sit = legs[i * LEG]
+			break
+	if t_sit == INF:
+		return w_tr
+	var w := floori(t_sit / INDEX_W)
+	var arr: Array = _bench_wishes(w).get(b, [])
+	var r := 0
+	for i in arr.size():
+		if int(arr[i][1]) == id:
+			r = i
+			break
+	if r < bench_cap(b):
+		return w_tr
+	var pp: Dictionary = people[id]
+	var a := int(w_tr["door_a"])
+	var d := int(w_tr["door_d"])
+	var walk := _legs(id, k, a, d, -1, float(pp["speed"]), legs[0])
+	if walk.size() == 0 or walk[walk.size() - LEG + 1] > float(pp["phase"]) + float(k + 1) * float(pp["period"]) - 2.0:
+		return w_tr       # (never: a walk without the stop is shorter)
+	return _finish_trip(walk, a, d, -1)
+
+
+## How many may stop at bench b in one window: the sitter and the standing slots of one parity (at most 7).
+func bench_cap(b: int) -> int:
+	return 1 + mini((bench_slots(b)[1] as PackedVector2Array).size() / 2, 6)
+
+
+## Who wishes to stop at each bench in index window w: {bench -> [[arrival, id]] sorted} (memo; built ahead like _groups).
+func _bench_wishes(w: int) -> Dictionary:
+	if _wish_index.has(w):
+		return _wish_index[w]
+	while not warm_index(w, count, 0, 1, true):
+		pass
+	return _wish_index[w]
 
 
 func _plan_trip(id: int, k: int) -> Dictionary:
@@ -871,17 +987,612 @@ func pose_in_trip(tr: Dictionary, t: float) -> Dictionary:
 			lo = mid
 		else:
 			hi = mid - 1
+	if not tr.has("J"):
+		_spread(tr)
 	var o := lo * LEG
 	var t0 := legs[o]
 	var t1 := legs[o + 1]
 	var f := clampf((t - t0) / maxf(t1 - t0, 1e-6), 0.0, 1.0)
-	var x := lerpf(legs[o + 2], legs[o + 4], f)
-	var s := lerpf(legs[o + 3], legs[o + 5], f)
+	var J: PackedVector2Array = tr["J"]
 	var kind := int(legs[o + 6])
-	var length := Vector2(legs[o + 4] - legs[o + 2], legs[o + 5] - legs[o + 3]).length()
-	return {"x": x, "s": s, "h": ground_h(x, s) if kind == CROSS else CityPlan.CURB_H, "heading": legs[o + 8],
-			"state": STATE_NAMES[kind], "visible": true, "dist": legs[o + 7] + length * f,
+	var at := J[lo]
+	var walked: float = (tr["D"] as PackedFloat64Array)[lo]
+	if kind == WALK or kind == CROSS:
+		var to_hold := lo + 1 < n and (int(legs[o + LEG + 6]) == WAIT or int(legs[o + LEG + 6]) == SIT)
+		var turn := LANE_TURN
+		if kind == CROSS and rail_edges.has(edge_between(int(legs[o + 9]), int(legs[o + 10]))):
+			turn = RAIL_TURN
+		at = _walk_point(int(tr.get("id", 0)), lo, legs, o, J[lo], J[lo + 1], f, to_hold, turn)
+		walked += J[lo].distance_to(at)
+	var st: String = STATE_NAMES[kind]
+	if (tr["ST"] as PackedByteArray)[lo] == 1:
+		st = "wait"            # a bench's overflow: stands by it instead of sitting
+	return {"x": at.x, "s": at.y, "h": CityPlan.CURB_H if kind == WALK else ground_h(at.x, at.y),
+			"heading": (tr["H"] as PackedFloat32Array)[lo], "state": st, "visible": true, "dist": walked,
 			"na": int(legs[o + 9]), "nb": int(legs[o + 10]), "door": -1}
+
+
+# --- Crowd spacing -----------------------------------------------------------------------------------------
+# docs/design/ambient-life.md "Crowd spacing". The timetable's legs (times, nodes) are unchanged; only where a person stands
+# and walks is spread out, as pure functions of the plan, the timetable and the id (no messages, the same everywhere):
+#   * walking: a lane offset to the right of the walking direction, one of LANES (by the id; after a green, by the rank in
+#     that green's group), mitred at corners so the path stays continuous, changed within LANE_TURN m of a leg's start,
+#     plus a seeded surge / lag along each leg (SURGE) so two walkers on one lane at one speed do not stay merged;
+#   * waiting for a crossing: a standing slot of that crossing at that corner (laid out once per node, on the sidewalk,
+#     clear of props, buildings and the road, at least SLOT_GAP apart), the slot index = the rank of the person's arrival
+#     among everyone the timetable has waiting for the same green there (earliest arrival takes the front slot); the
+#     group crosses from its slots on CROSS_LANES by rank (within the zebra band);
+#   * benches: two seats; whoever arrives first in an INDEX_W window sits on the window parity's seat, later arrivals
+#     stand by the bench at standing slots of that parity (windows of one parity never overlap: a sit lasts <= 60 s).
+
+const PROP_R := {"tree": 0.6, "lamp": 0.35, "bin": 0.45, "signal": 0.35, "sign": 0.3}   ## m, prop clearance radius
+const SLOT_GAP := 0.9         ## m between standing slots
+const SLOT_CAP := 32          ## standing slots per crossing (overflow reuses them modulo: reported by the spacing test)
+const LANES := [-0.9, -0.45, 0.0, 0.45, 0.9]   ## m, walking lane offsets to the right of the walking direction
+const CROSS_LAT := 1.6        ## m, the most a crossing is walked off its centre line (the zebra band is 3 m)
+const NARROW_LAT := 0.45      ## m, the same off the sidewalk (section mode: the pieces over the spine, the rail lane)
+## m, the lines a green's waiting group crosses on (by rank: the first ones spread widest apart)
+const CROSS_LANES := [0.0, 0.8, -0.8, 1.6, -1.6, 0.4, -0.4, 1.2, -1.2]
+const INDEX_W := 60.0         ## s, hold index window (also the bench parity window)
+const WALKWAY := Vector2(1.7, 3.95)   ## m from the curb: where a sidewalk slot may stand (beyond the furnishing band)
+
+
+const LANE_TURN := 2.5        ## m: a walker changes lane over the first this many metres of a leg
+const RAIL_TURN := 0.4        ## m: the same on a rail piece (inside the rail lane a walker keeps its +-NARROW_LAT line;
+                              ## the step to / from a waiting slot happens on the lane's edge, where the slot stands)
+const SURGE := 0.8            ## m: a walker's seeded surge / lag along a leg (so two on one lane at one speed part)
+
+
+## Where person id is on leg i (legs offset o) at fraction f, from its joints J0 -> J1: the lane offset (the joints'
+## sideways part) is reached within LANE_TURN m (of the end instead when the leg ends in a standing slot: `to_hold`), the along part follows the leg, and the person surges ahead or lags by up
+## to SURGE m mid-leg (sin(pi f): the leg's start and end times are kept).
+func _walk_point(id: int, i: int, legs: PackedFloat64Array, o: int, j0: Vector2, j1: Vector2, f: float, to_hold: bool = false,
+		turn: float = LANE_TURN) -> Vector2:
+	var b0 := Vector2(legs[o + 2], legs[o + 3])
+	var b1 := Vector2(legs[o + 4], legs[o + 5])
+	var length := b0.distance_to(b1)
+	if length < 1e-3:
+		return j0.lerp(j1, f)
+	var d := (b1 - b0) / length
+	var r := _right(d)
+	var o0 := j0 - b0
+	var o1 := j1 - b1
+	var g := smoothstep(0.0, 1.0, clampf(f * length / turn, 0.0, 1.0))
+	if to_hold:      # stepping into a standing slot: keep the lane until the last `turn` m (not across a corner early)
+		g = 1.0 - smoothstep(0.0, 1.0, clampf((1.0 - f) * length / turn, 0.0, 1.0))
+	var fs := f + minf(SURGE, length * 0.08) / length * sin(PI * f) * (2.0 * h(id, i, 66) - 1.0)
+	return b0.lerp(b1, fs) + r * lerpf(o0.dot(r), o1.dot(r), g) + d * lerpf(o0.dot(d), o1.dot(d), fs)
+
+
+## A rectangle that holds every pose of trip tr (indoors at its doors included): its legs' points grown by the most its
+## joints stand off them (x 1.5: a walked point mixes a joint's sideways and along parts), or by MAX_OFF before the
+## joints are worked out. LifeCrowd skips people whose box misses a threat (conservative: never changes a result).
+const MAX_OFF := 11.0         ## m: no joint stands further than this off its leg (slots <= 7.4 m from their node, x 1.5)
+
+func trip_box(tr: Dictionary) -> Rect2:
+	if tr.has("box"):
+		return tr["box"]
+	var n := int(tr["n"])
+	var legs: PackedFloat64Array = tr["legs"]
+	var box := Rect2(Vector2(legs[2], legs[3]), Vector2.ZERO)
+	for i in n:
+		var o := i * LEG
+		box = box.expand(Vector2(legs[o + 2], legs[o + 3])).expand(Vector2(legs[o + 4], legs[o + 5]))
+	var grow := MAX_OFF
+	if tr.has("J"):
+		var J: PackedVector2Array = tr["J"]
+		var off := 0.0
+		for j in n + 1:
+			var base := Vector2(legs[j * LEG + 2], legs[j * LEG + 3]) if j < n else Vector2(legs[(n - 1) * LEG + 4], legs[(n - 1) * LEG + 5])
+			off = maxf(off, J[j].distance_to(base))
+			if j > 0:
+				off = maxf(off, J[j].distance_to(Vector2(legs[(j - 1) * LEG + 4], legs[(j - 1) * LEG + 5])))
+		grow = off * 1.5 + 0.1
+		tr["box"] = box.grow(grow)
+		return tr["box"]
+	return box.grow(grow)
+
+
+func lane_of(id: int) -> float:
+	return float(LANES[int(h(id, 61) * LANES.size()) % LANES.size()])
+
+
+static func _right(d: Vector2) -> Vector2:
+	return Vector2(d.y, -d.x)
+
+
+## The joint between two walked directions offset `lat` to the right: the mitre point (offset from the node).
+static func miter(d_in: Vector2, d_out: Vector2, lat: float) -> Vector2:
+	var ra := _right(d_in)
+	var rb := _right(d_out)
+	var c := ra.dot(rb)
+	if c < -0.3:
+		return rb * lat
+	return (ra + rb) * (lat / (1.0 + c))
+
+
+## Distance from (x, s) to the curb of the block it stands on (-1 if on no block).
+func _curb_dist(p: Vector2) -> float:
+	var best := -1.0
+	for r in _block_rects:
+		if r.has_point(p):
+			best = maxf(best, minf(minf(p.x - r.position.x, r.end.x - p.x), minf(p.y - r.position.y, r.end.y - p.y)))
+	return best
+
+
+## Along door d's facade, on the side of `r` (a door leg can leave its facade at a slant: its lane point is clamped to the
+## lane; offsetting across the slant would put the person inside the building).
+func _door_side(d: int, r: Vector2) -> Vector2:
+	if d < 0 or d >= doors.size():
+		return r
+	var n: Vector2 = CityPlan.SIDE_N[int(doors[d]["side"])]
+	var t := _right(n)
+	return t if t.dot(r) >= 0.0 else -t
+
+
+## Whether node n stands on a sidewalk's walkway (else: in a road, a median, a park or a plaza).
+func _on_walk(n: int) -> bool:
+	return n >= 0 and _curb_dist(nodes[n]) >= WALKWAY.x - 0.01
+
+
+## Whether a person may stand at p. sidewalk: on the walkway band of a block; else anywhere off a building / cut (a node in
+## a road median, a park or a plaza). Never in a building, a floor cut, a prop, or a park fountain / plaza planter.
+func standable(p: Vector2, sidewalk: bool) -> bool:
+	if sidewalk:
+		var cd := _curb_dist(p)
+		if cd < WALKWAY.x or cd > WALKWAY.y:
+			return false
+	for r in _cuts:
+		if r.has_point(p):
+			return false
+	if plan.extent.size.x > 0.0 and not plan.extent.grow(-0.5).has_point(p):
+		return false
+	if plan.section != null:
+		var rl := plan.section.lane_x("rail")
+		if p.x > rl.x + 0.3 and p.x < rl.y - 0.3:
+			return false            # never wait in the rail lane
+	if _obst.is_empty():
+		_build_obst()
+	for ob: Array in _obst.get(Vector2i(floori(p.x / OBST_CELL), floori(p.y / OBST_CELL)), []):
+		match int(ob[0]):
+			0:       # a building footprint (grown)
+				if (ob[1] as Rect2).has_point(p):
+					return false
+			1:       # a prop
+				if (ob[1] as Vector2).distance_to(p) < float(ob[2]):
+					return false
+			2:       # a bench
+				var q := p - (ob[1] as Vector2)
+				var fwd: Vector2 = ob[2]
+				if absf(q.dot(fwd)) < 0.6 and absf(q.dot(_right(fwd))) < 1.2:
+					return false
+	for lot: Dictionary in _open_lots:
+		if not (lot["rect"] as Rect2).has_point(p):
+			continue
+		var c := (lot["rect"] as Rect2).grow(-2.0).get_center()
+		if lot["open"] == "park" and p.distance_to(c) < 3.4 + 0.5:
+			return false
+		if lot["open"] == "plaza":
+			var inner := (lot["rect"] as Rect2).grow(-2.0)
+			var pl := Vector2(minf(inner.size.x * 0.5, 4.0), minf(inner.size.y * 0.5, 4.0))
+			if Rect2(inner.get_center() - pl * 0.5, pl).grow(0.5).has_point(p):
+				return false
+		if lot["open"] == "garden":
+			return false
+	return true
+
+
+const OBST_CELL := 4.0        ## m, the cells of _obst
+
+
+func _obst_add(box: Rect2, ob: Array) -> void:
+	for cx in range(floori(box.position.x / OBST_CELL), floori(box.end.x / OBST_CELL) + 1):
+		for cy in range(floori(box.position.y / OBST_CELL), floori(box.end.y / OBST_CELL) + 1):
+			var c := Vector2i(cx, cy)
+			if not _obst.has(c):
+				_obst[c] = []
+			(_obst[c] as Array).append(ob)
+
+
+func _build_obst() -> void:
+	for r in _foot:
+		_obst_add(r.grow(0.35), [0, r.grow(0.35)])
+	for pr: Array in _props:
+		var rad := float(pr[1]) + 0.3
+		_obst_add(Rect2(pr[0] as Vector2, Vector2.ZERO).grow(rad), [1, pr[0], rad])
+	for b: Dictionary in benches:
+		var yaw := float(b["yaw"])
+		_obst_add(Rect2(b["at"] as Vector2, Vector2.ZERO).grow(1.4), [2, b["at"], Vector2(sin(yaw), cos(yaw))])
+	if _obst.is_empty():
+		_obst[Vector2i(1 << 20, 1 << 20)] = []      # built (nothing in it)
+	for lot: Dictionary in plan.lots:
+		if lot["kind"] == "open":
+			_open_lots.append(lot)
+
+
+func _far_enough(p: Vector2, taken: PackedVector2Array, gap: float) -> bool:
+	for q in taken:
+		if q.distance_to(p) < gap - 1e-4:
+			return false
+	return true
+
+
+## The standing slots at node u for the crossing to node v (laid out for every crossing at u at once, so the result does
+## not depend on which was asked first).
+func wait_slots(u: int, v: int) -> PackedVector2Array:
+	if not _node_slots.has(u):
+		_node_slots[u] = _layout_node(u)
+	return (_node_slots[u] as Dictionary).get(v, PackedVector2Array())
+
+
+func _layout_node(u: int) -> Dictionary:
+	var at := nodes[u]
+	var outs: Array = []           # [v, dir]
+	var es: Array = (adj[u] as Array).duplicate()
+	es.sort()
+	for e: int in es:
+		var ed: Array = edges[e]
+		if int(ed[2]) != CROSS:
+			continue
+		var v := int(ed[1]) if int(ed[0]) == u else int(ed[0])
+		outs.append([v, (nodes[v] - at).normalized()])
+	var sidewalk := _curb_dist(at) >= WALKWAY.x - 0.01
+	var rail_node := false
+	for e: int in adj[u]:
+		rail_node = rail_node or rail_edges.has(e)
+	var lists: Array = []
+	for o: Array in outs:
+		var d: Vector2 = o[1]
+		var q := _right(d)
+		var other := Vector2.ZERO
+		for o2: Array in outs:
+			if o2 != o:
+				other += o2[1] as Vector2
+		var cands: Array = []          # [score, point]
+		var rail := rail_edges.has(edge_between(u, int(o[0])))
+		for row in 3:
+			var a := 0.9 - 0.9 * float(row)
+			if not sidewalk and a > 0.0:
+				continue           # a node in the road: never step out into the lane ahead
+			if rail_node and a != 0.0:
+				continue           # beside the rail lane: only on the lane's edge line (behind / ahead is a lane)
+			for i in 16:
+				if rail and i > 0:
+					break          # the rail lane: waiters line up on the crossing's line (the tram passes 1.5 m away)
+				var b := 0.45 + 0.9 * float(i) + (0.45 if row % 2 == 1 else 0.0)
+				for sg: float in [1.0, -1.0]:
+					var lat := b * sg if not rail else 0.45 * sg
+					if rail_node and not rail:
+						lat = (0.45 + 0.9 * float(i) + 0.9) * sg     # along the edge line, clear of the rail crossing's own pair
+					var toward := other.length_squared() > 1e-6 and (q * lat).dot(other) > 0.0
+					var score := absf(lat) + 0.6 * float(row) + (3.0 if toward else 0.0) + (0.01 if sg < 0.0 else 0.0)
+					cands.append([score, at + d * a + q * lat])
+		cands.sort_custom(func(m: Array, n: Array) -> bool: return m[0] < n[0])
+		lists.append(cands)
+	# Slots already laid out nearby are kept clear of: benches' seats and standing slots, and the slots of crossing nodes
+	# with a lower index (laid out first, recursively: the result never depends on which node was asked first).
+	var taken := PackedVector2Array()
+	if not outs.is_empty():
+		for b in benches.size():
+			if (benches[b]["at"] as Vector2).distance_to(at) < 14.0:
+				var bs := bench_slots(b)
+				taken.append_array(bs[0])
+				taken.append_array(bs[1])
+		for m in u:
+			if nodes[m].distance_to(at) < 16.0 and _has_cross(m):
+				for v2: int in wait_slots_all(m):
+					taken.append_array((_node_slots[m] as Dictionary)[v2])
+	var out := {}
+	var pos: Array[int] = []
+	for o: Array in outs:
+		out[int(o[0])] = PackedVector2Array()
+		pos.append(0)
+	var any := true
+	while any:
+		any = false
+		for i in outs.size():
+			var mine: PackedVector2Array = out[int(outs[i][0])]
+			if mine.size() >= SLOT_CAP:
+				continue
+			var cands: Array = lists[i]
+			while pos[i] < cands.size():
+				var p: Vector2 = cands[pos[i]][1]
+				pos[i] += 1
+				if standable(p, sidewalk) and _far_enough(p, taken, SLOT_GAP):
+					taken.append(p)
+					mine.append(p)
+					out[int(outs[i][0])] = mine
+					any = true
+					break
+	return out
+
+
+func _has_cross(m: int) -> bool:
+	for e: int in adj[m]:
+		if int(edges[e][2]) == CROSS:
+			return true
+	return false
+
+
+## The far nodes of node m's crossings (its slots laid out).
+func wait_slots_all(m: int) -> Array:
+	if not _node_slots.has(m):
+		_node_slots[m] = _layout_node(m)
+	return (_node_slots[m] as Dictionary).keys()
+
+
+## Bench b's seats (2, a person's feet in front of the seat) and standing slots (by it, facing it), clear of the benches
+## with a lower index nearby.
+func bench_slots(b: int) -> Array:
+	if _bench_slots.has(b):
+		return _bench_slots[b]
+	var bench: Dictionary = benches[b]
+	var at: Vector2 = bench["at"]
+	var yaw := float(bench["yaw"])
+	var fwd := Vector2(sin(yaw), cos(yaw))
+	var side := _right(fwd)
+	var seats := PackedVector2Array([at + fwd * 0.05 - side * 0.5, at + fwd * 0.05 + side * 0.5])
+	var sidewalk := str(bench.get("kind", "street")) == "street"
+	var cands: Array = []
+	for f: float in [1.05, 1.95, 2.85, -1.05, -1.95]:
+		for i in 7:
+			var lat: float = [0.0, -0.95, 0.95, -1.9, 1.9, -2.85, 2.85][i]
+			var p := at + fwd * f + side * lat
+			cands.append([absf(f - 1.05) + absf(lat) * 0.8 + (3.0 if f < 0.0 else 0.0), p])
+	for sg: float in [-1.0, 1.0]:
+		cands.append([1.6, at + side * (1.55 * sg) + fwd * 0.2])
+	cands.sort_custom(func(m: Array, n: Array) -> bool: return m[0] < n[0])
+	var taken := seats.duplicate()
+	for o in b:
+		if (benches[o]["at"] as Vector2).distance_to(at) < 8.0:
+			var ob := bench_slots(o)
+			taken.append_array(ob[0])
+			taken.append_array(ob[1])
+	var stand := PackedVector2Array()
+	for c: Array in cands:
+		var p: Vector2 = c[1]
+		if standable(p, sidewalk) and _far_enough(p, taken, SLOT_GAP):
+			taken.append(p)
+			stand.append(p)
+	_bench_slots[b] = [seats, stand]
+	return _bench_slots[b]
+
+
+## The hold groups (waits for a crossing, bench visits) whose deciding time falls in index window w: {key -> [[t0, id]]}.
+## A wait's key is (node, crossing's far node, green time in ms: everyone waiting for one green at one corner); a rail
+## crossing's waits end at different times, so its key is (node, far node, -1 - window) with slots split by parity. A bench
+## visit's key is (-1 - bench, window of arrival, -2).
+func _groups(w: int) -> Dictionary:
+	if _index.has(w):
+		return _index[w]
+	while not warm_index(w, count):
+		pass
+	return _index[w]
+
+
+## Add up to n more people's holds to index window w (built ahead of need, a few people a frame, so the window is ready
+## before anyone stands in it; the result does not depend on the order). Returns whether the window is complete.
+func warm_index(w: int, n: int, part: int = 0, parts: int = 1, wishes: bool = false) -> bool:
+	var index := _wish_index if wishes else _index
+	var wips := _wish_wip if wishes else _index_wip
+	if index.has(w):
+		return true
+	if not wips.has(w):
+		var done := PackedByteArray()
+		done.resize(count)
+		wips[w] = [done, {}, 0]
+	var wip: Array = wips[w]
+	var done: PackedByteArray = wip[0]
+	var g: Dictionary = wip[1]
+	var left := n
+	var id := part
+	while id < count and left > 0:
+		if done[id] == 0:
+			if wishes:
+				_wish_person(w, id, g)
+			else:
+				_index_person(w, id, g)
+			done[id] = 1
+			wip[2] = int(wip[2]) + 1
+			left -= 1
+		id += parts
+	wip[0] = done
+	if int(wip[2]) < count:
+		return false
+	for key: Variant in g:
+		(g[key] as Array).sort_custom(func(m: Array, o: Array) -> bool: return m[0] < o[0] or (m[0] == o[0] and m[1] < o[1]))
+	wips.erase(w)
+	if index.size() > 24:            # forget the oldest windows (rebuilt the same if ever asked again)
+		var keys := index.keys()
+		keys.sort()
+		for k in keys.size() - 16:
+			index.erase(keys[k])
+	index[w] = g
+	return true
+
+
+func _wish_person(w: int, id: int, g: Dictionary) -> void:
+	var a := float(w) * INDEX_W
+	var b := a + INDEX_W
+	for k in range(slot_of(id, a), slot_of(id, b - 1e-6) + 1):
+		var tr := wish(id, k)
+		var bench := int(tr["bench"])
+		if bench < 0:
+			continue
+		var legs: PackedFloat64Array = tr["legs"]
+		for i in int(tr["n"]):
+			if int(legs[i * LEG + 6]) == SIT:
+				if floori(legs[i * LEG] / INDEX_W) == w:
+					if not g.has(bench):
+						g[bench] = []
+					(g[bench] as Array).append([legs[i * LEG], id])
+				break
+
+
+const AHEAD := 6              ## index windows built ahead: a trip planned now holds up to ~3 minutes ahead (4 windows),
+                              ## the 2 more are built a person a frame while nothing needs them yet
+
+## Build ahead: the index windows a pose may need from time t on, at most n people a call. AmbientLife calls it every frame; setup calls it per part.
+func warm_ahead(t: float, n: int, part: int = 0, parts: int = 1) -> void:
+	var w0 := floori(t / INDEX_W)
+	for w in range(w0, w0 + AHEAD):
+		for wishes: bool in [true, false]:       # the bench wishes first: the trips (and so the holds) depend on them
+			if not (_wish_index if wishes else _index).has(w):
+				warm_index(w, n, part, parts, wishes)
+				if parts == 1:
+					return
+
+
+func _index_person(w: int, id: int, g: Dictionary) -> void:
+	var a := float(w) * INDEX_W
+	var b := a + INDEX_W
+	for k in range(slot_of(id, a), slot_of(id, b - 1e-6) + 1):
+		var tr := trip(id, k)
+		var n := int(tr["n"])
+		if n == 0:
+			continue
+		var legs: PackedFloat64Array = tr["legs"]
+		for i in n:
+			var o := i * LEG
+			var kind := int(legs[o + 6])
+			var key := Vector3i.ZERO
+			if kind == WAIT and i + 1 < n:
+				var t1 := legs[o + 1]
+				if floori(t1 / INDEX_W) != w:
+					continue
+				var u := int(legs[o + 9])
+				var v := int(legs[(i + 1) * LEG + 10])
+				var e := edge_between(u, v)
+				key = Vector3i(u, v, -1 - w) if rail_edges.has(e) else Vector3i(u, v, int(round(t1 * 1000.0)))
+			elif kind == SIT:
+				if floori(legs[o] / INDEX_W) != w:
+					continue
+				key = Vector3i(-1 - int(tr["bench"]), w, -2)
+			else:
+				continue
+			if not g.has(key):
+				g[key] = []
+			(g[key] as Array).append([legs[o], id])
+
+
+func _rank(key: Vector3i, w: int, id: int) -> int:
+	var arr: Array = _groups(w).get(key, [])
+	for i in arr.size():
+		if int(arr[i][1]) == id:
+			return i
+	return 0
+
+
+## Where trip tr's holds stand and the walked joints between its legs: tr["J"] (n + 1 points, leg i runs J[i] -> J[i+1];
+## a hold has J[i] == J[i+1]), "D" (metres walked at each leg's start), "H" (headings), "ST" (1: a bench visit standing).
+func _spread(tr: Dictionary) -> void:
+	var n := int(tr["n"])
+	var legs: PackedFloat64Array = tr["legs"]
+	var id := int(tr.get("id", 0))
+	var lat := lane_of(id)
+	var J := PackedVector2Array()
+	J.resize(n + 1)
+	var H := PackedFloat32Array()
+	H.resize(n)
+	var ST := PackedByteArray()
+	ST.resize(n)
+	var hold := PackedVector2Array()       # per leg: the hold's spot (holds only)
+	hold.resize(n)
+	var is_hold := PackedByteArray()
+	is_hold.resize(n)
+	var wait_rank := PackedInt32Array()     # per leg: a wait's lane index after it (-1 otherwise)
+	wait_rank.resize(n)
+	wait_rank.fill(-1)
+	var cross_rank := PackedInt32Array()    # per leg: a wait's rank in its group (-1 otherwise)
+	cross_rank.resize(n)
+	cross_rank.fill(-1)
+	for i in n:
+		var o := i * LEG
+		var kind := int(legs[o + 6])
+		H[i] = legs[o + 8]
+		if kind == WAIT:
+			is_hold[i] = 1
+			var u := int(legs[o + 9])
+			var spot := Vector2(legs[o + 2], legs[o + 3])
+			if i + 1 < n:
+				var v := int(legs[(i + 1) * LEG + 10])
+				var t1 := legs[o + 1]
+				var w := floori(t1 / INDEX_W)
+				var rail := rail_edges.has(edge_between(u, v))
+				var key := Vector3i(u, v, -1 - w) if rail else Vector3i(u, v, int(round(t1 * 1000.0)))
+				var r := _rank(key, w, id)
+				var si := r * 2 + (posmod(w, 2)) if rail else r
+				# the lane walked on after this green: consecutive ranks of one group get different lanes, and the
+				# group's first lane comes from its key (so rank 0 of every group is not on the same lane)
+				wait_rank[i] = r + int(h(key.x, key.y, key.z) * LANES.size())
+				cross_rank[i] = r
+				var sl := wait_slots(u, v)
+				if not sl.is_empty():
+					spot = sl[si % sl.size()]
+			hold[i] = spot
+		elif kind == SIT:
+			is_hold[i] = 1
+			var bi := int(tr["bench"])
+			var spot := Vector2(legs[o + 2], legs[o + 3])
+			if bi >= 0:
+				var w := floori(legs[o] / INDEX_W)
+				var r := _rank(Vector3i(-1 - bi, w, -2), w, id)
+				var par := posmod(w, 2)
+				var bs := bench_slots(bi)
+				if r == 0:
+					spot = (bs[0] as PackedVector2Array)[par]
+				else:
+					var stand: PackedVector2Array = bs[1]
+					if not stand.is_empty():
+						spot = stand[((r - 1) * 2 + par) % stand.size()]
+						ST[i] = 1
+						var to := (benches[bi]["at"] as Vector2) - spot
+						H[i] = atan2(to.x, to.y)
+			hold[i] = spot
+	var dirs := PackedVector2Array()
+	dirs.resize(n)
+	for i in n:
+		var o := i * LEG
+		dirs[i] = Vector2(legs[o + 4] - legs[o + 2], legs[o + 5] - legs[o + 3]).normalized()
+	var cross_lat := 0.0
+	for j in n + 1:
+		# after a wait, the person walks on in a lane given by its slot rank (people leaving one green together spread)
+		if j > 0 and wait_rank[j - 1] >= 0:
+			lat = float(LANES[wait_rank[j - 1] % LANES.size()])
+		var prev := j - 1
+		var next := j
+		var base := Vector2(legs[j * LEG + 2], legs[j * LEG + 3]) if j < n else Vector2(legs[(n - 1) * LEG + 4], legs[(n - 1) * LEG + 5])
+		if next < n and is_hold[next] == 1:
+			J[j] = hold[next]
+		elif prev >= 0 and is_hold[prev] == 1:
+			J[j] = hold[prev]
+		elif prev >= 0 and int(legs[prev * LEG + 6]) == CROSS:
+			J[j] = base + _right(dirs[prev]) * cross_lat
+		elif prev < 0:
+			J[j] = base + _door_side(int(tr["door_a"]), _right(dirs[next])) * lat
+		elif next >= n:
+			J[j] = base + _door_side(int(tr["door_d"]), _right(dirs[prev])) * lat
+		else:
+			J[j] = base + miter(dirs[prev], dirs[next], lat)
+		if next < n and int(legs[next * LEG + 6]) == CROSS:
+			var wide := CROSS_LAT if _on_walk(int(legs[next * LEG + 9])) and _on_walk(int(legs[next * LEG + 10])) else NARROW_LAT
+			if prev >= 0 and cross_rank[prev] >= 0:
+				cross_lat = float(CROSS_LANES[cross_rank[prev] % CROSS_LANES.size()]) * wide / CROSS_LAT
+			else:
+				cross_lat = clampf((J[j] - base).dot(_right(dirs[next])), -wide, wide)
+	var D := PackedFloat64Array()
+	D.resize(n + 1)
+	D[0] = legs[7] if n > 0 else 0.0
+	for i in n:
+		D[i + 1] = D[i] + J[i].distance_to(J[i + 1])
+		if is_hold[i] == 0 and J[i].distance_squared_to(J[i + 1]) > 1e-8:
+			var dv := J[i + 1] - J[i]
+			H[i] = atan2(dv.x, dv.y)
+	tr["J"] = J
+	tr["D"] = D
+	tr["H"] = H
+	tr["ST"] = ST
+	trip_box(tr)         # while the joints are at hand (LifeCrowd's threat filter reads it)
 
 
 # --- Routes for panic --------------------------------------------------------------------------------------

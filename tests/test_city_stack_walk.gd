@@ -38,6 +38,7 @@ func setup() -> void:
 	await _spawn()
 	for ci in sec.connectors.size():
 		if sec.connectors[ci]["kind"] == "ramp":
+			await _headroom(ci)
 			await _ramp(ci)
 			await _parapets(ci)
 	await _bridge()
@@ -219,6 +220,66 @@ func _ramp(ci: int) -> void:
 			await get_tree().process_frame
 		eq(stack.active_deck, k_to, "%s: follow() switched the active deck to %d" % [tag, k_to])
 		check(stack.rig.sun.light_cull_mask == CityLightRig.ALWAYS | CityStack.deck_layer(k_to), "%s: and the daylight with it" % tag)
+
+
+## Headroom down the whole ramp (CityPlan.BRIDGE_CLEAR): the mech's own capsule (radius, height), standing 0.3 m above
+## the ramp's surface on its centre line, every 2 m from 20 m before the top line to 10 m past the foot line, touches no
+## collision shape of the stack (the first cross road past the head used to bridge the cut ~7 m above the ramp: a mech
+## walked through the drawn slab, whose collision is only its top 1 m). The mech itself is moved out of the way.
+func _headroom(ci: int) -> void:
+	var cn: Dictionary = sec.connectors[ci]
+	var mid := (float(cn["x0"]) + float(cn["x1"])) * 0.5
+	var th_top := float(sec.row_theta[int(cn["top_line"])])
+	var th_foot := float(sec.row_theta[int(cn["foot_line"])])
+	var r_low := sec.radius_of(int(cn["to"]))
+	var pitch := sec.p("pitch")
+	var cap0 := (mech.get_node("Shape") as CollisionShape3D).shape as CapsuleShape3D
+	var cap := CapsuleShape3D.new()
+	cap.radius = cap0.radius
+	cap.height = cap0.height
+	mech.global_position = sec.polar_to_world(0.0, 0.0, 10.0)     # near the axis: out of every deck
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var space := mech.get_world_3d().direct_space_state
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = cap
+	q.exclude = [mech.get_rid()]
+	var span := absf(th_foot - th_top) * r_low
+	var n := int(ceil((span + 30.0) / 2.0))
+	var hits := 0
+	var first := ""
+	var up_k := int(cn["from"])
+	var up_cuts := stack.decks[up_k].plan.floor_cuts()
+	var slab_hits := 0
+	var worst := 0.0
+	for i in n + 1:
+		var arc := -20.0 + float(i) * 2.0
+		var th := th_top + signf(th_foot - th_top) * arc / r_low
+		var t := clampf((th - th_top) / (th_foot - th_top), 0.0, 1.0)
+		var srf := r_low - pitch * (1.0 - t)
+		var foot := sec.polar_to_world(mid, th, srf - 0.3)
+		var up := stack.ring().up_at(foot)
+		q.transform = Transform3D(stack.ring().basis_at(foot, Vector3.RIGHT.cross(up)), foot + up * (cap.height * 0.5))
+		var res := space.intersect_shape(q, 4)
+		if not res.is_empty():
+			hits += 1
+			if first == "":
+				first = "%.0f m from the top line (t %.2f)" % [arc, t]
+		# The drawn slab of the upper deck (a bridge is the whole slab, `slab` deep; its collision is only the top 1 m):
+		# where the upper floor is not cut over the ramp, the capsule's top must stay under the slab's bottom.
+		var top_p := foot + up * cap.height
+		var ua := stack.decks[up_k].ring.world_to_arc(stack.decks[up_k].to_local(top_p))
+		if ua.z < 0.0 and ua.z > -sec.p("slab") - 0.01:
+			var floor_cut := false
+			for o in up_cuts:
+				floor_cut = floor_cut or o.has_point(Vector2(mid, ua.y))
+			if not floor_cut:
+				slab_hits += 1
+				worst = minf(worst, -sec.p("slab") - ua.z)
+	print("ramp %d headroom: %d capsule poses, %d touching collision, %d inside a drawn bridge slab (worst %.2f m into it)%s" % [
+			ci, n + 1, hits, slab_hits, -worst, (", first at " + first) if hits > 0 else ""])
+	eq(hits, 0, "ramp %d: the mech's capsule clears every collision shape above the ramp, top to foot" % ci)
+	eq(slab_hits, 0, "ramp %d: and passes under every bridge's drawn slab (worst %.2f m into it)" % [ci, -worst])
 
 
 ## Halfway down the ramp, strafing hard into each parapet for 2 s (walk, then run): the 1 m parapet holds the mech on

@@ -10,7 +10,10 @@ extends RefCounted
 ## -1 in DEFAULTS = never chosen: load_settings auto-detects, LOW on an integrated GPU, else HIGH), renderer (auto /
 ## forward_plus / gl_compatibility: GraphicsQuality.sync_renderer, takes effect at the next launch).
 ## Audio: master, music, sfx (0..1, linear).
+## Crew: friendly_fire (default true): the crew option this machine sets when it hosts (or plays solo); remembered.
 ## Network: link_sim (off / coast / rough): the crew's simulated link when this machine hosts (NetSession).
+## Dev: objectives (default false): play the mission plan (objectives, waves, the extraction hold; mission-objectives.md
+## phase 1) instead of clear + extract, solo and in the crews this machine hosts (also `--objectives`). No menu control.
 
 const DEFAULT_PATH := "user://settings.cfg"
 const DEFAULTS := {
@@ -28,6 +31,8 @@ const DEFAULTS := {
 	"music": 0.7,
 	"sfx": 0.8,
 	"link_sim": "off",
+	"friendly_fire": true,
+	"objectives": false,
 }
 ## Which ConfigFile section each key lives in.
 const SECTIONS := {
@@ -36,6 +41,8 @@ const SECTIONS := {
 	"fullscreen": "video", "vsync": "video", "msaa": "video", "quality": "video", "renderer": "video",
 	"master": "audio", "music": "audio", "sfx": "audio",
 	"link_sim": "network",
+	"friendly_fire": "crew",
+	"objectives": "dev",
 }
 const BUSES := ["Music", "SFX"]
 

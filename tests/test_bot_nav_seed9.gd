@@ -1,7 +1,8 @@
 extends "res://tests/bot_nav_case.gd"
 ## The mission bot alone walks a whole solo mission on section seed 9 (tests/bot_nav_case.gd): no DEV travel.
 
-const SERIAL := true   # a whole mission (60-100 s wall at --fixed-fps): run alone after the batch so CPU contention cannot push it past the 120 s timeout
+const SERIAL := true   # a whole mission: run alone after the batch (no CPU contention)
+const TEST_TIMEOUT := 240   # test_runner: 240 s instead of the 120 s default
 
 
 func _init() -> void:

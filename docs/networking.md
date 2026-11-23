@@ -39,28 +39,39 @@ projects out, `version` keeps different builds apart.
 ```
 host -> joiner   sys.ask      {protocol, build}
 joiner -> host   sys.hello    {protocol, build, name, head, chassis, accent, loadout, steam_id}
-host -> joiner   sys.welcome  {seat, peer, entries, host_unix, link}   |  sys.refuse {reason}
+host -> joiner   sys.welcome  {seat, peer, entries, host_unix, link, friendly_fire}   |  sys.refuse {reason}
 host -> all      sys.roster   {entries}          after every join / leave / profile change
 joiner -> host   sys.profile  {name, head, chassis, accent, loadout}
 host -> all      sys.link {preset}, sys.bye {reason}
+host -> all      sys.crew_opts {friendly_fire}   the host changed a crew option in its hangar
 ```
+**Crew options.** `friendly_fire` (default on) is the host's choice for the whole crew: the hangar's "Friendly fire" box
+(saved as GameSettings `crew/friendly_fire`, also used solo) calls `Session.set_friendly_fire(on)`, which the host sends as
+`sys.crew_opts` (and in `sys.welcome` to joiners); `Session.crew_opts_changed` fires on every machine. A client's box is
+read-only and shows `Session.friendly_fire` (the host's value while online; its own choice comes back when the session
+ends). `set_friendly_fire` is refused on a client. Test: `tests/test_net_crew_opts.gd`.
 Refusals: "Crew is full" (5th player), "Different build", "That crew is on a mission" (from the host's Launch until the
 mission ends; mid-mission join is not built: cast's M6 seat handover is the model), and at the load barrier
 "Desync: different city" / "Didn't load the mission in time" (Session.kick).
 
 ## Mission (co-op step 1)
 ```
-host -> crew     mission.launch {seed, mode, start_t, crew}  Session.start_mission(seed, mode): start_t = host_time() + 2.5 s
+host -> crew     mission.launch {seed, mode, start_t, crew, friendly_fire, objectives}  Session.start_mission(seed, mode): start_t = host_time() + 2.5 s
 client -> host   mission.loading {}                     Session.report_mission_loading(): right before the (blocking) build
 client -> host   mission.ready  {sum, ms}               Session.report_mission_built(TestDrive.mission_checksum(), build ms)
+host -> crew     mission.wait   {ready: [peer]}         the set of members that reported changed (the loading screen's ready ticks: Session.mission_ready_peers())
 host -> crew     mission.go     {start_at}              every remaining member reported the host's sum; start_at = +0.5 s
 host -> crew     mission.state  {state}                 the mission's progress changed (W6, below): Session.send_mission_state
+host -> crew     mission.wave   {order}                 plan mode: a reinforcement wave order (below): Session.send_mission_wave
 host -> crew     mission.end    {reason}                the host left the mission (Esc), or the outcome's hold ended: Session.end_mission()
 ```
 - Only the host's Launch counts (a client's button reads "Waiting for the host to launch"). Every machine, the host too,
   gets `Session.mission_started(params)`, plays the bay alert until `start_t` on the shared clock, then loads the test
   drive. `crew` is the roster by seat at launch: `{peer, seat, name, head, chassis, accent, loadout}`. The crew state is
-  "mission" from the launch to the end (joiners refused).
+  "mission" from the launch to the end (joiners refused). `friendly_fire` is the host's crew option at launch
+  (`Session.friendly_fire`; absent = true): every machine sets `td.friendly_fire` (`Net.SPAWN`) from it before
+  TestDriveCombat sets up, which hands it to `CombatWorld.friendly_fire`. Solo: `TestDrive.solo_launch` carries the
+  hangar's setting; a test drive with neither has it on. The loading screen's section line says "Friendly fire on / off".
 - **The city** (`params.mode`): `stack` (the default) builds the multi-deck mission section, `SectionPlan.make({seed})`
   then `CityStack.build`; `district` builds one `CityDistrict` (the pre-stack test drive). A launch without a mode is
   read as `district`. The stack is placed with the ENTRY deck's floor through the world origin, and `td.city` is that
@@ -111,7 +122,7 @@ client, back from its stall, heard nothing and ended 6 s later with "The host le
 `test_net_load_stall` with ENet's default timeouts (host: "c1 dropped: lost the link while loading").
 
 - **Stepped load (the game's crew mission in the stack):** `TestDrive._load_stepped` runs `CityStack.build_step(8 ms)`
-  once per frame ("Building the station... N%" in the middle of the screen; mechs not simulated), then sets up the
+  once per frame (behind the loading screen, `scripts/ui/loading_screen.gd`, docs/design/hud.md; mechs not simulated), then sets up the
   scene, then `AmbientLife.setup_step(8 ms)` once per frame, and only then reports `mission.ready` (so `mission.go` waits
   for every machine's whole load). `TestDrive.loading` is true meanwhile (no input, no physics). Events that arrive
   during the load are dispatched as usual: EnemySync pulls its manifest after setup, life replays what it heard while
@@ -179,6 +190,34 @@ host -> crew     mission.go     {start_at, state?}   carries the latest state (i
 - **Solo** (offline): the same rules evaluated locally (local seconds for t), the same banner, then back to the menu on
   its hangar (`FrontEnd.next_screen = "hangar"`). Solo mechs keep their auto-respawn; no downed / revive and no
   crew-wipe loss yet (user decision, 2026-11-22): `MissionRules` "wipe" stays off, so the outcome is only ever "won".
+- **Plan mode** (mission objectives phase 1, docs/design/mission-objectives.md §7 / §9; DEV: `--objectives` or
+  GameSettings dev `objectives` on the host -> `Session.objectives` -> `mission.launch` `objectives: true`, so every
+  machine agrees; solo: `TestDrive.solo_launch.objectives` / `--objectives`). Every machine builds `MissionPlan.make(sec)`,
+  `MissionRules.make(sec, {plan})`, `WaveDirector.make(plan)`, then `stack.setup_mission(plan)` (MissionWorld, behind the
+  loading screen, before the barrier) and `rules.set_site` from its `flag_site` / `asset_site` (kept on the plan's site
+  when `ok` is false). The barrier's checksum is `"<stack>/<plan.checksum()>"`. The host's garrison is
+  `plan.pool(k).garrison` of each deck's budget (`EnemySpawner.spawn_all(..., garrison_share)`).
+  ```
+  host -> crew   mission.wave  {order: {wave, deck, source, open_at, max_units}}   reliable, one per director order (~120 B)
+  host -> crew   mission.state {state}   rules.state() + {"dir": WaveDirector.state(), "assets": {defend id: hp}}, on change
+  host -> crew   mission.go    {start_at, state?, waves?}   + the orders whose open_at is still ahead (late barrier member)
+  ```
+  The host tick (4 Hz, same gate) evaluates the rules first (facts t, enemies, crew, waves_left, waves, zone_enemies,
+  assets, defend_waves), then `director.tick(t, ...)` (alive, garrison_alive = units with `wave == ""`, wave_alive,
+  wave_pending, crew_deck, objectives, closed). Each order: `mission.wave` to the crew; EVERY machine calls
+  `stack.mission.open_source(source, open_at)` (open_at >= t + 1 s, so the event is there before the telegraph);
+  when the shared clock reaches open_at the host calls antigravity's `EnemySpawner.spawn_wave(order, wave, source + point:
+  MissionWorld.source_point, ctx)`; the units are ordinary host enemies, tagged `wave`, streamed by EnemySync (the
+  manifest / "add" entry now carries the wave id). Clients apply both halves of the state. Presentation is pushed to
+  MissionWorld on every machine from the replicated state (flags, relay HP, portal, hold zone; flag ring colour from
+  what that machine sees: cosmetic), and `advance_to(host_time())` every frame. The defend relay's HP is host state
+  (`MissionFlow.asset_hp`; Weapons' damageable relay target still to wire to `damage_asset`). A failed primary ends
+  the mission "lost" with reason `objective_failed` (banner MISSION FAILED, mission.end "Objective failed"). Late
+  joiners: none mid-mission (refused); a barrier latecomer gets the state and the pending orders in mission.go
+  (MissionWorld.snapshot() is not sent: the doors are rebuilt from the orders, the rest from the state).
+  Tests: `test_mission_objectives` (solo: won through flag, two defends and the hold; lost by a destroyed relay; waves
+  spawn), `test_net_objectives` (2) / `test_net_objectives_3` (3), scenario `tests/net_objectives_case.gd`: equal
+  objective states, progress, wave counters, orders and door schedules on every machine, wave units on every client.
 - Tests: `test_net_mission_flow` (2) / `test_net_mission_flow_3` (3), scenario `tests/net_mission_flow_case.gd`: no
   clear latched right after go while enemies live, clients mirror the host's state and objective line, the host's kills
   turn every machine to extraction (waypoint on every HUD), the last client's mech in the zone gives "won" everywhere

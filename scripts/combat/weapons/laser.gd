@@ -85,3 +85,7 @@ func spawn(world: CombatWorld, record: Dictionary, st: Dictionary) -> CombatEffe
 	b.set_points(r["from"], r["to"])
 	b.follow = world.muzzle_of(record)
 	return b
+
+
+func prewarm(_st: Dictionary) -> void:
+	pass          # no shell: the Beam builds its facets per pulse

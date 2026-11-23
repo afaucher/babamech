@@ -310,3 +310,87 @@ Agreed with Engine (wiring, HUD, `mission.state` event, extract on for the first
 
 Enemies stay on the deck they spawn on in the demo, so "spawn deck" and "where it is" are the same thing; if that changes,
 the count still goes by spawn deck.
+
+## 15. Finding the last enemies (research, 2026-11-22)
+
+Playtest problem (user): "If you can't find the last enemies on a level you can get stuck." A clear-every-deck objective
+has this built in: the last 5 % of enemies cost as much time as the first 50 %. How other games deal with it:
+
+| Technique | Who does it | What it costs | Fit for babamech |
+|---|---|---|---|
+| **Remaining count on the HUD** | Warframe Exterminate (count under the minimap), Helldivers 2 Eradicate (kill total), wave shooters generally | Nothing; but a count alone tells you *that* you are stuck, not where to go. Warframe players complained for years about "looking for that last enemy before running to extraction" | Already there (`MissionRules.text()`); necessary, not sufficient |
+| **Markers on the targets** | Armored Core 6 marks every required target and the mission ends when the marked ones are down; Deep Rock Galactic shows Dreadnought cocoons as large red dots on the terrain scanner; Warframe's waypoints lead back to stragglers; Halo Firefight has an enemy-waypoint setting | Removes the hunt entirely if always on; fine when the fight, not the search, is the game | Yes, but **late**: only for the last few, after a delay, so exploring still matters early |
+| **Enemies come to you** (hunt-out) | Left 4 Dead's Director sends mobs at the survivors rather than waiting to be found; Killing Floor's tougher zeds enrage when they are among the last few; many wave shooters make the last enemies rush | Needs pathing that works everywhere; static enemies (turrets) can't do it | Yes for mobile enemies: antigravity's rule |
+| **Kill quota instead of kill-all** | Helldivers 2 Eradicate (kill N, enemies keep arriving); Warframe now spawns more enemies than the required kills, so the quota is reachable without finding everyone | Needs respawning enemies or a surplus; "clear" no longer means empty | Not now (fixed spawns per deck); it is the fallback if hunt-out + markers still leave people stuck |
+| **Objective is a few named targets, not everyone** | Deep Rock Galactic Elimination (2-3 Dreadnoughts), Armored Core 6 (the warships, the artillery), MechWarrior 5 assassination | The level can stay populated; needs boss-grade targets | Later: a heavy checkpoint or a siege tank per deck as the real objective (the hooks in §9 exist for this) |
+| **Arena lock with respawning fodder** | Doom Eternal: the doors open when the required demons are dead; fodder keeps respawning as a resource and does not count | Hand-built arenas; no search because the space is closed | No: the decks are open districts |
+| **Final wave / reinforcements** | Helldivers 2 and Deep Rock Galactic swarms, Halo Firefight rounds | Spawning in sight lines, pacing work | Later, as the climax of a deck; it also ends a deck on a fight instead of a search |
+| **A scan ability** | Deep Rock Galactic's terrain scanner, Armored Core 6's scan (also opens doors), radar in most mech games | A button and a cooldown; makes finding things a player skill | Later, as back equipment (`docs/design/back-equipment.md`) |
+| **A safety valve** | (What is missing where it goes wrong: MechWarrior 5 has long-standing reports of a last enemy stuck on a hilltop or never deploying, with "reload the mission" as the fix) | A rule that an enemy nobody can reach stops counting | Yes: cheap insurance against a soft-lock |
+
+Sources: Warframe wiki and forums (Exterminate; "Lost enemies in exterminate missions"; update 19.11 notes), Deep Rock
+Galactic wiki and Gamepressure guide (Elimination), Helldivers wiki (Eradicate), Push Square and Fextralife (Armored Core 6
+missions), Steam and GOG forums (MechWarrior 5 stuck missions; Doom Eternal arenas), Destructoid (Killing Floor 2 patch
+notes), Giant Bomb (Halo Firefight settings), Valve's "AI systems of Left 4 Dead". The Earth Defense Force, Destiny and
+Battlefield / Call of Duty lookups found nothing specific; nothing here leans on them.
+
+### Recommendation: escalate per deck, cheapest help first
+
+The count is always shown. Then, **per deck**, as the deck runs down:
+
+1. **Hunt-out** (antigravity, in progress). When few mobile enemies are left on a deck (suggest 3 or fewer) **or** the deck
+   has been quiet for a while (suggest 30 s with no enemy on that deck alerted, firing or damaged), the remaining mobile
+   enemies leave cover and go for the nearest crew mech. Telegraph rule still applies (0.3 s minimum).
+2. **Reveal.** Enemies that cannot come (turrets), and any hunter that still has not reached a fight 20 s after hunting
+   began, are **revealed**: a marker on the HUD and the map for every crew member, with distance. Revealed stays on until
+   the enemy dies. This is the Armored Core / Deep Rock answer, applied only to the tail.
+3. **Safety valve.** A revealed enemy that has taken no damage and dealt none for 120 s is removed by the host and counts
+   as destroyed (stuck in geometry, fell out of the world, unreachable roof). Nobody should ever need to restart.
+
+Say it out loud: one comms line and a ping sound when a deck's stragglers are revealed ("Last hostiles marked"), so the
+crew knows why markers appeared.
+
+Not now: a kill quota, a final wave, a scan ability, named targets. Named targets (one heavy per deck as the objective,
+the rest optional) is the better long-term shape and the one to try when objectives get designed; the quota is the fallback
+if playtests still stall.
+
+**What changes where.** `MissionRules` needs nothing: it counts alive enemies per deck, however they die. Enemies (host)
+own the hunt and the `revealed` flag; the enemy stream carries the flag to every machine; the HUD draws a marker for each
+revealed enemy and already shows the count.
+
+## 16. Encounter pacing along a deck (2026-11-22)
+
+Playtest problem (user): the enemies are almost all clustered around the crew's start on the first deck. The rule:
+
+**Each deck is a sequence of encounters from where the crew arrives to where it leaves**, not a population scattered
+around the spawn.
+
+| Stretch of the deck | What is there |
+|---|---|
+| **Arrival bubble** (70 m around the arrival point) | Nothing. The crew gets its bearings; on lower decks this is the ramp foot or the lift lobby, so nobody is shot while still on the ramp |
+| **First contact** (about 110 m in, on the avenue) | One light group: a scout pair, a drone. Teaches the deck's enemy mix before it matters |
+| **The crossing** | Groups at the plan's landmarks, light to medium: stations, patrol loops in parks, holding areas, cordons at sealed gates, the landing under a shaft, the locked express lift's stop |
+| **Departure** (the ramp head or lift down; on the lowest deck, the extraction portal) | The deck's heavy group: the checkpoint holding the way down. The climax of the deck |
+
+Rules of thumb for the spawner:
+
+- **Budget rises along the deck.** A site's share of the deck's enemy budget is its weight (light 1, medium 2, heavy 4)
+  times `0.6 + 0.8 x progress`, normalised over the deck. Roughly a fifth of the deck's enemies sit in the first third.
+- **No two groups closer than 40 m**; sites that close are one encounter.
+- **Deeper decks are heavier** (§4): scale the deck's whole budget, not just the last group.
+- **Static enemies sit at the heavy sites** (turrets on roofs overlooking the departure checkpoint), mobile ones at the
+  light and medium ones, so the hunt-out rule of §15 has something that can move.
+- A branch (the express lift stop, a holding area off the route) gets a group too: going off the route should find
+  something, but never the deck's heaviest fight.
+
+**From the plan** (derived, deterministic, not part of the checksum): `arrival(k)` and `departure(k)` give the two ends
+of deck k's crossing (`{deck, kind, x, s, connector}`); `encounter_sites(k)` gives the ordered list
+(`{deck, kind, x, s, progress, dist, weight, share, safe}`), with the bubble flagged `safe` and the shares already
+computed. The spawner snaps each site to real ground and roofs in that deck's city plan; the plan knows districts and
+roads, not buildings.
+
+**Known limit (2026-11-22).** A ramp is about 270 m long and lands part-way along the deck below, so on a deck entered by
+ramp the crossing from arrival to departure can be short (169 m on seed 1's middle deck; as little as 40 m with very
+large cells) and a large part of the deck lies *behind* the arrival. Those sites get `progress` 0 and the lowest shares:
+they play as side encounters off the route. If playtests show half a deck going unused, the fix is in the planner (land
+ramps nearer the end wall, or route the next way down at the far end), not in the spawner.

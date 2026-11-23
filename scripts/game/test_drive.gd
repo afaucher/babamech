@@ -47,7 +47,7 @@ const KEEPALIVE_CHUNK_MS := 40.0     ## crew mission, unstepped load: stack buil
 const DEV_FAST_CLEAR := 10.0         ## DEV ONLY: --dev-fast-clear, enemies take this many times the damage
 const STEP_BUDGET_MS := 8.0          ## stepped load: wall time per frame for the stack build / life setup
 
-## The menu's solo Launch hands its {seed, mode} to the next test drive here (consumed by _ready).
+## The menu's solo Launch hands its {seed, mode, friendly_fire} to the next test drive here (consumed by _ready).
 static var solo_launch: Dictionary = {}
 ## Tests (perf): a solo test drive with an OFFLINE CREW of this many mechs and no session (also `--offline-crew N`).
 ## Mechs 2..N are idle puppets (no input, no physics, no MechPuppet) with fake owner peers OFFLINE_PEER + seat, placed at
@@ -64,8 +64,21 @@ static var stepped_load := true
 static var bot_profile := ""
 ## Tests: DEV `--dev-bot-travel` for the mission bot (MissionBot.dev_travel).
 static var dev_bot_travel := false
+## Solo: put the loading screen up and let it draw (COVER_FRAMES) before the synchronous build, which blocks frames. Off
+## under --run-test (most tests check the scene right after adding it: their solo load stays inside _ready, behind a
+## screen that never draws) unless a test sets this.
+static var cover_solo := false
+const COVER_FRAMES := 2
 
 var seed_value := 1
+## The crew's friendly fire option (the host's hangar choice, carried in mission.launch; solo: the hangar's, in
+## solo_launch). True whenever it is absent. Set in _ready before TestDriveCombat sets up (which reads it once).
+var friendly_fire := true
+## DEV plan mode (docs/design/mission-objectives.md phase 1; MissionFlow): the mission plays MissionPlan's objectives and
+## waves instead of clear + extract. Crew: the host's choice in mission.launch (params.objectives), so every machine
+## agrees. Solo: solo_launch.objectives or `--objectives`; a test may set it true before the node enters the tree.
+var objectives := false
+var prebuilt_plan: MissionPlan = null   ## stepped load, plan mode: the plan whose MissionWorld was set up over frames
 ## "stack" or "district". Set before the node enters the tree to force it (tests); "" = from the launch / flags.
 var city_mode := ""
 ## Stack mode: every deck of the mission section (the entry deck at the world origin). Null in district mode.
@@ -92,6 +105,7 @@ var enemy_sync: EnemySync
 ## on every machine; the host arbitrates through Session events, offline it decides locally. Built after the city and
 ## the combat world (_build_life), rebuilt with the city (solo N).
 var life: AmbientLife
+var banners: OccupationBanners     ## the invaders' banners on every deck (scripts/world/occupation/, docs/design/banners.md)
 ## The mission's objective and end (W6; scripts/game/mission_flow.gd): stack mode only (null in a district).
 var mission: MissionFlow
 ## This machine has spawned the mission's enemies (host / solo; spawn_enemies): MissionFlow evaluates only after that.
@@ -123,23 +137,30 @@ var _t_load := 0                  ## msec the load started
 var _t_city := 0                  ## msec the city was done
 ## ShaderWarmup is drawing every look behind its overlay (the load's first frames and its last ones; not headless).
 var warming := false
+## The mission loading screen (scripts/ui/loading_screen.gd): up from the first line of _ready until mission_go (crew) or
+## the end of the solo load, and again while leaving. Null once it has come down.
+var loading_screen: LoadingScreen
+var _hud: MechHud                 ## the mech HUD, hidden while the loading screen is up
+var _hud_layer: CanvasLayer       ## the help / note layer, hidden while the loading screen is up
 
 
 ## Authority (scripts/net/net.gd): the seed and the spawn layout are fixed by the mission; everything else here is this
 ## machine's scene wiring (the mechs declare their own state).
 func net_fields() -> Dictionary:
-	return {"seed_value": Net.SPAWN, "city_mode": Net.SPAWN, "stack": Net.LOCAL, "city": Net.LOCAL, "mech": Net.LOCAL,
-		"rig": Net.LOCAL, "cam": Net.LOCAL, "enemy_sync": Net.LOCAL, "life": Net.LOCAL, "_audio_deck": Net.LOCAL, "_audio_check": Net.LOCAL,
+	return {"seed_value": Net.SPAWN, "city_mode": Net.SPAWN, "friendly_fire": Net.SPAWN, "objectives": Net.SPAWN, "prebuilt_plan": Net.LOCAL, "stack": Net.LOCAL, "city": Net.LOCAL, "mech": Net.LOCAL,
+		"rig": Net.LOCAL, "cam": Net.LOCAL, "enemy_sync": Net.LOCAL, "life": Net.LOCAL, "banners": Net.LOCAL, "_audio_deck": Net.LOCAL, "_audio_check": Net.LOCAL,
 		"drive_override": Net.LOCAL, "combat": Net.LOCAL, "combat_audio": Net.LOCAL, "mechs": Net.LOCAL,
 		"spawn_order": Net.SPAWN, "crewed": Net.SPAWN, "_help": Net.LOCAL, "_spawn": Net.SPAWN,
 		"_ignore_mouse_until": Net.LOCAL, "_shooting": Net.LOCAL, "_held": Net.PRIVATE, "crew_sync": Net.LOCAL,
 		"_seats": Net.SPAWN, "mission": Net.LOCAL, "enemies_spawned": Net.LOCAL,
 		"_leaving": Net.LOCAL, "_note_label": Net.LOCAL, "_note_until": Net.LOCAL, "_flow": Net.LOCAL,
 		"loading": Net.LOCAL, "loaded": Net.LOCAL, "bot": Net.LOCAL, "_load_label": Net.LOCAL, "_t_load": Net.LOCAL, "_t_city": Net.LOCAL,
-		"warming": Net.LOCAL}
+		"warming": Net.LOCAL, "loading_screen": Net.LOCAL, "_hud": Net.LOCAL, "_hud_layer": Net.LOCAL}
 
 
 func _ready() -> void:
+	# The loading screen before anything else: no frame may show the city being built, the camera or the HUD.
+	loading_screen = LoadingScreen.cover(self)
 	add_to_group(GraphicsQuality.GROUP)   # _on_graphics_quality when the setting changes
 	var args := OS.get_cmdline_user_args()
 	if DisplayServer.get_name() != "headless":
@@ -154,14 +175,24 @@ func _ready() -> void:
 	if crewed:
 		seed_value = int(params.get("seed", 1))
 		mode = str(params.get("mode", MODE_DISTRICT))   # a launch without a mode came from a pre-stack host
+		friendly_fire = bool(params.get("friendly_fire", true))
+		objectives = bool(params.get("objectives", false))
 	elif not solo_launch.is_empty():
 		seed_value = int(solo_launch.get("seed", 1))
 		mode = str(solo_launch.get("mode", mode))
+		friendly_fire = bool(solo_launch.get("friendly_fire", true))
+		objectives = objectives or bool(solo_launch.get("objectives", false))
 		solo_launch = {}
 	elif s.is_valid_int():
 		seed_value = int(s)
+	if not crewed and args.has("--objectives"):
+		objectives = true
 	if city_mode == "":
 		city_mode = mode
+	loading_screen.friendly_fire = friendly_fire
+	loading_screen.set_mission(seed_value, city_mode)
+	if crewed:
+		loading_screen.crew_source = _crew_rows
 	_t_load = Time.get_ticks_msec()
 	if crewed:
 		# Tell the host this machine is building (a slow laptop takes seconds). The stepped load builds over frames; the
@@ -203,6 +234,7 @@ func _ready() -> void:
 		# Connected before the load, so the session ending (or the host ending the mission) while loading leaves too.
 		_held = true
 		sess.mission_go.connect(func(_elapsed: float) -> void: _held = false)
+		sess.mission_go.connect(func(_elapsed: float) -> void: _uncover())
 		sess.mission_ended.connect(func(_reason: String) -> void: _back_to_menu())
 		sess.session_ended.connect(func(_reason: String) -> void: _back_to_menu())
 		sess.crew_note.connect(_show_note)
@@ -210,8 +242,13 @@ func _ready() -> void:
 	if crewed and stack != null and stepped_load:
 		_load_stepped(args)   # a coroutine: returns at its first frame
 		return
+	if not crewed and (cover_solo or not OS.get_cmdline_user_args().has("--run-test")):
+		_load_solo(args)   # a coroutine: the loading screen draws first, then the synchronous build
+		return
 	_keep_alive()
+	loading_screen.set_phase("build", 0.0)
 	build_city(seed_value)
+	_cover_section()
 	_t_city = Time.get_ticks_msec()
 	_finish_setup(args, false)
 
@@ -226,13 +263,16 @@ func _load_stepped(args: PackedStringArray) -> void:
 	stack.position = Vector3.ZERO
 	if ShaderWarmup.should_run():   # the shared materials first, so the build's frames don't compile them
 		warming = true
-		await ShaderWarmup.warm(cam, null)
+		loading_screen.set_phase("shaders_pre", 0.0)
+		await ShaderWarmup.warm(cam, null, "", false)
 		warming = false
 		if _leaving or not is_inside_tree():
 			return
-	stack.build_begin(SectionPlan.make({"seed": float(seed_value)}))
+	var sec := SectionPlan.make({"seed": float(seed_value)})
+	loading_screen.set_section(sec)
+	stack.build_begin(sec)
 	while not stack.build_step(STEP_BUDGET_MS):
-		_show_loading(stack.build_progress() * 0.85)
+		_show_loading(stack.build_progress())
 		await get_tree().process_frame
 		if _leaving or not is_inside_tree():
 			return
@@ -243,11 +283,96 @@ func _load_stepped(args: PackedStringArray) -> void:
 	await _finish_setup(args, true)
 
 
-func _show_loading(f: float) -> void:
-	if _load_label == null:
+## Solo: the loading screen draws its first frames (the window shows it, not the hangar or a half-built city), then the
+## synchronous build and setup run as before, then the warm-up; the screen comes down at the end of _finish_setup.
+func _load_solo(args: PackedStringArray) -> void:
+	loading = true
+	for p: int in mechs:
+		(mechs[p] as Node).process_mode = Node.PROCESS_MODE_DISABLED
+	for i in COVER_FRAMES:
+		await get_tree().process_frame
+		if _leaving or not is_inside_tree():
+			return
+	if city_mode == MODE_STACK:
+		loading_screen.set_section(SectionPlan.make({"seed": float(seed_value)}))   # cheap: plan data only
+	loading_screen.set_phase("build", 0.05)
+	await get_tree().process_frame
+	if _leaving or not is_inside_tree():
 		return
-	_load_label.visible = true
-	_load_label.text = "Building the station... %d%%" % clampi(int(f * 100.0), 0, 100)
+	build_city(seed_value)
+	_t_city = Time.get_ticks_msec()
+	_cover_section()
+	loading_screen.set_phase("populate", 0.0)
+	for p: int in mechs:
+		(mechs[p] as Node).process_mode = Node.PROCESS_MODE_INHERIT
+	loading = false
+	await _finish_setup(args, false)
+
+
+## The stack build's progress on the loading screen (the "build" phase).
+func _show_loading(f: float) -> void:
+	if loading_screen != null:
+		loading_screen.set_phase("build", f)
+
+
+## The section line on the loading screen once the stack is built.
+func _cover_section() -> void:
+	if loading_screen != null and stack != null and stack.section != null:
+		loading_screen.set_section(stack.section)
+
+
+## The crew rows the loading screen lists: every member of the launch, by seat, ready once it has reported its build.
+func _crew_rows() -> Array:
+	var sess := Net.session()
+	if sess == null or not sess.online():
+		return []
+	var ready := sess.mission_ready_peers()
+	var out: Array = []
+	var entries := (sess.mission_params().get("crew", []) as Array).duplicate()
+	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a.get("seat", 0)) < int(b.get("seat", 0)))
+	for e: Dictionary in entries:
+		var p := int(e.get("peer", 0))
+		if not sess.roster.has(p):
+			continue
+		out.append({"peer": p, "name": str(e.get("name", p)), "head": str(e.get("head", "")),
+			"accent": str(e.get("accent", NetSession.DEFAULT_ACCENT)), "status": "ready" if ready.has(p) else "loading",
+			"local": p == sess.local_id()})
+	return out
+
+
+## Hide or show the HUD (the mech HUD and the help / note layer) under the loading screen.
+func _set_hud_shown(on: bool) -> void:
+	if _hud != null and is_instance_valid(_hud):
+		_hud.visible = on
+	if _hud_layer != null and is_instance_valid(_hud_layer):
+		_hud_layer.visible = on
+
+
+## The mission starts here (mission_go, or the solo load is done): the HUD comes back and the loading screen fades out.
+func _uncover() -> void:
+	if _leaving or loading_screen == null or not is_instance_valid(loading_screen):
+		return
+	_set_hud_shown(true)
+	loading_screen.finish()
+	loading_screen = null
+
+
+## Leave this scene for `scene` behind a loading screen: it is up (and has drawn a frame) before anything is torn down,
+## and the next scene (the menu) puts its own up first (LoadingScreen.handoff), so no frame shows a half-freed mission.
+func _leave_to(scene: String) -> void:
+	_leaving = true
+	if loading_screen == null or not is_instance_valid(loading_screen) or loading_screen.fading:
+		loading_screen = LoadingScreen.cover(self)
+		loading_screen.friendly_fire = friendly_fire
+		loading_screen.set_mission(seed_value, city_mode)
+	loading_screen.set_phase("leave")
+	_set_hud_shown(false)
+	LoadingScreen.handoff = true
+	LoadingScreen.handoff_phase = "leave"
+	await get_tree().process_frame
+	await get_tree().process_frame
+	if is_inside_tree():
+		get_tree().change_scene_to_file(scene)
 
 
 ## Everything after the city: combat, audio, life, HUD, the crew's sync, the mission, then (crew) mission.ready.
@@ -272,22 +397,38 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 		life.name = "AmbientLife"
 		add_child(life)
 		life.setup_stack_begin(stack)
+		var steps := 0
+		loading_screen.set_phase("populate", 0.0)
 		while not life.setup_step(STEP_BUDGET_MS):
-			_show_loading(0.85 + 0.15 * 0.5)
+			steps += 1
+			loading_screen.set_phase("populate", 1.0 - pow(0.93, float(steps)))   # no count to read: ease toward the end
 			await get_tree().process_frame
 			if _leaving or not is_inside_tree():
 				return
 		_bind_life()
+		if stack != null:
+			# The banners deck by deck (OccupationBanners.setup_step: one deck per call, 3-19 ms each).
+			banners = _new_banners()
+			banners.setup_begin(stack, combat.world)
+			while not banners.setup_step(STEP_BUDGET_MS):
+				await get_tree().process_frame
+				if _leaving or not is_inside_tree():
+					return
 		loading = false
-		if _load_label != null:
-			_load_label.visible = false
 	else:
+		if loading_screen != null:
+			loading_screen.set_phase("populate", 0.0)
 		_build_life()
+		if stack != null:
+			banners = _new_banners()
+			banners.setup(stack, combat.world)
 	_keep_alive()
 	var hud := MechHud.for_drive(self)   # weapons, heat, damage, crosshair + aim pips (scripts/ui/mech_hud.gd)
 	if combat.player_target != null:
 		hud.component_source = combat.player_target.component_fractions
 	add_child(hud)
+	_hud = hud
+	_set_hud_shown(loading_screen == null)
 	if crewed:
 		crew_sync = CrewSync.new()
 		crew_sync.name = "CrewSync"
@@ -299,6 +440,17 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 		enemy_sync.name = "EnemySync"
 		add_child(enemy_sync)
 		enemy_sync.setup(self)
+	if stepped and objectives and stack != null and stack.section != null:
+		# Plan mode: the mission world (wave doors, flag masts, relays, portal) sets up over frames too
+		# (CityStack.setup_mission_begin / step), so a slow machine keeps its link and the loading screen keeps moving.
+		prebuilt_plan = MissionPlan.make(stack.section, MissionFlow.test_plan)
+		stack.setup_mission_begin(prebuilt_plan)
+		while not stack.setup_mission_step(STEP_BUDGET_MS):
+			if loading_screen != null:
+				loading_screen.set_phase("populate", 0.9 + 0.1 * stack.setup_mission_progress())
+			await get_tree().process_frame
+			if _leaving or not is_inside_tree():
+				return
 	if stack != null:
 		mission = MissionFlow.new()
 		mission.name = "MissionFlow"
@@ -315,7 +467,9 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 		var was_paused := get_tree().paused
 		if not crewed:
 			get_tree().paused = true
-		await ShaderWarmup.warm(cam, self)
+		if loading_screen != null:
+			loading_screen.set_phase("shaders", 0.0)
+		await ShaderWarmup.warm(cam, self, "", loading_screen == null)
 		if is_inside_tree():
 			get_tree().paused = was_paused
 		warming = false
@@ -334,6 +488,10 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 			_back_to_menu.call_deferred()   # the session ended inside the build (seen by a keep-alive poll)
 		else:
 			sess.report_mission_built(mission_checksum(), ms)
+			if loading_screen != null:
+				loading_screen.set_phase("crew", 1.0)   # until mission_go (_uncover)
+			if sess.mission.phase == NetMission.RUNNING:
+				_uncover()   # the barrier passed already
 	if args.has("--dev-fast-clear"):
 		CombatWorld.dev_enemy_damage = DEV_FAST_CLEAR
 		print("[TestDrive] DEV --dev-fast-clear: enemies take %.0fx damage" % DEV_FAST_CLEAR)
@@ -348,6 +506,8 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 			bot = MissionBot.attach(self, profile)
 			_flow_watch()
 	loaded = true
+	if not crewed:
+		_uncover()   # solo: the load and warm-up are done
 	mission_loaded.emit()
 	if _shooting:
 		var after := float(Boot.arg_value(args, "--shot-after")) if Boot.arg_value(args, "--shot-after").is_valid_float() else 4.0
@@ -404,6 +564,8 @@ func _flow_watch() -> void:
 		return
 	_flow = {"contact": false, "done": [], "outcome": "", "kills": 0, "check": 0.0}
 	combat.world.hit_landed.connect(func(t: CombatTarget, h: Hit) -> void:
+		if t is BannerTarget:
+			return   # tearing a banner is not enemy contact
 		if not bool(_flow.get("contact", true)) and (t.team == "enemy" or str(h.shooter).begins_with("enemy") or t.team == "player"):
 			_flow["contact"] = true
 			FlowLog.say("first enemy contact", "%s hit %s" % [h.shooter, t.target_id]))
@@ -496,12 +658,22 @@ func build_city(seed: int, built: bool = false) -> void:
 		combat_audio.bind_props(city.props)
 	if life != null:
 		_setup_life()
+	if banners != null and stack != null:
+		banners.setup(stack, combat.world)
 	if mission != null:
 		mission.rebuild()   # solo N: the new city's section and objectives
 
 
 ## Ambient life for this scene: the city's civilians and vehicles, pushed by every mech (puppets too: src = owner peer)
 ## and every enemy (src -1), seen from every mech and the camera.
+func _new_banners() -> OccupationBanners:
+	var b := OccupationBanners.new()
+	b.name = "OccupationBanners"
+	b.set_quality(GraphicsQuality.level())
+	add_child(b)
+	return b
+
+
 func _build_life() -> void:
 	life = AmbientLife.new()
 	life.set_quality(GraphicsQuality.level())
@@ -542,6 +714,8 @@ func _on_graphics_quality(q: int) -> void:
 		stack.set_quality(q)
 	if life != null:
 		life.set_quality(q)
+	if banners != null:
+		banners.set_quality(q)
 
 
 func _setup_life() -> void:
@@ -623,11 +797,18 @@ func spawn_enemies(w: CombatWorld, sq: EnemySquad) -> Array[EnemyBase]:
 	var entry_k := int(stack.section.entry["deck"])
 	var ea := stack.to_deck_arc(origin)
 	var out: Array[EnemyBase] = []
+	# Plan mode: only the deck pool's garrison share stands at the start (0.5; 1.0 on a deck without wave sources); the
+	# rest arrives in waves (MissionFlow -> EnemySpawner.spawn_wave). The same plan MissionFlow builds right after.
+	var mp: MissionPlan = MissionPlan.make(stack.section, MissionFlow.test_plan) if objectives else null
 	for k in stack.decks.size():
 		sq.add_deck_nav(k, stack.decks[k].plan)
 		var o := origin if k == entry_k else stack.from_deck_arc(k, float(ea["x"]), float(ea["s"]), float(ea["h"]))
-		out.append_array(EnemySpawner.spawn_all(stack.decks[k].plan, city.ring if k == entry_k else stack.deck_ring(k), o, w,
-			sq, seed_value, false, crew, "" if k == entry_k else "d%d_" % k, k))
+		var share := float(mp.pool(k).get("garrison", 1.0)) if mp != null else 1.0
+		var got := EnemySpawner.spawn_all(stack.decks[k].plan, city.ring if k == entry_k else stack.deck_ring(k), o, w,
+			sq, seed_value, false, crew, "" if k == entry_k else "d%d_" % k, k, [], share)
+		if mp != null:
+			print("[mission] deck %d garrison: %d units (share %.2f)" % [k, got.size(), share])
+		out.append_array(got)
 	enemies_spawned = true
 	return out
 
@@ -647,9 +828,12 @@ func enemies_alive_per_deck() -> Array[int]:
 	return EnemySync.alive_per_deck(combat.squad.enemies if combat != null and combat.squad != null else [], decks)
 
 
-## What the load barrier compares: the stack's checksum (section + every deck's plan) or the district plan's.
+## What the load barrier compares: the stack's checksum (section + every deck's plan) or the district plan's; in plan
+## mode the MissionPlan's checksum is joined to the stack's ("<stack>/<plan>").
 func mission_checksum() -> String:
 	if stack != null:
+		if mission != null and mission.plan != null:
+			return stack.checksum() + "/" + mission.plan.checksum()
 		return stack.checksum()
 	return city.plan.checksum() if city != null and city.plan != null else ""
 
@@ -713,8 +897,7 @@ func mech_of(peer: int) -> MechController:
 
 func _back_to_menu() -> void:
 	if crewed and not _leaving and is_inside_tree() and get_tree().current_scene == self:
-		_leaving = true
-		get_tree().change_scene_to_file.call_deferred(Boot.MENU_SCENE)
+		_leave_to(Boot.MENU_SCENE)
 
 
 ## The mission's end flow is over (MissionFlow.finished): back to the hangar. A crew goes there through the menu (online:
@@ -722,10 +905,9 @@ func _back_to_menu() -> void:
 func _leave_mission() -> void:
 	if _leaving or not is_inside_tree() or get_tree().current_scene != self:
 		return
-	_leaving = true
 	if not crewed:
 		FrontEnd.next_screen = "hangar"
-	get_tree().change_scene_to_file.call_deferred(Boot.MENU_SCENE)
+	_leave_to(Boot.MENU_SCENE)
 
 
 func _make_mech() -> MechController:
@@ -801,9 +983,14 @@ func _unhandled_input(e: InputEvent) -> void:
 	elif e is InputEventKey and (e as InputEventKey).pressed and not (e as InputEventKey).echo:
 		match (e as InputEventKey).keycode:
 			KEY_ESCAPE:
+				if _leaving:
+					return
 				if crewed and Net.session() != null:
 					Net.session().end_mission()
-				get_tree().change_scene_to_file(Boot.MENU_SCENE)
+				if get_tree().current_scene == self:
+					_leave_to(Boot.MENU_SCENE)
+				else:
+					get_tree().change_scene_to_file(Boot.MENU_SCENE)
 			KEY_TAB:
 				_capture(Input.mouse_mode != Input.MOUSE_MODE_CAPTURED)
 			KEY_N:
@@ -827,6 +1014,8 @@ func _build_hud() -> void:
 	var layer := CanvasLayer.new()
 	layer.name = "Hud"
 	add_child(layer)
+	_hud_layer = layer
+	layer.visible = loading_screen == null
 	var root := Control.new()
 	root.name = "HudRoot"
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE

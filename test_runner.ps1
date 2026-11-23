@@ -18,6 +18,7 @@
 #
 # SERIAL TESTS: a test whose source declares `const SERIAL := true` (a wall-clock budget, e.g. test_perf) is left out of
 # the parallel batch and runs after everything else (the net runs too), one at a time, with no other test process going.
+# PER-TEST TIMEOUT: `const TEST_TIMEOUT := N` gives a (non-net) test max(-TimeoutSec, N) s (the bot-played missions).
 #
 # Logs: test_logs\<name>.log / .err.log. A test passes only with exit code 0, the ">>> [TEST PASSED] <name> <<<"
 # marker, AND no "SCRIPT ERROR" / "Parse Error" in its output. Ordinary tests run under --fixed-fps 60.
@@ -73,13 +74,20 @@ function Test-Bad([string]$Text) { return $Text -match "SCRIPT ERROR|Parse Error
 function Test-Visual([string]$Name) { return (Get-Content -Raw "$PSScriptRoot\tests\$Name.gd") -match '(?m)^const VISUAL\s*:=\s*true' }
 function Test-Serial([string]$Name) { return (Get-Content -Raw "$PSScriptRoot\tests\$Name.gd") -match '(?m)^const SERIAL\s*:=\s*true' }
 
+# `const TEST_TIMEOUT := N` in a (non-net) test: it gets max(-TimeoutSec, N) s (a whole bot-played mission).
+function Get-TestTimeout([string]$Name) {
+    $m = [regex]::Match((Get-Content -Raw "$PSScriptRoot\tests\$Name.gd"), '(?m)^const TEST_TIMEOUT\s*:=\s*(\d+)')
+    if ($m.Success) { return [Math]::Max($TimeoutSec, [int]$m.Groups[1].Value) }
+    return $TimeoutSec
+}
+
 function Start-Test([string]$Name) {
     $g = Start-Godot $Name "--net-port $(Get-FreePort)"
-    return [PSCustomObject]@{ Name = $Name; Proc = $g.Proc; Out = $g.Out; Err = $g.Err; Watch = [Diagnostics.Stopwatch]::StartNew() }
+    return [PSCustomObject]@{ Name = $Name; Proc = $g.Proc; Out = $g.Out; Err = $g.Err; Watch = [Diagnostics.Stopwatch]::StartNew(); Timeout = (Get-TestTimeout $Name) }
 }
 
 function Finish-Test($r) {
-    $left = [Math]::Max(0, [int](($TimeoutSec - $r.Watch.Elapsed.TotalSeconds) * 1000))
+    $left = [Math]::Max(0, [int](($r.Timeout - $r.Watch.Elapsed.TotalSeconds) * 1000))
     if (-not $r.Proc.WaitForExit($left)) { try { $r.Proc.Kill() } catch {}; $r.Proc.WaitForExit() }
     $out = $r.Out.Result; $err = $r.Err.Result
     Set-Content -Path "$logDir\$($r.Name).log" -Value $out
@@ -305,7 +313,7 @@ $serial = @($parallel | Where-Object { Test-Serial $_ })
 $parallel = @($parallel | Where-Object { $serial -notcontains $_ })
 foreach ($n in $parallel) {
     while ($true) {
-        $done = @($running | Where-Object { $_.Proc.HasExited -or $_.Watch.Elapsed.TotalSeconds -gt $TimeoutSec })
+        $done = @($running | Where-Object { $_.Proc.HasExited -or $_.Watch.Elapsed.TotalSeconds -gt $_.Timeout })
         foreach ($r in $done) {
             $total += 1
             if (-not (Finish-Test $r)) { $failed += $r.Name }
@@ -343,7 +351,7 @@ if ($netRuns.Count -gt 0) {
 
 foreach ($n in $serial) {
     $r = Start-Test $n
-    $r.Proc.WaitForExit($TimeoutSec * 1000) | Out-Null
+    $r.Proc.WaitForExit($r.Timeout * 1000) | Out-Null
     $total += 1
     if (-not (Finish-Test $r)) { $failed += $n }
 }

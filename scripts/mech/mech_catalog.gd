@@ -23,7 +23,7 @@ const CHASSIS := {
 		"base_weight": 38.0,
 		"max_weight": 30.0,    ## weapons over this slow the mech (the penalty is not built yet)
 		"heat_cap": 100.0,
-		"cooling": 6.0,
+		"cooling": 9.0,
 		"hardpoints": [
 			{"id": "side_l", "label": "Left side", "mount": "side"},
 			{"id": "side_r", "label": "Right side", "mount": "side"},
@@ -104,14 +104,25 @@ const WEAPONS := {
 		"falloff_start": 45.0, "falloff_min": 1.0, "spread": 5.0, "knockback": 0.0, "splash_damage": 0.0, "splash_radius": 0.0,
 		"target_heat": 2.2, "ammo": -1, "growth": 6.0, "growth_full": 45.0, "size": 0.25, "trail": 0.0, "impact_radius": 0.0,
 		"muzzle": 0.85, "slew": 180.0},
+	# Flak (weapons.md §3.10): a fast straight shell with a proximity fuse. Armed after arm_distance m, it bursts where its
+	# path passes closest to a hit sphere within fuse_radius m of it (any target CombatWorld.spares doesn't spare), on any
+	# contact, and at the end of its range. Direct damage only on an actual strike, on top of the splash.
+	"flak": {"name": "Flak Cannon", "mounts": ["side", "shoulder"], "weight": 7.0, "passive_heat": 0.5, "active_heat": 2.2,
+		"note": "Proximity-fused shells: bursts beside aircraft, on contact or at range.",
+		"kind": "flak", "damage": 6.0, "rate": 1.5, "salvo": 1, "reload": 0.0, "speed": 140.0, "range": 220.0,
+		"falloff_start": 220.0, "falloff_min": 1.0, "spread": 0.4, "knockback": 0.4, "splash_damage": 16.0, "splash_radius": 8.0,
+		"target_heat": 0.0, "ammo": 160, "growth": 3.5, "growth_full": 120.0, "size": 0.6, "trail": 0.3, "impact_radius": 2.5,
+		"muzzle": 1.46, "explosive": true, "fuse_radius": 6.0, "arm_distance": 12.0, "splash_knockback": 0.4, "prop_blast": 0.4,
+		"slew": 180.0},
 	# --- Back-mount EQUIPMENT (docs/design/back-equipment.md). Entries in this table so loadouts, the hello profile,
 	# sanitize_loadout and loadout_stats carry them unchanged; NOT in WEAPON_ORDER (weapons_for / the hangar list weapons
 	# only: offer EQUIPMENT_ORDER via equipment_for). `equipment`: "active" (the slot key activates it) or "passive".
 	# Never fires on the trigger; no behaviour in WeaponRegistry; no mesh yet (MechParts gives an empty node).
 	"repair_drone": {"name": "Repair Drone", "mounts": ["back"], "weight": 6.0, "passive_heat": 0.0, "active_heat": 15.0,
-		"note": "Key 5 launches a drone that follows you for 60 s and repairs every mech within 15 m. 2 per mission.",
+		"note": "Key 5 selects, click launches: circles you 60 s, repairs mechs within 15 m, docks. 2 per mission.",
 		"kind": "equipment", "equipment": "active", "ammo": -1, "muzzle": 0.0,
-		"charges": 2, "life": 60.0, "hover": 6.0, "radius": 15.0, "heal_rate": 0.01, "follow": 0.4, "rise": 0.5},
+		"charges": 2, "life": 60.0, "hover": 6.0, "radius": 15.0, "heal_rate": 0.01, "follow": 0.4, "rise": 0.5,
+		"orbit": 5.0, "orbit_period": 6.0, "dock": 1.5},
 	"radiator": {"name": "Radiator Fins", "mounts": ["back"], "weight": 5.0, "passive_heat": 0.0, "active_heat": 0.0,
 		"note": "Passive: +3 heat/s cooling.",
 		"kind": "equipment", "equipment": "passive", "ammo": -1, "muzzle": 0.0, "cooling_bonus": 3.0},
@@ -122,7 +133,7 @@ const WEAPONS := {
 ## Back-mount equipment the hangar offers (entries of WEAPONS with an `equipment` field), in display order.
 const EQUIPMENT_ORDER := ["repair_drone", "radiator", "ammo_bin"]
 ## Weapons the hangar offers.
-const WEAPON_ORDER := ["laser", "autocannon", "gatling", "swivel", "rockets", "missiles", "flamer", "mortar", "railgun"]
+const WEAPON_ORDER := ["laser", "autocannon", "gatling", "swivel", "rockets", "missiles", "flamer", "mortar", "railgun", "flak"]
 ## Every stat a weapon entry carries (test_combat checks them all).
 const WEAPON_STATS := ["name", "mounts", "weight", "passive_heat", "active_heat", "kind", "damage", "rate", "salvo", "reload",
 	"speed", "range", "falloff_start", "falloff_min", "spread", "knockback", "splash_damage", "splash_radius", "target_heat", "ammo",

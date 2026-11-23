@@ -53,12 +53,16 @@ var tr: LifeTraffic
 var episodes: Dictionary = {}   ## loop -> its latest episode (the one before under "prev")
 var locks: Dictionary = {}      ## loop -> PackedFloat64Array [a0, b0, ...]: held until b
 var wrecks: Dictionary = {}     ## vid -> its last wreck event
+var brute_force := false        ## the reference path for tests: every vehicle's pose on every threat
+var _loop_box: Array = []       ## loop -> Rect2 holding every pose a vehicle on it can have (its path, grown LOOP_SLACK)
+const LOOP_SLACK := 5.0         ## m: a vehicle that is not a wreck is on its loop's path (docked / pulled over: within this)
 
 
 func net_fields() -> Dictionary:
 	return {
 		"tr": Net.SPAWN,
 		"episodes": Net.OWNER, "locks": Net.OWNER, "wrecks": Net.OWNER,    # decided by the host's events, derived everywhere
+		"brute_force": Net.LOCAL, "_loop_box": Net.LOCAL,                 # test switch / derived from the plan
 	}
 
 
@@ -350,8 +354,21 @@ func apply_threat(ev: Dictionary, crowd: LifeCrowd) -> void:
 	var T := float(ev.get("t", 0.0))
 	var c := Vector2(float(ev.get("x", 0.0)), float(ev.get("s", 0.0)))
 	var st := int(ev.get("st", 1))
+	if _loop_box.size() != tr.loops.size():
+		_loop_box.clear()
+		for lo: Dictionary in tr.loops:
+			var pts: PackedVector2Array = lo["pts"]
+			var box := Rect2(pts[0] if pts.size() > 0 else Vector2.ZERO, Vector2.ZERO)
+			for q in pts:
+				box = box.expand(q)
+			_loop_box.append(box.grow(LOOP_SLACK))
 	for li in tr.loops.size():
 		var hit := false
+		if not brute_force:      # no vehicle of this loop can be within ESTOP_R: the loop below would find none
+			var box: Rect2 = _loop_box[li]
+			var q := Vector2(clampf(c.x, box.position.x, box.end.x), clampf(c.y, box.position.y, box.end.y))
+			if q.distance_to(c) > ESTOP_R + 0.05:
+				continue
 		for vid in tr.loop_vehicles(li):
 			var p := pose(vid, T)
 			if not p["wreck"] and Vector2(p["x"], p["s"]).distance_to(c) <= ESTOP_R:

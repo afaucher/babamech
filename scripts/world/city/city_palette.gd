@@ -29,8 +29,19 @@ const C := {
 	# ceiling (underside of the next deck)
 	"ceil_a": Color("c9b58c"), "ceil_b": Color("bca87f"), "ceil_c": Color("d3c199"), "rib": Color("a5916c"),
 	"strip": Color("fff6e0"),
+	# vertical farm side walls (docs/design/city-styles.md "Side walls: vertical farm"): pale concrete fins and plinth, a
+	# darker solid backing, pale racks, blue-grey feed pipes, and fresh greens brighter than the street trees
+	"farm_fin": Color("e4dccb"), "farm_backing": Color("8e8576"), "farm_rack": Color("d6d2c6"), "farm_planter": Color("a8a091"),
+	"farm_pipe": Color("7d91a1"), "farm_leaf_dark": Color("5c9a3c"), "farm_leaf": Color("7db948"), "farm_leaf_light": Color("a2d067"),
 	# backdrop (far, low-detail blocks: desaturated so the haze reads)
 	"far_a": Color("cfc6b2"), "far_b": Color("c0a89a"), "far_c": Color("a9b7a6"), "far_d": Color("a8bccb"),
+	# mission world (MissionWorld): wave doors, the beacon, the alien banner, ours (the crew's default accent, safety
+	# orange: MechMeshes.ORANGE), the defend relay, the extraction portal; glows use MissionProps' emissive materials
+	"m_recess": Color("1c1d1f"), "m_leaf": Color("55595a"), "m_scorch": Color("2a2624"), "m_weld": Color("3b3e40"),
+	"m_beacon": Color("ffab2e"), "m_beacon_dead": Color("4a3f30"), "m_alien": Color("3a3a40"), "m_alien_mark": Color("b23a2e"),
+	"m_ours": Color("ee7520"), "m_ours_mark": Color("f4ecd8"), "m_relay": Color("7d8a8f"), "m_relay_band": Color("5fd0e6"),
+	"m_portal": Color("6fe3ff"), "m_portal_off": Color("3c4446"), "m_zone": Color("f2ead5"), "m_hostile": Color("e0402e"),
+	"m_done": Color("7ee08a"),
 }
 
 static var _surface: StandardMaterial3D
@@ -64,3 +75,22 @@ static func strip_material() -> StandardMaterial3D:
 		_strip.emission = Color.WHITE
 		_strip.emission_energy_multiplier = 2.0
 	return _strip
+
+
+## A farm wall's light bars: the same kind of material as the strips, tinted warm (FARM_LIGHT_TINT); CityLightRig sets
+## its glow from the strips' preset colour times that tint, a little dimmer, so a bar reads as a warm fixture, not a
+## white line blooming across the wall.
+const FARM_LIGHT_TINT := Color(1.0, 0.86, 0.62)
+const FARM_LIGHT_ENERGY := 0.55     ## of the strips' energy
+static var _farm_light: StandardMaterial3D
+
+
+static func farm_light_material() -> StandardMaterial3D:
+	if _farm_light == null:
+		_farm_light = StandardMaterial3D.new()
+		_farm_light.albedo_color = FARM_LIGHT_TINT
+		_farm_light.roughness = 1.0
+		_farm_light.emission_enabled = true
+		_farm_light.emission = FARM_LIGHT_TINT
+		_farm_light.emission_energy_multiplier = 2.0 * FARM_LIGHT_ENERGY
+	return _farm_light

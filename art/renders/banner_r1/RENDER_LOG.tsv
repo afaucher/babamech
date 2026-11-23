@@ -1,0 +1,13 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-22T20:29:58	b1_eye_chevron_s4242.png	flux3_klein_t2i	4242	1024x576			5.82	b1_eye_chevron_prompt.txt
+2026-11-22T20:30:02	b2_rings_s4242.png	flux3_klein_t2i	4242	1024x576			3.31	b2_rings_prompt.txt
+2026-11-22T20:30:05	b3_grip_s4242.png	flux3_klein_t2i	4242	1024x576			3.31	b3_grip_prompt.txt
+2026-11-22T20:30:09	b4_tricrown_s4242.png	flux3_klein_t2i	4242	1024x576			3.45	b4_tricrown_prompt.txt
+2026-11-22T20:30:12	b5_glyphs_s4242.png	flux3_klein_t2i	4242	1024x576			3.31	b5_glyphs_prompt.txt
+2026-11-22T20:30:16	b6_spiral_s4242.png	flux3_klein_t2i	4242	1024x576			3.31	b6_spiral_prompt.txt
+2026-11-22T20:30:20	b7_minimal_s4242.png	flux3_klein_t2i	4242	1024x576			3.44	b7_minimal_prompt.txt
+2026-11-22T20:30:23	b8_hex_eye_s4242.png	flux3_klein_t2i	4242	1024x576			3.71	b8_hex_eye_prompt.txt
+2026-11-22T20:30:27	b9_descent_s4242.png	flux3_klein_t2i	4242	1024x576			3.71	b9_descent_prompt.txt
+2026-11-22T20:30:50	b3_grip_s4242.png	flux3_klein_t2i	4242	1024x576			3.79	b3_grip_prompt.txt
+2026-11-22T20:30:53	b6_spiral_s4242.png	flux3_klein_t2i	4242	1024x576			3.3	b6_spiral_prompt.txt
+2026-11-22T20:31:12	b3_grip_s4242.png	flux3_klein_t2i	4242	1024x576			3.91	b3_grip_prompt.txt

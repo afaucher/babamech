@@ -1,0 +1,19 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-23T08:29:55	1_ring_skyline_s11.png	flux3_klein_t2i	11	1024x576			5.77	1_ring_skyline_prompt.txt
+2026-11-23T08:29:58	1_ring_skyline_s22.png	flux3_klein_t2i	22	1024x576			2.86	1_ring_skyline_prompt.txt
+2026-11-23T08:30:02	2_hangar_quiet_s11.png	flux3_klein_t2i	11	1024x576			3.29	2_hangar_quiet_prompt.txt
+2026-11-23T08:30:05	2_hangar_quiet_s22.png	flux3_klein_t2i	22	1024x576			2.89	2_hangar_quiet_prompt.txt
+2026-11-23T08:30:08	3_launch_rail_s11.png	flux3_klein_t2i	11	1024x576			3.27	3_launch_rail_prompt.txt
+2026-11-23T08:30:11	3_launch_rail_s22.png	flux3_klein_t2i	22	1024x576			2.88	3_launch_rail_prompt.txt
+2026-11-23T08:30:15	4_occupied_street_s11.png	flux3_klein_t2i	11	1024x576			3.26	4_occupied_street_prompt.txt
+2026-11-23T08:30:18	4_occupied_street_s22.png	flux3_klein_t2i	22	1024x576			2.96	4_occupied_street_prompt.txt
+2026-11-23T08:30:21	5_hull_window_s11.png	flux3_klein_t2i	11	1024x576			3.29	5_hull_window_prompt.txt
+2026-11-23T08:30:24	5_hull_window_s22.png	flux3_klein_t2i	22	1024x576			2.88	5_hull_window_prompt.txt
+2026-11-23T08:30:28	6_deck_flythrough_s11.png	flux3_klein_t2i	11	1024x576			3.31	6_deck_flythrough_prompt.txt
+2026-11-23T08:30:31	6_deck_flythrough_s22.png	flux3_klein_t2i	22	1024x576			2.87	6_deck_flythrough_prompt.txt
+2026-11-23T08:30:34	7_gantry_s11.png	flux3_klein_t2i	11	1024x576			3.27	7_gantry_prompt.txt
+2026-11-23T08:30:37	7_gantry_s22.png	flux3_klein_t2i	22	1024x576			2.89	7_gantry_prompt.txt
+2026-11-23T08:30:41	8_graphic_s11.png	flux3_klein_t2i	11	1024x576			3.29	8_graphic_prompt.txt
+2026-11-23T08:30:44	8_graphic_s22.png	flux3_klein_t2i	22	1024x576			2.9	8_graphic_prompt.txt
+2026-11-23T08:30:47	9_dropship_s11.png	flux3_klein_t2i	11	1024x576			3.29	9_dropship_prompt.txt
+2026-11-23T08:30:50	9_dropship_s22.png	flux3_klein_t2i	22	1024x576			2.86	9_dropship_prompt.txt

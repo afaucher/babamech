@@ -30,6 +30,7 @@ var _slot_batch_t := -1.0
 var _slot_batch_count := 0
 var _slot_batch_last := 0
 var _slot_batch_on := false
+var _reveal_ping_t := 0.0
 
 
 func net_fields() -> Dictionary:
@@ -38,7 +39,7 @@ func net_fields() -> Dictionary:
 		"local_shooter": Net.LOCAL, "_hooked_targets": Net.LOCAL, "_hooked_mounts": Net.LOCAL,
 		"_whistled_shells": Net.LOCAL, "_enemy_fired_recent": Net.LOCAL, "_was_trigger": Net.LOCAL,
 		"_scan_t": Net.LOCAL, "_slot_batch_t": Net.LOCAL, "_slot_batch_count": Net.LOCAL,
-		"_slot_batch_last": Net.LOCAL, "_slot_batch_on": Net.LOCAL,
+		"_slot_batch_last": Net.LOCAL, "_slot_batch_on": Net.LOCAL, "_reveal_ping_t": Net.LOCAL,
 	}
 
 
@@ -157,6 +158,7 @@ func step(delta: float) -> void:
 	if rack != null:
 		_sync_mounts()
 		_step_rack(a)
+	_step_reveal_pings(a, delta)
 
 
 # --- Weapons & Rack -------------------------------------------------------------------------------------
@@ -258,7 +260,7 @@ func _on_fired(record: Dictionary) -> void:
 	var prof := "local_mech" if is_local else "weapon"
 	var cue := _weapon_fire_cue(w)
 	var pitch := 1.0
-	if w == "rockets" or w == "enemy_rockets":
+	if w == "rockets" or w == "enemy_rockets" or w == "enemy_gunship_rockets":
 		# Walk pitch slightly across tubes so salvos ripple cleanly.
 		var tube := posmod(int(record.get("shot_index", 0)), 6)
 		pitch = 0.94 + float(tube) * 0.025
@@ -452,16 +454,25 @@ func _on_enemy_event(kind: String, _enemy: Node, payload: Dictionary) -> void:
 		"telegraph_started":
 			var tk := str(payload.get("kind", "generic"))
 			var dur := float(payload.get("duration", 0.55))
-			a.play_enemy_telegraph(id, _telegraph_audio_kind(tk), pos, dur)
+			# Diegetic-only rule: play physical weapon charge-up sounds (beam/lance/cannon/pulse) and the Scout
+			# Drone's real Alert Beacon support siren; skip non-diegetic warning beeps on ballistic/rocket/rifle fire.
 			if tk == "beacon":
+				a.play_enemy_telegraph(id, _telegraph_audio_kind(tk), pos, dur)
 				a.play_enemy_alert("relay", pos)
+			elif tk in ["beam", "lance", "cannon", "pulse"]:
+				a.play_enemy_telegraph(id, _telegraph_audio_kind(tk), pos, dur)
 			if a.music != null:
 				a.music.bump_combat(0.20)
 		"telegraph_cancelled":
 			a.cancel_enemy_telegraph(id)
 		"alerted":
 			var st := str(payload.get("state", "spotted"))
-			a.play_enemy_alert(st, pos)
+			if st.begins_with("deck:"):
+				return
+			if st == "revealed":
+				# Subtle 3D physical signal-flare pop from the straggler's own location (no 2D HUD alarm beep).
+				a.play_3d("wpn.mortar.fire", pos, -10.0, 1.75, "weapon", AudioDirector.BUS_SFX_WORLD)
+				_reveal_ping_t = EnemyTelegraphFx.FLARE_INTERVAL
 			if a.music != null and (st == "spotted" or st == "relay"):
 				a.music.bump_combat(0.25)
 		"weapon_fired":
@@ -521,6 +532,38 @@ func _on_player_disabled(_cause: String) -> void:
 		a.play_2d("combat.player.disabled", 0.0, 1.0, AudioDirector.BUS_SFX_TELEGRAPH)
 
 
+func _step_reveal_pings(a: AudioDirector, delta: float) -> void:
+	if squad == null or not is_instance_valid(squad):
+		return
+	_reveal_ping_t -= delta
+	if _reveal_ping_t > 0.0:
+		return
+	var list: Variant = squad.get("enemies")
+	if not (list is Array):
+		_reveal_ping_t = 0.5
+		return
+	var any_rev := false
+	var nearest_pos := Vector3.ZERO
+	var best_d2 := INF
+	var ref_p := Vector3.ZERO
+	if player_target != null and is_instance_valid(player_target) and player_target is Node3D and (player_target as Node3D).is_inside_tree():
+		ref_p = (player_target as Node3D).global_position
+	for e: Variant in list:
+		if e is EnemyBase and is_instance_valid(e) and not (e as EnemyBase).destroyed() and (e as EnemyBase).revealed:
+			any_rev = true
+			var ep := (e as EnemyBase).global_position if (e as EnemyBase).is_inside_tree() else (e as EnemyBase).position
+			var d2 := ref_p.distance_squared_to(ep)
+			if d2 < best_d2:
+				best_d2 = d2
+				nearest_pos = ep
+	if not any_rev:
+		_reveal_ping_t = 0.5
+		return
+	_reveal_ping_t = EnemyTelegraphFx.FLARE_INTERVAL
+	# Subtle 3D physical flare launch pop from the nearest revealed straggler (no radar chime).
+	a.play_3d("wpn.mortar.fire", nearest_pos, -11.0, 1.75, "weapon", AudioDirector.BUS_SFX_WORLD)
+
+
 func _charge_tag(slot_idx: int) -> String:
 	return "wpn.charge.%d.%d" % [get_instance_id(), slot_idx]
 
@@ -536,7 +579,7 @@ func _lock_tag() -> String:
 func _weapon_fire_cue(w: String) -> String:
 	match w:
 		"enemy_lance": return "wpn.railgun.fire"
-		"enemy_rockets", "enemy_troop_at": return "wpn.rockets.fire"
+		"enemy_rockets", "enemy_troop_at", "enemy_gunship_rockets": return "wpn.rockets.fire"
 		"enemy_scatter", "enemy_troop_rifle": return "wpn.autocannon.fire"
 	var cue := "wpn." + w + ".fire"
 	return cue if SoundBank.has_cue(cue) else "wpn.autocannon.fire"
@@ -545,9 +588,9 @@ func _weapon_fire_cue(w: String) -> String:
 func _telegraph_audio_kind(tk: String) -> String:
 	match tk:
 		"lance": return "beam"
-		"salvo", "troop_at": return "mortar"
+		"salvo", "troop_at", "gunship_salvo": return "mortar"
 		"scatter", "troop_rifle": return "rush"
-		"beacon": return "pulse"
+		"beacon", "dropship": return "pulse"
 	return tk
 
 

@@ -45,3 +45,7 @@ func spawn(world: CombatWorld, record: Dictionary, st: Dictionary) -> CombatEffe
 	p.look = look()
 	p.start(world, record, st)
 	return p
+
+
+func prewarm(st: Dictionary) -> void:
+	RailSlug.prewarm_slug(look(), st)

@@ -73,14 +73,14 @@ static func _total(c: Dictionary) -> int:
 
 
 ## Warm up under `cam` and return the report {items, frames, ms, compiled: {kind: n}}. Await it. `scan_root` null: the
-## extras only. `text`: the overlay's line.
-static func warm(cam: Camera3D, scan_root: Node, text: String = "Preparing shaders...") -> Dictionary:
+## extras only. `text`: the overlay's line. `overlay` false: no overlay of its own (the mission's LoadingScreen covers it).
+static func warm(cam: Camera3D, scan_root: Node, text: String = "Preparing shaders...", overlay: bool = true) -> Dictionary:
 	if cam == null or not cam.is_inside_tree():
 		return {}
 	var w := ShaderWarmup.new()
 	w.name = "ShaderWarmup"
 	cam.add_child(w)
-	var r := await w._run(cam, scan_root, text)
+	var r := await w._run(cam, scan_root, text if overlay else "")
 	if is_instance_valid(w):
 		w.queue_free()
 	return r
@@ -89,7 +89,8 @@ static func warm(cam: Camera3D, scan_root: Node, text: String = "Preparing shade
 func _run(cam: Camera3D, scan_root: Node, text: String) -> Dictionary:
 	var t0 := Time.get_ticks_msec()
 	var before := compilations()
-	_show_overlay(text)
+	if text != "":
+		_show_overlay(text)
 	if scan_root != null:
 		_scan(scan_root)
 	_extras()

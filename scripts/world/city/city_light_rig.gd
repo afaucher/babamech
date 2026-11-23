@@ -169,6 +169,9 @@ func apply(id: String) -> void:
 	var strip := CityPalette.strip_material()
 	strip.emission = p["strip"]
 	strip.emission_energy_multiplier = p["strip_energy"]
+	var farm := CityPalette.farm_light_material()      # farm wall light bars: the same light, warmer and dimmer
+	farm.emission = (p["strip"] as Color) * CityPalette.FARM_LIGHT_TINT
+	farm.emission_energy_multiplier = float(p["strip_energy"]) * CityPalette.FARM_LIGHT_ENERGY
 	_apply_quality()
 
 

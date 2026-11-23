@@ -130,6 +130,7 @@ const FIXED_ARC_YAW := PIVOT_YAW
 const FIXED_ARC_PITCH_DOWN := PIVOT_PITCH_DOWN
 const FIXED_ARC_PITCH_UP := PIVOT_PITCH_UP
 const OUT_OF_ARC := "OUT OF ARC"
+const SHUTDOWN := "SHUTDOWN"      ## hold reason while the mech is in heat shutdown (WeaponMount parks, weapons.md §4.7)
 
 
 ## Does this weapon pivot at its mount (see PIVOTING above)? Straight-flight player weapons without their own arc.

@@ -34,6 +34,11 @@ extends RefCounted
 ##                       glass ridge runs along the longer side)
 ##   gable               civic only: {off, w, d, y0, rise, front} the pitched roof, ridge along the front direction
 ##   columns[].ring_r/h  the planted stone ring round a park column's foot: radius, top height
+## DOWNTOWN (docs/design/city-downtown.md): a seeded contiguous zone of blocks (`block["downtown"]` true; a section's
+## `zone` stays the section's) whose lots carry ceiling-touching towers of style "tower" on six bases (`base`: podium,
+## stepped, plaza, corner, twin, arcade; a pillar in the zone gets podium or plaza). Tier kinds there: podium, terrace,
+## lobby, arcade (the arcade's roof over its walk-under gallery) and tower (a shaft, `tower`: slab | point, not standable,
+## up into the ceiling); solids kind column (the arcade's). `paving` [Rect2] and `planters` are looks (plaza ground).
 ## Sides are numbered 0:+x 1:-x 2:+s 3:-s.
 
 const FLOOR_H := 3.25        ## storey height (m)
@@ -44,7 +49,12 @@ const AVENUE_W := 20.0       ## four lanes + median
 const LOT_MAX := 26.0
 const LOT_MIN := 11.0
 const PILLAR_APRON := 4.0    ## a pillar tower's lot reaches this far past its structural core
-const STYLES := ["apartment", "office", "sage", "shops", "civic", "pillar"]
+## A cross road may bridge a ramp's cut only where a mech walking down the ramp fits under it with a margin: the clear
+## height from the ramp's surface to the bridge's underside (bridge_clearance) is at least BRIDGE_CLEAR. MECH_TOP is the
+## mech's collision capsule top (MechSpawn: height 4.0 x mech_scale 2.0; the drawn mech is about 8 m too).
+const MECH_TOP := 8.0
+const BRIDGE_CLEAR := MECH_TOP + 1.5
+const STYLES := ["apartment", "office", "sage", "shops", "civic", "pillar", "tower"]
 const BANDS := {"apartment": [1, 3], "office": [2, 4], "sage": [1, 3], "shops": [0, 0], "civic": [1, 1], "pillar": [1, 1]}
 const SIDE_N: Array[Vector2] = [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]
 const SIDE_EDGE: Array[String] = ["x1", "x0", "s1", "s0"]     ## the section's name for each side's wall
@@ -55,6 +65,9 @@ const DEFAULTS := {
 	"band_step": 6.5, "ceiling": 40.0, "clearance": 12.0, "pillar_bay": 90.0, "atrium": 0.0, "walls": 0.0, "jump_gap": 6.0,
 	"radius": 300.0,
 	"w_apartment": 1.0, "w_office": 1.0, "w_sage": 1.0, "w_shops": 0.8,
+	# Downtown zone share of the blocks (docs/design/city-downtown.md). On its own: 0 = none. A section deck rolls its own
+	# zone unless the overrides name this (0 = none there too).
+	"downtown": 0.0,
 }
 
 var params: Dictionary = {}
@@ -145,8 +158,20 @@ func generate(overrides: Dictionary = {}, given: CitySite = null) -> void:
 	var by_block := _pillars_by_block()
 	if int(special["civic"]) >= 0 and by_block.has(special["civic"]):
 		special["civic"] = -1          # an imposed pillar stands in that block: no room for the hall
+	var designs := {}
+	if p("downtown") > 0.0:
+		var allowed: Array[bool] = []
+		var avenue: Array[bool] = []
+		for bi in blocks.size():
+			var r: Rect2 = blocks[bi]["rect"]
+			allowed.append(bi != int(special["park"]) and bi != int(special["civic"]))
+			avenue.append(absf(r.position.x - AVENUE_W * 0.5) < 0.01 or absf(r.end.x + AVENUE_W * 0.5) < 0.01)
+		designs = _downtown_zone(p("downtown"), 1.0, allowed, avenue, by_block)
 	for bi in blocks.size():
-		_fill_block(bi, special, by_block.get(bi, []))
+		if designs.has(bi):
+			_fill_downtown(bi, designs[bi])
+		else:
+			_fill_block(bi, special, by_block.get(bi, []))
 	_finish()
 
 
@@ -202,11 +227,11 @@ func generate_deck(sec: SectionPlan, k: int, overrides: Dictionary = {}) -> void
 			var zone := sec.zone(deck, c, r)
 			blocks.append({"rect": sec.cell_rect(deck, c, r), "ix": c, "is": r, "kind": ZONE_KIND.get(zone, "built"), "zone": zone})
 	site = CitySite.for_deck(sec, deck)
+	_make_ramps()
 	var cut: Array[Rect2] = []
 	for o in site.floor_holes:
 		cut.append_array(_bridged(o))
 	site.floor_holes = cut
-	_make_ramps()
 	# Each pillar belongs to its own cell; one that does not fit inside that block's building line is dropped.
 	var by_block := {}
 	for q: Dictionary in site.pillars:
@@ -218,8 +243,24 @@ func generate_deck(sec: SectionPlan, k: int, overrides: Dictionary = {}) -> void
 		if not by_block.has(bi):
 			by_block[bi] = []
 		by_block[bi].append(q)
+	# Downtown: by seed on about two decks in three, about a third of the blocks, grown from a block on the spine; the
+	# overrides' `downtown` forces a share instead (0: none). Urban and industrial cells may join (industrial is urban
+	# lots for now, city-section-mode.md); the section's zone of a cell is left as it is.
+	var forced := overrides.has("downtown")
+	var share := float(overrides["downtown"]) if forced else DT_SHARE
+	var designs := {}
+	if share > 0.0:
+		var allowed: Array[bool] = []
+		var avenue: Array[bool] = []
+		for b: Dictionary in blocks:
+			allowed.append(b["zone"] == "urban" or b["zone"] == "industrial")
+			avenue.append(int(b["ix"]) == sec.spine_line or int(b["ix"]) + 1 == sec.spine_line)
+		designs = _downtown_zone(share, 1.0 if forced else DT_DECK_CHANCE, allowed, avenue, by_block)
 	for bi in blocks.size():
-		_fill_zone(bi, by_block.get(bi, []))
+		if designs.has(bi):
+			_fill_downtown(bi, designs[bi])
+		else:
+			_fill_zone(bi, by_block.get(bi, []))
 	_finish()
 
 
@@ -232,10 +273,14 @@ func _finish() -> void:
 
 
 ## A ramp's cut runs down a spine lane and so crosses the cross roads: they bridge it, so the floor is only cut
-## between them.
+## between them. Except where a mech walking down the ramp would not fit under the bridge (BRIDGE_CLEAR): there the
+## cut runs on under the cross road, which ends at the cut's curb and railing on both sides. With the section's ramp
+## grades that is always exactly the first cross road past the ramp's head (about 7 m clear), never another.
 func _bridged(o: Rect2) -> Array[Rect2]:
 	var bridges: Array[Rect2] = []
 	for road: Dictionary in roads_s:
+		if not bridge_allowed(o, float(road["a"]), float(road["b"])):
+			continue
 		bridges.append(Rect2(o.position.x - 1.0, float(road["a"]), o.size.x + 2.0, float(road["b"]) - float(road["a"])))
 	var out: Array[Rect2] = []
 	for q in CityGeo.cut(o, bridges):
@@ -275,6 +320,34 @@ static func ramp_height(r: Dictionary, s: float) -> float:
 ## Where ramp part `r` is at height h.
 static func ramp_s(r: Dictionary, h: float) -> float:
 	return lerpf(float(r["s_top"]), float(r["s_foot"]), (h - float(r["h_top"])) / (float(r["h_foot"]) - float(r["h_top"])))
+
+
+## Clear height under a bridge over a ramp's cut, on the ramp's centre line, at s (the bridge's edge nearer the ramp's
+## head, where the ramp is highest under it): from the ramp's surface up to the bridge's underside, the slab's bottom
+## (`slab` m under the road; the cut's faces and the soffit are drawn that deep). `r` is the ramp's top part.
+static func bridge_clearance(r: Dictionary, s: float, slab: float) -> float:
+	return -slab - ramp_height(r, s)
+
+
+## Whether the cross road a..b may bridge floor hole `o` (always, unless `o` is a ramp's cut and a mech walking down the
+## ramp would not fit under the road: bridge_clearance < BRIDGE_CLEAR). The cross road at the ramp's head is its
+## mouth (floor_cuts), not a bridge.
+func bridge_allowed(o: Rect2, a: float, b: float) -> bool:
+	if b <= o.position.y or a >= o.end.y:
+		return true
+	for r: Dictionary in ramps:
+		if r["role"] != "top" or absf(o.position.x - float(r["x0"])) > 0.01 or absf(o.end.x - float(r["x1"])) > 0.01:
+			continue
+		var top := float(r["s_top"])
+		var down := signf(float(r["s_foot"]) - top)
+		if a <= top and top <= b:
+			continue
+		var near := a if down > 0.0 else b
+		if (near - top) * down < 0.0:
+			continue
+		if bridge_clearance(r, near, site.slab) < BRIDGE_CLEAR:
+			return false
+	return true
 
 
 ## The floor as it is actually cut: the floor holes, with the piece at each ramp's top reaching on across half its cross
@@ -330,7 +403,8 @@ func clear_at(pt: Vector2) -> bool:
 
 ## One axis of the grid: a centre road, then blocks and streets outward on both sides, ending with a perimeter street.
 func _axis(half: float, centre_w: float, centre_kind: String, barred: Array) -> Dictionary:
-	var block := p("block")
+	# With a downtown zone the blocks are at least section-cell sized: a zone block holds two towers each way.
+	var block := p("block") if p("downtown") <= 0.0 else maxf(p("block"), DT_BLOCK)
 	var out_blocks := []
 	var out_roads := [{"a": -centre_w * 0.5, "b": centre_w * 0.5, "kind": centre_kind}]
 	for side: float in [1.0, -1.0]:
@@ -513,12 +587,7 @@ func _carve(r: Rect2, pillars_here: Array, bi: int, zone: Rect2, out: Array[Rect
 	if r.end.y - s1 < LOT_MIN + alley:
 		s1 = r.end.y
 	var li := _add_lot(Rect2(x0, s0, x1 - x0, s1 - s0), bi, zone, "")
-	_add_building(li, "pillar")
-	var b: Dictionary = buildings[buildings.size() - 1]
-	b["pillar"] = true
-	b["band"] = 1
-	b["setback"] = 0.5
-	b["core"] = {"x": q["x"], "s": q["s"], "half": float(q["half"]), "kind": q["kind"], "size": Vector2.ZERO}
+	_add_pillar(li, q)
 	var rest := []
 	for o: Dictionary in pillars_here:
 		if o != q:
@@ -531,6 +600,16 @@ func _carve(r: Rect2, pillars_here: Array, bi: int, zone: Rect2, out: Array[Rect
 		_carve(Rect2(x0, r.position.y, x1 - x0, s0 - alley - r.position.y), rest, bi, zone, out, split)
 	if s1 < r.end.y:
 		_carve(Rect2(x0, s1 + alley, x1 - x0, r.end.y - s1 - alley), rest, bi, zone, out, split)
+
+
+## The pillar tower on lot li, wrapping structural pillar q.
+func _add_pillar(li: int, q: Dictionary) -> void:
+	_add_building(li, "pillar")
+	var b: Dictionary = buildings[buildings.size() - 1]
+	b["pillar"] = true
+	b["band"] = 1
+	b["setback"] = 0.5
+	b["core"] = {"x": q["x"], "s": q["s"], "half": float(q["half"]), "kind": q["kind"], "size": Vector2.ZERO}
 
 
 ## Cut a rectangle into lots: split the long side until every piece is at most LOT_MAX, sometimes leaving an alley.
@@ -620,6 +699,9 @@ func band_floors(band: int) -> int:
 ## curved deck stays inside its lot all the way up (walls lean together toward the axis).
 func _shape_building(i: int) -> void:
 	var b: Dictionary = buildings[i]
+	if b["style"] == "tower":
+		_shape_tower(b)
+		return
 	var lot: Dictionary = lots[b["lot"]]
 	var r: Rect2 = lot["rect"]
 	var style: String = b["style"]
@@ -774,8 +856,11 @@ func _build_tiers(i: int) -> void:
 				var depth := 0.55 * float(k + 1)
 				solids.append(_solid("step", n * (d * 0.5 + depth * 0.5), _oriented(n, depth, w * 0.64), -0.5, 1.2 - 0.3 * float(k)))
 		"pillar":
-			if b["core"]["kind"] != "lift":      # a lift pillar stands bare in its plaza: the doors need the room
+			# A lift pillar stands bare in its plaza (the doors need the room); so does a downtown pillar on a plaza base.
+			if b["core"]["kind"] != "lift" and b.get("base", "") != "plaza":
 				tiers.append(_tier(Vector2.ZERO, size, 0.0, roof, true))
+		"tower":
+			_tower_tiers(b, tiers, solids)
 	for t: Dictionary in tiers:
 		if float(t["y1"]) > stand_limit() + 0.01:
 			t["stand"] = false
@@ -834,6 +919,16 @@ func roof_slots(i: int) -> Array:
 		"pillar":
 			if not tiers.is_empty():
 				return [[0, ["planter", "ac"]]]
+		"tower":
+			# The base's roofs (podium, terrace, arcade), never a shaft: low units only, so a mech's eye (8 m) still sees
+			# over a 6.5 m roof. The shafts standing on a roof are its blockers (roof_blockers).
+			var out := []
+			for t in tiers.size():
+				var tk := str(tiers[t].get("kind", ""))
+				var ts: Vector2 = tiers[t]["size"]
+				if tiers[t]["stand"] and tk != "lobby" and tk != "tower" and minf(ts.x, ts.y) >= ROOF_INSET * 2.0 + 1.0:
+					out.append([t, ["planter", "ac", "vent"]])
+			return out
 	return []
 
 
@@ -900,11 +995,14 @@ func _skylights(i: int) -> void:
 					break
 
 
-## The edge of the map: one entry per side, [{side, kind: bulkhead | window, at, backdrop, gates: [{a, b, h, kind:
+## The edge of the map: one entry per side, [{side, kind: bulkhead | window | farm, at, backdrop, gates: [{a, b, h, kind:
 ## blast_door | portal | collapsed}]}], gate a..b along the wall (x on an arc-end wall, s on a side wall). In a section
 ## they are the section's walls (always on); on its own the district is open unless `walls` asks for them, and then the
 ## two ends across the arc are bulkheads with a sealed gate wherever a road reaches them and the two sides are the
 ## habitat's hull, a window wall with no backdrop behind it.
+## kind "farm": the section's window walls that would look out at a backdrop are drawn as a vertical farm instead (user
+## decision, docs/design/city-styles.md "Side walls: vertical farm"): a solid wall, so no backdrop. Looks only: the wall's
+## collision, its gates and the checksum (which never reads boundary()) are the same as a window wall's.
 func boundary() -> Array:
 	var out := []
 	if section == null and p("walls") < 0.5:
@@ -918,6 +1016,9 @@ func boundary() -> Array:
 			var w: Dictionary = section.boundary(deck, SIDE_EDGE[side])
 			kind = str(w["kind"])
 			backdrop = bool(w["backdrop"])
+			if kind == "window" and backdrop:
+				kind = "farm"
+				backdrop = false
 			for g: Dictionary in w["gates"]:
 				var mid := float(g["x"]) if side >= 2 else float(g["s"])
 				var half := float(g["width"]) * 0.5
@@ -938,11 +1039,904 @@ func top_of(i: int) -> float:
 	return top
 
 
+# --- Downtown (docs/design/city-downtown.md) -------------------------------------------------------------
+# A seeded contiguous cluster of blocks whose lots carry ceiling-touching towers of one family (a broad slab or a slender
+# point, CityBuildings._tower) on six base layouts. All of it is plan data (tiers, solids: collision and checksum). The
+# zone, each block's layout and its towers come from their own generators, seeded from the seed, the deck and the block,
+# never from `_rng`'s sequence before the zone, so a plan without a zone is exactly what it was.
+#
+# A block is laid out in this order (_dt_design, pure, also the zone's test of whether a block can join): the pillar
+# lots (as _carve), the THROUGH VIEW (a line across the block beside every core, at which the pieces are cut, sometimes
+# with a paved gap: every lot keeps half the shaft spacing from a cut, so no shaft stands in it), lots of DT_LOT_MIN ..
+# DT_LOT_MAX, each lot's shaft ROOM (street setback, half the spacing to the next lot's room, the spacing to a core, the
+# lean of a tall box on the curved deck, clear of ceiling openings under its drop panel), the bases each lot can take,
+# then one base per lot by a seeded search: neighbours differ, three kinds or more per block, perches at two heights.
+
+const DT_BASES: Array[String] = ["podium", "stepped", "plaza", "corner", "twin", "arcade"]
+const DT_SHARE := 1.0 / 3.0      ## a section deck's zone: about this share of its blocks
+const DT_DECK_CHANCE := 0.67     ## on about two decks in three
+const DT_BLOCK := 62.0           ## a district on its own with a zone plans blocks at least this big (section cells: 53-71 m)
+const DT_SETBACK := 6.0          ## a shaft stands at least this far back from the building line on a street side
+const DT_SPACING := 10.0         ## shafts (and pillar cores) at least this far apart: a mech always fits between
+const DT_EDGE := 1.5             ## a shaft stays at least this far inside its lot
+const DT_INNER := 0.25           ## a base's wall stands this far in from a lot edge that is not on a street
+const DT_POINT := Vector2(9.0, 13.0)          ## a point tower's side: min, max
+const DT_SLAB_LONG := Vector2(18.0, 26.0)     ## a slab's long side
+const DT_SLAB_SHORT := Vector2(10.0, 13.0)    ## and its short side
+const DT_SLAB_CHANCE := 0.7      ## of a single tower being a slab where one fits (twins are points: ~40 % slabs overall)
+const DT_LOT_MIN := 21.0         ## a tower lot: setback + the smallest point + half the spacing
+const DT_LOT_MAX := 42.0
+const DT_GAP := 9.0              ## a mid-block gap at the through view (a paved through route) is this wide
+const DT_GAP_CHANCE := 0.35
+const DT_EYE := 8.0              ## a mech's eye: whatever rises past it blocks a view (a 6.5 m roof is seen over)
+const DT_VIEW_HALF := 1.0        ## a through view is a corridor this far either side of its line
+const DT_VIEW_INSET := 6.0       ## running at least this far inside the block's building line
+const DT_GALLERY := 10.0         ## an arcade's walk-under gallery, from the building line in (columns included)
+const DT_COLUMN := 1.2           ## an arcade column's side
+const DT_COLUMN_PITCH := DT_COLUMN + 8.0     ## column centres: 8 m clear between columns
+const DT_TERRACE_LIP := 1.5      ## a stepped podium keeps this much 6.5 m roof in front of its 13 m terrace
+const DT_CORNER_MIN := 30.0      ## a corner cut needs a corner lot at least this big each way
+const DT_WEIGHT := {"corner": 4.0, "twin": 4.0, "arcade": 0.8}     ## how often a base comes first where it fits
+
+
+## The downtown zone: {block index: its design} (empty: no zone). `share` of all the blocks, on a roll of `chance`;
+## `allowed[bi]` whether block bi may join, `avenue[bi]` whether it borders the avenue (the zone grows from one of those
+## through allowed neighbours whose design works).
+func _downtown_zone(share: float, chance: float, allowed: Array[bool], avenue: Array[bool], by_block: Dictionary) -> Dictionary:
+	var out := {}
+	var zr := RandomNumberGenerator.new()
+	zr.seed = int(p("seed")) * 92821 + (deck + 2) * 6271 + 17
+	var roll := zr.randf()
+	if share <= 0.0 or roll >= chance:
+		return out
+	var designs := {}
+	var at := {}
+	for bi in blocks.size():
+		at[int(blocks[bi]["ix"]) * 1000 + int(blocks[bi]["is"])] = bi
+	var starts: Array[int] = []
+	for bi in blocks.size():
+		if avenue[bi] and _dt_ok(bi, allowed, designs, by_block):
+			starts.append(bi)
+	if starts.is_empty():
+		return out
+	var zone: Array[int] = [starts[zr.randi_range(0, starts.size() - 1)]]
+	var target := maxi(1, roundi(share * float(blocks.size())))
+	while zone.size() < target:
+		var front: Array[int] = []
+		for bi in zone:
+			for d: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]:
+				var key := (int(blocks[bi]["ix"]) + d.x) * 1000 + int(blocks[bi]["is"]) + d.y
+				if at.has(key):
+					var nb: int = at[key]
+					if not zone.has(nb) and not front.has(nb) and _dt_ok(nb, allowed, designs, by_block):
+						front.append(nb)
+		if front.is_empty():
+			break
+		front.sort()
+		zone.append(front[zr.randi_range(0, front.size() - 1)])
+	for bi in zone:
+		out[bi] = designs[bi]
+	return out
+
+
+func _dt_ok(bi: int, allowed: Array[bool], designs: Dictionary, by_block: Dictionary) -> bool:
+	if not allowed[bi]:
+		return false
+	if not designs.has(bi):
+		designs[bi] = _dt_design(bi, by_block.get(bi, []))
+	return bool(designs[bi]["ok"])
+
+
+## The geometry of _carve without making lots: the pillar lots [{rect, q}] and the pieces left round them, in its order.
+func _carve_geom(r: Rect2, pillars_here: Array, out_pillars: Array, out_pieces: Array[Rect2]) -> void:
+	var inside := []
+	for q: Dictionary in pillars_here:
+		if r.grow(0.01).has_point(Vector2(q["x"], q["s"])):
+			inside.append(q)
+	if inside.is_empty():
+		if minf(r.size.x, r.size.y) >= 4.0:
+			out_pieces.append(r)
+		return
+	var q: Dictionary = inside[0]
+	var half := float(q["half"]) + PILLAR_APRON
+	var x0 := maxf(float(q["x"]) - half, r.position.x)
+	var x1 := minf(float(q["x"]) + half, r.end.x)
+	var s0 := maxf(float(q["s"]) - half, r.position.y)
+	var s1 := minf(float(q["s"]) + half, r.end.y)
+	var alley := 3.0
+	if x0 - r.position.x < LOT_MIN + alley:
+		x0 = r.position.x
+	if r.end.x - x1 < LOT_MIN + alley:
+		x1 = r.end.x
+	if s0 - r.position.y < LOT_MIN + alley:
+		s0 = r.position.y
+	if r.end.y - s1 < LOT_MIN + alley:
+		s1 = r.end.y
+	out_pillars.append({"rect": Rect2(x0, s0, x1 - x0, s1 - s0), "q": q})
+	var rest := []
+	for o: Dictionary in pillars_here:
+		if o != q:
+			rest.append(o)
+	if x0 > r.position.x:
+		_carve_geom(Rect2(r.position.x, r.position.y, x0 - alley - r.position.x, r.size.y), rest, out_pillars, out_pieces)
+	if x1 < r.end.x:
+		_carve_geom(Rect2(x1 + alley, r.position.y, r.end.x - x1 - alley, r.size.y), rest, out_pillars, out_pieces)
+	if s0 > r.position.y:
+		_carve_geom(Rect2(x0, r.position.y, x1 - x0, s0 - alley - r.position.y), rest, out_pillars, out_pieces)
+	if s1 < r.end.y:
+		_carve_geom(Rect2(x0, s1 + alley, x1 - x0, r.end.y - s1 - alley), rest, out_pillars, out_pieces)
+
+
+## r with its extent along `axis` (0: x, 1: s) set to a..b.
+static func _dt_cut(r: Rect2, axis: int, a: float, b: float) -> Rect2:
+	if axis == 0:
+		return Rect2(a, r.position.y, b - a, r.size.y)
+	return Rect2(r.position.x, a, r.size.x, b - a)
+
+
+## The block's through view: a line at c across the block (axis 0: it runs along s at x = c; 1: along x at s = c), clear
+## of every pillar core, that the pieces it crosses are cut at, preferring cuts that leave a tower lot either side.
+## {axis, c, gap} (gap: a paved mid-block gap there, 0 or DT_GAP); {} when no line clears the cores.
+func _dt_lane(z: Rect2, pls: Array, pieces: Array[Rect2], rng: RandomNumberGenerator) -> Dictionary:
+	var best := {}
+	var best_score := -1.0e9
+	for axis in 2:
+		var c := ceilf(z.position[axis] + DT_VIEW_INSET + 2.0)
+		while c <= z.end[axis] - DT_VIEW_INSET - 2.0:
+			var ok := true
+			for pl: Dictionary in pls:
+				var core := float(pl["q"]["x"] if axis == 0 else pl["q"]["s"])
+				if absf(c - core) < float(pl["q"]["half"]) + DT_VIEW_HALF + 2.0:
+					ok = false
+			var score := 0.0
+			for q in pieces:
+				if q.position[axis] + 0.01 < c and c < q.end[axis] - 0.01:
+					if c - q.position[axis] >= DT_LOT_MIN and q.end[axis] - c >= DT_LOT_MIN:
+						score += 2.0
+					else:
+						score -= 6.0
+			if ok:
+				score += rng.randf()
+				if score > best_score:
+					best_score = score
+					best = {"axis": axis, "c": c}
+			c += 1.0
+	if best.is_empty():
+		return best
+	var gap := 0.0
+	if rng.randf() < DT_GAP_CHANCE:
+		var fits := true
+		var crossed := 0
+		var axis: int = best["axis"]
+		var c: float = best["c"]
+		for q in pieces:
+			if q.position[axis] + 0.01 < c and c < q.end[axis] - 0.01:
+				crossed += 1
+				if c - DT_GAP * 0.5 - q.position[axis] < DT_LOT_MIN or q.end[axis] - c - DT_GAP * 0.5 < DT_LOT_MIN:
+					fits = false
+		if fits and crossed > 0:
+			gap = DT_GAP
+	best["gap"] = gap
+	return best
+
+
+## Cut r into lots of DT_LOT_MIN..DT_LOT_MAX along its long side (sometimes leaving a big one, for twins and slabs).
+func _dt_split(r: Rect2, rng: RandomNumberGenerator, out: Array[Rect2]) -> void:
+	var axis := 0 if r.size.x >= r.size.y else 1
+	var length := r.size[axis]
+	if length > DT_LOT_MAX or (length >= DT_LOT_MIN * 2.0 + 4.0 and rng.randf() < 0.6):
+		var cut := snappedf(clampf(length * rng.randf_range(0.4, 0.6), DT_LOT_MIN, length - DT_LOT_MIN), 0.5)
+		_dt_split(_dt_cut(r, axis, r.position[axis], r.position[axis] + cut), rng, out)
+		_dt_split(_dt_cut(r, axis, r.position[axis] + cut, r.end[axis]), rng, out)
+		return
+	out.append(r)
+
+
+## False where a base may not stand: on ground kept clear or by a floor hole.
+func _dt_clear(r: Rect2) -> bool:
+	for k in site.keep_clear:
+		if k.intersects(r):
+			return false
+	for o in site.floor_holes:
+		if o.grow(CityStreets.HOLE_CURB + 0.5).intersects(r):
+			return false
+	return true
+
+
+## Which sides of r lie on the building line of block zone z (face a street).
+static func _dt_faces(r: Rect2, z: Rect2) -> Array[bool]:
+	return [absf(r.end.x - z.end.x) < 0.01, absf(r.position.x - z.position.x) < 0.01,
+			absf(r.end.y - z.end.y) < 0.01, absf(r.position.y - z.position.y) < 0.01]
+
+
+## How far o lies beyond side `side` of r when it faces that side (overlapping it across), else INF.
+static func _dt_gap(r: Rect2, o: Rect2, side: int) -> float:
+	var axis := 0 if side < 2 else 1
+	var other := 1 - axis
+	if minf(r.end[other], o.end[other]) - maxf(r.position[other], o.position[other]) <= 0.0:
+		return INF
+	var g := o.position[axis] - r.end[axis] if side % 2 == 0 else r.position[axis] - o.end[axis]
+	return g if g >= -0.01 else INF
+
+
+static func _dt_core(q: Dictionary) -> Rect2:
+	var h := float(q["half"])
+	return Rect2(float(q["x"]) - h, float(q["s"]) - h, h * 2.0, h * 2.0)
+
+
+## Where tower lot u's shaft(s) may stand (see the section header). A zero-size Rect2 when nowhere.
+func _dt_room(u: Dictionary, units: Array) -> Rect2:
+	var r: Rect2 = u["rect"]
+	var faces: Array = u["faces"]
+	var m: Array[float] = [0.0, 0.0, 0.0, 0.0]
+	for side in 4:
+		if faces[side]:
+			m[side] = DT_SETBACK
+			continue
+		var need := DT_EDGE
+		for o: Dictionary in units:
+			if o == u or (o["kind"] != "tower" and o["kind"] != "pillar"):
+				continue
+			var tower: bool = o["kind"] == "tower"
+			var g := _dt_gap(r, o["rect"] if tower else _dt_core(o["q"]), side)
+			if g > DT_SPACING + 1.0:
+				continue
+			need = maxf(need, (DT_SPACING - g) * 0.5 + 0.5 if tower else DT_SPACING + 0.5 - g)
+		m[side] = need
+	var room := Rect2(r.position.x + m[1], r.position.y + m[3], r.size.x - m[0] - m[1], r.size.y - m[2] - m[3])
+	# Standing straight up to the ceiling on the curved deck, a shaft reaches further out along s the higher it goes: its
+	# top must stay inside the lot (about the lot's centre, which is its building's).
+	var rad := p("radius")
+	var reach := r.size.y * 0.5 * (rad - p("ceiling") - 1.0) / rad - 0.3
+	var cy := r.get_center().y
+	room = _dt_clip_s(room, cy - reach, cy + reach)
+	# Under a ceiling opening there is nothing to meet: keep the drop panel (and the opening's rim) clear of it.
+	var kc := rad / (rad - p("ceiling"))
+	for o: Rect2 in site.openings:
+		if room.size.x <= 0.0 or room.size.y <= 0.0:
+			break
+		var f := CityStreets.ceiling_opening(o).grow(CityStreets.RIM + CityStreets.DROP_PANEL + 0.5)
+		var g := Rect2(f.position.x, cy + (f.position.y - cy) / kc, f.size.x, f.size.y / kc)
+		if not g.intersects(room):
+			continue
+		var best := Rect2()
+		for piece in CityGeo.cut(room, [g]):
+			if minf(piece.size.x, piece.size.y) > minf(best.size.x, best.size.y):
+				best = piece
+		room = best
+	return room
+
+
+static func _dt_clip_s(r: Rect2, a: float, b: float) -> Rect2:
+	var s0 := maxf(r.position.y, a)
+	var s1 := minf(r.end.y, b)
+	return Rect2(r.position.x, s0, r.size.x, maxf(s1 - s0, 0.0))
+
+
+static func _dt_fits(room: Rect2, w: float, d: float) -> bool:
+	return room.size.x >= w - 0.001 and room.size.y >= d - 0.001
+
+
+static func _dt_shuffle(a: Array, rng: RandomNumberGenerator) -> void:
+	for i in range(a.size() - 1, 0, -1):
+		var j := rng.randi_range(0, i)
+		var t: Variant = a[i]
+		a[i] = a[j]
+		a[j] = t
+
+
+## The bases tower lot u can take, in a seeded order. Fills u["corner"] / u["arcade"] for those.
+func _dt_options(u: Dictionary, high: bool, arcade_ok: bool, rng: RandomNumberGenerator) -> Array:
+	var out := []
+	var room: Rect2 = u["room"]
+	if not _dt_fits(room, DT_POINT.x, DT_POINT.x):
+		return out
+	var faces: Array = u["faces"]
+	var streets := 0
+	for f: bool in faces:
+		streets += 1 if f else 0
+	out.append("podium")
+	if high and streets > 0:
+		out.append("stepped")
+	if streets > 0:
+		out.append("plaza")
+	var cn := _dt_corner(u, rng)
+	if not cn.is_empty():
+		u["corner"] = cn
+		out.append("corner")
+	if maxf(room.size.x, room.size.y) >= DT_POINT.x * 2.0 + DT_SPACING:
+		out.append("twin")
+	if arcade_ok:
+		var order := [0, 1, 2, 3]
+		_dt_shuffle(order, rng)
+		var r: Rect2 = u["rect"]
+		for f: int in order:
+			var axis := 0 if f < 2 else 1
+			if faces[f] and r.size[axis] >= DT_GALLERY + 6.0 and room.size[1 - axis] >= DT_COLUMN_PITCH:
+				u["arcade"] = f
+				out.append("arcade")
+				break
+	# A seeded order, the rarer layouts (they need a big or a corner lot) first more often.
+	var keyed := []
+	for o: String in out:
+		keyed.append([rng.randf() * float(DT_WEIGHT.get(o, 1.0)), o])
+	keyed.sort_custom(func(m: Array, n: Array) -> bool: return m[0] > n[0])
+	out.clear()
+	for k: Array in keyed:
+		out.append(k[1])
+	return out
+
+
+## A corner cut for corner lot u: the open plaza on its street corner, lot A (the tower's leg, full depth) and lot B (the
+## low wing beside the plaza), and A's shaft room. {} when u is not a corner lot big enough.
+func _dt_corner(u: Dictionary, rng: RandomNumberGenerator) -> Dictionary:
+	var r: Rect2 = u["rect"]
+	var faces: Array = u["faces"]
+	if r.size.x < DT_CORNER_MIN or r.size.y < DT_CORNER_MIN or not (faces[0] or faces[1]) or not (faces[2] or faces[3]):
+		return {}
+	var fx := 0 if faces[0] else 1
+	if faces[0] and faces[1] and rng.randf() < 0.5:
+		fx = 1
+	var fs := 2 if faces[2] else 3
+	if faces[2] and faces[3] and rng.randf() < 0.5:
+		fs = 3
+	var cw := snappedf(clampf(r.size.x * rng.randf_range(0.35, 0.45), 9.0, r.size.x - DT_LOT_MIN), 0.5)
+	var cd := snappedf(clampf(r.size.y * rng.randf_range(0.35, 0.45), 9.0, r.size.y - 9.0), 0.5)
+	var px := r.end.x - cw if fx == 0 else r.position.x
+	var ps := r.end.y - cd if fs == 2 else r.position.y
+	var plaza := Rect2(px, ps, cw, cd)
+	var a := Rect2(r.position.x if fx == 0 else r.position.x + cw, r.position.y, r.size.x - cw, r.size.y)
+	var b := Rect2(px, r.position.y if fs == 2 else r.position.y + cd, cw, r.size.y - cd)
+	var room: Rect2 = u["room"]
+	var x0 := room.position.x
+	var x1 := room.end.x
+	if fx == 0:
+		x1 = minf(x1, a.end.x - DT_EDGE)
+	else:
+		x0 = maxf(x0, a.position.x + DT_EDGE)
+	var ra := Rect2(x0, room.position.y, x1 - x0, room.size.y)
+	if not _dt_fits(ra, DT_POINT.x, DT_POINT.x):
+		return {}
+	return {"plaza": plaza, "a": a, "b": b, "room_a": ra}
+
+
+## The layout of downtown block bi (pure: no lots made): {ok, z, units: [{kind: pillar | tower | plaza, rect, faces,
+## base, room, ...}], h0, h1}. ok is false when the block cannot hold the rules (a through view, three bases, perches at
+## two heights): such a block stays urban.
+func _dt_design(bi: int, pillars_here: Array) -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(p("seed")) * 15485863 + (deck + 2) * 104723 + bi * 7919 + 3
+	var z: Rect2 = (blocks[bi]["rect"] as Rect2).grow(-SIDEWALK)
+	var pls := []
+	var pieces: Array[Rect2] = []
+	_carve_geom(z, pillars_here, pls, pieces)
+	var lane := _dt_lane(z, pls, pieces, rng)
+	if lane.is_empty():
+		return {"ok": false, "why": "no through view clears the cores"}
+	var units := []
+	for pl: Dictionary in pls:
+		units.append({"kind": "pillar", "rect": pl["rect"], "q": pl["q"]})
+	var axis: int = lane["axis"]
+	var c: float = lane["c"]
+	var g: float = lane["gap"]
+	for q in pieces:
+		var parts: Array[Rect2] = [q]
+		if q.position[axis] + 0.01 < c and c < q.end[axis] - 0.01:
+			parts = [_dt_cut(q, axis, q.position[axis], c - g * 0.5), _dt_cut(q, axis, c + g * 0.5, q.end[axis])]
+			if g > 0.0:
+				units.append({"kind": "plaza", "rect": _dt_cut(q, axis, c - g * 0.5, c + g * 0.5)})
+		for part in parts:
+			if part.size.x < 0.01 or part.size.y < 0.01:
+				continue
+			var cut: Array[Rect2] = []
+			_dt_split(part, rng, cut)
+			for l in cut:
+				# A tower lot if its shaft room (below) fits a point; a lot that cannot is an open plaza.
+				var tall := minf(l.size.x, l.size.y) >= DT_POINT.x + DT_EDGE * 2.0 and _dt_clear(l)
+				units.append({"kind": "tower" if tall else "plaza", "rect": l})
+	for u: Dictionary in units:
+		u["faces"] = _dt_faces(u["rect"], z)
+	var h0 := float(band_floors(0)) * FLOOR_H
+	var h1 := float(band_floors(1)) * FLOOR_H
+	var high := h1 > h0 + 0.1 and h1 <= stand_limit() + 0.01
+	var arcade_ok := high and h1 - FLOOR_H >= BRIDGE_CLEAR
+	for u: Dictionary in units:
+		if u["kind"] == "tower":
+			u["room"] = _dt_room(u, units)
+	var based: Array[int] = []
+	for i in units.size():
+		var u: Dictionary = units[i]
+		if u["kind"] == "tower":
+			u["opts"] = _dt_options(u, high, arcade_ok, rng)
+			if (u["opts"] as Array).is_empty():
+				u["kind"] = "plaza"
+		elif u["kind"] == "pillar":
+			var opts := ["plaza"]
+			if str(u["q"]["kind"]) != "lift":
+				opts = ["podium"]
+				if (u["faces"] as Array).has(true):
+					opts.append("plaza")
+				_dt_shuffle(opts, rng)
+			u["opts"] = opts
+		if u["kind"] == "tower" or u["kind"] == "pillar":
+			based.append(i)
+	if based.size() < 3:
+		return {"ok": false, "why": "fewer than three lots with a base", "units": units}
+	# Neighbours on a block face: side by side (across at most an alley) on the same street.
+	var nb := {}
+	for i in based:
+		nb[i] = []
+		for j in based:
+			if i != j and _dt_touch(units[i]["rect"], units[j]["rect"], 3.6) and _dt_same_face(units[i]["faces"], units[j]["faces"]):
+				(nb[i] as Array).append(j)
+	var ctx := {"nodes": 0, "high": high, "h0": h0, "h1": h1}
+	if not _dt_assign(units, based, nb, 0, ctx):
+		return {"ok": false, "why": "no bases fit the rules", "units": units}
+	return {"ok": true, "z": z, "units": units, "h0": h0, "h1": h1, "lane": lane}
+
+
+## Whether rects a and b face each other across at most `tol` (overlapping by more than 1 m across).
+static func _dt_touch(a: Rect2, b: Rect2, tol: float) -> bool:
+	var dx := maxf(b.position.x - a.end.x, a.position.x - b.end.x)
+	var ds := maxf(b.position.y - a.end.y, a.position.y - b.end.y)
+	var over_x := minf(a.end.x, b.end.x) - maxf(a.position.x, b.position.x)
+	var over_s := minf(a.end.y, b.end.y) - maxf(a.position.y, b.position.y)
+	return (dx >= -0.01 and dx <= tol and over_s > 1.0) or (ds >= -0.01 and ds <= tol and over_x > 1.0)
+
+
+static func _dt_same_face(a: Array, b: Array) -> bool:
+	for k in 4:
+		if a[k] and b[k]:
+			return true
+	return false
+
+
+## Seeded depth-first search for one base per unit: no two neighbours alike, then _dt_rules. Bounded.
+func _dt_assign(units: Array, order: Array[int], nb: Dictionary, i: int, ctx: Dictionary) -> bool:
+	if i >= order.size():
+		return _dt_rules(units, order, ctx)
+	ctx["nodes"] = int(ctx["nodes"]) + 1
+	if int(ctx["nodes"]) > 4000:
+		return false
+	var u: Dictionary = units[order[i]]
+	for kind: String in u["opts"]:
+		var clash := false
+		for j: int in nb[order[i]]:
+			if units[j].get("base", "") == kind:
+				clash = true
+		if clash:
+			continue
+		u["base"] = kind
+		if _dt_assign(units, order, nb, i + 1, ctx):
+			return true
+		u.erase("base")
+	return false
+
+
+## Three kinds of base or more in the block, and standable roofs at two heights or more (one where the bands allow
+## only one).
+func _dt_rules(units: Array, order: Array[int], ctx: Dictionary) -> bool:
+	var kinds := {}
+	var heights := {}
+	for i in order:
+		var u: Dictionary = units[i]
+		var base: String = u["base"]
+		kinds[base] = true
+		if base in ["podium", "stepped", "corner", "twin"]:
+			heights[ctx["h0"]] = true
+		if (base == "stepped" or base == "arcade") and ctx["high"]:
+			heights[ctx["h1"]] = true
+	return kinds.size() >= 3 and heights.size() >= (2 if ctx["high"] else 1)
+
+
+## Downtown block bi from its design: lots, bases and towers.
+func _fill_downtown(bi: int, d: Dictionary) -> void:
+	blocks[bi]["downtown"] = true
+	var z: Rect2 = d["z"]
+	var trng := RandomNumberGenerator.new()
+	trng.seed = int(p("seed")) * 49979687 + (deck + 2) * 1299709 + bi * 104729 + 11
+	var units: Array = d["units"]
+	for ui in units.size():
+		var u: Dictionary = units[ui]
+		var r: Rect2 = u["rect"]
+		match str(u["kind"]):
+			"pillar":
+				var li := _add_lot(r, bi, z, "")
+				_add_pillar(li, u["q"])
+				var pb: Dictionary = buildings[buildings.size() - 1]
+				pb["base"] = u["base"]
+				pb["unit"] = ui
+				if u["base"] == "podium":
+					pb["band"] = 0
+				else:
+					pb["paving"] = [r]
+			"plaza":
+				if minf(r.size.x, r.size.y) >= 4.0:
+					_add_lot(r, bi, z, "plaza")
+			"tower":
+				_dt_tower(bi, z, ui, u, d, trng)
+
+
+## A base's walls: the lot, out to the building line on its street sides, DT_INNER in from the others.
+static func _dt_env(r: Rect2, faces: Array) -> Rect2:
+	var x0 := r.position.x + (0.0 if faces[1] else DT_INNER)
+	var x1 := r.end.x - (0.0 if faces[0] else DT_INNER)
+	var s0 := r.position.y + (0.0 if faces[3] else DT_INNER)
+	var s1 := r.end.y - (0.0 if faces[2] else DT_INNER)
+	return Rect2(x0, s0, x1 - x0, s1 - s0)
+
+
+func _dt_building(li: int, base: String, band: int, unit: int, rng: RandomNumberGenerator) -> Dictionary:
+	var lot: Dictionary = lots[li]
+	lot["building"] = buildings.size()
+	var b := {"lot": li, "style": "tower", "band": band, "pillar": false, "front": maxi(int(lot["front"]), 0), "setback": 0.0,
+			"variant": rng.randi_range(0, 999), "floors": 0, "roof_h": 0.0, "center": Vector2.ZERO, "size": Vector2.ZERO,
+			"tiers": [], "base": base, "unit": unit,
+			"dt": {"env": Rect2(), "top": 0.0, "lean": 1.0, "parts": [], "shafts": [], "columns": [], "clear": 0.0}}
+	buildings.append(b)
+	return b
+
+
+func _dt_part(kind: String, r: Rect2, y0: float, y1: float, stand: bool) -> Dictionary:
+	return {"kind": kind, "rect": r, "y0": y0, "y1": y1, "stand": stand}
+
+
+## The tower(s) of lot u (unit ui of block bi's design d) on its base.
+func _dt_tower(bi: int, z: Rect2, ui: int, u: Dictionary, d: Dictionary, rng: RandomNumberGenerator) -> void:
+	var base: String = u["base"]
+	var h0: float = d["h0"]
+	var h1: float = d["h1"]
+	var r: Rect2 = u["rect"]
+	var room: Rect2 = u["room"]
+	if base == "corner":
+		var cn: Dictionary = u["corner"]
+		_add_lot(cn["plaza"], bi, z, "plaza")
+		var la := _add_lot(cn["a"], bi, z, "")
+		var ba := _dt_building(la, base, 0, ui, rng)
+		var env_a := _dt_env(cn["a"], lots[la]["faces"])
+		ba["dt"]["env"] = env_a
+		ba["dt"]["parts"] = [_dt_part("podium", env_a, 0.0, h0, true)]
+		ba["dt"]["shafts"] = [_dt_shaft(bi, cn["room_a"], rng, [], h0, true)]
+		var lb := _add_lot(cn["b"], bi, z, "")
+		var bb := _dt_building(lb, base, 0, ui, rng)
+		var env_b := _dt_env(cn["b"], lots[lb]["faces"])
+		bb["dt"]["env"] = env_b
+		bb["dt"]["parts"] = [_dt_part("podium", env_b, 0.0, h0, true)]
+		return
+	var li := _add_lot(r, bi, z, "")
+	var faces: Array = lots[li]["faces"]
+	var b := _dt_building(li, base, 1 if base == "stepped" or base == "arcade" else 0, ui, rng)
+	var dt: Dictionary = b["dt"]
+	var env := _dt_env(r, faces)
+	dt["env"] = env
+	match base:
+		"podium":
+			dt["parts"] = [_dt_part("podium", env, 0.0, h0, true)]
+			dt["shafts"] = [_dt_shaft(bi, room, rng, [], h0, true)]
+		"stepped":
+			# The terrace against the tower on the street side(s): the shaft hugs its room's edge there.
+			var streets := []
+			for side in 4:
+				if faces[side]:
+					streets.append(side)
+			_dt_shuffle(streets, rng)
+			var hug := [streets[0]]
+			if streets.size() > 1 and (int(streets[1]) < 2) != (int(streets[0]) < 2) and rng.randf() < 0.5:
+				hug.append(streets[1])
+			var sh := _dt_shaft(bi, room, rng, hug, h0, true)
+			var parts := [_dt_part("podium", env, 0.0, h0, true)]
+			var s: Rect2 = sh["rect"]
+			for side: int in hug:
+				var t: Rect2
+				match side:
+					0: t = Rect2(s.end.x - 1.0, s.position.y, r.end.x - DT_TERRACE_LIP - s.end.x + 1.0, s.size.y)
+					1: t = Rect2(r.position.x + DT_TERRACE_LIP, s.position.y, s.position.x + 1.0 - r.position.x - DT_TERRACE_LIP, s.size.y)
+					2: t = Rect2(s.position.x, s.end.y - 1.0, s.size.x, r.end.y - DT_TERRACE_LIP - s.end.y + 1.0)
+					_: t = Rect2(s.position.x, r.position.y + DT_TERRACE_LIP, s.size.x, s.position.y + 1.0 - r.position.y - DT_TERRACE_LIP)
+				parts.append(_dt_part("terrace", t, h0, h1, true))
+			dt["parts"] = parts
+			dt["shafts"] = [sh]
+		"plaza":
+			# No podium: the shaft's lobby at ground in a paved plaza (its footprint is the building's).
+			var sh := _dt_shaft(bi, room, rng, [], 0.0, true)
+			dt["env"] = sh["rect"]
+			dt["shafts"] = [sh]
+			b["paving"] = [r]
+			b["planters"] = _dt_planters(r, faces, sh["rect"])
+		"twin":
+			var la := 0 if room.size.x >= room.size.y else 1
+			var side := snappedf(rng.randf_range(DT_POINT.x, DT_POINT.y), 0.5)
+			side = minf(side, minf(room.size[1 - la], (room.size[la] - DT_SPACING) * 0.5))
+			var across := rng.randf_range(room.position[1 - la], room.end[1 - la] - side)
+			var shafts := []
+			for k in 2:
+				var along := room.position[la] if k == 0 else room.end[la] - side
+				var pos := Vector2(along, across) if la == 0 else Vector2(across, along)
+				shafts.append({"rect": Rect2(pos, Vector2(side, side)), "kind": "point", "y0": h0})
+			dt["parts"] = [_dt_part("podium", env, 0.0, h0, true)]
+			dt["shafts"] = shafts
+		"arcade":
+			var f: int = u["arcade"]
+			var clear := h1 - FLOOR_H
+			var axis := 0 if f < 2 else 1
+			var gallery: Rect2
+			var lobby: Rect2
+			if f % 2 == 0:
+				gallery = _dt_cut(env, axis, env.end[axis] - DT_GALLERY, env.end[axis])
+				lobby = _dt_cut(env, axis, env.position[axis], env.end[axis] - DT_GALLERY)
+			else:
+				gallery = _dt_cut(env, axis, env.position[axis], env.position[axis] + DT_GALLERY)
+				lobby = _dt_cut(env, axis, env.position[axis] + DT_GALLERY, env.end[axis])
+			dt["parts"] = [_dt_part("lobby", lobby, 0.0, clear, false), _dt_part("arcade", env, clear, h1, true)]
+			dt["clear"] = clear
+			dt["gallery"] = gallery
+			dt["front"] = f
+			# Columns along the street: 8 m clear between them, over the shaft room's span (the cut lanes stay open).
+			var line := env.end[axis] - 0.4 - DT_COLUMN * 0.5 if f % 2 == 0 else env.position[axis] + 0.4 + DT_COLUMN * 0.5
+			var lo := room.position[1 - axis]
+			var hi := room.end[1 - axis]
+			var n := int((hi - lo) / DT_COLUMN_PITCH) + 1
+			var cols := []
+			for k in n:
+				var at := lo + (hi - lo) * float(k) / float(n - 1)
+				cols.append(Vector2(line, at) if axis == 0 else Vector2(at, line))
+			dt["columns"] = cols
+			dt["shafts"] = [_dt_shaft(bi, room, rng, [], h1, true)]
+			b["paving"] = [gallery]
+
+
+## A shaft in `room`: a point, or a slab where one fits (by roll, never facing another slab across a street), placed by
+## seed, pushed against the room's sides in `hug`. {rect, kind, y0}.
+func _dt_shaft(bi: int, room: Rect2, rng: RandomNumberGenerator, hug: Array, y0: float, slab_ok: bool) -> Dictionary:
+	var la := 0 if room.size.x >= room.size.y else 1
+	var size := Vector2.ZERO
+	var kind := "point"
+	if slab_ok and room.size[la] >= DT_SLAB_LONG.x and room.size[1 - la] >= DT_SLAB_SHORT.x and rng.randf() < DT_SLAB_CHANCE:
+		var long := minf(snappedf(rng.randf_range(DT_SLAB_LONG.x, minf(DT_SLAB_LONG.y, room.size[la])), 0.5), room.size[la])
+		var short := minf(snappedf(rng.randf_range(DT_SLAB_SHORT.x, minf(DT_SLAB_SHORT.y, room.size[1 - la])), 0.5), room.size[1 - la])
+		size = Vector2(long, short) if la == 0 else Vector2(short, long)
+		kind = "slab"
+	if kind == "point":
+		var side := minf(snappedf(rng.randf_range(DT_POINT.x, minf(DT_POINT.y, minf(room.size.x, room.size.y))), 0.5),
+				minf(room.size.x, room.size.y))
+		size = Vector2(side, side)
+	var pos := Vector2(rng.randf_range(room.position.x, room.end.x - size.x), rng.randf_range(room.position.y, room.end.y - size.y))
+	for side: int in hug:
+		match side:
+			0: pos.x = room.end.x - size.x
+			1: pos.x = room.position.x
+			2: pos.y = room.end.y - size.y
+			3: pos.y = room.position.y
+	var rect := Rect2(pos, size)
+	if kind == "slab" and _dt_slab_facing(bi, rect):
+		return _dt_shaft(bi, room, rng, hug, y0, false)
+	return {"rect": rect, "kind": kind, "y0": y0}
+
+
+## Whether a slab at `rect` in block bi would face another slab across a street: long sides parallel, overlapping along
+## them, in the next block across (rule "never two slabs facing each other across a street": they wall the view).
+func _dt_slab_facing(bi: int, rect: Rect2) -> bool:
+	var axis := 0 if rect.size.x >= rect.size.y else 1      # along the long side
+	for o: Dictionary in buildings:
+		if o["style"] != "tower":
+			continue
+		var obi := int(lots[o["lot"]]["block"])
+		var dix := absi(int(blocks[obi]["ix"]) - int(blocks[bi]["ix"]))
+		var dis := absi(int(blocks[obi]["is"]) - int(blocks[bi]["is"]))
+		# The long sides face across axis 1 - axis: the next block that way, same row or column the other way.
+		var across := (axis == 1 and dix == 1 and dis == 0) or (axis == 0 and dis == 1 and dix == 0)
+		if not across:
+			continue
+		for sh: Dictionary in o["dt"]["shafts"]:
+			if sh["kind"] != "slab":
+				continue
+			var r: Rect2 = sh["rect"]
+			var oaxis := 0 if r.size.x >= r.size.y else 1
+			if oaxis == axis and minf(r.end[axis], rect.end[axis]) - maxf(r.position[axis], rect.position[axis]) > 0.0:
+				return true
+	return false
+
+
+## A plaza base's fixed planters (looks only: CityStreets.furniture), on the paving between the street and the shaft:
+## [[centre, size]] in arc coordinates.
+static func _dt_planters(r: Rect2, faces: Array, shaft: Rect2) -> Array:
+	var out := []
+	for side in 4:
+		if not faces[side]:
+			continue
+		var axis := 0 if side < 2 else 1          # the street's normal
+		var at := r.end[axis] - 3.0 if side % 2 == 0 else r.position[axis] + 3.0
+		var sz := Vector2(1.3, 3.2) if axis == 0 else Vector2(3.2, 1.3)
+		for k in 2:
+			var along := shaft.position[1 - axis] - 3.0 if k == 0 else shaft.end[1 - axis] + 3.0
+			along = clampf(along, r.position[1 - axis] + 2.5, r.end[1 - axis] - 2.5)
+			out.append([Vector2(at, along) if axis == 0 else Vector2(along, at), sz])
+		break
+	return out
+
+
+## Footprint and heights of a downtown building (its envelope, narrowed along s like every building so its base's walls
+## stay inside the lot on the curve; a plaza tower's footprint is its shaft, which keeps its full size).
+func _shape_tower(b: Dictionary) -> void:
+	var dt: Dictionary = b["dt"]
+	var top := 0.0
+	for part: Dictionary in dt["parts"]:
+		top = maxf(top, float(part["y1"]))
+	var bare := top <= 0.0
+	if bare:
+		top = float(band_floors(0)) * FLOOR_H
+	dt["top"] = top
+	var lean := 1.0 if bare else (p("radius") - top - 3.0) / p("radius")
+	dt["lean"] = lean
+	var env: Rect2 = dt["env"]
+	b["center"] = env.get_center()
+	b["size"] = Vector2(snappedf(env.size.x, 0.01), snappedf(env.size.y * lean, 0.01))
+	b["floors"] = maxi(int(round(top / FLOOR_H)), 2)
+	b["roof_h"] = top
+
+
+## Tiers and solids of a downtown building, in its frame: base parts narrowed along s (as the footprint), shafts at full
+## size from their base up into the ceiling slab (not standable), the arcade's columns.
+func _tower_tiers(b: Dictionary, tiers: Array, solids: Array) -> void:
+	var dt: Dictionary = b["dt"]
+	var lean: float = dt["lean"]
+	var c: Vector2 = b["center"]
+	for part: Dictionary in dt["parts"]:
+		var r: Rect2 = part["rect"]
+		tiers.append(_tier(Vector2(r.get_center().x - c.x, (r.get_center().y - c.y) * lean), Vector2(r.size.x, r.size.y * lean),
+				part["y0"], part["y1"], part["stand"], part["kind"]))
+	if dt.has("gallery"):
+		var g: Rect2 = dt["gallery"]
+		dt["gallery_frame"] = Rect2(Vector2(g.position.x - c.x, (g.position.y - c.y) * lean), Vector2(g.size.x, g.size.y * lean))
+	for sh: Dictionary in dt["shafts"]:
+		var r: Rect2 = sh["rect"]
+		var t := _tier(r.get_center() - c, r.size, sh["y0"], p("ceiling") + 1.0, false, "tower")
+		t["tower"] = sh["kind"]
+		tiers.append(t)
+	for col: Vector2 in dt["columns"]:
+		solids.append(_solid("column", Vector2(col.x - c.x, (col.y - c.y) * lean), Vector2(DT_COLUMN, DT_COLUMN), 0.0, float(dt["clear"])))
+
+
+# --- Downtown: what the rules read (tests, the lab) --------------------------------------------------------
+
+## Indices of the downtown blocks.
+func downtown_blocks() -> Array[int]:
+	var out: Array[int] = []
+	for bi in blocks.size():
+		if blocks[bi].get("downtown", false):
+			out.append(bi)
+	return out
+
+
+## Indices of the buildings standing in block bi.
+func buildings_in(bi: int) -> Array[int]:
+	var out: Array[int] = []
+	for i in buildings.size():
+		if int(lots[buildings[i]["lot"]]["block"]) == bi:
+			out.append(i)
+	return out
+
+
+## Tier t (a tier dictionary) of building i as a ground rectangle in arc coordinates (its frame's footprint).
+func tier_rect(i: int, t: Dictionary) -> Rect2:
+	var size: Vector2 = t["size"]
+	return Rect2((buildings[i]["center"] as Vector2) + (t["off"] as Vector2) - size * 0.5, size)
+
+
+## Every downtown shaft and every pillar core in block bi (bi < 0: all of them), as ground rectangles.
+func shaft_rects(bi: int = -1) -> Array[Rect2]:
+	var out: Array[Rect2] = []
+	for i in buildings.size():
+		var b: Dictionary = buildings[i]
+		if bi >= 0 and int(lots[b["lot"]]["block"]) != bi:
+			continue
+		for t: Dictionary in b["tiers"]:
+			if str(t.get("kind", "")) == "tower":
+				out.append(tier_rect(i, t))
+		if b["pillar"]:
+			var cs: Vector2 = b["core"]["size"]
+			out.append(Rect2(Vector2(b["core"]["x"], b["core"]["s"]) - cs * 0.5, cs))
+	return out
+
+
+## The through views of block bi: [{axis, c}] for every line on a 0.5 m step (axis 0: along s at x = c; 1: along x at
+## s = c), at least DT_VIEW_INSET inside the building line, whose corridor (DT_VIEW_HALF either side) crosses the block
+## from street to street at a mech's eye (DT_EYE) clear of whatever rises past it: tiers, shafts, columns, pillar cores.
+func through_views(bi: int) -> Array:
+	var z: Rect2 = (blocks[bi]["rect"] as Rect2).grow(-SIDEWALK)
+	var blockers: Array[Rect2] = []
+	for i in buildings_in(bi):
+		var b: Dictionary = buildings[i]
+		for t: Dictionary in b["tiers"]:
+			if float(t["y0"]) < DT_EYE and float(t["y1"]) > DT_EYE:
+				blockers.append(tier_rect(i, t))
+		for so: Dictionary in b.get("solids", []):
+			if float(so["y0"]) < DT_EYE and float(so["y1"]) > DT_EYE:
+				var sz: Vector2 = so["size"]
+				blockers.append(Rect2((b["center"] as Vector2) + (so["off"] as Vector2) - sz * 0.5, sz))
+		if b["pillar"]:
+			var cs: Vector2 = b["core"]["size"]
+			blockers.append(Rect2(Vector2(b["core"]["x"], b["core"]["s"]) - cs * 0.5, cs))
+	var out := []
+	for axis in 2:
+		var c := z.position[axis] + DT_VIEW_INSET
+		while c <= z.end[axis] - DT_VIEW_INSET + 0.001:
+			var clear := true
+			for r in blockers:
+				if r.position[axis] < c + DT_VIEW_HALF and c - DT_VIEW_HALF < r.end[axis]:
+					clear = false
+					break
+			if clear:
+				out.append({"axis": axis, "c": c})
+			c += 0.5
+	return out
+
+
+## The heights of the standable roofs in block bi (rounded to 0.1 m, sorted, unique).
+func perch_heights(bi: int) -> Array[float]:
+	var out: Array[float] = []
+	for i in buildings_in(bi):
+		for t: Dictionary in buildings[i]["tiers"]:
+			var y := snappedf(float(t["y1"]), 0.1)
+			if t["stand"] and not out.has(y):
+				out.append(y)
+	out.sort()
+	return out
+
+
+## Where shafts meet the ceiling, in arc coordinates: every site pillar's drop panel, then every downtown shaft's
+## (CityStreets.ceiling_range keeps the light strips and ducts out of them).
+func ceiling_heads() -> Array[Rect2]:
+	var out: Array[Rect2] = []
+	for q: Dictionary in site.pillars:
+		var m := float(q["half"]) + CityStreets.DROP_PANEL
+		out.append(Rect2(float(q["x"]) - m, float(q["s"]) - m, m * 2.0, m * 2.0))
+	for i in buildings.size():
+		for t: Dictionary in buildings[i]["tiers"]:
+			if str(t.get("kind", "")) == "tower":
+				out.append(shaft_head(i, t).grow(CityStreets.DROP_PANEL))
+	return out
+
+
+## Shaft tier t of building i where it meets the ceiling, in arc coordinates: it stands straight in its building's frame,
+## so along s it reaches further out the higher it goes.
+func shaft_head(i: int, t: Dictionary) -> Rect2:
+	var c: Vector2 = buildings[i]["center"]
+	var off: Vector2 = t["off"]
+	var size: Vector2 = t["size"]
+	var k := p("radius") / (p("radius") - p("ceiling"))
+	return Rect2(c.x + off.x - size.x * 0.5, c.y + (off.y - size.y * 0.5) * k, size.x, size.y * k)
+
+
 # --- Roads as a graph ------------------------------------------------------------------------------------
 
 ## Road centre-line graph: a node at every crossing, an edge along every road between neighbouring crossings.
-## Returns {nodes: [Vector2], edges: [[i, j]]}.
+## No edge crosses a floor cut (a cross road that does not bridge a ramp's cut, CityPlan.bridge_allowed); an edge may
+## run along a cut's edge (the road at a ramp's mouth). Returns {nodes: [Vector2], edges: [[i, j]]}.
 func road_graph() -> Dictionary:
+	var g := _grid_graph()
+	if site == null or site.floor_holes.is_empty():
+		return g
+	var cuts := floor_cuts()
+	var kept := []
+	for ed: Array in g["edges"]:
+		var p: Vector2 = g["nodes"][int(ed[0])]
+		var q: Vector2 = g["nodes"][int(ed[1])]
+		var lo := Vector2(minf(p.x, q.x), minf(p.y, q.y))
+		var hi := Vector2(maxf(p.x, q.x), maxf(p.y, q.y))
+		var blocked := false
+		for o in cuts:
+			var inner := o.grow(-0.5)
+			if lo.x < inner.end.x and hi.x > inner.position.x and lo.y < inner.end.y and hi.y > inner.position.y:
+				blocked = true
+				break
+		if not blocked:
+			kept.append(ed)
+	g["edges"] = kept
+	return g
+
+
+func _grid_graph() -> Dictionary:
 	var nodes: Array[Vector2] = []
 	var edges := []
 	var nx := roads_x.size()
@@ -993,6 +1987,14 @@ func checksum() -> String:
 			_put(buf, [(g["off"] as Vector2).x, (g["off"] as Vector2).y, g["w"], g["d"], g["y0"], g["rise"], g["front"]])
 		if b["pillar"]:
 			_put(buf, [b["core"]["x"], b["core"]["s"], (b["core"]["size"] as Vector2).x, (b["core"]["size"] as Vector2).y])
+		if b.has("base"):     # downtown only: a plan without a zone hashes exactly as before
+			buf.put_utf8_string("base:" + str(b["base"]))
+	var zone := ""
+	for bi in blocks.size():
+		if blocks[bi].get("downtown", false):
+			zone += str(bi) + ","
+	if zone != "":
+		buf.put_utf8_string("downtown:" + zone)
 	for c: Dictionary in columns:
 		_put(buf, [c["x"], c["s"], c["half"], c["ring_r"], c["ring_h"]])
 	site.put(buf)

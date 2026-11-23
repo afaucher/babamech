@@ -10,8 +10,8 @@ extends CharacterBody3D
 ##
 ## Thrusters (S2): `thrust_input` (Space) pushes along local up at `thrust_accel` (more than gravity, so it lifts),
 ## costing heat. On a long fall an automatic emergency burn fires when the ground is closer than the braking distance;
-## it is only an emergency system, so a long drop can still end in a hard landing (`hard_landing` signal: leg damage
-## comes with component damage in S5). Heat is the primary limit: thrust heats, the frame cools; at `heat_cap` the mech
+## it is only an emergency system, so a long drop can still end in a hard landing (`hard_landing` signal: PlayerTarget
+## turns it into leg damage, docs/design/weapons.md "Fall damage"; shut down = no burn). Heat is the primary limit: thrust, walking and running heat, the frame cools; at `heat_cap` the mech
 ## SHUTS DOWN (no move, no thrust), cools to `reboot_heat`, then reboots after `reboot_time`.
 ##
 ## Input comes from whoever drives it (player, lab bot, later the network for puppets): set `move_input`, `turn_input`,
@@ -32,6 +32,8 @@ var climb_speed := 10.0              ## m/s the body rises while stepping up (ke
 var thrust_accel := 34.0             ## m/s^2 along local up while thrusting (gravity is subtracted)
 var air_control := 0.35              ## share of `accel` available while airborne
 var thrust_heat := 24.0              ## heat per second of thrust
+var walk_heat := 2.5                 ## heat/s walking at walk_speed (scales with ground speed; docs/design/weapons.md)
+var run_heat := 9.0                  ## heat/s running at run_speed (lerps from walk_heat above walk_speed)
 var cooling := 9.0                   ## heat shed per second
 var heat_cap := 100.0                ## overheat: shutdown
 var reboot_heat := 35.0              ## cooled to this, the reboot starts
@@ -74,6 +76,7 @@ func net_fields() -> Dictionary:
 		"ring": Net.SPAWN, "walk_speed": Net.SPAWN, "run_speed": Net.SPAWN, "strafe_scale": Net.SPAWN, "accel": Net.SPAWN,
 		"turn_rate": Net.SPAWN, "gravity": Net.SPAWN, "max_step_up": Net.SPAWN, "climb_speed": Net.SPAWN,
 		"thrust_accel": Net.SPAWN, "air_control": Net.SPAWN, "thrust_heat": Net.SPAWN, "cooling": Net.SPAWN,
+		"walk_heat": Net.SPAWN, "run_heat": Net.SPAWN,
 		"heat_cap": Net.SPAWN, "reboot_heat": Net.SPAWN, "reboot_time": Net.SPAWN, "auto_burn": Net.SPAWN,
 		"safe_land_speed": Net.SPAWN, "hard_land_speed": Net.SPAWN,
 		"move_input": Net.PRIVATE, "turn_input": Net.PRIVATE, "running": Net.PRIVATE, "thrust_input": Net.PRIVATE,
@@ -174,6 +177,7 @@ func add_heat(amount: float) -> void:
 func _update_heat(delta: float) -> void:
 	if thrusting:
 		heat += thrust_heat * delta
+	heat += move_heat_rate() * delta
 	heat = maxf(heat - cooling * delta, 0.0)
 	if heat >= heat_cap and not shutdown:
 		heat = heat_cap
@@ -184,6 +188,18 @@ func _update_heat(delta: float) -> void:
 			shutdown = false
 			rebooted.emit()
 	heat = minf(heat, heat_cap)
+
+
+## Heat/s from walking / running now: from the actual ground speed, only on the ground, live, not thrusting and with
+## move input (a knockback slide or a ride with no input adds nothing). Walk: walk_heat * v / walk_speed; above it lerps
+## to run_heat at run_speed, clamped there. Owner only (a puppet runs no step()).
+func move_heat_rate() -> float:
+	if puppet or shutdown or thrusting or move_input.length_squared() < 1e-4 or not grounded():
+		return 0.0
+	var v := ground_speed()
+	if v <= walk_speed:
+		return walk_heat * v / maxf(walk_speed, 0.01)
+	return lerpf(walk_heat, run_heat, clampf((v - walk_speed) / maxf(run_speed - walk_speed, 0.01), 0.0, 1.0))
 
 
 func _overheat() -> void:

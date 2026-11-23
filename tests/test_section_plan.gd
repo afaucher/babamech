@@ -1,7 +1,9 @@
 extends TestCase
 ## SectionPlan (docs/design/mission-section.md): deterministic and checksummed; a route from the entry to the lowest
 ## deck for vehicles AND for mechs; pillars line up between decks; every cell is reachable; no connection sits in a
-## pillar it isn't housed in; the planner holds up across seeds and at the ends of every setting.
+## pillar it isn't housed in; the planner holds up across seeds and at the ends of every setting. Ramp bridges too low to
+## walk under are gone from the road graph; road segment forms keep their always-street rules and the repair guarantees
+## (vehicle network, a vehicle side on every cell, no stubs) even at extreme mixes, and move nothing rolled before them.
 
 const SETTINGS := [
 	{}, {"decks": 2.0}, {"decks": 5.0}, {"arc": 300.0}, {"arc": 900.0}, {"width": 160.0}, {"width": 450.0},
@@ -33,7 +35,231 @@ func setup() -> void:
 			_check_plan(SectionPlan.make(o), "settings %d seed %d" % [i, seed_])
 	_deck_views()
 	_geometry()
+	_forms_sweep()
 	finish()
+
+
+## Legacy digest of seeds 1..40, recorded before ramp bridges and segment forms existed (2026-11-23): everything rolled
+## before them (grid, zones, regions, pillars, connectors, roads, mech route, hooks, walls and gates, ends) is unchanged.
+const LEGACY_1_40 := "3ac644959496e0cf"
+## checksum() of seeds 1..40, concatenated and sha256'd, recorded before ramp bridges and segment forms: with the forms
+## dormant (default fractions 0) and the bridge rule on, the whole plan hashes exactly as before.
+const CHECKSUM_1_40 := "af844bf36222946e"
+const ZERO_FORMS := {"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0}
+## The intended mix (DEFAULTS keep the forms dormant at 0 until the city draws them).
+const FORM_MIX := {"f_lane": 0.20, "f_pedestrian": 0.10, "f_none": 0.08}
+const EXTREMES := [
+	{"f_pedestrian": 0.6, "f_none": 0.6}, {"f_lane": 1.0}, {"f_pedestrian": 1.0}, {"f_none": 1.0},
+	{"f_pedestrian": 0.6, "f_none": 0.6, "decks": 5.0, "arc": 900.0, "width": 450.0, "cell": 60.0, "shafts": 3.0},
+	{"f_pedestrian": 0.6, "f_none": 0.6, "w_industrial": 3.0, "w_park": 0.0},
+]
+
+
+func _forms_sweep() -> void:
+	# Determinism.
+	var mo := FORM_MIX.duplicate()
+	mo["seed"] = 7.0
+	var a := SectionPlan.make(mo)
+	var b := SectionPlan.make(mo)
+	eq(str(a.forms), str(b.forms), "same seed, same segment forms")
+	check(a.checksum() != SectionPlan.make({"seed": 7.0}).checksum(), "forms are in the checksum")
+	# Defaults: forms dormant, every segment a street, the plan and its checksum exactly as before forms and bridges.
+	var sums := ""
+	for seed_ in range(1, 41):
+		var plan := SectionPlan.make({"seed": float(seed_)})
+		sums += plan.checksum()
+		var streets := true
+		for k in plan.deck_count:
+			for sg: Dictionary in plan.segments(k):
+				streets = streets and sg["form"] == "street"
+		check(streets, "seed %d: forms dormant by default" % seed_)
+		eq(plan.checksum(), SectionPlan.make({"seed": float(seed_), "bridge_rule": 0.0}).checksum(),
+				"seed %d: the bridge rule changes nothing stored" % seed_)
+	eq(sums.sha256_text().substr(0, 16), CHECKSUM_1_40, "seeds 1..40: default checksums as before forms and bridges")
+	# Old data unmoved, and at default grade one bridge goes per ramp; mix of the minor segments (intended mix).
+	var all := ""
+	var mix := {"street": 0, "lane": 0, "pedestrian": 0, "none": 0}
+	var minor := 0
+	var total := 0
+	var repaired := 0
+	var stubs := 0
+	for seed_ in range(1, 41):
+		var po := FORM_MIX.duplicate()
+		po["seed"] = float(seed_)
+		var plan := SectionPlan.make(po)
+		_check_plan(plan, "mix seed %d" % seed_)
+		all += _legacy_digest(plan)
+		for ci in plan.connectors.size():
+			if plan.connectors[ci]["kind"] == "ramp":
+				eq(plan.bridge_lines(ci).size(), 1, "seed %d: one bridge fewer over ramp %d at the default grade" % [seed_, ci])
+		for k in plan.deck_count:
+			for sg: Dictionary in plan.segments(k):
+				total += 1
+				if sg["minor"]:
+					minor += 1
+					mix[sg["form"]] += 1
+		repaired += int(plan.repair_stats["repaired"])
+		stubs += int(plan.repair_stats["stubs"])
+		# Geometry and everything rolled before the forms: the same as a plan with no minor forms at all.
+		var flat_o := ZERO_FORMS.duplicate()
+		flat_o["seed"] = float(seed_)
+		var flat := SectionPlan.make(flat_o)
+		_same_geometry(plan, flat, "seed %d" % seed_)
+	eq(all.sha256_text().substr(0, 16), LEGACY_1_40, "seeds 1..40: everything rolled before forms is unchanged")
+	print("[section] forms over 40 seeds: %d segments, %d minor (%.0f%%): street %.3f lane %.3f pedestrian %.3f none %.3f; repaired %.2f / plan, stubs %.2f / plan" % [
+			total, minor, 100.0 * minor / total, float(mix["street"]) / minor, float(mix["lane"]) / minor,
+			float(mix["pedestrian"]) / minor, float(mix["none"]) / minor, repaired / 40.0, stubs / 40.0])
+	var f_lane := float(mix["lane"]) / minor
+	var f_ped := float(mix["pedestrian"]) / minor
+	var f_none := float(mix["none"]) / minor
+	check(f_lane > 0.12 and f_lane < 0.45, "lanes roughly f_lane (%.3f)" % f_lane)
+	check(f_ped > 0.05 and f_ped < 0.30, "pedestrian roughly f_pedestrian (%.3f)" % f_ped)
+	check(f_none > 0.01 and f_none < 0.15, "none roughly f_none, less the zones that forbid it (%.3f)" % f_none)
+	# The intended mix across the settings extremes, and deck views of mixed plans (strips carry forms, still tile).
+	for i in SETTINGS.size():
+		var so: Dictionary = (SETTINGS[i] as Dictionary).duplicate()
+		so.merge(FORM_MIX)
+		so["seed"] = 3.0
+		_check_plan(SectionPlan.make(so), "mix settings %d" % i)
+	for seed_ in [1, 2, 9]:
+		var vo := FORM_MIX.duplicate()
+		vo["seed"] = float(seed_)
+		var vp := SectionPlan.make(vo)
+		for k in vp.deck_count:
+			_check_view(vp, k, vp.deck_view(k), "mix view seed %d deck %d" % [seed_, k])
+	# All fractions 0: every segment a street, and the road graph is the full grid less ramp feet and ramp bridges.
+	for o: Dictionary in [{"seed": 3.0}, {"seed": 11.0}, {"seed": 4.0, "ramp_grade": 0.08}, {"seed": 29.0, "decks": 5.0}]:
+		var zo := ZERO_FORMS.duplicate()
+		zo.merge(o)
+		var plan := SectionPlan.make(zo)
+		var edges := _grid_edges(plan)
+		var bad := 0
+		for k in plan.deck_count:
+			for sg: Dictionary in plan.segments(k):
+				if sg["form"] != "street":
+					bad += 1
+				var foot: bool = sg["axis"] == "x" and plan._crossing_blocked(k, int(sg["index"]), int(sg["line"]))
+				var bridge := false
+				for ci in plan.connectors.size():
+					var c: Dictionary = plan.connectors[ci]
+					if c["kind"] == "ramp" and int(c["from"]) == k and sg["axis"] == "x" and plan.bridge_lines(ci).has(int(sg["line"])) \
+							and int(sg["index"]) == (plan.spine_line - 1 if c["lane"] == "ramp_a" else plan.spine_line):
+						bridge = true
+				var key := Vector2i(mini(int(sg["a"]), int(sg["b"])), maxi(int(sg["a"]), int(sg["b"])))
+				if edges.has(key) == (foot or bridge):
+					bad += 1
+		eq(bad, 0, "no forms %s: all streets, road graph = grid less ramp feet and bridges" % str(o))
+		eq(int(plan.repair_stats["repaired"]) + int(plan.repair_stats["stubs"]), 0, "no forms %s: nothing to repair" % str(o))
+	# Extreme mixes: the repair still delivers every guarantee (the full plan checks run on them).
+	for i in EXTREMES.size():
+		var rep := 0
+		var stub := 0
+		var rolled := 0
+		var n_seeds := 3 if (EXTREMES[i] as Dictionary).has("decks") else 10     # the big grid repairs ~0.7 s a plan
+		for seed_ in range(1, n_seeds + 1):
+			var o: Dictionary = (EXTREMES[i] as Dictionary).duplicate()
+			o["seed"] = float(seed_)
+			var plan := SectionPlan.make(o)
+			_check_plan(plan, "extreme %d seed %d" % [i, seed_])
+			rep += int(plan.repair_stats["repaired"])
+			stub += int(plan.repair_stats["stubs"])
+			rolled += int(plan.repair_stats["rolled"])
+		print("[section] extreme %s: rolled %.1f, repaired %.1f, stubs %.1f per plan" % [str(EXTREMES[i]), float(rolled) / n_seeds,
+				float(rep) / n_seeds, float(stub) / n_seeds])
+
+
+func _same_geometry(a: SectionPlan, b: SectionPlan, tag: String) -> void:
+	eq(str(a.decks), str(b.decks), tag + ": zones and regions unchanged by forms")
+	eq(str(a.pillars), str(b.pillars), tag + ": pillars unchanged by forms")
+	eq(str(a.connectors), str(b.connectors), tag + ": connectors unchanged by forms")
+	eq(str(a.hooks), str(b.hooks), tag + ": hooks unchanged by forms")
+	eq(str(a.boundaries), str(b.boundaries), tag + ": walls and gates unchanged by forms")
+	eq(str(a.route["mech"]), str(b.route["mech"]), tag + ": mech route unchanged by forms")
+	var bad := 0
+	for k in a.deck_count:
+		for r in a.rows:
+			for c in a.cols:
+				if a.cell_rect(k, c, r) != b.cell_rect(k, c, r):
+					bad += 1
+		for id in a.pillars.size():
+			if a.pillar_point(k, id) != b.pillar_point(k, id):
+				bad += 1
+		for ci in a.connectors.size():
+			if a.connector_rect(ci, k) != b.connector_rect(ci, k):
+				bad += 1
+		var sa: Array = a.deck_view(k)["road_strips"]
+		var sb: Array = b.deck_view(k)["road_strips"]
+		if sa.size() != sb.size():
+			bad += 1
+		else:
+			for m in sa.size():
+				if sa[m]["rect"] != sb[m]["rect"]:
+					bad += 1
+	eq(bad, 0, tag + ": cell rects, pillar points, connector rects and road strips unchanged by forms")
+
+
+## Hash of everything SectionPlan rolled before ramp bridges and segment forms (the vehicle route left out: it now avoids
+## those segments). Quantised like checksum().
+static func _legacy_digest(plan: SectionPlan) -> String:
+	var buf := StreamPeerBuffer.new()
+	var q := func(v: float) -> void: buf.put_32(int(round(v * 1000.0)))
+	for v in [plan.deck_count, plan.cols, plan.rows, plan.spine_line]:
+		buf.put_32(v)
+	for x in plan.col_x: q.call(x)
+	for t in plan.row_theta: q.call(t * 1000.0)
+	for dk: Dictionary in plan.decks:
+		buf.put_32(int(dk["dir"]))
+		for row: Array in dk["zones"]:
+			for z: String in row:
+				buf.put_utf8_string(z)
+		for r: Rect2 in dk["keep_clear"]:
+			for v in [r.position.x, r.position.y, r.size.x, r.size.y]: q.call(v)
+		for reg: Dictionary in dk["regions"]:
+			buf.put_utf8_string(str(reg["kind"]))
+			for c: Vector2i in reg["cells"]:
+				buf.put_32(c.x + c.y * 64)
+	for p: Dictionary in plan.pillars:
+		buf.put_32(int(p["col"]) + int(p["row"]) * 64)
+		q.call(float(p["x"])); q.call(float(p["theta"]) * 1000.0)
+		buf.put_8(1 if p["lift"] else 0)
+		for k: int in p["stops"]: buf.put_8(k)
+	for c: Dictionary in plan.connectors:
+		var keys: Array = c.keys()
+		keys.sort()
+		for key: Variant in keys:
+			buf.put_utf8_string(str(key))
+			var v: Variant = c[key]
+			if v is float: q.call(v * 1000.0)
+			else: buf.put_utf8_string(str(v))
+	for r: Dictionary in plan.roads:
+		buf.put_utf8_string("%s:%d:%s" % [r["axis"], r["line"], r["kind"]]); q.call(float(r["width"]))
+	for w: Dictionary in plan.route["mech"]:
+		buf.put_32(plan.cell_id(w["deck"], w["col"], w["row"]))
+	q.call(float(plan.route["mech_len"]))
+	for h: Dictionary in plan.hooks:
+		var keys: Array = h.keys()
+		keys.sort()
+		for key: Variant in keys:
+			buf.put_utf8_string(str(key))
+			var v: Variant = h[key]
+			if v is float: q.call(v)
+			elif v is Array:
+				for e: Variant in v:
+					if e is Vector2: q.call(e.x); q.call(e.y)
+					else: buf.put_utf8_string(str(e))
+			else: buf.put_utf8_string(str(v))
+	for b: Dictionary in plan.boundaries:
+		buf.put_utf8_string("%s:%s:%s" % [b["deck"], b["edge"], b["kind"]])
+		for g: Dictionary in b["gates"]:
+			buf.put_utf8_string("%s:%s:%s:%d" % [g["kind"], g["role"], g["axis"], g["line"]])
+			q.call(float(g["x"])); q.call(float(g["s"])); q.call(float(g["width"]))
+	for e: Dictionary in [plan.entry, plan.extraction]:
+		for v in [e["deck"], e["i"], e["j"], e["col"], e["row"]]:
+			buf.put_32(int(v))
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	ctx.update(buf.data_array)
+	return ctx.finish().hex_encode().substr(0, 16)
 
 
 func _determinism() -> void:
@@ -51,6 +277,14 @@ func _determinism() -> void:
 		sums[SectionPlan.make({"seed": float(seed_)}).checksum()] = true
 	check(sums.size() >= 38, "seeds give different sections (%d of 40)" % sums.size())
 	check(SectionPlan.make({"seed": 7.0, "w_park": 1.5}).checksum() != a.checksum(), "the zone mix changes the plan")
+	# Encounter data is derived: repeatable, the same on two plans of one seed, and reading it changes nothing.
+	var sum := a.checksum()
+	for k in a.deck_count:
+		eq(str(a.arrival(k)), str(b.arrival(k)), "same seed, same arrival on deck %d" % k)
+		eq(str(a.departure(k)), str(b.departure(k)), "same seed, same departure on deck %d" % k)
+		eq(str(a.encounter_sites(k)), str(b.encounter_sites(k)), "same seed, same encounter sites on deck %d" % k)
+		eq(str(a.encounter_sites(k)), str(a.encounter_sites(k)), "encounter sites are repeatable on deck %d" % k)
+	eq(a.checksum(), sum, "reading encounter data leaves the plan alone")
 
 
 func _check_plan(plan: SectionPlan, tag: String) -> void:
@@ -224,6 +458,290 @@ func _check_plan(plan: SectionPlan, tag: String) -> void:
 		if h["kind"] == "checkpoint" and h["size"] == "heavy":
 			checkpoints += 1
 	check(checkpoints >= n - 1, tag + ": a heavy checkpoint at every way down")
+	_check_encounters(plan, tag)
+	_check_bridges(plan, tag)
+	_check_forms(plan, tag)
+
+
+## Ramp bridges: on a ramp's upper deck, the cross segment of its lane at every line too low to drive under (clearance
+## recomputed here) is blocked and missing from the road graph; every other line keeps its bridge.
+func _check_bridges(plan: SectionPlan, tag: String) -> void:
+	var edges := _grid_edges(plan)
+	for ci in plan.connectors.size():
+		var c: Dictionary = plan.connectors[ci]
+		var lines := plan.bridge_lines(ci)
+		if c["kind"] != "ramp":
+			eq(lines.size(), 0, tag + ": only ramps lose bridges")
+			continue
+		var k := int(c["from"])
+		var top := int(c["top_line"])
+		var foot := int(c["foot_line"])
+		var i := plan.spine_line - 1 if c["lane"] == "ramp_a" else plan.spine_line
+		var run := absf(plan.line_s(k, foot) - plan.line_s(k, top))
+		for j in range(mini(top, foot) + 1, maxi(top, foot)):
+			var d := absf(plan.line_s(k, j) - plan.line_s(k, top)) - plan.line_width("x", j) * 0.5
+			var clear := plan.p("pitch") * d / run - plan.p("slab")
+			eq(lines.has(j), clear < SectionPlan.BRIDGE_CLEARANCE, "%s: ramp %d line %d bridged iff clear (%.2f m)" % [tag, ci, j, clear])
+			var a := plan.node_id(k, i, j)
+			var b := plan.node_id(k, i + 1, j)
+			eq(edges.has(Vector2i(a, b)), not lines.has(j) and plan.segment_form(k, a, b) in ["street", "lane"],
+					"%s: ramp %d line %d edge in road_graph iff bridged" % [tag, ci, j])
+			if lines.has(j):
+				var sg := _seg(plan, k, "x", j, i)
+				eq(str(sg["blocked"]), "bridge", "%s: ramp %d line %d segment blocked by the cut" % [tag, ci, j])
+		for j in lines:
+			check(j != top and j != foot and (j - top) * (foot - top) > 0, "%s: ramp %d bridge line %d between head and foot" % [tag, ci, j])
+
+
+## Road-graph edges between neighbouring nodes of one deck (connector edges left out), as Vector2i(lo, hi).
+func _grid_edges(plan: SectionPlan) -> Dictionary:
+	var out := {}
+	var adj := plan.road_graph(false)
+	for a in adj.size():
+		for e: Array in adj[a]:
+			if int(e[2]) < 0:
+				out[Vector2i(mini(a, int(e[0])), maxi(a, int(e[0])))] = true
+	return out
+
+
+func _seg(plan: SectionPlan, k: int, axis: String, line: int, index: int) -> Dictionary:
+	return plan.line_segments(k, axis, line)[index]
+
+
+## Segment forms (always-street rules, graph agreement, repair guarantees, strips) on one plan.
+func _check_forms(plan: SectionPlan, tag: String) -> void:
+	var n := plan.deck_count
+	var edges := _grid_edges(plan)
+	var road := SectionPlan.walk(plan.road_graph(false), plan.entry_node())
+	var hw := plan.p("width") * 0.5
+	for k in n:
+		var t := "%s deck %d" % [tag, k]
+		var segs := plan.segments(k)
+		eq(segs.size(), (plan.cols + 1) * plan.rows + (plan.rows + 1) * plan.cols, t + ": every segment listed")
+		var forced := {}       # segment index in segs -> why
+		var node_segs := {}    # node id -> [indices into segs]
+		var cell_vehicle := {} # cell id -> true
+		var bad := 0
+		for si in segs.size():
+			var sg: Dictionary = segs[si]
+			var a := int(sg["a"])
+			var b := int(sg["b"])
+			var form := str(sg["form"])
+			if not form in SectionPlan.FORMS:
+				bad += 1
+			for nd in [a, b]:
+				if not node_segs.has(nd):
+					node_segs[nd] = []
+				node_segs[nd].append(si)
+			if plan.segment_form(k, a, b) != form or plan.segment_form(k, b, a) != form:
+				bad += 1
+			var drive: bool = form in ["street", "lane"] and str(sg["blocked"]) == ""
+			if edges.has(Vector2i(mini(a, b), maxi(a, b))) != drive:
+				bad += 1
+				check(false, "%s: %s %d #%d (%s, %s) in road_graph iff vehicles drive it" % [t, sg["axis"], sg["line"], sg["index"], form, sg["blocked"]])
+			var cw := plan.carriageway(k, a, b)
+			var want := float(SectionPlan.FORM_WIDTH[form])
+			if not is_equal_approx(cw, plan.line_width(sg["axis"], sg["line"]) if want < 0.0 else want):
+				bad += 1
+			var line := int(sg["line"])
+			var idx := int(sg["index"])
+			var cells: Array[Vector2i] = []
+			for side in [line - 1, line]:
+				var cell := Vector2i(side, idx) if sg["axis"] == "s" else Vector2i(idx, side)
+				if cell.x >= 0 and cell.x < plan.cols and cell.y >= 0 and cell.y < plan.rows:
+					cells.append(cell)
+			if drive:
+				for cell in cells:
+					cell_vehicle[plan.cell_id(k, cell.x, cell.y)] = true
+			if sg["axis"] == "s" and line in [0, plan.spine_line, plan.cols]:
+				forced[si] = "spine / perimeter"
+			if sg["axis"] == "x" and line in [0, plan.rows]:
+				forced[si] = "perimeter"
+			var area: Rect2 = sg["rect"]
+			for ci in plan.connectors.size():
+				var c: Dictionary = plan.connectors[ci]
+				var on: Array = c["stops"] if c["kind"] == "lift" else [int(c["from"]), int(c["to"])]
+				if on.has(k) and area.intersects(plan.connector_rect(ci, k).grow(1.0), true):
+					forced[si] = "touches connector %d" % ci
+			for h: Dictionary in plan.hooks:
+				if int(h["deck"]) == k and h["kind"] in ["checkpoint", "cordon"] and area.grow(1.0).has_point(Vector2(float(h["x"]), float(h["s"]))):
+					forced[si] = "hook " + str(h["kind"])
+			# A superblock only joins built blocks, never a connector's cell.
+			if form == "none":
+				for cell in cells:
+					if plan.zone(k, cell.x, cell.y) in ["park", "open", "transit"]:
+						bad += 1
+						check(false, "%s: none segment beside a %s cell" % [t, plan.zone(k, cell.x, cell.y)])
+					var crect := plan.cell_rect(k, cell.x, cell.y)
+					for ci in plan.connectors.size():
+						var c: Dictionary = plan.connectors[ci]
+						var on: Array = c["stops"] if c["kind"] == "lift" else [int(c["from"]), int(c["to"])]
+						if on.has(k) and plan.connector_rect(ci, k).intersects(crect):
+							bad += 1
+							check(false, "%s: none segment beside connector %d's cell" % [t, ci])
+		eq(bad, 0, t + ": segment forms, symmetry, carriageway and graph agree")
+		# Node-based rules: gates, ramp heads / feet, lift lobbies.
+		var force_node := func(i: int, j: int, why: String) -> void:
+			for si: int in node_segs.get(plan.node_id(k, i, j), []):
+				forced[si] = why
+		for b: Dictionary in plan.boundaries:
+			if int(b["deck"]) != k:
+				continue
+			for g: Dictionary in b["gates"]:
+				if g["axis"] == "s":
+					force_node.call(int(g["line"]), 0 if b["edge"] == "s0" else plan.rows, "gate")
+				else:
+					force_node.call(0 if b["edge"] == "x0" else plan.cols, int(g["line"]), "gate")
+		for c: Dictionary in plan.connectors:
+			if c["kind"] == "ramp":
+				for i in [plan.spine_line - 1, plan.spine_line, plan.spine_line + 1]:
+					if int(c["from"]) == k:
+						force_node.call(i, int(c["top_line"]), "ramp head")
+					if int(c["to"]) == k:
+						force_node.call(i, int(c["foot_line"]), "ramp foot")
+			elif c["kind"] == "lift" and (c["stops"] as Array).has(k):
+				force_node.call(int(c["top"]["i"]), int(c["top"]["j"]), "lift lobby")
+				var cc := int(c["col"])
+				var rr := int(c["row"])
+				for si in segs.size():
+					var sg: Dictionary = segs[si]
+					if (sg["axis"] == "x" and int(sg["index"]) == cc and int(sg["line"]) in [rr, rr + 1]) or \
+							(sg["axis"] == "s" and int(sg["index"]) == rr and int(sg["line"]) in [cc, cc + 1]):
+						forced[si] = "lift cell"
+		for si: int in forced:
+			var sg: Dictionary = segs[si]
+			if sg["form"] != "street" or sg["minor"]:
+				check(false, "%s: %s %d #%d is a street (%s), is %s" % [t, sg["axis"], sg["line"], sg["index"], forced[si], sg["form"]])
+		# Repair guarantees: every cell has a side vehicles drive; every node with a vehicle segment is on the network.
+		var no_side := 0
+		for r in plan.rows:
+			for c in plan.cols:
+				if not cell_vehicle.has(plan.cell_id(k, c, r)):
+					no_side += 1
+		eq(no_side, 0, t + ": every cell has a vehicle side")
+		var stranded := 0
+		var stubs := 0
+		for nd: int in node_segs:
+			var drawn := 0
+			var drives := false
+			for si: int in node_segs[nd]:
+				var sg: Dictionary = segs[si]
+				if sg["form"] != "none":
+					drawn += 1
+				drives = drives or (sg["form"] in ["street", "lane"] and str(sg["blocked"]) == "")
+			if drawn == 1:
+				stubs += 1
+			if drives and float(road["dist"][nd]) == INF:
+				stranded += 1
+		eq(stranded, 0, t + ": vehicles reach every node with a vehicle segment")
+		eq(stubs, 0, t + ": no stub streets")
+		# line_segments tile each line's strip: end to end, line width across, deck edge to deck edge.
+		for axis: String in ["s", "x"]:
+			for line in (plan.cols + 1 if axis == "s" else plan.rows + 1):
+				var ls := plan.line_segments(k, axis, line)
+				var lo := -plan.arc_of(k) * 0.5 if axis == "s" else -hw
+				var gaps := 0
+				for m in ls.size():
+					var rc: Rect2 = ls[m]["rect"]
+					var along0 := rc.position.y if axis == "s" else rc.position.x
+					var along1 := rc.end.y if axis == "s" else rc.end.x
+					var across := rc.size.x if axis == "s" else rc.size.y
+					if absf(along0 - lo) > 1e-3 or along1 <= along0 or absf(across - plan.line_width(axis, line)) > 1e-3 or int(ls[m]["index"]) != m:
+						gaps += 1
+					lo = along1
+				var hi := plan.arc_of(k) * 0.5 if axis == "s" else hw
+				eq(gaps, 0, "%s: line %s %d segments tile without gaps or overlaps" % [t, axis, line])
+				near(lo, hi, 1e-3, "%s: line %s %d segments reach the deck's far edge" % [t, axis, line])
+
+
+## arrival / departure / encounter_sites (mission-section.md §16): derived reads the enemy spawner places groups from.
+func _check_encounters(plan: SectionPlan, tag: String) -> void:
+	var n := plan.deck_count
+	var av := plan.lane_x("avenue")
+	var avenue := (av.x + av.y) * 0.5
+	for k in n:
+		var t := "%s deck %d" % [tag, k]
+		var extent := Rect2(-plan.p("width") * 0.5, -plan.arc_of(k) * 0.5, plan.p("width"), plan.arc_of(k)).grow(0.01)
+		var a := plan.arrival(k)
+		var d := plan.departure(k)
+		var ap := Vector2(float(a["x"]), float(a["s"]))
+		var dp := Vector2(float(d["x"]), float(d["s"]))
+		eq(int(a["deck"]), k, t + ": arrival deck")
+		eq(int(d["deck"]), k, t + ": departure deck")
+		check(extent.has_point(ap), t + ": arrival inside the deck " + str(ap))
+		check(extent.has_point(dp), t + ": departure inside the deck " + str(dp))
+		if k == 0:
+			eq(str(a["kind"]), "portal", t + ": the crew arrives through the entry portal")
+			check(ap.distance_to(Vector2(avenue, plan.line_s(0, int(plan.entry["j"])))) < 0.01, t + ": arrival is the entry node on the avenue")
+		else:
+			_check_end(plan, k, a, k - 1, t + ": arrival")
+		if k == n - 1:
+			eq(str(d["kind"]), "portal", t + ": the crew leaves through the extraction portal")
+			eq(int(d["connector"]), -1, t + ": the extraction is no connector")
+			check(dp.distance_to(Vector2(avenue, plan.line_s(k, int(plan.extraction["j"])))) < 0.01, t + ": departure is the extraction node on the avenue")
+		else:
+			_check_end(plan, k, d, k, t + ": departure")
+		# 100 m apart, except where a ramp lands right beside the next ramp down (same cross line, neighbouring lanes:
+		# the generator allows it, e.g. cell 140 seed 11 deck 1, 40 m).
+		var ad := ap.distance_to(dp)
+		var side_by_side: bool = a["kind"] == "ramp" and d["kind"] == "ramp" and absf(ap.y - dp.y) < 0.01
+		check(ad >= 100.0 or (side_by_side and ad >= 39.9), t + ": arrival and departure apart (%.1f m)" % ad)
+		# --- Sites.
+		var sites := plan.encounter_sites(k)
+		check(not sites.is_empty(), t + ": encounter sites")
+		var total := 0.0
+		var early := false
+		var late := false
+		var ends := 0
+		for i in sites.size():
+			var site: Dictionary = sites[i]
+			var at := Vector2(float(site["x"]), float(site["s"]))
+			var st := "%s site %d (%s)" % [t, i, site["kind"]]
+			check(site["kind"] in SectionPlan.SITE_PRIORITY, st + ": kind")
+			check(site["weight"] in ["light", "medium", "heavy"], st + ": weight")
+			eq(int(site["deck"]), k, st + ": deck")
+			check(extent.has_point(at), st + ": inside the deck")
+			check(float(site["progress"]) >= 0.0 and float(site["progress"]) <= 1.0, st + ": progress in 0..1")
+			if i > 0:
+				check(float(site["progress"]) >= float(sites[i - 1]["progress"]), st + ": sorted by progress")
+			near(float(site["dist"]), at.distance_to(ap), 1e-3, st + ": dist from the arrival")
+			eq(bool(site["safe"]), float(site["dist"]) < SectionPlan.SAFE_RADIUS, st + ": safe iff near the arrival")
+			if site["safe"]:
+				eq(float(site["share"]), 0.0, st + ": nothing spawns in the safe bubble")
+			else:
+				check(float(site["share"]) > 0.0, st + ": a share of the budget")
+				total += float(site["share"])
+				early = early or float(site["progress"]) < 0.35
+				late = late or float(site["progress"]) > 0.8
+			if site["kind"] in ["departure", "extraction"]:
+				ends += 1
+				eq(str(site["kind"]), "extraction" if k == n - 1 else "departure", st + ": extraction on the lowest deck only")
+				check(at.distance_to(dp) < 0.01, st + ": at departure()")
+				eq(str(site["weight"]), "heavy", st + ": the way out is held heavy")
+			if site["kind"] == "checkpoint":
+				check(site.has("connector") and site.has("size"), st + ": checkpoint keeps connector and size")
+			if site["kind"] == "patrol":
+				check(site.has("loop"), st + ": patrol keeps its loop")
+			for j in range(i + 1, sites.size()):
+				var gap := at.distance_to(Vector2(float(sites[j]["x"]), float(sites[j]["s"])))
+				check(gap >= SectionPlan.MERGE_DIST, "%s: sites %d and %d merged (%.1f m)" % [t, i, j, gap])
+		near(total, 1.0, 1e-6, t + ": shares sum to 1")
+		check(early, t + ": an enemy group early on the crossing")
+		check(late, t + ": an enemy group at the way out")
+		eq(ends, 1, t + ": one departure or extraction site")
+
+
+## `end` (an arrival or departure on deck k) stands on the critical connector from deck `upper` to upper + 1.
+func _check_end(plan: SectionPlan, k: int, end: Dictionary, upper: int, tag: String) -> void:
+	var ci := int(end["connector"])
+	check(ci >= 0 and ci < plan.connectors.size(), tag + ": on a connector")
+	if ci < 0 or ci >= plan.connectors.size():
+		return
+	var c: Dictionary = plan.connectors[ci]
+	check(c["role"] == "critical" and not c["locked"] and int(c["from"]) <= upper and int(c["to"]) >= upper + 1,
+			tag + ": the critical connector %d -> %d" % [upper, upper + 1])
+	eq(str(end["kind"]), str(c["kind"]), tag + ": kind is the connector's")
+	check(plan.connector_rect(ci, k).grow(0.01).has_point(Vector2(float(end["x"]), float(end["s"]))), tag + ": inside its footprint")
 
 
 ## deck_view: read-only, consistent with the plan's own helpers, and blocks + road strips tile each deck's ground.
@@ -319,10 +837,29 @@ func _check_view(plan: SectionPlan, k: int, v: Dictionary, tag: String) -> void:
 			s += 7.0
 		x += 7.0
 	eq(bad, 0, tag + ": blocks and road strips tile the ground")
-	# The spine's lanes sit side by side, west to east, and fill the spine.
+	# Strips are per road segment: each carries its index and form, and matches line_segments (the spine split in lanes).
+	var by_seg := {}
+	for st: Dictionary in strips:
+		check(st.has("index") and str(st.get("form", "")) in SectionPlan.FORMS, tag + ": strip has index and form")
+		var key := "%s:%d:%d" % [st["axis"], st["line"], st["index"]]
+		if not by_seg.has(key):
+			by_seg[key] = []
+		by_seg[key].append(st)
+	eq(by_seg.size(), plan.segments(k).size(), tag + ": strips for every road segment")
+	for sg: Dictionary in plan.segments(k):
+		var pieces: Array = by_seg.get("%s:%d:%d" % [sg["axis"], sg["line"], sg["index"]], [])
+		check(not pieces.is_empty(), tag + ": segment has strips")
+		if pieces.is_empty():
+			continue
+		var u: Rect2 = pieces[0]["rect"]
+		for pc: Dictionary in pieces:
+			u = u.merge(pc["rect"])
+			eq(str(pc["form"]), str(sg["form"]), tag + ": strip form is its segment's")
+		check(u.is_equal_approx(sg["rect"]), tag + ": strips of %s %d #%d are its seg rect" % [sg["axis"], sg["line"], sg["index"]])
+	# The spine's lanes sit side by side, west to east, and fill the spine (one segment's worth: index 0).
 	var lanes := []
 	for st: Dictionary in strips:
-		if st["axis"] == "s" and int(st["line"]) == plan.spine_line:
+		if st["axis"] == "s" and int(st["line"]) == plan.spine_line and int(st["index"]) == 0:
 			lanes.append(st)
 	eq(lanes.size(), SectionPlan.SPINE_LANES.size(), tag + ": one strip per spine lane")
 	if lanes.size() == SectionPlan.SPINE_LANES.size():

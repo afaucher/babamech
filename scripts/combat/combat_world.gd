@@ -1,6 +1,6 @@
 class_name CombatWorld
 extends Node3D
-## The combat container of a scene (weapons.md §5): owns the combat CLOCK, the mission seed, the registered targets and
+## The combat container of a scene (weapons.md Â§5): owns the combat CLOCK, the mission seed, the registered targets and
 ## the live effects (shots, impacts), and is where hits are decided and delivered. One per scene; place it at the
 ## origin (effects draw in world space).
 ##
@@ -8,7 +8,7 @@ extends Node3D
 ##   world.register(target)                       a CombatTarget becomes hittable
 ##   world.fire(record) -> CombatEffect           start a shot from a fire record (Combat.fire_record); a record older
 ##                                                than `now` is fast-forwarded by now - record.t (a late network event)
-##   world.advance(dt)                            the scene calls this with ITS delta (× the lab's time scale): moves the
+##   world.advance(dt)                            the scene calls this with ITS delta (Ã— the lab's time scale): moves the
 ##                                                clock, steps targets this machine owns, advances every effect
 ##   world.stats(weapon_id)                       the weapon's catalog entry + the lab's `overrides`
 ##   world.launch_drone(record) -> RepairDrone    start a repair drone (back-equipment.md; a scheduled effect that
@@ -21,12 +21,14 @@ extends Node3D
 ## `remote_hit` (a client's hit on a host-owned target), which CombatNet carries to the host. A machine that doesn't
 ## decide still shows the impact. Fire records cross machines through CombatNet (scripts/combat/combat_net.gd).
 ##
-## CITY PROPS (docs/design/city-props.md §5): `first_hit` also asks the props `first_hit(a, b, r)` and keeps the nearest
+## CITY PROPS (docs/design/city-props.md Â§5): `first_hit` also asks the props `first_hit(a, b, r)` and keeps the nearest
 ## of targets / world / props (a hit on a prop carries "prop": id and "prop_node": the CityProps it came from, target
 ## null); a direct hit calls `apply_impulse(id, dv, src)` on that node (`hit_prop`: dv = stats.knockback along the shot,
 ## no damage, no heat) and `splash` calls `blast(point, radius, dv, src)` (dv = stats.prop_blast, else
 ## splash_knockback). Props aren't CombatTargets: they are a host-arbitrated world object, so only the machine that
-## decides the shot (the shooter's, as for host-owned targets) calls the verbs.
+## decides the shot (the shooter's, as for host-owned targets) calls the verbs. A shot that punches through props (the
+## railgun slug) sets `skip_props` while it sweeps, so first_hit leaves props out, and knocks every prop
+## `props_on_segment(a, b, r)` lists along what it flew, each through `hit_prop` (the same arbitration).
 ##   STACK (the mission, docs/design/city-ramps-and-stack.md): every deck has its own CityProps (ids are per deck; each
 ## node puts its own `deck` on its prop events, so the verbs take no deck). `stack` is the CityStack: TestDriveCombat sets
 ## it from td.stack, else it is found in group "city_stack" (looked up only while no props node is cached). With a
@@ -37,7 +39,7 @@ extends Node3D
 ## stack.ring()). No stack (lab, district mode, single-process tests): the first node in group "city_props" (found once,
 ## cached) and `ring`, exactly as before.
 ##
-## AMBIENT LIFE (docs/design/ambient-life.md §6): when a node in group "ambient_life" exists (AmbientLife; looked up
+## AMBIENT LIFE (docs/design/ambient-life.md Â§6): when a node in group "ambient_life" exists (AmbientLife; looked up
 ## lazily on the first call that needs it, at most every LIFE_RESCAN s of clock while missing, cached until freed), every
 ## shot path reports itself through `life_sweep(record, a, b, r)` -> `life.sweep(a, b, r, src)` (Projectile._sweep per
 ## chord, the laser's ray, each flame chunk's chord) and `splash` calls `life.blast(point, radius, src)`. Only the
@@ -62,15 +64,38 @@ signal advanced(dt: float, space: PhysicsDirectSpaceState3D)
 signal drone_launched(record: Dictionary, drone: RepairDrone)
 
 const PROP_COLOR := Color(0.42, 0.4, 0.36)    ## debris colour of a prop that names none
+const PROPS_PER_SEGMENT := 64     ## props_on_segment: at most this many props per props node on one segment
+const PROP_STEP := 0.25           ## m props_on_segment steps on when its query meets a prop it already listed
 const LIFE_RESCAN := 0.5          ## s of clock between "ambient_life" group lookups while the node is missing
+const WALL_PROBE := 0.3           ## m each way along an impact's normal that wall_at looks for the static surface it hit
 
 ## DEV ONLY: damage multiplier on hits against team "enemy" (TestDrive sets it for `--dev-fast-clear`, so a bot run
 ## clears decks quickly without skipping any transition). 1 = normal play.
 static var dev_enemy_damage := 1.0
+## PROFILING (tests/bench_combat_fx.gd, tools/fx_bench): while `profiling` is true, advance times every effect by script
+## and a few hot calls into `prof` (key -> usec, "n:" + key -> count); off (the default) costs one bool test per call.
+static var profiling := false
+static var prof: Dictionary = {}
+## key -> PackedInt32Array of usec per single call (prof_add with n = 1), while profiling: per-call medians in the bench.
+static var prof_samples: Dictionary = {}
+
+
+static func prof_add(key: String, us: int, n: int = 1) -> void:
+	prof[key] = int(prof.get(key, 0)) + us
+	prof["n:" + key] = int(prof.get("n:" + key, 0)) + n
+	if n == 1:
+		var s: PackedInt32Array = prof_samples.get(key, PackedInt32Array())
+		s.append(us)
+		prof_samples[key] = s
 
 var now := 0.0
 var mission_seed := 0
-var ring: RingFrame = null         ## optional RingFrame on curved city decks (for surface-aligned impacts)
+## FRIENDLY FIRE (weapons.md Â§4.6): true (the default) = a team "player" shot hits other team "player" targets exactly
+## like enemies (direct hits stop at them, splash reaches them); false = it passes through them as before. A mission
+## parameter every machine sets the same (TestDriveCombat from the crew's launch params). Other same-team pairs (enemy
+## on enemy) are spared either way, and a shot never hits its own shooter (`spares`).
+var friendly_fire := true
+var ring: RingFrame = null        ## optional RingFrame on curved city decks (for surface-aligned impacts)
 var targets: Array[CombatTarget] = []
 var effects: Array[CombatEffect] = []
 ## Weapon id -> {stat: value} laid over MechCatalog.WEAPONS (the lab's session tuning; empty in the game).
@@ -89,6 +114,9 @@ var _shooter_teams: Dictionary = {} ## shooter_id -> team string (cached from re
 var stack: Node = null
 var _props: Node = null           ## the CityProps node (group "city_props"), cached (no stack only)
 var _props_scan := -1.0           ## clock time of the last group lookup (at most one per step while it is missing)
+## True while a shot that punches through props sweeps (RailSlug._sweep sets it around Projectile._sweep): first_hit
+## then leaves props out (they never stop or shorten that shot; it knocks them through props_on_segment instead).
+var skip_props := false
 var _life: Node = null            ## the AmbientLife node (group "ambient_life"), cached
 var _life_scan := -INF            ## clock time of the last "ambient_life" lookup
 ## The shared clock (set_clock): () -> float seconds, or a negative value when there is none. Invalid (the default: the
@@ -109,6 +137,43 @@ var _ray_exclude: Array[RID] = [] ## registered targets' physics bodies (mech ca
 var _exclude_bodies: Array = []   ## the bodies behind _ray_exclude (to notice one freed)
 var _exclude_dirty := true
 var _shot_query := PhysicsRayQueryParameters3D.new()
+## MESH POOL (cosmetic, local): hidden top-level MeshInstance3D nodes that ImpactFx parts and rocket smoke puffs borrow
+## (take_mesh) and hand back when their effect leaves (give_mesh), instead of a new node + queue_free per part. The
+## borrower sets only mesh, global_transform and visible, so a reused node draws exactly like a new one.
+var _mesh_pool: Array[MeshInstance3D] = []   ## pooled nodes without a mesh (prewarmed)
+var _mesh_pool_by: Dictionary = {}            ## Mesh -> Array of pooled nodes last showing it
+var _mesh_pool_n := 0                         ## nodes in the pool, all lists
+var _pool_root: Node3D = null
+const MESH_POOL_MAX := 4096        ## hidden nodes kept at most (past it a returned node is freed)
+## PACKED TARGET BOUNDS (first_hit's broad phase while advance steps the effects): every target with hit spheres, in
+## `targets` order, with its world bounding sphere (CombatTarget.wc_bound_c / wc_bound_r) copied into packed arrays, so
+## the per-chord loop touches no target Node until a cheap test against the chord's own bounding sphere passes; a target
+## that passes then goes through exactly the old per-target code (live transform, cache refresh, exact bound test,
+## spheres). THE RULE that makes it exact: during advance's effect step (after the owned targets ticked and `advanced`
+## was emitted, until the last effect stepped) no target moves: targets move in their own tick (CombatWorld.advance's
+## target step, or their scene's own process), puppets when their snapshot is applied (outside advance), never from a
+## hit (apply_hit / apply_impulse only change velocity; position changes in the next tick). So bounds packed once inside
+## that window are the bounds the old code read at every query in it. Repacked when a target registers / unregisters
+## (_tb_dirty) or any target gains a sphere (CombatTarget.shapes_epoch); outside the window first_hit is unchanged.
+## `verify_bounds` (env BABAMECH_VERIFY_BOUNDS, tests) re-checks every packed reject against the live target.
+var _tb_on := false               ## inside advance's effect step: packed bounds may be used
+var _tb_dirty := true             ## pack again before the next packed query (a target registered / unregistered)
+var _tb_fresh := false            ## the packed bounds were read this effect step (else _refresh_bounds first)
+var _tb_epoch := -1               ## CombatTarget.shapes_epoch when packed
+var _tb_n := -1                   ## targets.size() when packed (a change packs again)
+var _tb_t: Array[CombatTarget] = []
+var _tb_c := PackedVector3Array()
+var _tb_r := PackedFloat64Array()
+## Also fixed for the effect step: the space state advance looked up, and deck_span's shared-axis ring + its axis point
+## (the stack never moves or rebuilds inside advance).
+var _tb_space: PhysicsDirectSpaceState3D = null
+var _tb_rg: RingFrame = null
+var _tb_ax := Vector3.ZERO
+var _tb_st: Node = null
+var _tb_st_ok := false
+var _tb_dp: Dictionary = {}       ## deck k -> deck_props(k) this effect step
+static var verify_bounds := OS.has_environment("BABAMECH_VERIFY_BOUNDS")
+static var bounds_violations := 0  ## packed rejects the live target would not have rejected (verify_bounds only; must stay 0)
 
 
 func _init() -> void:
@@ -116,18 +181,23 @@ func _init() -> void:
 
 
 func net_fields() -> Dictionary:
-	return {"now": Net.LOCAL, "mission_seed": Net.SPAWN, "ring": Net.SPAWN, "targets": Net.LOCAL, "effects": Net.LOCAL, "overrides": Net.LOCAL,
+	return {"now": Net.LOCAL, "mission_seed": Net.SPAWN, "friendly_fire": Net.SPAWN, "ring": Net.SPAWN, "targets": Net.LOCAL, "effects": Net.LOCAL, "overrides": Net.LOCAL,
 		"designators": Net.LOCAL, "use_physics": Net.LOCAL, "looks_rng": Net.LOCAL,
 		"muzzles": Net.LOCAL, "_shooter_teams": Net.LOCAL, "stack": Net.LOCAL, "_props": Net.LOCAL, "_props_scan": Net.LOCAL,
-		"_life": Net.LOCAL, "_life_scan": Net.LOCAL, "clock": Net.LOCAL, "anchors": Net.LOCAL, "equipment_look": Net.LOCAL,
+		"skip_props": Net.LOCAL, "_life": Net.LOCAL, "_life_scan": Net.LOCAL, "clock": Net.LOCAL, "anchors": Net.LOCAL, "equipment_look": Net.LOCAL,
 		"fire_gate": Net.LOCAL, "stepping_targets": Net.LOCAL, "_ray_exclude": Net.LOCAL, "_exclude_bodies": Net.LOCAL,
-		"_exclude_dirty": Net.LOCAL, "_shot_query": Net.LOCAL}
+		"_exclude_dirty": Net.LOCAL, "_shot_query": Net.LOCAL, "_mesh_pool": Net.LOCAL, "_pool_root": Net.LOCAL,
+		"_mesh_pool_by": Net.LOCAL, "_mesh_pool_n": Net.LOCAL, "_tb_on": Net.LOCAL, "_tb_dirty": Net.LOCAL, "_tb_fresh": Net.LOCAL, "_tb_epoch": Net.LOCAL, "_tb_n": Net.LOCAL,
+		"_tb_t": Net.LOCAL, "_tb_c": Net.LOCAL, "_tb_r": Net.LOCAL, "_tb_space": Net.LOCAL, "_tb_rg": Net.LOCAL, "_tb_ax": Net.LOCAL, "_tb_st": Net.LOCAL, "_tb_st_ok": Net.LOCAL, "_tb_dp": Net.LOCAL}
 
 
 func register(t: CombatTarget) -> void:
 	if not t in targets:
 		targets.append(t)
 		_exclude_dirty = true
+		_tb_dirty = true
+		if not _plain_by_script.has(t.get_script()):
+			_plain_script(t.get_script())     # once per script (splash's broad phase), here rather than mid-fight
 	if t.target_id != "" and t.team != "":
 		_shooter_teams[t.target_id] = t.team
 
@@ -135,6 +205,7 @@ func register(t: CombatTarget) -> void:
 func unregister(t: CombatTarget) -> void:
 	targets.erase(t)
 	_exclude_dirty = true
+	_tb_dirty = true
 
 
 ## Physics bodies of registered targets (a PlayerTarget's MechController capsule, local or a crew puppet's): shots meet
@@ -167,6 +238,11 @@ func shot_ray(sp: PhysicsDirectSpaceState3D, a: Vector3, b: Vector3) -> Dictiona
 	_body_excludes()
 	_shot_query.from = a
 	_shot_query.to = b
+	if profiling:
+		var t := Time.get_ticks_usec()
+		var h := sp.intersect_ray(_shot_query)
+		prof_add("shot_ray", Time.get_ticks_usec() - t)
+		return h
 	return sp.intersect_ray(_shot_query)
 
 
@@ -190,17 +266,26 @@ func fire(record: Dictionary) -> CombatEffect:
 	var b := WeaponRegistry.behaviour(str(record.get("weapon", "")))
 	if b == null:
 		return null
+	var f0 := Time.get_ticks_usec() if profiling else 0
 	var e := b.spawn(self, record, stats(str(record["weapon"])))
 	if e == null:
 		return null
 	_add_effect(e)
+	var f1 := Time.get_ticks_usec() if profiling else 0
 	e.advance_to(now)
+	var f2 := Time.get_ticks_usec() if profiling else 0
 	if e is Projectile and now - float(record.get("t", now)) < MuzzleFlash.LIFE:
 		var p := e as Projectile
 		var mf := MuzzleFlash.new()
 		_add_effect(mf)
 		mf.setup(self, p.flight_pos(0.0), p.flight_dir(0.0), MuzzleFlash.size_for(p.stats), float(record.get("t", now)))
+	var f3 := Time.get_ticks_usec() if profiling else 0
 	fired.emit(record)
+	if profiling:
+		prof_add("fire.spawn", f1 - f0)
+		prof_add("fire.advance", f2 - f1)
+		prof_add("fire.flash", f3 - f2)
+		prof_add("fire.emit", Time.get_ticks_usec() - f3)
 	return e
 
 
@@ -262,6 +347,99 @@ func drone_of(shooter: String) -> RepairDrone:
 	return null
 
 
+## A hidden, top-level MeshInstance3D showing `m` (shadows off, as CombatMeshes.instance), from the pool, or null when
+## this world isn't in the tree (the caller then makes its own). Hand it back with give_mesh. A node last used with the
+## same mesh is preferred (no mesh swap: MeshInstance3D.set_mesh is not free), then any pooled node, then a new one.
+func take_mesh(m: Mesh) -> MeshInstance3D:
+	if not is_inside_tree():
+		return null
+	if _pool_root == null or not is_instance_valid(_pool_root):
+		_pool_root = Node3D.new()
+		_pool_root.name = "MeshPool"
+		add_child(_pool_root)
+		_mesh_pool.clear()
+		_mesh_pool_by.clear()
+		_mesh_pool_n = 0
+	var mi: MeshInstance3D = null
+	var same: Variant = _mesh_pool_by.get(m) if m != null else null
+	while mi == null and same != null and not (same as Array).is_empty():
+		mi = (same as Array).pop_back()
+		_mesh_pool_n -= 1
+		if not is_instance_valid(mi):
+			mi = null
+	if mi != null:
+		return mi
+	while mi == null and not _mesh_pool.is_empty():
+		mi = _mesh_pool.pop_back()
+		_mesh_pool_n -= 1
+		if not is_instance_valid(mi):
+			mi = null
+	if mi == null and _mesh_pool_n > 0:
+		# No node with this mesh and none blank: re-mesh an idle node showing another mesh (cheaper than a new node).
+		for arr: Array in _mesh_pool_by.values():
+			while mi == null and not arr.is_empty():
+				mi = arr.pop_back()
+				_mesh_pool_n -= 1
+				if not is_instance_valid(mi):
+					mi = null
+			if mi != null:
+				break
+	if mi == null:
+		mi = CombatMeshes.instance(m)
+		mi.top_level = true
+		mi.visible = false
+		_pool_root.add_child(mi)
+	elif mi.mesh != m:
+		mi.mesh = m
+	return mi
+
+
+func _prewarm_later(n: int, plan: Array) -> void:
+	prewarm_mesh_pool.call_deferred(n, plan)
+
+
+## Return a node from take_mesh: hidden at once, kept (by its mesh) for the next borrower.
+func give_mesh(mi: MeshInstance3D) -> void:
+	if mi == null or not is_instance_valid(mi):
+		return
+	mi.visible = false
+	if _mesh_pool_n < MESH_POOL_MAX and _pool_root != null and mi.get_parent() == _pool_root:
+		_mesh_pool_n += 1
+		var m := mi.mesh
+		if m == null:
+			_mesh_pool.append(mi)
+		else:
+			var arr: Variant = _mesh_pool_by.get(m)
+			if arr == null:
+				arr = []
+				_mesh_pool_by[m] = arr
+			(arr as Array).append(mi)
+	else:
+		mi.queue_free()
+
+
+## Make up to `n` pooled nodes ahead of time (at scene load: TestDriveCombat.setup), so the first seconds of a fight
+## don't pay for new nodes. `plan` [[mesh, count], ...] gives that many of them their mesh already (ImpactFx.pool_plan,
+## Rocket.pool_plan), so a borrower of that mesh needs no mesh swap; the rest have none. Hidden: nothing to draw.
+func prewarm_mesh_pool(n: int, plan: Array = []) -> void:
+	if not is_inside_tree():      # not in the scene yet (TestDriveCombat.setup before the drive enters): once it is
+		if not tree_entered.is_connected(_prewarm_later):
+			tree_entered.connect(_prewarm_later.bind(n, plan), CONNECT_ONE_SHOT)
+		return
+	var ms: Array[MeshInstance3D] = []
+	for e: Array in plan:
+		for i in int(e[1]):
+			if ms.size() >= n:
+				break
+			var mi := take_mesh(null)
+			mi.mesh = e[0]
+			ms.append(mi)
+	while ms.size() < n:
+		ms.append(take_mesh(null))
+	for mi in ms:
+		give_mesh(mi)
+
+
 func _add_effect(e: CombatEffect) -> void:
 	add_child(e)
 	effects.append(e)
@@ -285,17 +463,63 @@ func advance(dt: float) -> void:
 	now = maxf(now, c) if c > 0.0 else now + dt
 	props()      # (re)find the city props node while it is missing
 	var sp := space()
+	if profiling:
+		_advance_profiled(dt, sp)
+		return
 	stepping_targets = true
 	for t in targets.duplicate():
 		if is_instance_valid(t) and owns(t):
 			t.tick(dt, sp)
 	stepping_targets = false
 	advanced.emit(dt, sp)
+	_tb_on = true            # targets stay put until the effects are stepped: first_hit may use packed bounds (see _tb_*)
+	_tb_fresh = false
+	_tb_space = sp
+	_tb_rg = null
+	_tb_st_ok = false
+	_tb_dp.clear()
 	for e in effects.duplicate():
 		e.advance_to(now)
 		if e.finished():
 			remove_effect(e)
+	_tb_on = false
 	equipment_look.step(self)
+
+
+## advance's body with timings into `prof` (profiling only; the same steps in the same order).
+func _advance_profiled(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
+	var t0 := Time.get_ticks_usec()
+	stepping_targets = true
+	for t in targets.duplicate():
+		if is_instance_valid(t) and owns(t):
+			t.tick(dt, sp)
+	stepping_targets = false
+	var t1 := Time.get_ticks_usec()
+	prof_add("targets.tick", t1 - t0)
+	advanced.emit(dt, sp)
+	var t2 := Time.get_ticks_usec()
+	prof_add("advanced.emit", t2 - t1)
+	_tb_on = true
+	_tb_fresh = false
+	_tb_space = sp
+	_tb_rg = null
+	_tb_st_ok = false
+	_tb_dp.clear()
+	for e in effects.duplicate():
+		var s: Script = e.get_script()
+		var k := "fx:" + (str(s.get_global_name()) if s != null else "?")
+		var a := Time.get_ticks_usec()
+		e.advance_to(now)
+		var fin: bool = e.finished()
+		var b := Time.get_ticks_usec()
+		prof_add(k, b - a)
+		if fin:
+			remove_effect(e)
+			prof_add("remove_effect", Time.get_ticks_usec() - b)
+	_tb_on = false
+	var t3 := Time.get_ticks_usec()
+	equipment_look.step(self)
+	prof_add("equipment_look", Time.get_ticks_usec() - t3)
 
 
 func remove_effect(e: CombatEffect) -> void:
@@ -347,6 +571,8 @@ func decides(t: CombatTarget, shooter_peer: int) -> bool:
 # --- Queries -----------------------------------------------------------------------------------------
 
 func space() -> PhysicsDirectSpaceState3D:
+	if _tb_on:
+		return _tb_space     # advance's own lookup, for the whole effect step (the same object)
 	if not use_physics or not is_inside_tree():
 		return null
 	return get_world_3d().direct_space_state
@@ -360,30 +586,78 @@ func _team_of(shooter: String, fallback: String = "") -> String:
 	return str(_shooter_teams.get(shooter, ""))
 
 
-## The first thing on segment a -> b: a target hit sphere (inflated by `r`, skipping `shooter` and ids in `skip`) or
-## world geometry or a city prop. {} or {target (null = world / prop), component, point, normal, frac, color} (+ "prop": id
-## for a prop).
-func first_hit(a: Vector3, b: Vector3, r: float, shooter: String = "", skip: Array = []) -> Dictionary:
+## THE friendly-fire rule (weapons.md Â§4.6), asked by every shot path (first_hit, splash): true = a shot from
+## `shooter_id` (team `shooter_team`) passes `t` by. A shot never touches its own shooter. Same non-empty team: a
+## "player" shot hits a "player" target while `friendly_fire` is on, every other same-team pair (enemy on enemy) is
+## always spared. Different or empty teams: never spared. Who then DECIDES the hit is unchanged (`decides`: the
+## victim's machine for a mech).
+func spares(shooter_team: String, t: CombatTarget, shooter_id: String) -> bool:
+	if shooter_id != "" and t.target_id == shooter_id:
+		return true
+	if shooter_team == "" or t.team != shooter_team:
+		return false
+	return not (friendly_fire and shooter_team == "player")
+
+
+## The first thing on segment a -> b: a target hit sphere (inflated by `r`, skipping `shooter`, ids in `skip` and the
+## targets `spares` passes by) or world geometry or a city prop. {} or {target (null = world / prop), component, point,
+## normal, frac, color} (+ "prop": id for a prop). `query` true: a look along the line, not a shot (the camera's aim
+## pull-in): same-team targets are always passed by, whatever `friendly_fire` says.
+func first_hit(a: Vector3, b: Vector3, r: float, shooter: String = "", skip: Array = [], query: bool = false) -> Dictionary:
+	if not profiling:
+		return _first_hit(a, b, r, shooter, skip, query)
+	var t := Time.get_ticks_usec()
+	var h := _first_hit(a, b, r, shooter, skip, query)
+	prof_add("first_hit", Time.get_ticks_usec() - t)
+	return h
+
+
+func _first_hit(a: Vector3, b: Vector3, r: float, shooter: String, skip: Array, query: bool) -> Dictionary:
 	var best := {}
 	var best_f := 2.0
 	var sh_team := _team_of(shooter)
-	for t in targets:
-		if not is_instance_valid(t) or not t.is_hittable() or t.target_id == shooter or t.target_id in skip:
-			continue
-		if sh_team != "" and t.team == sh_team:
-			continue
-		# CombatTarget.world_spheres() inlined (same maths, no per-call arrays): this runs for every target on every chord of
-		# every shot. Keep the two in step.
-		var xf := t.global_transform
-		var sc := xf.basis.get_scale().x
-		for hs: Dictionary in t.hit_shapes:
-			var c: Vector3 = xf * (hs["center"] as Vector3)
-			var f := Combat.segment_sphere(a, b, c, float(hs["radius"]) * sc + r)
-			if f >= 0.0 and f < best_f:
-				var p := a.lerp(b, f)
-				best_f = f
-				best = {"target": t, "component": hs["component"], "point": p, "normal": (p - c).normalized(),
-					"frac": f, "color": MechMeshes.GREY}
+	if _tb_on:
+		# Inside advance's effect step: the packed bounds (see _tb_*) reject every target the chord's bounding sphere
+		# can't reach without touching it; the rest go through _target_hit exactly as below, in the same order.
+		if _tb_dirty or _tb_epoch != CombatTarget.shapes_epoch or _tb_n != targets.size():
+			_pack_bounds()
+		elif not _tb_fresh:
+			_refresh_bounds()
+		var mid := (a + b) * 0.5
+		var reach0 := a.distance_to(b) * 0.5 + r
+		var tc := _tb_c
+		var tr := _tb_r
+		var vb := verify_bounds
+		for i in tc.size():
+			# |c - mid| > half + r + R  =>  the chord is farther than r + R from c: the exact test below would reject too
+			# (slack keeps rounding on the safe side; a pass only costs the exact test).
+			var c := tc[i]
+			var q := (reach0 + tr[i]) * 1.00001 + 1e-4
+			if c.distance_squared_to(mid) > q * q:
+				if vb:
+					_verify_reject(_tb_t[i], a, b, r)
+				continue
+			# _target_hit's own exact bound test, on the packed copy of the same bound (equal by THE RULE): no Node yet.
+			var reach := tr[i] + r
+			if c.distance_squared_to(Geometry3D.get_closest_point_to_segment(c, a, b)) > reach * reach:
+				if vb:
+					_verify_reject(_tb_t[i], a, b, r)
+				continue
+			var t := _tb_t[i]
+			if not is_instance_valid(t):
+				continue
+			var h := _target_hit(t, a, b, r, shooter, skip, query, sh_team, best_f)
+			if not h.is_empty():
+				best = h
+				best_f = float(h["frac"])
+	else:
+		for t in targets:
+			if not is_instance_valid(t):
+				continue
+			var h := _target_hit(t, a, b, r, shooter, skip, query, sh_team, best_f)
+			if not h.is_empty():
+				best = h
+				best_f = float(h["frac"])
 	var sp := space()
 	if sp != null and a.distance_squared_to(b) > 1e-10:
 		var h := shot_ray(sp, a, b)        # mech capsules ignored: targets are hit through their spheres above
@@ -396,9 +670,9 @@ func first_hit(a: Vector3, b: Vector3, r: float, shooter: String = "", skip: Arr
 					col = c.get_meta("surface_color")
 				best = {"target": null, "component": "", "point": h["position"], "normal": h["normal"], "frac": f, "color": col}
 				best_f = f
-	if a.distance_squared_to(b) <= 1e-10:
+	if a.distance_squared_to(b) <= 1e-10 or skip_props:
 		return best
-	var st := city_stack()
+	var st := _tb_stack() if _tb_on else city_stack()
 	if st == null:
 		var pr := props()
 		if pr != null:
@@ -408,7 +682,7 @@ func first_hit(a: Vector3, b: Vector3, r: float, shooter: String = "", skip: Arr
 		return best
 	var span := deck_span(a, b, r)
 	for k in range(span.x, span.y + 1):
-		var dp := deck_props(k)
+		var dp := _tb_deck_props(k) if _tb_on else deck_props(k)
 		if dp == null:
 			continue
 		var ph: Dictionary = dp.first_hit(a, b, r)
@@ -418,9 +692,157 @@ func first_hit(a: Vector3, b: Vector3, r: float, shooter: String = "", skip: Arr
 	return best
 
 
+## first_hit's per-target test: target `t`'s nearest sphere the chord a -> b (inflated by r) meets before `best_f`, as a
+## first_hit result, or {} (also for a target it passes by). World spheres come from a cache on the target, rebuilt when
+## its transform or shapes changed (CombatTarget.refresh_world_cache: world_spheres()' exact maths), behind an exact
+## bounding-sphere reject: same hits as testing every sphere, a fraction of the work.
+func _target_hit(t: CombatTarget, a: Vector3, b: Vector3, r: float, shooter: String, skip: Array, query: bool,
+		sh_team: String, best_f: float) -> Dictionary:
+	var xf := t.global_transform
+	if t.wc_xf != xf or t.wc_rev != t.shapes_rev or t.wc_n != t.hit_shapes.size():
+		t.refresh_world_cache(xf)
+	if t.wc_bound_r < 0.0:
+		return {}
+	var reach := t.wc_bound_r + r
+	if t.wc_bound_c.distance_squared_to(Geometry3D.get_closest_point_to_segment(t.wc_bound_c, a, b)) > reach * reach:
+		return {}
+	if not t.is_hittable() or t.target_id == shooter or t.target_id in skip:
+		return {}
+	if (sh_team != "" and t.team == sh_team) if query else spares(sh_team, t, shooter):
+		return {}
+	var best := {}
+	var cs := t.wc_centers
+	var rs := t.wc_radii
+	for i in cs.size():
+		var c := cs[i]
+		var f := Combat.segment_sphere(a, b, c, rs[i] + r)
+		if f >= 0.0 and f < best_f:
+			var p := a.lerp(b, f)
+			best_f = f
+			best = {"target": t, "component": t.wc_comps[i], "point": p, "normal": (p - c).normalized(),
+				"frac": f, "color": MechMeshes.GREY}
+	return best
+
+
+## Copy every registered target with hit spheres (targets order) and its world bounding sphere into _tb_* (refreshing
+## its sphere cache from its live transform, as first_hit would). Only inside advance's effect step (_tb_on).
+func _pack_bounds() -> void:
+	_tb_dirty = false
+	_tb_fresh = true
+	_tb_epoch = CombatTarget.shapes_epoch
+	_tb_n = targets.size()
+	_tb_t.clear()
+	_tb_c.clear()
+	_tb_r.clear()
+	for t in targets:
+		if not is_instance_valid(t):
+			continue
+		var xf := t.global_transform
+		if t.wc_xf != xf or t.wc_rev != t.shapes_rev or t.wc_n != t.hit_shapes.size():
+			t.refresh_world_cache(xf)
+		if t.wc_bound_r < 0.0:
+			continue          # no spheres: nothing to hit (a sphere added later bumps shapes_epoch: packed again)
+		_tb_t.append(t)
+		_tb_c.append(t.wc_bound_c)
+		_tb_r.append(t.wc_bound_r)
+
+
+## The same targets as the last _pack_bounds (none registered / unregistered, no sphere added since): read each packed
+## target's live transform again, refresh its cache if it moved, copy its bound in place. A target whose spheres were
+## only removed keeps its larger (still holding) packed bound; one freed is skipped by first_hit's validity check.
+func _refresh_bounds() -> void:
+	_tb_fresh = true
+	for i in _tb_t.size():
+		var t := _tb_t[i]
+		if not is_instance_valid(t):
+			continue
+		var xf := t.global_transform
+		if t.wc_xf != xf:
+			t.refresh_world_cache(xf)
+		if t.wc_bound_r >= 0.0:      # (always copied: another caller may have refreshed the cache since the pack)
+			_tb_c[i] = t.wc_bound_c
+			_tb_r[i] = t.wc_bound_r
+
+
+## verify_bounds only: a packed reject of `t` must also be a reject by the live target's exact bound (else THE RULE in
+## the _tb_* header was broken: something moved a target inside advance's effect step). Counts and reports it.
+func _verify_reject(t: CombatTarget, a: Vector3, b: Vector3, r: float) -> void:
+	if not is_instance_valid(t):
+		return
+	var xf := t.global_transform
+	if t.wc_xf != xf or t.wc_rev != t.shapes_rev or t.wc_n != t.hit_shapes.size():
+		t.refresh_world_cache(xf)
+	if t.wc_bound_r < 0.0:
+		return
+	var reach := t.wc_bound_r + r
+	if t.wc_bound_c.distance_squared_to(Geometry3D.get_closest_point_to_segment(t.wc_bound_c, a, b)) <= reach * reach:
+		bounds_violations += 1
+		push_error("CombatWorld: packed bounds stale for target %s (moved inside advance's effect step)" % t.target_id)
+
+
 func _prop_hit(ph: Dictionary, node: Node) -> Dictionary:
 	return {"target": null, "prop": ph["id"], "prop_node": node, "component": "", "point": ph["point"],
 		"normal": ph["normal"], "frac": float(ph["frac"]), "color": ph.get("color", PROP_COLOR)}
+
+
+## EVERY city prop a sphere of radius `r` meets moving a -> b, nearest first, as first_hit prop results ({target: null,
+## prop, prop_node, component, point, normal, frac (along a -> b), color}): what a shot that punches through props (the
+## railgun slug) knocks. Asks the same props first_hit has (the one props node, or every deck deck_span gives in the
+## stack). Built on CityProps.first_hit alone, which returns only the nearest prop: after each prop the query restarts
+## where the sphere leaves it (`_prop_exit`), at most PROPS_PER_SEGMENT props per node. Reads only; knocks nothing.
+func props_on_segment(a: Vector3, b: Vector3, r: float) -> Array:
+	var out: Array = []
+	if a.distance_squared_to(b) <= 1e-10:
+		return out
+	var nodes: Array[Node] = []
+	if city_stack() == null:
+		var pr := props()
+		if pr != null:
+			nodes.append(pr)
+	else:
+		var span := deck_span(a, b, r)
+		for k in range(span.x, span.y + 1):
+			var dp := deck_props(k)
+			if dp != null:
+				nodes.append(dp)
+	var step := PROP_STEP / a.distance_to(b)
+	for node in nodes:
+		var f0 := 0.0
+		var seen := {}
+		for i in PROPS_PER_SEGMENT:
+			var ph: Dictionary = node.first_hit(a.lerp(b, f0), b, r)
+			if ph.is_empty():
+				break
+			var id := int(ph["id"])
+			var fe := f0 + float(ph["frac"]) * (1.0 - f0)
+			if seen.has(id):
+				f0 = fe + step       # met again (the restart was still inside it by its own maths): step on past it
+			else:
+				seen[id] = true
+				var h := _prop_hit(ph, node)
+				h["frac"] = fe
+				out.append(h)
+				f0 = _prop_exit(node, id, a, b, r, fe) + step * 0.04
+			if f0 >= 1.0:
+				break
+	if nodes.size() > 1:
+		out.sort_custom(func(x: Dictionary, y: Dictionary) -> bool: return float(x["frac"]) < float(y["frac"]))
+	return out
+
+
+## Where (frac along a -> b, from `fe` where it entered) a sphere of radius r leaves prop `id` of `node`: bisection on
+## the node's own first_hit (inside = the query from there meets that prop at once), so the restart never meets it again.
+func _prop_exit(node: Node, id: int, a: Vector3, b: Vector3, r: float, fe: float) -> float:
+	var lo := fe
+	var hi := 1.0
+	for i in 18:
+		var mid := (lo + hi) * 0.5
+		var ph: Dictionary = node.first_hit(a.lerp(b, mid), b, r)
+		if not ph.is_empty() and int(ph["id"]) == id and float(ph["frac"]) <= 1e-6:
+			lo = mid
+		else:
+			hi = mid
+	return hi
 
 
 ## The scene's CityProps node (group "city_props") when there is no stack, or null. Looked up (once per clock step while
@@ -449,6 +871,22 @@ func city_stack() -> Node:
 	return stack if decks is Array and not (decks as Array).is_empty() else null
 
 
+## city_stack() / deck_props(k) looked up once per advance effect step (the stack doesn't change inside it): first_hit.
+func _tb_stack() -> Node:
+	if not _tb_st_ok:
+		_tb_st_ok = true
+		_tb_st = city_stack()
+	return _tb_st
+
+
+func _tb_deck_props(k: int) -> Node:
+	if _tb_dp.has(k):
+		return _tb_dp[k]
+	var dp := deck_props(k)
+	_tb_dp[k] = dp
+	return dp
+
+
 ## Deck k's CityProps in the stack (read from the deck each time: right after a rebuild), or null.
 func deck_props(k: int) -> Node:
 	var decks: Variant = stack.get("decks") if stack != null and is_instance_valid(stack) else null
@@ -470,8 +908,14 @@ func props_at(p: Vector3) -> Node:
 ## The decks (first, last; numbered from the axis out) a sphere of radius r moving a -> b can touch: stack.deck_at of the
 ## segment's point nearest the shared axis moved r toward it, and of the farther end moved r away. Needs city_stack().
 func deck_span(a: Vector3, b: Vector3, r: float) -> Vector2i:
-	var rg: RingFrame = stack.ring()
-	var ax := rg.axis_point()
+	var rg: RingFrame = _tb_rg
+	var ax := _tb_ax
+	if rg == null or not _tb_on:
+		rg = stack.ring()
+		ax = rg.axis_point()
+		if _tb_on:
+			_tb_rg = rg
+			_tb_ax = ax
 	var a2 := Vector2(a.y - ax.y, a.z - ax.z)    # the axis is parallel to X: distances to it live in the YZ plane
 	var b2 := Vector2(b.y - ax.y, b.z - ax.z)
 	var ab := b2 - a2
@@ -523,6 +967,11 @@ static func life_src(record: Dictionary) -> int:
 func life_sweep(record: Dictionary, a: Vector3, b: Vector3, r: float) -> void:
 	var lf := life()
 	if lf != null and lf.has_method("sweep") and decides_shot(record):
+		if profiling:
+			var t := Time.get_ticks_usec()
+			lf.sweep(a, b, r, life_src(record))
+			prof_add("life_sweep", Time.get_ticks_usec() - t)
+			return
 		lf.sweep(a, b, r, life_src(record))
 
 
@@ -554,7 +1003,8 @@ func surface_below(p: Vector3, up_dir: Vector3, depth: float) -> Dictionary:
 	if sp != null:
 		var h := shot_ray(sp, p + u * 0.15, p - u * depth)
 		if not h.is_empty():
-			return {"point": h["position"] as Vector3, "normal": (h["normal"] as Vector3).normalized()}
+			return {"point": h["position"] as Vector3, "normal": (h["normal"] as Vector3).normalized(),
+				"collider": h.get("collider")}
 		return {}
 	var rg := ring_at(p)
 	if rg != null:
@@ -566,7 +1016,7 @@ func surface_below(p: Vector3, up_dir: Vector3, depth: float) -> Dictionary:
 
 # --- Hits --------------------------------------------------------------------------------------------
 
-## A direct hit: builds the Hit (damage, Δv = stats.knockback along `dir`, heat = stats.target_heat) and delivers it,
+## A direct hit: builds the Hit (damage, Î”v = stats.knockback along `dir`, heat = stats.target_heat) and delivers it,
 ## if this machine decides hits on `target`. Returns the Hit or null.
 func resolve_hit(record: Dictionary, st: Dictionary, target: CombatTarget, component: String, point: Vector3, normal: Vector3,
 		dir: Vector3, damage: float) -> Hit:
@@ -590,17 +1040,39 @@ func deliver(target: CombatTarget, h: Hit) -> void:
 	if dev_enemy_damage != 1.0 and target.team == "enemy":
 		h.damage *= dev_enemy_damage   # DEV ONLY (--dev-fast-clear): scaled where the hit is decided, before it travels
 	if owns(target):
-		target.apply_hit(h)
-		hit_landed.emit(target, h)
+		if profiling:
+			var t0 := Time.get_ticks_usec()
+			target.apply_hit(h)
+			var t1 := Time.get_ticks_usec()
+			hit_landed.emit(target, h)
+			prof_add("apply_hit", t1 - t0)
+			prof_add("hit_landed.emit", Time.get_ticks_usec() - t1)
+		else:
+			target.apply_hit(h)
+			hit_landed.emit(target, h)
 	else:
 		remote_hit.emit(target.target_id, h)
 
 
 ## Splash at `point`: every other target whose nearest hit sphere is within stats.splash_radius takes
-## splash_damage × (1 - d / R) and a radial Δv of splash_knockback (+ splash_lift up) scaled the same way.
+## splash_damage Ã— (1 - d / R) and a radial Î”v of splash_knockback (+ splash_lift up) scaled the same way.
 func splash(record: Dictionary, st: Dictionary, point: Vector3, exclude: CombatTarget = null) -> void:
+	if not profiling:
+		_splash(record, st, point, exclude)
+		return
+	var t := Time.get_ticks_usec()
+	_splash(record, st, point, exclude)
+	prof_add("splash", Time.get_ticks_usec() - t)
+
+
+func _splash(record: Dictionary, st: Dictionary, point: Vector3, exclude: CombatTarget) -> void:
 	var rad := float(st.get("splash_radius", 0.0))
-	impact_from.emit(record, point, rad)
+	if profiling:
+		var t := Time.get_ticks_usec()
+		impact_from.emit(record, point, rad)
+		prof_add("impact_from.emit", Time.get_ticks_usec() - t)
+	else:
+		impact_from.emit(record, point, rad)
 	var dmg := float(st.get("splash_damage", 0.0))
 	var pdv := float(st.get("prop_blast", st.get("splash_knockback", 0.0)))
 	if rad > 0.0 and pdv > 0.0 and decides_shot(record):
@@ -621,12 +1093,22 @@ func splash(record: Dictionary, st: Dictionary, point: Vector3, exclude: CombatT
 			lf.blast(point, rad, life_src(record))
 	if rad <= 0.0 or (dmg <= 0.0 and float(st.get("splash_knockback", 0.0)) <= 0.0):
 		return
-	var sh_team := _team_of(str(record.get("shooter", "")), str(record.get("team", "")))
+	var sh := str(record.get("shooter", ""))
+	var sh_team := _team_of(sh, str(record.get("team", "")))
 	for t in targets.duplicate():
 		if t == exclude or not is_instance_valid(t) or not t.is_hittable():
 			continue
-		if sh_team != "" and t.team == sh_team:
+		if spares(sh_team, t, sh):     # never the shooter; teammates only with friendly fire on
 			continue
+		if _plain_spheres(t):
+			# Broad phase from first_hit's sphere cache (same spheres as world_spheres()): every sphere is at least
+			# |point - bound centre| - bound radius away, so past rad + slack none can be within rad (the test below would skip
+			# it too). Only for targets whose world_spheres() is CombatTarget's own (EnemyTrooper overrides it).
+			var xf: Transform3D = t.global_transform
+			if t.wc_xf != xf or t.wc_rev != t.shapes_rev or t.wc_n != t.hit_shapes.size():
+				t.refresh_world_cache(xf)
+			if t.wc_bound_r < 0.0 or point.distance_to(t.wc_bound_c) - t.wc_bound_r > rad * 1.00001 + 1e-4:
+				continue
 		var best := INF
 		var comp := ""
 		var centre: Vector3 = t.global_position
@@ -652,18 +1134,100 @@ func splash(record: Dictionary, st: Dictionary, point: Vector3, exclude: CombatT
 		deliver(t, h)
 
 
+static var _plain_by_script: Dictionary = {}   ## Script -> true when its world_spheres() is CombatTarget's own
+
+
+## True when `t`'s world_spheres() is CombatTarget's (its hit_shapes in world space, what first_hit's cache holds), false
+## when its script (or a base below CombatTarget) overrides it. A GDScript's method list repeats a method once per
+## script in the chain that defines it, so an override shows world_spheres twice. Cached per script.
+## Reading a script's method list costs ~0.5 ms (EnemyBase), so it happens at load: warm_target_scripts() for every
+## named class deriving from CombatTarget, and register() for any other script.
+static func _plain_spheres(t: CombatTarget) -> bool:
+	var s: Script = t.get_script()
+	var v: Variant = _plain_by_script.get(s)
+	return bool(v) if v != null else _plain_script(s)
+
+
+static func _plain_script(s: Script) -> bool:
+	var n := 0
+	if s != null:
+		for m: Dictionary in s.get_script_method_list():
+			if StringName(m["name"]) == &"world_spheres":
+				n += 1
+	_plain_by_script[s] = n == 1
+	return n == 1
+
+
+## Fill _plain_spheres' cache for every named class deriving from CombatTarget (at scene load: TestDriveCombat.setup), so
+## no splash pays for a method list mid-fight.
+static func warm_target_scripts() -> void:
+	var base_of: Dictionary = {}
+	var path_of: Dictionary = {}
+	for c: Dictionary in ProjectSettings.get_global_class_list():
+		base_of[StringName(c["class"])] = StringName(c["base"])
+		path_of[StringName(c["class"])] = str(c["path"])
+	for cls: StringName in base_of:
+		var b: StringName = cls
+		var hops := 0
+		while b != &"" and b != &"CombatTarget" and base_of.has(b) and hops < 32:
+			b = base_of[b]
+			hops += 1
+		if b == &"CombatTarget":
+			var s := load(path_of[cls]) as Script
+			if s != null and not _plain_by_script.has(s):
+				_plain_script(s)
+
+
 ## A cosmetic impact of radius r (ImpactFx) and a shake signal. `flash_color`: the flash ball's colour (default the flame
 ## core; the laser's is teal).
 func spawn_impact(point: Vector3, normal: Vector3, r: float, surface: Color = MechMeshes.GREY, explosive: bool = false,
 		flash_color: Color = LowPolyFlame.CORE, is_energy: bool = false) -> ImpactFx:
 	if r <= 0.0:
 		return null
+	var pt := Time.get_ticks_usec() if profiling else 0
 	var local_up := up_at(point)
 	var surf := surface_below(point, local_up, r * 1.5)
+	if surf.has("collider") and not is_static_world(surf["collider"]):
+		surf = {}                  # a tram roof or an unregistered mech is not ground: no crater on a moving thing
 	var gy := float((surf["point"] as Vector3).y) if not surf.is_empty() else NAN
+	var p1 := Time.get_ticks_usec() if profiling else 0
+	var wall := wall_at(point, normal)
+	var p2 := Time.get_ticks_usec() if profiling else 0
 	var fx := ImpactFx.new()
 	_add_effect(fx)
-	fx.setup(self, point, normal, r, surface, gy, explosive, flash_color, surf, local_up)
+	fx.setup(self, point, normal, r, surface, gy, explosive, flash_color, surf, local_up, wall)
+	if profiling:
+		prof_add("si.surface", p1 - pt)
+		prof_add("si.wall", p2 - p1)
+		prof_add("si.setup", Time.get_ticks_usec() - p2)
 	shake.emit(r, point)
 	impact_spawned.emit(point, r, explosive, is_energy or not flash_color.is_equal_approx(LowPolyFlame.CORE))
+	if profiling:
+		prof_add("spawn_impact", Time.get_ticks_usec() - pt)
 	return fx
+
+
+## The static world surface an impact at `point` with normal `n` sits on: a short world ray along the normal through the
+## point (WALL_PROBE m each way; shot_ray already ignores registered targets' bodies) that meets static geometry facing
+## the same way, as {point, normal}, or {} (a hit on a target's hull, a blast in open air, a moving body, no physics).
+## Decides where ImpactFx may lay its wall scorch: decals go on static world surfaces only, never on a target or in the air.
+func wall_at(point: Vector3, n: Vector3) -> Dictionary:
+	if n.length_squared() < 1e-6:
+		return {}
+	var sp := space()
+	if sp == null:
+		return {}
+	var u := n.normalized()
+	var h := shot_ray(sp, point + u * WALL_PROBE, point - u * WALL_PROBE)
+	if h.is_empty() or not is_static_world(h.get("collider")):
+		return {}
+	var hn := (h["normal"] as Vector3).normalized()
+	if hn.dot(u) < 0.5:
+		return {}
+	return {"point": h["position"] as Vector3, "normal": hn}
+
+
+## True for static world geometry (a StaticBody3D that isn't kinematic: the district, a lab's slabs), false for a mech's
+## CharacterBody3D, a tram's AnimatableBody3D, a RigidBody3D or nothing.
+static func is_static_world(c: Variant) -> bool:
+	return is_instance_valid(c) and c is StaticBody3D and not (c is AnimatableBody3D)

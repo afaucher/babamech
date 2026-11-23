@@ -1,7 +1,7 @@
 class_name PilotHeadPickle
 extends PilotFace
-## The pickle pilot (art/picks/head_pickle.png), rigged: the static MechHeadMeshes pickle cut into rigid pieces (same
-## sections, girth, nose, warts and stern brow at rest), plus lids, moving pupils on a white-ringed green eye, the mouth
+## The pickle pilot (art/picks/head_pickle.png), rigged: the static MechHeadMeshes pickle's sections as one body mesh
+## (PilotFace.add_body; same girth, nose, warts and stern brow at rest), plus lids, moving pupils on a white-ringed green eye, the mouth
 ## line split into two half bars hinged at the centre (MouthL / MouthR: mouth_curve turns the corners up / down,
 ## brow_skew makes it lopsided) and a lip plate under it (Jaw) that drops to show a dark mouth.
 ## No appendages: the flair is the whole body as jelly. The neck's flair spring drives the Skull's scale and shear
@@ -17,7 +17,6 @@ const MOUTH := Color(0.12, 0.1, 0.05)
 ## Body sections [y, centre z, half width, half depth] (as MechHeadMeshes._pickle).
 const SECS := [[0.0, 0.0, 0.27, 0.27], [0.16, 0.0, 0.33, 0.33], [0.5, 0.0, 0.35, 0.35], [0.85, 0.0, 0.35, 0.35],
 	[1.1, 0.0, 0.3, 0.3], [1.24, 0.0, 0.17, 0.17]]
-const SLEEVE := 1.04
 ## Warts [x, y, z] (as MechHeadMeshes._pickle) and their gains on the pendulum / jelly springs.
 const WARTS := [[0.33, 0.95, -0.12], [-0.34, 0.6, 0.05], [0.3, 0.3, -0.16], [-0.26, 1.02, -0.2]]
 const WART_PEND := [1.0, -0.8, 1.3, -1.1]
@@ -40,6 +39,8 @@ var _tic_t0 := 0.0
 
 func _init() -> void:
 	id = "pickle"
+	# The stalk and the body's bottom band take the bend (the stalk's top ring halfway); from the 0.5 ring up the body is rigid.
+	body_bend = Vector2(0.0, 0.32)
 	var g := float(MechHeadMeshes.GIRTH.get("pickle", 1.0))
 	girth = Vector3(g, 1.0, g)
 	pendulums = 1
@@ -61,18 +62,16 @@ func _init() -> void:
 
 
 func build_pieces() -> void:
-	# The neck bends at the base: NeckLow is the stalk, NeckHigh a bare joint, the Skull everything above it.
+	# The neck bends at the base: NeckLow is the stalk, NeckHigh a bare joint, the Skull (the jelly) everything above it.
 	add_piece("NeckLow", "", Vector3.ZERO)
-	var k := kit()
-	k.loft([_ring(SECS[0]), _ring(SECS[1])], _colour, false, false)
-	add_neck_plug(k, _ring(SECS[0]))
-	add_mesh("NeckLow", k)
 	add_piece("NeckHigh", "NeckLow", Vector3(0.0, 0.16, 0.0))
-
 	add_piece("Skull", "NeckHigh", Vector3(0.0, 0.16, 0.0))
+	# The body: one loft, stalk to crown.
+	var shell := kit()
+	shell.loft([_ring(SECS[0]), _ring(SECS[1]), _ring(SECS[2]), _ring(SECS[3]), _ring(SECS[4]), _ring(SECS[5])], _colour,
+		false, true)
+	add_neck_plug(shell, _ring(SECS[0]))
 	var ks := kit()
-	ks.loft([_ring(_lerp_sec(SECS[0], SECS[1], 0.12), SLEEVE), _ring(SECS[2]), _ring(SECS[3]), _ring(SECS[4]),
-		_ring(SECS[5])], _colour, false, true)
 	build_eye_set(ks, Vector3(0.14, 0.7, -0.325), Vector3(0.3, 0.0, -0.95), 1.2,
 		{"brow": GREEN.lightened(0.12), "lid": GREEN.darkened(0.06), "iris": IRIS, "pupil": PUPIL, "white": MechHeadMeshes.EYE_WHITE},
 		{"eye": 0.046, "pupil": 0.024})
@@ -84,9 +83,10 @@ func build_pieces() -> void:
 	for p: Vector2 in [Vector2(-0.1, 0.38), Vector2(0.1, 0.38), Vector2(0.1, 0.29), Vector2(-0.1, 0.29)]:
 		mouth.append(Vector3(p.x, p.y, -_face_r(p.y) * FLAT - 0.004))
 	ks.poly(mouth, MOUTH, Vector3(0.0, 0.33, 0.0))
-	add_mesh("Skull", ks)
+	add_body(shell, ks)
 
 	# Mouth line: two half bars hinged at the centre (the static bar, split).
+	var k: MeshKit
 	for side: float in [-1.0, 1.0]:
 		var n := "MouthL" if side < 0.0 else "MouthR"
 		add_piece(n, "Skull", Vector3(0.0, 0.4, -0.335))

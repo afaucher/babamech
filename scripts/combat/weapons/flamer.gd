@@ -11,3 +11,7 @@ func spawn(world: CombatWorld, record: Dictionary, st: Dictionary) -> CombatEffe
 	c.start(world, record, st)
 	FlamerFx.note(world, record, st)
 	return c
+
+
+func prewarm(_st: Dictionary) -> void:
+	pass          # no shell: the look is FlamerFx's stream

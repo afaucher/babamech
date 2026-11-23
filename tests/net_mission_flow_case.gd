@@ -51,12 +51,7 @@ func run_host() -> void:
 	# 2. Every enemy down ----------------------------------------------------------------------------------------
 	for e in td.combat.squad.enemies.duplicate():   # killing past MAX_WRECKS frees old wrecks from the list
 		if is_instance_valid(e) and not e.destroyed():
-			# A troop squad is one EnemyBase with a component per trooper: the core hit downs one trooper, so hit until
-			# it is destroyed (bounded).
-			for _i in 12:
-				if e.destroyed():
-					break
-				e.apply_damage(1.0e7, e.core_component(), "test")
+			e.apply_damage(1.0e7, e.core_component(), "test")
 	if not check(await until(func() -> bool: return rules.current() == "extract", 5.0), "the host's objective turns to extraction"):
 		return
 	await sleep(0.6)

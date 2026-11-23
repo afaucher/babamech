@@ -20,6 +20,7 @@ thin cyan and white lines on translucent glass, corner brackets. Reference rende
   an X near the aim point when its line of sight is blocked.
 - The test drive's help line moved to the top centre (the bottom corners are the HUD's).
 - **Top centre, under the help line: the mission objective** (W6, see "Mission objective").
+- **Anywhere: revealed enemies** (a deck's last stragglers, see "Revealed enemies").
 
 ## Mission objective
 Built 2026-11-22 (`scripts/ui/mission_hud.gd`, MissionHud, a child of MechHud's root, `hud.mission_hud`), same holo style:
@@ -36,6 +37,40 @@ Built 2026-11-22 (`scripts/ui/mission_hud.gd`, MissionHud, a child of MechHud's 
   `demo_banner` adds the banner.
 - Not built (user decision 2026-11-22, "don't do revive yet"): the downed overlay, the revive prompt / ring and downed
   teammate markers.
+
+## Mission objectives (plan mode)
+Built 2026-11-23 (mission objectives phase 1, docs/design/mission-objectives.md; `MissionHud`, data from
+`MissionFlow.hud_state()` when the drive runs the plan, DEV `--objectives`). On top of the objective strip (whose line is
+`MissionRules.text()`: the first primary not done, "RAISE THE FLAG: 12 / 20 S", "HOLD THE EXTRACTION PORTAL: 42 S"):
+- **Objective list**, top right (300 px wide, 40 px from the top; on a 4:3 screen it drops under the centre strips so it
+  never meets the objective line): "DECK n OBJECTIVES" and, amber, "WAVES 2 / 3" (released / total on your deck from
+  the director's state), then `MissionRules.lines(deck)`: the primary first, bonuses once found (cyan, "BONUS: ..."),
+  done lines green, failed red, at most 7.
+- **Objective markers**: a square over each known / active flag and defend of your deck (amber primary, cyan bonus;
+  "? FLAG" for a found bonus not started) with the distance, edge-stuck with an arrow like the extraction waypoint. A
+  **ring** projected on the floor round each defend site (radius 30 m); the flag rings and the extraction hold zone are
+  drawn in the world by MissionWorld (idle / contested / ours colours pushed by MissionFlow).
+- **Reinforcements**: "REINFORCEMENTS, EAST GATE  4S" in a red-edged 420 x 28 strip at 118 px (under the "last hostiles"
+  line), from the order until 6 s after the door opens (", DECK n" when it is another deck). A red INBOUND
+  triangle at the source on your deck (edge-stuck with an arrow) (`MissionHud.SOURCE_ARROW`, on: user decision
+  2026-11-23 "keep both", alongside the gate's beacon and klaxon; it points at the door, never at enemies). Direction words: a gate's wall (s1 north, s0 south,
+  x1 east, x0 west), otherwise the source's side of the deck in the deck's own frame.
+- **Zone bar**: 380 x 40 at 154 px while anyone of the crew stands in an active flag or hold zone: "RAISING THE FLAG
+  12 / 20 S" or "HOLDING THE PORTAL 42 S" (the hold's countdown) with a progress bar; red "CONTESTED" while an enemy
+  is in the flag's ring (progress paused).
+- **Banner**: lost by a failed primary reads "MISSION FAILED" / "Objective failed" (red).
+- `demo_plan` shows a sample of all of it (list, marker, ring, reinforcement line with a left-edge arrow, zone bar).
+  Tests: `test_layout` (plan panels on screen at the three sizes, clear of each other, the strip and the corners),
+  `test_mission_objectives`, `test_net_objectives*`, visual `test_visual_objectives` (shots `objectives_hud_demo`,
+  `objectives_drive_flag`).
+
+## Revealed enemies: removed
+
+Built and then removed on 2026-11-22. The user asked for no non-diegetic enemy indicators: "the charge orb is FINE but
+the diamond over their head and the warning sound is not". The HUD draws no markers, diamonds or distances over
+enemies, and plays no "last hostiles" beep. The reveal itself (`mission-section.md` §15) is made diegetic on the enemy
+side by antigravity, for example a flare. The shared edge-arrow helpers in `mission_hud.gd` stay for the mission's own
+waypoints.
 
 ## Damage diagram
 Picked 2026-11-22 from `hud/grid_hud_diagram_r1.png` (rows: view front / side profile / 3/4, columns: abstraction
@@ -90,6 +125,36 @@ Code: `scripts/ui/crew_panel.gd` (CrewPanel; `Card.look()` says what a card show
 Tests: `tests/test_crew_panel.gd` (empty = hidden, roster, status states, avatar badge with a fake Steam),
 `tests/test_layout.gd` (`_hud`: three cards on screen at every size, above and left-aligned with the status panel, no
 overlaps), `tests/test_visual_hud.gd` (`hud_demo` includes it).
+
+## Loading screen
+User feedback: "let's get an actual loading screen. It flashes everything as it loads right now." `LoadingScreen`
+(`scripts/ui/loading_screen.gd`), a CanvasLayer at layer 125 (above MechHud's 5 and ShaderWarmup's 120), opaque, in the
+HUD's holo style (MechHud colours, `draw_glass`) on a near-black blue backdrop with a faint drifting grid.
+- **When.** `TestDrive._ready` puts it up in its first line, before anything is built, so no frame shows the city being
+  built, the camera or the HUD (both HUD layers are hidden while it is up). It comes down at `mission_go` (crew) or when
+  the solo load and the shader warm-up are done, with a 0.3 s fade (`LoadingScreen.FADE`). The 3D viewport keeps
+  rendering underneath, so ShaderWarmup still draws its meshes (it gets no overlay of its own then:
+  `ShaderWarmup.warm(..., overlay = false)`). It runs `PROCESS_MODE_ALWAYS` (the solo warm-up pauses the tree) and
+  touches neither input nor the session, so the load's keepalive and Session polling are untouched.
+- **Solo** uses the same screen: `TestDrive._load_solo` lets it draw two frames, shows the section, then runs the
+  synchronous build as before. Under `--run-test` the solo load stays in `_ready` (tests check the scene right after
+  adding it) unless a test sets `TestDrive.cover_solo`; tests also take the screen down at once unless
+  `LoadingScreen.fade_in_tests`.
+- **What it shows.** The title, the mission ("Section 57036"; "District N"), the section (`section_text`: deck count,
+  entry and extraction deck, ramps / lifts / shafts from the SectionPlan; "Charting the section..." before), a phase
+  line + segmented progress bar (`PHASES`: shaders_pre 0-5 %, build 5-78 % from `CityStack.build_progress()`, populate
+  78-88 % eased over the `AmbientLife.setup_step` frames, shaders 88-100 %, then "Waiting for crew  n / N ready"), in a
+  crew the crew list (accent hex, name, head, LOADING / READY tick: `Session.mission_ready_peers()`, which the host
+  knows from `mission.ready` and clients from the host's `mission.wait`), and a tip line that rotates every 6 s.
+- **Scene changes.** Leaving the mission (the outcome's end flow, the host ending it, Esc) puts the screen up in phase
+  "leave", waits two frames, then changes scene; `LoadingScreen.handoff` tells the menu to put its own up in its
+  `_ready` and fade it after three frames. The hangar's Launch (and a relaunch) puts one up ("Launching") two frames
+  before the change to the mission scene, which covers itself at once.
+- Tests: `tests/test_loading_screen.gd` (solo: up from the first frame, covers every frame until `loaded`, HUD hidden,
+  fades and frees; the tests' synchronous path; phases / section / crew rows), `tests/test_net_loading_screen.gd`
+  (2 peers, stepped load: covered until `mission_go`, both rows, READY ticks), `tests/test_layout.gd` (`_loading`: fills
+  the screen, bar / phase / crew rows / tip on screen at the three sizes), `tests/test_visual_loading.gd` (shots
+  `loading_solo_midload`, `loading_solo_done`, `loading_coop_wait`).
 
 ## Data
 Read-only polling every frame: `WeaponRack` HUD contract (`scripts/combat/weapon_rack.gd` header: slots(),

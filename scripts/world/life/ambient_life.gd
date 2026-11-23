@@ -99,10 +99,17 @@ var _ta := PackedFloat64Array()
 var _tb := PackedFloat64Array()
 var _xa: Array[Transform3D] = []
 var _xb: Array[Transform3D] = []
-var _mesh := PackedInt32Array()     ## pose mesh of sample A (-1 hidden)
+var _motion := PackedInt32Array()   ## LifeAnimRig motion of sample A (-1 hidden)
 var _vis_b := PackedByteArray()
 var _state: Array[String] = []      ## state of sample A
 var _last_b: Array = []             ## the last sample B per person (reused as the next sample A)
+var _ha := PackedFloat32Array()     ## headings of samples A / B (the route's; the drawn one lags: _yaw)
+var _hb := PackedFloat32Array()
+# animation (cosmetic, computed locally on every machine from the same state + clock; LifeFigures / life_anim_limbs)
+var _drawn_mo := PackedInt32Array() ## motion in the person's custom data (-1: not drawn, the next motion starts fresh)
+var _mo_t0 := PackedFloat64Array()  ## its start time
+var _yaw := PackedFloat32Array()    ## drawn heading (district-local yaw), easing toward the route's (LifeAnimRig.TURN_TAU)
+var _draw_now := 0.0                ## clock at the last drawn frame (the heading's easing step)
 var _steps_at := PackedFloat64Array()
 var _falling: Dictionary = {}       ## id -> true while tipping over (drawn exactly every frame)
 var _px := PackedFloat32Array()     ## displayed arc x, s per person
@@ -156,6 +163,22 @@ var _su_k := 0                      ## the deck being set up
 var _su_unit: AmbientLife           ## its unit
 var _su_units: Array[AmbientLife] = []   ## the decks' units set up so far (they become `units` when all are done)
 var _su_events: Array = []          ## life.* events heard while setting up, replayed when done
+# lab-only debug hooks (the crowd lab, scripts/world/life/crowd_lab.gd): never set by the game, never sent, free unused
+var debug_people_cap := LifePlan.PEOPLE_CAP   ## the people cap setup() passes to LifePlan (the crowd lab raises it)
+var debug_profile := false          ## true: _process measures itself into debug_us
+var debug_us := 0.0                 ## usec the last _process took (debug_profile only)
+## Shot tests (sweep / blast) look people up in a grid of their displayed feet, rebuilt lazily after the positions
+## change (_pos_rev) and only from the second shot test on the same positions (one shot a frame: the plain loop is
+## cheaper). The same people in the same id order as the plain loop: results identical (brute_force: the reference).
+const GRID := 4.0                   ## m, shot grid cell
+var brute_force := false
+var _pos_rev := 0                   ## bumped whenever _pos / _on are rewritten
+var _grid_rev := -1                 ## _pos_rev the grid was built for
+var _grid_asks := 0                 ## shot tests since the positions last changed (at _asks_rev)
+var _asks_rev := -1
+var _all_ids := PackedInt32Array()  ## 0 .. total - 1 (the plain loop's order)
+var _grid: Dictionary = {}          ## Vector3i cell -> PackedInt32Array ids (alive and outdoors)
+var _force: Dictionary = {}         ## debug_force_state: id (-1 everyone) -> [DEBUG_STATES key, clock time it was forced]
 
 
 func net_fields() -> Dictionary:
@@ -168,7 +191,7 @@ func net_fields() -> Dictionary:
 		"sent": Net.PRIVATE, "_pending": Net.PRIVATE, "_recent": Net.PRIVATE, "_last_send": Net.PRIVATE,
 		"_pushers": Net.PRIVATE, "_stack_pushers": Net.PRIVATE, "_asked": Net.PRIVATE, "_vasked": Net.PRIVATE,
 		"_ring": Net.LOCAL, "_geo": Net.LOCAL, "_online_clock": Net.LOCAL, "_tick": Net.LOCAL, "_ta": Net.LOCAL,
-		"_tb": Net.LOCAL, "_xa": Net.LOCAL, "_xb": Net.LOCAL, "_mesh": Net.LOCAL, "_vis_b": Net.LOCAL, "_state": Net.LOCAL,
+		"_tb": Net.LOCAL, "_xa": Net.LOCAL, "_xb": Net.LOCAL, "_motion": Net.LOCAL, "_vis_b": Net.LOCAL, "_state": Net.LOCAL,
 		"_last_b": Net.LOCAL, "_steps_at": Net.LOCAL, "_falling": Net.LOCAL, "_px": Net.LOCAL, "_ps": Net.LOCAL,
 		"_pos": Net.LOCAL, "_up": Net.LOCAL, "_on": Net.LOCAL, "_band": Net.LOCAL, "_bounds": Net.LOCAL,
 		"_any_out": Net.LOCAL, "_vta": Net.LOCAL, "_vtb": Net.LOCAL, "_vxa": Net.LOCAL, "_vxb": Net.LOCAL,
@@ -178,8 +201,15 @@ func net_fields() -> Dictionary:
 		"_viewers": Net.LOCAL, "_views": Net.LOCAL, "_cull": Net.LOCAL, "_active": Net.LOCAL,
 		"quality": Net.LOCAL, "_draw_r": Net.LOCAL,     # drawing only (CityQuality): never what is simulated or hit
 		"_pusher_arc": Net.LOCAL, "_heard": Net.LOCAL,
+		"_ha": Net.LOCAL, "_hb": Net.LOCAL, "_drawn_mo": Net.LOCAL, "_mo_t0": Net.LOCAL, "_yaw": Net.LOCAL,
+		"_draw_now": Net.LOCAL,     # animation only: cosmetic, derived locally
 		"_setup_part": Net.LOCAL, "_su_stack": Net.LOCAL, "_su_k": Net.LOCAL, "_su_unit": Net.LOCAL, "_su_units": Net.LOCAL,
 		"_su_events": Net.LOCAL,
+		# crowd lab only (debug hooks): a local presentation override, never simulated for others nor sent
+		"debug_people_cap": Net.LOCAL, "debug_profile": Net.LOCAL, "debug_us": Net.LOCAL, "_force": Net.LOCAL,
+		# shot lookup grid: a local index of the displayed positions (results identical to the plain loop)
+		"brute_force": Net.LOCAL, "_pos_rev": Net.LOCAL, "_grid_rev": Net.LOCAL, "_grid_asks": Net.LOCAL, "_grid": Net.LOCAL,
+		"_asks_rev": Net.LOCAL, "_all_ids": Net.LOCAL,
 	}
 
 
@@ -231,8 +261,12 @@ func setup(d: CityDistrict, people_count: int = -1, pod_count: int = -1, cart_co
 
 
 ## setup() in SETUP_PARTS chunks (the stack's setup_step runs one per call): the same calls in the same order.
-## 0: plan, crowd, figures, per-person arrays; 1: traffic; 2: tram cars and barriers; 3: the first exact draw.
-const SETUP_PARTS := 4
+## 0: plan, crowd, figures, per-person arrays; 1: traffic; 2: tram cars and barriers; 3: the first exact draw;
+## 4 .. 4 + WARM_PARTS - 1: a quarter a part of: the walk graph's shortest-path trees from every door (a threat's refuge
+## choice reads them), the standing slots of crossings and benches, and the hold index for the next minutes (crowd
+## spacing). Built here instead of on first use (a shot, a frame): the same data whenever it is built.
+const WARM_PARTS := 4
+const SETUP_PARTS := 4 + WARM_PARTS
 
 func _setup_begin(d: CityDistrict, people_count: int, pod_count: int, cart_count: int) -> void:
 	district = d
@@ -252,11 +286,14 @@ func _setup_chunk() -> void:
 			_build_traffic()
 		2:
 			_build_section()
-			_set_layers(figures)
 			_tick = -1
 			_follow()
 		3:
 			_redraw_exact(false)
+		_:
+			plan.warm_trees(part - 4, WARM_PARTS)
+			plan.warm_slots(part - 4, WARM_PARTS)
+			plan.warm_ahead(now, plan.count, part - 4, WARM_PARTS)
 
 
 func _setup_people() -> void:
@@ -264,7 +301,7 @@ func _setup_people() -> void:
 	var people_count := people
 	_ring = d.ring
 	_geo = CityGeo.new(_ring)
-	plan = LifePlan.make(d.plan, people_count)
+	plan = LifePlan.make(d.plan, people_count, debug_people_cap)
 	crowd = LifeCrowd.new(plan)
 	tram = plan.tram
 	if figures == null:
@@ -275,13 +312,22 @@ func _setup_people() -> void:
 		cars = LifeCars.new()
 		cars.top_level = true
 		add_child(cars)
-	figures.build(plan.people + plan.riders, _local_bounds())
 	var n := plan.total()
+	var seeds := PackedFloat32Array()
+	for i in n:
+		seeds.append(plan.h(i, 91))
+	figures.build(plan.people + plan.riders, _local_bounds(), d.render_layer, seeds)
+	_apply_figure_quality()
 	_ta.resize(n)
 	_tb.resize(n)
 	_xa.resize(n)
 	_xb.resize(n)
-	_mesh.resize(n)
+	_motion.resize(n)
+	_ha.resize(n)
+	_hb.resize(n)
+	_drawn_mo.resize(n)
+	_mo_t0.resize(n)
+	_yaw.resize(n)
 	_vis_b.resize(n)
 	_state.resize(n)
 	_last_b.resize(n)
@@ -294,7 +340,8 @@ func _setup_people() -> void:
 	_on.resize(n)
 	_band.resize(n)
 	for i in n:
-		_mesh[i] = -1
+		_motion[i] = -1
+		_drawn_mo[i] = -1
 		_state[i] = "calm"
 		_on[i] = 0
 		_band[i] = NEAR
@@ -364,6 +411,7 @@ func _setup_stack_chunk() -> void:
 			nu.remove_from_group("ambient_life")
 			nu.name = "Deck%d" % k
 			nu.time_scale = time_scale
+			nu.debug_people_cap = debug_people_cap
 			add_child(nu)
 			nu._setup_begin(s.decks[k], people, pods, carts)
 			_su_unit = nu
@@ -454,8 +502,7 @@ func vehicle_ids() -> PackedInt32Array:
 func _build_traffic() -> void:
 	traffic = LifeTraffic.make(plan, pods, carts)
 	fleet = LifeFleet.new(traffic)
-	cars.build(traffic.vehicles, _local_bounds())
-	_set_layers(cars)
+	cars.build(traffic.vehicles, _local_bounds(), district.render_layer)
 	var m := traffic.count()
 	_vta.resize(m)
 	_vtb.resize(m)
@@ -505,13 +552,6 @@ func _build_section() -> void:
 		barriers.layers = district.render_layer
 		add_child(barriers)
 	_tram_step()
-
-
-func _set_layers(n: Node) -> void:
-	if n == null or district == null:
-		return
-	for g in n.find_children("*", "GeometryInstance3D", true, false):
-		(g as GeometryInstance3D).layers = district.render_layer
 
 
 ## Change the number of people (rebuilds the plan; forgets every threat, kill and wreck).
@@ -606,6 +646,7 @@ func _set_view(cull: bool, pts: PackedVector3Array, active: bool) -> void:
 	if not active:
 		_any_out = false
 		_vany = false
+		_pos_rev += 1
 		_on.fill(0)
 		_von.fill(0)
 
@@ -630,6 +671,20 @@ func _band_of(p: Vector3) -> int:
 func set_quality(q: int) -> void:
 	quality = CityQuality.clamp_level(q)
 	_draw_r = minf(float(CityQuality.level(quality)["life_draw_r"]), DRAW_R)
+	_apply_figure_quality()
+	var all: Array[AmbientLife] = units.duplicate()
+	all.append_array(_su_units)
+	if _su_unit != null and is_instance_valid(_su_unit):
+		all.append(_su_unit)
+	for u in all:
+		u._apply_figure_quality()
+
+
+## The figures' shadows follow the quality: real (posed) shadows at HIGH / MEDIUM, none at LOW. Drawing only.
+func _apply_figure_quality() -> void:
+	if figures != null:
+		var q := _root.quality if _root != null else quality
+		figures.set_shadows(q != CityQuality.LOW)
 
 
 ## The draw radius in force (a stack's unit uses its stack node's).
@@ -648,9 +703,9 @@ func _drawn_at(p: Vector3) -> bool:
 	return false
 
 
-func _show_person(id: int, mesh: int, xf: Transform3D) -> void:
+func _show_person(id: int, motion: int, xf: Transform3D) -> void:
 	if _drawn_at(xf.origin):
-		figures.show_pose(id, mesh, xf)
+		figures.place(id, motion, xf)
 	else:
 		figures.hide_person(id)
 
@@ -691,6 +746,15 @@ func _clock() -> float:
 
 
 func _process(delta: float) -> void:
+	if not debug_profile:
+		_step(delta)
+		return
+	var t0 := Time.get_ticks_usec()
+	_step(delta)
+	debug_us = float(Time.get_ticks_usec() - t0)
+
+
+func _step(delta: float) -> void:
 	if _setup_part >= 0:
 		return              # a unit still being set up (setup_step)
 	if stack != null:
@@ -710,6 +774,7 @@ func _process(delta: float) -> void:
 		_online_clock = online
 		_rebase(_clock())
 	now = _clock() if online else now + delta * time_scale
+	plan.warm_ahead(now, 1)      # crowd spacing: the hold index of the coming minutes, one person a frame
 	_flush()
 	_pusher_step(delta * (1.0 if online else time_scale))
 	_tram_step()
@@ -772,31 +837,113 @@ func advance_to(t: float) -> void:
 
 # --- Sampling and drawing ----------------------------------------------------------------------------------
 
-## [transform (district-local, unscaled), pose mesh (-1 hidden), state, arc x, s, h, tipping]
+## [0 drawn transform (district-local, unscaled, upright: the shader topples the dead), 1 motion (LifeAnimRig; -1
+## hidden), 2 state, 3 arc x, 4 s, 5 h, 6 tipping (drawn exactly every frame), 7 heading, 8 when the motion began
+## (NAN: unknown, the sample's time is used), 9 metres walked (the stride), 10 fall direction (deck angle), 11 the
+## person's transform (pose_of: the dead tipped over, LifeFigures.tip)]
 func _sample(id: int, t: float) -> Array:
 	var p := crowd.pose(id, t)
+	if not _force.is_empty():
+		p = _debug_pose(id, t, p)
 	var frame := _geo.frame(float(p["x"]), float(p["s"]), float(p["h"]))
 	var state := str(p["state"])
+	var heading := float(p["heading"])
 	if not p["visible"]:
-		return [frame, -1, state, p["x"], p["s"], p["h"], false]
+		return [frame, -1, state, p["x"], p["s"], p["h"], false, heading, NAN, 0.0, 0.0, frame]
 	var mode := str(p["mode"])
+	var xf := Transform3D(frame.basis * Basis(Vector3.UP, heading), frame.origin)
 	if mode == "down":
 		var f := float(p["tip"])
-		var xf := LifeFigures.tip(frame, Vector3(float(p["dx"]), 0.0, float(p["ds"])), f, float(p["heading"]))
-		return [xf, LifeFigures.IDLE, state, p["x"], p["s"], p["h"], f < 1.0]
-	var xf := Transform3D(frame.basis * Basis(Vector3.UP, float(p["heading"])), frame.origin)
-	var mesh := LifeFigures.IDLE
+		var dir := Vector3(float(p["dx"]), 0.0, float(p["ds"]))
+		var start := float(p["t_start"]) if p.has("t_start") else float(crowd.dead[id]["t"]) if crowd.dead.has(id) else NAN
+		return [xf, LifeAnimRig.FALL, state, p["x"], p["s"], p["h"], f < 1.0, heading, start, 0.0, atan2(dir.x, dir.z),
+				LifeFigures.tip(frame, dir, f, heading)]
+	var m := LifeAnimRig.IDLE
+	var start := float(p["t_start"]) if p.has("t_start") else NAN
 	match mode:
-		"walk": mesh = LifeFigures.WALK_A if int(float(p["dist"]) / 0.75) % 2 == 0 else LifeFigures.WALK_B
-		"run": mesh = LifeFigures.RUN_A if int(float(p["dist"]) / 1.4) % 2 == 0 else LifeFigures.RUN_B
-		"sit": mesh = LifeFigures.SIT
-		"wary": mesh = LifeFigures.WARY
+		"walk": m = LifeAnimRig.WALK
+		"run":
+			m = LifeAnimRig.RUN
+			if is_nan(start):
+				start = _rec_time(id, t, "t_flee")
+		"sit": m = LifeAnimRig.SIT
+		"wary":
+			m = LifeAnimRig.FLINCH
+			if is_nan(start):
+				start = _rec_time(id, t, "t0")
+		"hands_up":                     # only from debug_force_state (the game shows hands up through "cower" below)
+			m = LifeAnimRig.HANDS
+		"look_around":                  # only from debug_force_state (in the game it is one of the idle's variations)
+			m = LifeAnimRig.LOOK
 		"cower":
-			mesh = LifeFigures.COWER
+			m = LifeAnimRig.COWER
+			if is_nan(start):
+				start = _rec_time(id, t, "t_flee")
 			if _hands_up(Vector2(p["x"], p["s"]), t):
-				mesh = LifeFigures.HANDS
+				m = LifeAnimRig.HANDS
 				state = "hands_up"
-	return [xf, mesh, state, p["x"], p["s"], p["h"], false]
+				start = NAN
+	return [xf, m, state, p["x"], p["s"], p["h"], false, heading, start, float(p["dist"]), 0.0, xf]
+
+
+## Field `key` of the alarm record in force for `id` at t (as LifeCrowd.pose walks them), NAN if none. Animation only.
+func _rec_time(id: int, t: float, key: String) -> float:
+	var r: Variant = crowd.recs.get(id)
+	while r != null and t < float((r as Dictionary)["t0"]):
+		r = (r as Dictionary).get("prev")
+	return float((r as Dictionary)[key]) if r != null else NAN
+
+
+## The animation of person `id` from its sample `a` taken at `ta` (cosmetic, local: the same state and clock give the
+## same custom data on every machine). Writes LifeFigures' custom data only when the motion changes or a turn starts.
+func _animate(id: int, a: Array, ta: float) -> void:
+	var m := int(a[1])
+	if m < 0:
+		_drawn_mo[id] = -1
+		return
+	var was := _drawn_mo[id]
+	var heading := float(a[7])
+	if was < 0:
+		_yaw[id] = heading          # appears (out of a door, into range): no blend, no turn
+	var gap := 0.0 if m == LifeAnimRig.FALL else wrapf(heading - _yaw[id], -PI, PI)
+	if m == was:
+		if absf(gap) < LifeAnimRig.TURN_MIN or ta - _mo_t0[id] < 0.5 or not m in [LifeAnimRig.WALK, LifeAnimRig.RUN,
+				LifeAnimRig.IDLE, LifeAnimRig.LOOK]:
+			return
+	var t0 := ta
+	var start := float(a[8])
+	if m != was and not is_nan(start):
+		t0 = start if ta - start > 0.4 else maxf(start, ta - 0.08)   # live: start it now-ish, never skip the start
+	var speed := float(plan.person(id)["speed"])
+	var param := 0.0
+	if m == LifeAnimRig.WALK:
+		param = fposmod(float(a[9]) - speed * (ta - t0), 512.0)
+	elif m == LifeAnimRig.RUN:
+		param = fposmod(float(a[9]) - LifeCrowd.RUN * (ta - t0), 512.0)
+	elif m == LifeAnimRig.FALL:
+		param = wrapf(float(a[10]) - _yaw[id], -PI, PI)        # relative to the body as drawn
+	var talk := false
+	if m == LifeAnimRig.IDLE:
+		var at := (a[0] as Transform3D).origin
+		for j in plan.total():
+			if j != id and (_drawn_mo[j] == LifeAnimRig.IDLE or _drawn_mo[j] == LifeAnimRig.LOOK) \
+					and _pos[j].distance_squared_to(at) < 9.0:
+				talk = true
+				break
+	figures.set_motion(id, m, m if was < 0 else was, t0, gap if absf(gap) >= 0.1 else 0.0, speed, param, talk)
+	_drawn_mo[id] = m
+	_mo_t0[id] = t0
+
+
+## The drawn transform of `id`: `xf` turned to the drawn heading, which eases toward the route's heading `h` (step `k`
+## of the exponential; frozen while falling). Positions, and so every hit test, are untouched.
+func _turned(id: int, xf: Transform3D, h: float, k: float) -> Transform3D:
+	if _drawn_mo[id] != LifeAnimRig.FALL:
+		_yaw[id] += wrapf(h - _yaw[id], -PI, PI) * k
+	var corr := wrapf(_yaw[id] - h, -PI, PI)
+	if absf(corr) < 1e-4:
+		return xf
+	return Transform3D(xf.basis * Basis(Vector3.UP, corr), xf.origin)
 
 
 ## [transform (district-local), hazard, state, arc x, s, tipping, pose]
@@ -825,6 +972,7 @@ func _hands_up(at: Vector2, t: float) -> bool:
 
 func _advance_draw() -> void:
 	_follow()
+	figures.set_clock(now)
 	var target := int(floor(now / TICK))
 	if _tick < 0 or target - _tick > 8 or target < _tick - 2:
 		_resample_all(target)
@@ -932,7 +1080,8 @@ func _far(id: int, a: Array, ta: float) -> void:
 	_tb[id] = ta
 	_xa[id] = a[0]
 	_xb[id] = a[0]
-	_mesh[id] = -1
+	_motion[id] = -1
+	_drawn_mo[id] = -1
 	_vis_b[id] = 0
 	_state[id] = str(a[2])
 	_last_b[id] = null
@@ -967,9 +1116,12 @@ func _set_samples(id: int, k: int, events: bool, period: int = GROUPS) -> void:
 	_tb[id] = tb
 	_xa[id] = a[0]
 	_xb[id] = b[0]
-	_mesh[id] = int(a[1])
+	_motion[id] = int(a[1])
+	_ha[id] = float(a[7])
+	_hb[id] = float(b[7])
 	_vis_b[id] = 1 if int(b[1]) >= 0 else 0
 	_state[id] = str(a[2])
+	_animate(id, a, ta)
 	if bool(a[6]):
 		_falling[id] = true
 
@@ -994,10 +1146,14 @@ func _set_vsamples(vid: int, k: int, events: bool, period: int = GROUPS) -> void
 func _display() -> void:
 	var first := true
 	_any_out = false
+	_pos_rev += 1
+	var k := 1.0 - exp(-clampf(now - _draw_now, 0.0, 1.0) / LifeAnimRig.TURN_TAU)
+	_draw_now = now
 	for id in plan.total():
 		if _falling.has(id):
 			var e := _sample(id, now)
-			_show_person(id, int(e[1]), e[0])
+			_animate(id, e, now)
+			_show_person(id, int(e[1]), _turned(id, e[0], float(e[7]), k))
 			_px[id] = e[3]
 			_ps[id] = e[4]
 			_pos[id] = (e[0] as Transform3D).origin
@@ -1006,17 +1162,19 @@ func _display() -> void:
 			if not bool(e[6]):
 				_falling.erase(id)
 			continue
-		var mesh := _mesh[id]
-		if mesh < 0:
+		var motion := _motion[id]
+		if motion < 0:
 			figures.hide_person(id)
 			_on[id] = 0
 			continue
 		var xf: Transform3D = _xa[id]
+		var h := _ha[id]
 		if _vis_b[id] == 1:
 			var f := clampf((now - _ta[id]) / maxf(_tb[id] - _ta[id], 1e-6), 0.0, 1.0)
 			if not _xa[id].is_equal_approx(_xb[id]):
 				xf = _xa[id].interpolate_with(_xb[id], f)
-		_show_person(id, mesh, xf)
+				h = lerp_angle(_ha[id], _hb[id], f)
+		_show_person(id, motion, _turned(id, xf, h, k))
 		_pos[id] = xf.origin
 		_up[id] = xf.basis.y.normalized()
 		var alive := not crowd.dead.has(id)
@@ -1090,8 +1248,12 @@ func _vstore(vid: int, xf: Transform3D) -> void:
 ## sampled once (to know where they are) and hidden.
 func _redraw_exact(events: bool) -> void:
 	_follow()
+	figures.set_clock(now)
+	var k := 1.0 - exp(-clampf(now - _draw_now, 0.0, 1.0) / LifeAnimRig.TURN_TAU)
+	_draw_now = now
 	var first := true
 	_any_out = false
+	_pos_rev += 1
 	for id in plan.total():
 		var e := _sample(id, now)
 		if events:
@@ -1101,21 +1263,25 @@ func _redraw_exact(events: bool) -> void:
 		_tb[id] = now
 		_xa[id] = e[0]
 		_xb[id] = e[0]
-		_mesh[id] = int(e[1])
+		_motion[id] = int(e[1])
+		_ha[id] = float(e[7])
+		_hb[id] = float(e[7])
 		_vis_b[id] = 0
 		_last_b[id] = null
 		_band[id] = _band_of((e[0] as Transform3D).origin)
 		if _band[id] == FAR:
-			_mesh[id] = -1
-		if bool(e[6]) and _mesh[id] >= 0:
+			_motion[id] = -1
+		if bool(e[6]) and _motion[id] >= 0:
 			_falling[id] = true
 		else:
 			_falling.erase(id)
-		if _mesh[id] < 0:
+		if _motion[id] < 0:
+			_drawn_mo[id] = -1
 			figures.hide_person(id)
 			_on[id] = 0
 			continue
-		_show_person(id, int(e[1]), e[0])
+		_animate(id, e, now)
+		_show_person(id, int(e[1]), _turned(id, e[0], float(e[7]), k))
 		_pos[id] = (e[0] as Transform3D).origin
 		_up[id] = (e[0] as Transform3D).basis.y.normalized()
 		_px[id] = e[3]
@@ -1270,7 +1436,7 @@ func state_of(id: int) -> String:
 func pose_of(id: int) -> Transform3D:
 	if not units.is_empty():
 		return _unit_of(id).pose_of(id % ID_STRIDE)
-	return _to_world() * (_sample(id, now)[0] as Transform3D)
+	return _to_world() * (_sample(id, now)[11] as Transform3D)
 
 
 ## Whether person `id` is outdoors (could be drawn) now.
@@ -1345,6 +1511,147 @@ func tally() -> Dictionary:
 	var t := crowd.tally()
 	t["wrecks"] = fleet.wrecks.size() if fleet != null else 0
 	return t
+
+
+## The animation person `id` shows now: walk | wait | sit | run | wary | cower | hands_up | down | indoor (indoor: not
+## drawn). What a figure drawer is asked to draw (with state_of for the behaviour behind it).
+func mode_of(id: int) -> String:
+	if not units.is_empty():
+		return _unit_of(id).mode_of(id % ID_STRIDE)
+	var p := crowd.pose(id, now)
+	if not _force.is_empty():
+		p = _debug_pose(id, now, p)
+	var mode := str(p["mode"])
+	if mode == "cower" and _hands_up(Vector2(p["x"], p["s"]), now):
+		return "hands_up"
+	return mode
+
+
+# --- Debug hooks (the crowd lab only; never called by the game) -----------------------------------------------
+
+## The states a figure can be forced into (debug_force_state): key -> the behaviour state (state_of) and the animation
+## mode (mode_of) it shows. Every animation the crowd system really produces today is here (LifeCrowd.pose modes, plus
+## the local hands-up look): add a new animation here and the crowd lab lists it.
+const DEBUG_STATES := {
+	"walk": {"state": "calm", "mode": "walk"},
+	"idle": {"state": "calm", "mode": "wait"},
+	"sit": {"state": "calm", "mode": "sit"},
+	"flinch": {"state": "wary", "mode": "wary"},
+	"flee": {"state": "fleeing", "mode": "run"},
+	"cower": {"state": "cowering", "mode": "cower"},
+	"hands_up": {"state": "hands_up", "mode": "hands_up"},
+	"down": {"state": "down", "mode": "down"},
+	"look_around": {"state": "calm", "mode": "look_around"},   # animation only: an idle variation, not a crowd state
+}
+
+
+static func debug_states() -> Array:
+	return DEBUG_STATES.keys()
+
+
+## LAB ONLY: draw person `id` (-1: everyone) in state `key` (a DEBUG_STATES key; "" or "timetable" lifts it) from now
+## on, where the timetable / threats put them (nobody is moved: people indoors stay hidden, the dead stay down). A
+## local presentation override: state_of / mode_of / pose_of and the figures follow it; the crowd's state (threats,
+## kills, snapshot, tally) never does, and nothing is sent. Free while unused (one empty-dictionary test per sample).
+func debug_force_state(id: int, key: String) -> void:
+	for u in units:
+		u.debug_force_state(id if id < 0 else (id % ID_STRIDE if id / ID_STRIDE == u.deck else -2), key)
+	if id == -2:
+		return
+	if key == "" or key == "timetable":
+		_force.erase(id)
+	elif DEBUG_STATES.has(key):
+		if id < 0:
+			_force.clear()
+		_force[id] = [key, now]
+	else:
+		push_warning("AmbientLife.debug_force_state: unknown state %s" % key)
+		return
+	_tick = -1
+
+
+## LAB ONLY: lift every debug_force_state: everyone back on the timetable / the threats' state.
+func debug_clear() -> void:
+	for u in units:
+		u.debug_clear()
+	_force.clear()
+	_tick = -1
+
+
+## The DEBUG_STATES key forced on `id` ("" none).
+func debug_forced(id: int) -> String:
+	if not units.is_empty():
+		return _unit_of(id).debug_forced(id % ID_STRIDE)
+	var f: Variant = _force.get(id, _force.get(-1))
+	return str((f as Array)[0]) if f != null else ""
+
+
+## Everything the crowd lab's inspector shows about person `id`, from the crowd's data (no drawing): id, state, mode,
+## forced, visible, alive, x, s, h, heading (deg), speed (m/s now), cruise (walking speed), rider, activity (timetable:
+## walk | wait | sit | cross | indoor), door_a / door_d (this trip's home and destination doors, -1 none) and their arc
+## points home / dest, bench, alarm ({t0, t_flee, kind flee|cower, st, door, face deg, last} or {}), down ({t, src} or
+## {}), and the seeded variety: cloth, build, tall, period, phase.
+func debug_person(id: int) -> Dictionary:
+	if not units.is_empty():
+		var o := _unit_of(id).debug_person(id % ID_STRIDE)
+		if not o.is_empty():
+			o["id"] = id
+		return o
+	if plan == null or id < 0 or id >= plan.total():
+		return {}
+	var p := crowd.pose(id, now)
+	if not _force.is_empty():
+		p = _debug_pose(id, now, p)
+	var q := crowd.pose(id, now - 0.2)
+	var pp := plan.person(id)
+	var out := {"id": id, "state": state_of(id), "mode": mode_of(id), "forced": debug_forced(id), "visible": bool(p["visible"]),
+			"alive": not crowd.dead.has(id), "x": float(p["x"]), "s": float(p["s"]), "h": float(p["h"]),
+			"heading": rad_to_deg(float(p["heading"])),
+			"speed": Vector2(float(p["x"]) - float(q["x"]), float(p["s"]) - float(q["s"])).length() / 0.2 if bool(q["visible"]) else 0.0,
+			"cruise": float(pp["speed"]), "rider": id >= plan.count, "activity": "indoor", "door_a": -1, "door_d": -1,
+			"home": Vector2.ZERO, "dest": Vector2.ZERO, "bench": -1, "alarm": {}, "down": {},
+			"cloth": int(pp["cloth"]), "build": int(pp["build"]), "tall": int(pp["tall"]), "period": float(pp["period"]),
+			"phase": float(pp["phase"])}
+	if id < plan.count:
+		var tr := plan.trip(id, plan.slot_of(id, now))
+		out["activity"] = str(plan.pose_in_trip(tr, now)["state"])
+		out["door_a"] = int(tr["door_a"])
+		out["door_d"] = int(tr["door_d"])
+		out["bench"] = int(tr["bench"])
+		if not plan.doors.is_empty():
+			out["home"] = plan.doors[clampi(int(tr["door_a"]), 0, plan.doors.size() - 1)]["at"]
+			out["dest"] = plan.doors[clampi(int(tr["door_d"]), 0, plan.doors.size() - 1)]["at"]
+	var r: Variant = crowd.recs.get(id)
+	if r != null:
+		var rd := r as Dictionary
+		out["alarm"] = {"t0": float(rd["t0"]), "t_flee": float(rd["t_flee"]), "st": int(rd["st"]), "door": int(rd["door"]),
+				"kind": "flee" if int(rd["kind"]) == LifeCrowd.FLEE else "cower", "face": rad_to_deg(float(rd["face"])),
+				"last": float(rd["last"])}
+	if crowd.dead.has(id):
+		out["down"] = {"t": float(crowd.dead[id]["t"]), "src": int(crowd.dead[id]["src"])}
+	return out
+
+
+## The crowd's pose of `id` at t with a debug_force_state applied (only called while one is set).
+func _debug_pose(id: int, t: float, p: Dictionary) -> Dictionary:
+	var f: Variant = _force.get(id, _force.get(-1))
+	if f == null or not p["visible"] or p["state"] == "down":
+		return p
+	var key := str((f as Array)[0])
+	var spec: Dictionary = DEBUG_STATES[key]
+	var q := p.duplicate()
+	q["state"] = spec["state"]
+	q["mode"] = spec["mode"]
+	q["t_start"] = float((f as Array)[1])      # the animation starts when it was forced
+	match key:
+		"walk": q["dist"] = t * float(plan.person(id)["speed"])     # the stride runs from the clock (walks in place if still)
+		"flee": q["dist"] = t * LifeCrowd.RUN
+		"down":
+			var h := float(p["heading"])
+			q["tip"] = clampf((t - float((f as Array)[1])) / LifeCrowd.TIP_S, 0.0, 1.0)
+			q["dx"] = -sin(h)          # falls backward
+			q["ds"] = -cos(h)
+	return q
 
 
 # --- Threats (host) ------------------------------------------------------------------------------------------
@@ -1464,7 +1771,7 @@ func sweep(a: Vector3, b: Vector3, r: float, src: int) -> int:
 	var n := 0
 	if _any_out and seg.intersects(_bounds):
 		var pre := (reach + HEIGHT * 0.5) * (reach + HEIGHT * 0.5)
-		for id in plan.total():
+		for id in _shot_ids(seg):
 			if _on[id] == 0:
 				continue
 			var foot := _pos[id]
@@ -1506,7 +1813,7 @@ func blast(point: Vector3, radius: float, src: int) -> int:
 	var lp := _to_world().affine_inverse() * point
 	var n := 0
 	if _any_out and AABB(lp, Vector3.ZERO).grow(radius + HEIGHT).intersects(_bounds):
-		for id in plan.total():
+		for id in _shot_ids(AABB(lp, Vector3.ZERO).grow(radius + HEIGHT)):
 			if _on[id] == 0:
 				continue
 			var foot := _pos[id]
@@ -1527,6 +1834,44 @@ func blast(point: Vector3, radius: float, src: int) -> int:
 			if _request_wreck(vid, _deck_dir(_vps[vid], c - lp), src, 1, BLAST_PUSH):
 				n += 1
 	return n
+
+
+## The ids to test against a shot whose reach is the district-local box `box` (everyone whose feet can be within the
+## shot's reach lies in it: the tests below need the capsule within reach + HEIGHT of the segment), ascending. All ids
+## for the first shot test on fresh positions, a big box or brute_force (the plain loop).
+func _shot_ids(box: AABB) -> PackedInt32Array:
+	var n := plan.total()
+	if _all_ids.size() != n:
+		_all_ids.resize(n)
+		for i in n:
+			_all_ids[i] = i
+	if _asks_rev != _pos_rev:
+		_asks_rev = _pos_rev
+		_grid_asks = 0
+	_grid_asks += 1
+	var lo := Vector3i((box.position / GRID).floor())
+	var hi := Vector3i((box.end / GRID).floor())
+	var cells := (hi.x - lo.x + 1) * (hi.y - lo.y + 1) * (hi.z - lo.z + 1)
+	if brute_force or _grid_asks < 2 or cells > 64:
+		return _all_ids
+	if _grid_rev != _pos_rev:
+		_grid.clear()
+		for i in n:
+			if _on[i] == 1:
+				var c := Vector3i((_pos[i] / GRID).floor())
+				var arr: PackedInt32Array = _grid.get(c, PackedInt32Array())
+				arr.append(i)
+				_grid[c] = arr
+		_grid_rev = _pos_rev
+	var out := PackedInt32Array()
+	for x in range(lo.x, hi.x + 1):
+		for y in range(lo.y, hi.y + 1):
+			for z in range(lo.z, hi.z + 1):
+				var c := Vector3i(x, y, z)
+				if _grid.has(c):
+					out.append_array(_grid[c])
+	out.sort()
+	return out
 
 
 ## A district-local vector as a unit direction in the deck plane at arc s (x, s).

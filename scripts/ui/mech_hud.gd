@@ -59,6 +59,9 @@ var rows: Array[Control] = []
 
 var _t := 0.0
 var _font: Font
+var _slots: Array = []             ## slots() cache: the rack's rows this frame
+var _slots_frame := -1
+var _slots_rack: WeaponRack
 
 
 static func for_drive(td: Node) -> MechHud:
@@ -180,7 +183,9 @@ func _sync_diagram() -> void:
 		so[str(s["hardpoint"])] = int(s["slot"])
 	if status_diagram.slot_of != so:
 		status_diagram.slot_of = so
-	status_diagram.health = components()
+	var hp := components()
+	if status_diagram.health != hp:   # the setter redraws the diagram (~1 ms): only when a component changed
+		status_diagram.health = hp
 
 
 func _sync_world_aim() -> void:
@@ -215,11 +220,17 @@ func _find_sources() -> void:
 
 # --- Data (read-only) ---------------------------------------------------------------------------------------------
 
+## The rack's rows, read once per frame (WeaponRack.slots builds them, ~0.1 ms; the HUD asks ~10 times a frame).
 func slots() -> Array:
 	if demo:
 		return DEMO_SLOTS
 	if rack != null:
-		return rack.slots()
+		var f := Engine.get_process_frames()
+		if f != _slots_frame or rack != _slots_rack:
+			_slots_frame = f
+			_slots_rack = rack
+			_slots = rack.slots()
+		return _slots
 	return []
 
 
@@ -316,7 +327,7 @@ func _muzzle_screen(s: Dictionary) -> Variant:
 ## The slots that get aim pips: built, enabled weapons. Back-mount equipment has no aim and no muzzle: never.
 static func aim_pip_slots(all: Array) -> Array:
 	return all.filter(func(s: Dictionary) -> bool:
-		return str(s["weapon"]) != "" and bool(s["enabled"]) and bool(s.get("built", true)) and not bool(s.get("equipment", false)))
+		return str(s["weapon"]) != "" and bool(s["enabled"]) and bool(s.get("built", true)) and not bool(s.get("equipment", false)) 			and str(s.get("hold", "")).to_upper() != "SHUTDOWN")   # heat shutdown: the mounts park, no aim pips
 
 
 func _camera() -> Camera3D:
@@ -410,8 +421,9 @@ func _draw_row(c: Control, i: int) -> void:
 	var empty := str(s["weapon"]) == ""
 	var equip := bool(s.get("equipment", false)) and not empty
 	var passive := equip and bool(s.get("passive", false))
-	# Equipment: the key is lit while it can be used (active: a drone ready to launch); a passive is never "on".
-	var on := (bool(s["enabled"]) and not empty) if not equip else (not passive and float(s.get("ready", 0.0)) >= 1.0)
+	# Equipment: the active drone is a selectable slot (key 5 selects, the trigger launches): lit while selected and ready.
+	var on := (bool(s["enabled"]) and not empty) if not equip \
+		else (not passive and bool(s["enabled"]) and float(s.get("ready", 0.0)) >= 1.0)
 	var built := bool(s.get("built", true))
 	var a := 1.0 if (on or (equip and not passive)) else (0.6 if passive else 0.38)
 	_glass(c, Rect2(Vector2.ZERO, sz), a)
@@ -464,6 +476,9 @@ func _draw_row(c: Control, i: int) -> void:
 		# Unusable (rack: destroyed / out of ammo): the row is already dimmed (enabled false); the flag says why, in red.
 		flag = hold if hold != "" else "OFFLINE"
 		fc = RED
+	elif hold == "SHUTDOWN":
+		flag = "SHUTDOWN"   # wins over RELOAD: nothing fires until the reactor is back
+		fc = RED
 	elif reloading:
 		flag = "RELOAD"
 	elif str(s.get("hold", "")) != "":
@@ -515,6 +530,10 @@ func _draw_equipment_row(c: Control, s: Dictionary, x: float, a: float, passive:
 		fc = GREEN
 	elif hold == "EMPTY" or hold == "DESTROYED":
 		fc = RED
+	elif flag == "" and str(s.get("hint", "")) != "":
+		# How to use it (rack: "PRESS 5" while deselected, "CLICK TO LAUNCH" once selected); the hold flag wins.
+		flag = str(s["hint"]).to_upper()
+		fc = WHITE
 	if flag != "":
 		_text(c, Vector2(x + 210, 37), 90, flag, 10, Color(fc, a), HORIZONTAL_ALIGNMENT_LEFT)
 

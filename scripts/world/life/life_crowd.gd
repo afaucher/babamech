@@ -24,7 +24,7 @@ const RIPPLE_R := 8.0         ## m
 const TIP_S := 0.4            ## s: a killed person tips over in this long
 const FLEE := 0
 const COWER := 1
-const SNAP_VERSION := 2
+const SNAP_VERSION := 3        ## 3: alarm records carry the cowering spot (cx, cs)
 
 var lp: LifePlan
 var recs: Dictionary = {}       ## id -> alarm record (the latest; older ones chained under "prev")
@@ -36,6 +36,15 @@ var killed_by_enemies := 0
 var last_threat := -INF         ## time of the latest threat anywhere
 var riders_used := 0            ## rider slots handed out (LifePlan.RIDERS at most per mission)
 var occupants_killed := 0       ## pod passengers killed inside a wrecked pod (no figures; also in the tallies above)
+## Per-threat cost (results identical either way; tests/test_life_threat_grid.gd runs both): door points as a packed
+## array, and per person the slot its box was worked out for. brute_force: the reference path (everyone's pose).
+var brute_force := false
+var _door_at := PackedVector2Array()
+var _ph := PackedFloat64Array()       ## person -> timetable phase / period (as LifePlan.slot_of reads them)
+var _per := PackedFloat64Array()
+var _box_k := PackedInt64Array()      ## person -> the slot its cached box is for (INT64_MIN: none)
+var _box_ts := PackedFloat64Array()   ## ... that trip's start
+var _box: Array = []                  ## ... Rect2, or false (no trip in that slot)
 
 
 func net_fields() -> Dictionary:
@@ -45,11 +54,25 @@ func net_fields() -> Dictionary:
 		"recs": Net.OWNER, "dead": Net.OWNER, "locks": Net.OWNER, "by_src": Net.OWNER,
 		"killed_by_players": Net.OWNER, "killed_by_enemies": Net.OWNER, "last_threat": Net.OWNER,
 		"riders_used": Net.OWNER, "occupants_killed": Net.OWNER,
+		# derived caches (pure functions of the plan), never sent
+		"brute_force": Net.LOCAL, "_door_at": Net.LOCAL, "_ph": Net.LOCAL, "_per": Net.LOCAL, "_box_k": Net.LOCAL,
+		"_box_ts": Net.LOCAL, "_box": Net.LOCAL,
 	}
 
 
 func _init(plan: LifePlan = null) -> void:
 	lp = plan
+	if lp == null:
+		return
+	for d: Dictionary in lp.doors:
+		_door_at.append(d["at"])
+	for pp: Dictionary in lp.people:
+		_ph.append(float(pp["phase"]))
+		_per.append(float(pp["period"]))
+	_box_k.resize(lp.count)
+	_box_k.fill(-9223372036854775807)
+	_box_ts.resize(lp.count)
+	_box.resize(lp.count)
 
 
 func reset() -> void:
@@ -126,9 +149,11 @@ func pose(id: int, t: float) -> Dictionary:
 	if dead.has(id):
 		var dd: Dictionary = dead[id]
 		if t >= float(dd["t"]):
-			return {"x": dd["x"], "s": dd["s"], "h": dd["h"], "heading": dd["heading"], "state": "down", "mode": "down",
+			var tip := clampf((t - float(dd["t"])) / TIP_S, 0.0, 1.0)
+			return {"x": lerpf(float(dd.get("x0", dd["x"])), float(dd["x"]), tip),
+					"s": lerpf(float(dd.get("s0", dd["s"])), float(dd["s"]), tip), "h": dd["h"], "heading": dd["heading"], "state": "down", "mode": "down",
 					"visible": true, "dist": 0.0, "na": -1, "nb": -1, "door": -1,
-					"tip": clampf((t - float(dd["t"])) / TIP_S, 0.0, 1.0), "dx": dd["dx"], "ds": dd["ds"]}
+					"tip": tip, "dx": dd["dx"], "ds": dd["ds"]}
 	var r: Variant = recs.get(id)
 	while r != null and t < float((r as Dictionary)["t0"]):
 		r = (r as Dictionary).get("prev")
@@ -163,25 +188,33 @@ func _timetable(id: int, t: float, resume: float) -> Dictionary:
 
 func _rec_pose(id: int, r: Dictionary, t: float) -> Dictionary:
 	if t < float(r["t_flee"]):
-		return _still(r, "wary", "wary")
+		var p := _still(r, "wary", "wary")
+		if int(r["kind"]) == COWER:     # a step to its own cowering spot while flinching
+			var f := clampf((t - float(r["t0"])) / maxf(float(r["t_flee"]) - float(r["t0"]), 1e-3), 0.0, 1.0)
+			p["x"] = lerpf(float(r["x"]), float(r["cx"]), f)
+			p["s"] = lerpf(float(r["s"]), float(r["cs"]), f)
+		return p
 	if int(r["kind"]) == FLEE:
 		var t_in := float(r["t_flee"]) + float(r["route"]["length"]) / RUN
 		if t < t_in:
-			return _on_route(r["route"], (t - float(r["t_flee"])) * RUN, "fleeing", "run")
+			return _on_route(r["route"], (t - float(r["t_flee"])) * RUN, "fleeing", "run", lp.lane_of(id))
 		var release := lock_end(int(r["door"]), t_in) + RELEASE_SPREAD * lp.h(id, 7)
 		if t < release:
 			return _indoor(id, int(r["door"]), "sheltered")
 		return _timetable(id, t, release)
 	var t_up := float(r["last"]) + COWER_S
 	if t < t_up:
-		return _still(r, "cowering", "cower")
+		var c := _still(r, "cowering", "cower")
+		c["x"] = r["cx"]
+		c["s"] = r["cs"]
+		return c
 	var walk: Dictionary = r["route"]
 	if (walk["pts"] as PackedVector2Array).size() < 2:
 		return _timetable(id, t, t_up)
 	var speed := float(lp.person(id)["speed"])
 	var u := (t - t_up) * speed
 	if u < float(walk["length"]):
-		return _on_route(walk, u, "calm", "walk")
+		return _on_route(walk, u, "calm", "walk", lp.lane_of(id))
 	return _timetable(id, t, t_up + float(walk["length"]) / speed)
 
 
@@ -190,17 +223,34 @@ func _still(r: Dictionary, state: String, mode: String) -> Dictionary:
 			"dist": 0.0, "na": r["na"], "nb": r["nb"], "door": -1}
 
 
-func _on_route(rt: Dictionary, u: float, state: String, mode: String) -> Dictionary:
+## Point u along route rt, walked `lat` m to the right of its line (crowd spacing: the walking lanes; the route's first
+## point, where the person stood, is not offset; joints are mitred so the path stays continuous).
+func _on_route(rt: Dictionary, u: float, state: String, mode: String, lat: float = 0.0) -> Dictionary:
 	var at: Array = LifePlan.along(rt, u)
-	var p: Vector2 = at[0]
 	var seg: int = at[1]
 	var pts: PackedVector2Array = rt["pts"]
-	var dir := pts[seg + 1] - pts[seg]
+	var cum: PackedFloat32Array = rt["cum"]
+	var f := clampf((u - cum[seg]) / maxf(cum[seg + 1] - cum[seg], 1e-6), 0.0, 1.0)
+	var a := _route_joint(pts, seg, lat)
+	var b := _route_joint(pts, seg + 1, lat)
+	var p := a.lerp(b, f)
+	var dir := b - a if a.distance_squared_to(b) > 1e-8 else pts[seg + 1] - pts[seg]
 	var ids: PackedInt32Array = rt["nodes"]
 	var kind := int((rt["kinds"] as PackedByteArray)[seg])
 	return {"x": p.x, "s": p.y, "h": lp.ground_h(p.x, p.y) if kind == LifePlan.CROSS or seg == 0 else CityPlan.CURB_H,
 			"heading": atan2(dir.x, dir.y), "state": state, "mode": mode, "visible": true, "dist": u,
 			"na": ids[seg], "nb": ids[seg + 1], "door": -1}
+
+
+static func _route_joint(pts: PackedVector2Array, i: int, lat: float) -> Vector2:
+	if i == 0 or lat == 0.0:
+		return pts[i]
+	var last := pts.size() - 1
+	var d_in := (pts[i] - pts[i - 1]).normalized()
+	if i == last:
+		return pts[i] + Vector2(d_in.y, -d_in.x) * lat
+	var d_out := (pts[i + 1] - pts[i]).normalized()
+	return pts[i] + LifePlan.miter(d_in, d_out, lat)
 
 
 # --- Threats ---------------------------------------------------------------------------------------------
@@ -213,8 +263,8 @@ func apply_threat(ev: Dictionary) -> void:
 	var st := int(ev.get("st", 1))
 	last_threat = maxf(last_threat, T)
 	var reach := maxf(LOCK_R, radius)
-	for d in lp.doors.size():
-		if (lp.doors[d]["at"] as Vector2).distance_to(c) <= reach:
+	for d in _door_at.size():
+		if _door_at[d].distance_to(c) <= reach:
 			_lock(d, T)
 	# Cowering people near it keep cowering.
 	for id: int in recs.keys():
@@ -222,26 +272,76 @@ func apply_threat(ev: Dictionary) -> void:
 		if int(r["kind"]) == COWER and T >= float(r["t0"]) and T < float(r["last"]) + COWER_S \
 				and Vector2(r["x"], r["s"]).distance_to(c) <= reach:
 			r["last"] = maxf(float(r["last"]), T)
-	# Everyone at the time of the threat, for the range test and the ripple's coarse filter.
+	# Everyone at the time of the threat, for the range test and the ripple's coarse filter: [poses, boxes]. A pose is
+	# computed only when the person's box (where its current trip can be at all) reaches the area that is tested, which
+	# gives exactly the results of computing everyone: the skipped could not pass the distance test. Poses that a change
+	# made during this event could alter are computed before it: alarmed people and the dead (now), anyone whose trip
+	# starts exactly at T (a lock-down at T could keep them in), and a person just before its record is replaced.
+	var n := lp.total()
 	var at_t: Array = []
-	for id in lp.total():
-		at_t.append(pose(id, T))
+	at_t.resize(n)
+	var boxes: Array = []
+	boxes.resize(n)
+	for id in n:
+		var b: Variant = null if brute_force else _reach_box(id, T)
+		boxes[id] = b
+		if b == null:
+			at_t[id] = pose(id, T)
+	var near := [at_t, boxes, T]
 	var queue: Array = []        # [t, id, point, strength]
-	for id in lp.total():
-		var p: Dictionary = at_t[id]
-		if p["visible"] and p["state"] == "calm" and Vector2(p["x"], p["s"]).distance_to(c) <= radius:
-			_alarm(id, T, c, st, queue, at_t)
+	for id in n:
+		var p: Variant = _near_pose(near, id, T, c, radius)
+		if p != null and p["visible"] and p["state"] == "calm" and Vector2(p["x"], p["s"]).distance_to(c) <= radius:
+			_alarm(id, T, c, st, queue, near)
 	while not queue.is_empty():
 		queue.sort_custom(func(m: Array, n: Array) -> bool: return m[0] < n[0] or (m[0] == n[0] and m[1] < n[1]))
 		var q: Array = queue.pop_front()
 		var id: int = q[1]
 		var p := pose(id, float(q[0]))
 		if p["visible"] and p["state"] == "calm" and Vector2(p["x"], p["s"]).distance_to(q[2]) <= RIPPLE_R:
-			_alarm(id, float(q[0]), q[2], int(q[3]), queue, at_t)
+			_alarm(id, float(q[0]), q[2], int(q[3]), queue, near)
+
+
+## Where person id can be during the trip it is on at T: a Rect2 (its pose at T is inside), false when it cannot be
+## outdoors and calm at T (a rider still inside, the dead, no trip), or null when its pose must be computed exactly.
+func _reach_box(id: int, T: float) -> Variant:
+	if recs.has(id):
+		return null
+	if dead.has(id):
+		return false if float(dead[id]["t"]) <= T else null
+	if id >= lp.count:
+		return false            # a rider not yet let out: inside its pod
+	var k := int(floor((T - _ph[id]) / _per[id]))      # = LifePlan.slot_of(id, T)
+	if _box_k[id] != k:
+		var tr := lp.trip(id, k)
+		_box_k[id] = k
+		_box_ts[id] = float(tr["t_start"])
+		_box[id] = false if int(tr["n"]) == 0 else lp.trip_box(tr)
+	if _box[id] is bool:
+		return false
+	if _box_ts[id] == T:
+		return null
+	return _box[id]
+
+
+## Person id's pose at T if its box reaches the disc (c, r), else null (it cannot be within r of c). Memoised in `near`.
+func _near_pose(near: Array, id: int, T: float, c: Vector2, r: float) -> Variant:
+	var at_t: Array = near[0]
+	if at_t[id] != null:
+		return at_t[id]
+	var b: Variant = (near[1] as Array)[id]
+	if b is bool:
+		return null
+	var box: Rect2 = b
+	var q := Vector2(clampf(c.x, box.position.x, box.end.x), clampf(c.y, box.position.y, box.end.y))
+	if q.distance_to(c) > r + 0.05:
+		return null
+	at_t[id] = pose(id, T)
+	return at_t[id]
 
 
 ## Person `id` notices a threat at time T: flinch, then flee to a refuge or cower.
-func _alarm(id: int, T: float, c: Vector2, st: int, queue: Array, at_t: Array) -> void:
+func _alarm(id: int, T: float, c: Vector2, st: int, queue: Array, near: Array) -> void:
 	if dead.has(id) and float(dead[id]["t"]) <= T:
 		return
 	var t_alarm := T + 0.1 + 0.3 * lp.h(id, 5)
@@ -262,9 +362,17 @@ func _alarm(id: int, T: float, c: Vector2, st: int, queue: Array, at_t: Array) -
 		if (r["route"]["pts"] as PackedVector2Array).size() < 2:
 			r["kind"] = COWER
 	if int(r["kind"]) == COWER:
-		r["route"] = _home(p0, int(p["na"]), int(p["nb"]))
+		var spot := _cower_spot(id, p0, T)
+		r["cx"] = spot.x
+		r["cs"] = spot.y
+		r["route"] = _home(spot, int(p["na"]), int(p["nb"]))
 	else:
+		r["cx"] = p0.x
+		r["cs"] = p0.y
 		_lock(door, T)
+	var at_t: Array = near[0]
+	if at_t[id] == null and not ((near[1] as Array)[id] is bool):
+		at_t[id] = pose(id, float(near[2]))      # its pose at the event's time, before its record changes
 	var prev: Variant = recs.get(id)
 	if prev != null:
 		(prev as Dictionary).erase("prev")       # keep two records at most
@@ -272,16 +380,65 @@ func _alarm(id: int, T: float, c: Vector2, st: int, queue: Array, at_t: Array) -
 	recs[id] = r
 	if int(r["kind"]) == FLEE and st - 1 >= 1:
 		var t_flee := float(r["t_flee"])
+		var t_ev := float(near[2])
+		var reach := RIPPLE_R + 2.0 * (t_flee + 0.8 - T) + 1.0     # the largest slack below (delay <= 0.8 s)
 		for b in lp.total():
-			if b == id or at_t.is_empty():
+			if b == id:
 				continue
-			var pb: Dictionary = at_t[b]
+			var pv: Variant = _near_pose(near, b, t_ev, p0, reach)
+			if pv == null:
+				continue
+			var pb: Dictionary = pv
 			if not pb["visible"] or pb["state"] != "calm":
 				continue
 			var delay := 0.3 + 0.5 * lp.h(b, 8)
 			var slack := RIPPLE_R + 2.0 * (t_flee + delay - T) + 1.0
 			if Vector2(pb["x"], pb["s"]).distance_to(p0) <= slack:
 				queue.append([t_flee + delay, b, p0, st - 1])
+
+
+const SPREAD := 0.8           ## m: cowering spots and resting bodies keep at least this far apart (crowd spacing)
+
+
+## Where person `id` cowers when alarmed at p0 at time T: p0, or the nearest of a few deterministic spots round it that is
+## SPREAD m clear of everyone already cowering there (records are made in event order, the same on every machine).
+func _cower_spot(id: int, p0: Vector2, T: float) -> Vector2:
+	var taken := PackedVector2Array()
+	for o: int in recs:
+		var r: Dictionary = recs[o]
+		if o != id and int(r["kind"]) == COWER and T < float(r["last"]) + COWER_S and r.has("cx"):
+			var q := Vector2(r["cx"], r["cs"])
+			if q.distance_to(p0) < SPREAD * 4.0:
+				taken.append(q)
+	return _clear_spot(id, p0, taken, true)
+
+
+## p0 or the first spot on rings of SPREAD round it (start angle from the id) clear of `taken`; on a person's footing
+## (never in a building or a floor cut) when `walkable`.
+func _clear_spot(id: int, p0: Vector2, taken: PackedVector2Array, walkable: bool) -> Vector2:
+	var a0 := lp.h(id, 63) * TAU
+	for ring in 4:
+		var n := 1 if ring == 0 else 6 * ring
+		for k in n:
+			var ang := a0 + TAU * float(k) / float(n)
+			var p := p0 + Vector2(cos(ang), sin(ang)) * (SPREAD * float(ring))
+			var ok := true
+			for q in taken:
+				if q.distance_to(p) < SPREAD:
+					ok = false
+					break
+			if ok and walkable and ring > 0:
+				for r in lp._foot:
+					if r.grow(0.3).has_point(p):
+						ok = false
+						break
+				for r in lp._cuts:
+					if r.has_point(p):
+						ok = false
+						break
+			if ok:
+				return p
+	return p0
 
 
 ## The calm walk to the nearest door after cowering (empty pts if none within reach).
@@ -303,8 +460,18 @@ func kill(id: int, t: float, dir: Vector2, src: int, force: bool = false) -> boo
 	if not p["visible"] and not force:
 		return false
 	var d := dir.normalized() if dir.length_squared() > 1e-8 else Vector2(0.0, 1.0)
-	dead[id] = {"t": t, "dx": d.x, "ds": d.y, "src": src, "x": float(p["x"]), "s": float(p["s"]), "h": float(p["h"]),
-			"heading": float(p["heading"])}
+	# Bodies settle apart: a body that would lie within SPREAD of another rests at the nearest clear spot (kills apply in
+	# the host's event order on every machine, so every machine picks the same; a dead body is not a hit target).
+	var at := Vector2(float(p["x"]), float(p["s"]))
+	var near := PackedVector2Array()
+	for o: int in dead:
+		var q := Vector2(dead[o]["x"], dead[o]["s"])
+		if q.distance_to(at) < SPREAD * 4.0:
+			near.append(q)
+	if not near.is_empty():
+		at = _clear_spot(id, at, near, true)
+	dead[id] = {"t": t, "dx": d.x, "ds": d.y, "src": src, "x": at.x, "s": at.y, "h": float(p["h"]),
+			"heading": float(p["heading"]), "x0": float(p["x"]), "s0": float(p["s"])}
 	by_src[src] = int(by_src.get(src, 0)) + 1
 	if src >= 0:
 		killed_by_players += 1
@@ -347,9 +514,14 @@ func spawn_rider(t: float, p0: Vector2, c: Vector2, st: int) -> int:
 		r["kind"] = FLEE
 		r["door"] = door
 		r["route"] = lp.route(p0, n, -1, door)
+		r["cx"] = p0.x
+		r["cs"] = p0.y
 		_lock(door, t)
 	else:
-		r["route"] = _home(p0, n, -1)
+		var spot := _cower_spot(id, p0, t)
+		r["cx"] = spot.x
+		r["cs"] = spot.y
+		r["route"] = _home(spot, n, -1)
 	recs[id] = r
 	return id
 
@@ -425,7 +597,7 @@ func snapshot(now: float) -> PackedByteArray:
 		buf.put_32(int(r["na"]))
 		buf.put_32(int(r["nb"]))
 		buf.put_32(int(r["door"]))
-		for k: String in ["t0", "t_flee", "x", "s", "h", "face", "last"]:
+		for k: String in ["t0", "t_flee", "x", "s", "h", "face", "last", "cx", "cs"]:
 			buf.put_double(float(r[k]))
 	return buf.data_array
 
@@ -462,12 +634,12 @@ func restore(bytes: PackedByteArray) -> void:
 	for i in buf.get_u16():
 		var id := buf.get_u16()
 		var r := {"kind": buf.get_u8(), "st": buf.get_u8(), "na": buf.get_32(), "nb": buf.get_32(), "door": buf.get_32()}
-		for k: String in ["t0", "t_flee", "x", "s", "h", "face", "last"]:
+		for k: String in ["t0", "t_flee", "x", "s", "h", "face", "last", "cx", "cs"]:
 			r[k] = buf.get_double()
 		var p0 := Vector2(r["x"], r["s"])
 		if int(r["kind"]) == FLEE and int(r["door"]) >= 0:
 			r["route"] = lp.route(p0, int(r["na"]), int(r["nb"]), int(r["door"]))
 		else:
-			r["route"] = _home(p0, int(r["na"]), int(r["nb"]))
+			r["route"] = _home(Vector2(r["cx"], r["cs"]), int(r["na"]), int(r["nb"]))
 		if id < lp.total():
 			recs[id] = r

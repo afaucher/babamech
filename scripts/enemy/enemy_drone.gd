@@ -19,6 +19,8 @@ const STANDOFF_HIGH := 125.0
 const STANDOFF_IDEAL := 105.0
 const ALT_MIN := 13.0
 const ALT_MAX := 17.5
+const CEILING_CAP := 34.0
+const SPOTLIGHT_RANGE := 45.0
 const INVESTIGATE_TIMEOUT := 7.5
 
 var _scan_yaw := 0.0
@@ -30,6 +32,12 @@ var _investigating := false
 var _investigate_pos := Vector3.ZERO
 var _investigate_t := 0.0
 var _beacon_count := 0            ## telemetry / tests: completed beacon pulses
+var _avoid_sign := 1.0            ## committed lateral pillar-avoidance side
+var _avoid_t := 0.0               ## s remaining before flipping _avoid_sign
+var _air_probe_t := 0.0           ## 12.5 Hz throttle for aerial ramp/obstacle ray probes
+var _air_climb_alt := 0.0         ## cached ramp/roof clearance target altitude
+var _air_steer_yaw := 0.0         ## cached lateral sidestep angle (rad)
+var _air_spd_scale := 1.0         ## cached speed damping while climbing a steep lip
 
 var _body_pivot: Node3D
 var _hull_mi: MeshInstance3D
@@ -48,9 +56,23 @@ func net_fields() -> Dictionary:
 		"_scan_yaw": Net.OWNER, "_bank_pitch": Net.OWNER, "_hover_t": Net.LOCAL,
 		"_cruise_alt": Net.SPAWN, "_beacon_cd": Net.PRIVATE, "_investigating": Net.PRIVATE,
 		"_investigate_pos": Net.PRIVATE, "_investigate_t": Net.PRIVATE, "_beacon_count": Net.PRIVATE,
+		"_avoid_sign": Net.PRIVATE, "_avoid_t": Net.PRIVATE, "_air_probe_t": Net.PRIVATE,
+		"_air_climb_alt": Net.PRIVATE, "_air_steer_yaw": Net.PRIVATE, "_air_spd_scale": Net.PRIVATE,
 		"_body_pivot": Net.LOCAL, "_hull_mi": Net.LOCAL, "_optic_mi": Net.LOCAL, "_cone_mi": Net.LOCAL,
 	})
 	return f
+
+
+func _is_aerial_wreck() -> bool:
+	return true
+
+
+func _wreck_ground_radius() -> float:
+	return 0.75
+
+
+func _wreck_body_pivot() -> Node3D:
+	return _body_pivot
 
 
 func configure(type_id: String, id: String, w: CombatWorld, sq: Node = null, r: RingFrame = null,
@@ -75,6 +97,7 @@ func _build_visuals() -> void:
 	_cone_mi.rotation = Vector3(deg_to_rad(36.0), 0.0, 0.0)
 	_cone_mi.material_override = EnemyMeshes.scanner_material()
 	_cone_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_cone_mi.visible = false
 	_body_pivot.add_child(_cone_mi)
 
 
@@ -170,7 +193,20 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 		_has_los = false
 		if ai_state == STATE_TELEGRAPH:
 			_cancel_telegraph("lost_los")
-			ai_state = STATE_FLANK if _investigating else STATE_PATROL
+			ai_state = STATE_FLANK if (_investigating or _hunting) else STATE_PATROL
+		if _hunting:
+			var hunt_pos := Vector3.ZERO
+			var b_entry := _board_entry()
+			if not b_entry.is_empty():
+				hunt_pos = b_entry["pos"] as Vector3
+			elif defend_target_id != "" and squad != null and squad.has_method("live_defend_asset"):
+				var relay := squad.live_defend_asset(defend_target_id) as AssetTarget
+				if relay != null:
+					hunt_pos = _target_aim_center(relay)
+			if hunt_pos != Vector3.ZERO:
+				ai_state = STATE_FLANK
+				_fly_hunt_path(hunt_pos, _cruise_alt, float(_cfg.get("flank_speed", 16.0)) * speed_scale, dt, space)
+				return
 		if _investigating:
 			_step_investigate(dt, space)
 		else:
@@ -181,6 +217,9 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 
 	# Real visual LOS contact!
 	_has_los = true
+	_hunt_t = 0.0
+	if squad != null and squad.has_method("note_deck_activity"):
+		squad.note_deck_activity(spawn_deck)
 	_investigating = false
 	_target_id = target.target_id
 	_last_target_ref = target
@@ -220,6 +259,14 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 func _acquire_visual_target(space: PhysicsDirectSpaceState3D) -> CombatTarget:
 	if world == null:
 		return null
+	var force_scan := (ai_state == STATE_TELEGRAPH) or not _perc_valid or _perc_t <= 0.0 \
+		or (_cached_target != null and (not is_instance_valid(_cached_target) or not _cached_target.is_hittable()))
+	if not force_scan:
+		return _cached_target
+	var t0 := Time.get_ticks_usec() if CombatWorld.profiling else 0
+	var was_valid := _perc_valid
+	_perc_valid = true
+	_perc_t = _perception_interval() if was_valid else _perc_stagger_offset()
 	var eye := eye_world()
 	var eff_range := sight_range if (is_alerted() or _investigating or ai_mode == "telegraph_loop") \
 		else minf(sight_range, float(_cfg.get("patrol_sight_range", 115.0)))
@@ -232,6 +279,8 @@ func _acquire_visual_target(space: PhysicsDirectSpaceState3D) -> CombatTarget:
 			continue
 		if t.team == team or t.team == "":
 			continue
+		if (t is AssetTarget) and not _can_target_asset(t as AssetTarget):
+			continue
 		if squad != null and squad.has_method("on_deck") and not squad.on_deck(t.global_position, spawn_deck):
 			continue
 		var tp := _target_aim_center(t)
@@ -242,9 +291,12 @@ func _acquire_visual_target(space: PhysicsDirectSpaceState3D) -> CombatTarget:
 		flat_to -= up * flat_to.dot(up)
 		var in_fov := is_alerted() or _investigating or ai_mode == "telegraph_loop" \
 			or flat_to.length_squared() < 1e-4 or fwd.dot(flat_to.normalized()) >= fov_cos
-		if in_fov and _check_los(eye, tp, space) and d < best_d:
+		if in_fov and _check_los(eye, tp, space, t) and d < best_d:
 			best = t
 			best_d = d
+	_cached_target = best
+	if CombatWorld.profiling:
+		CombatWorld.prof_add("ai.acquire", Time.get_ticks_usec() - t0)
 	return best
 
 
@@ -274,6 +326,8 @@ func _complete_beacon(target: CombatTarget, target_pos: Vector3) -> void:
 	comms_relayed.emit(self)
 	if squad != null and squad.has_method("relay_beacon"):
 		squad.relay_beacon(_world_pos(), target, target_pos, spawn_deck, BEACON_RADIUS)
+	if squad != null and squad.has_method("request_dropship"):
+		squad.request_dropship(target_pos, spawn_deck)
 
 
 func _step_drone_patrol(dt: float, space: PhysicsDirectSpaceState3D) -> void:
@@ -284,7 +338,9 @@ func _step_drone_patrol(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 	ai_state = STATE_PATROL
 	var goal_arc := _patrol_points[_patrol_idx % _patrol_points.size()]
 	var goal_w := _arc_to_world_alt(goal_arc, _cruise_alt)
-	if _world_pos().distance_to(goal_w) < 7.0:
+	var diff := goal_w - _world_pos()
+	diff -= up * diff.dot(up)
+	if diff.length() < 7.5:
 		_patrol_idx = (_patrol_idx + 1) % _patrol_points.size()
 		goal_w = _arc_to_world_alt(_patrol_points[_patrol_idx], _cruise_alt)
 	_fly_toward(goal_w, _cruise_alt, float(_cfg.get("move_speed", 12.5)) * speed_scale, dt, space)
@@ -303,6 +359,24 @@ func _step_investigate(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 	_fly_toward(_investigate_pos, 15.5, float(_cfg.get("flank_speed", 16.0)) * speed_scale, dt, space)
 
 
+func _fly_hunt_path(goal_w: Vector3, want_alt: float, spd: float, dt: float, space: PhysicsDirectSpaceState3D) -> void:
+	_path_timer -= dt
+	if (_path_points.is_empty() or _path_timer <= 0.0) and squad != null and squad.has_method("find_arc_path"):
+		_path_timer = 2.5
+		_path_points = squad.find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(goal_w), spawn_deck)
+	var steer_goal := goal_w
+	while not _path_points.is_empty():
+		var wp := _arc_to_world_alt(_path_points[0], want_alt)
+		var diff := wp - _world_pos()
+		diff -= up * diff.dot(up)
+		if diff.length() < 9.0:
+			_path_points.pop_front()
+		else:
+			steer_goal = wp
+			break
+	_fly_toward(steer_goal, want_alt, spd, dt, space)
+
+
 func _step_standoff_orbit(dt: float, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
 	var pos := _world_pos()
 	var away := pos - target_pos
@@ -313,6 +387,10 @@ func _step_standoff_orbit(dt: float, target_pos: Vector3, space: PhysicsDirectSp
 	var dir := Vector3.ZERO
 	var spd := float(_cfg.get("flank_speed", 16.0)) * speed_scale
 	var alt := 16.0
+	if wave != "" and dist > 74.0:
+		# Wave drones close cleanly inside active combat range (<= 74 m) before orbiting.
+		_fly_hunt_path(target_pos, 15.0, spd, dt, space)
+		return
 	if dist < STANDOFF_MIN:
 		# Player closed inside 72 m: actively retreat while maintaining angled sightline!
 		dir = (radial * 0.88 + tangent * 0.42).normalized()
@@ -339,18 +417,22 @@ func _fly_toward(goal_w: Vector3, want_alt: float, spd: float, dt: float, space:
 	var pos := _world_pos()
 	if ring != null:
 		up = ring.up_at(pos)
+	if _avoid_t > 0.0:
+		_avoid_t = maxf(_avoid_t - dt, 0.0)
 	var to_g := goal_w - pos
 	to_g -= up * to_g.dot(up)
 	var dir := to_g.normalized() if to_g.length_squared() > 0.25 else (-global_basis.z if is_inside_tree() else Vector3.FORWARD)
-	# 2D arc-space repulsion from tall buildings (> 12.5 m) & pillar cores so drones cruise cleanly over avenues.
+	var cur_alt := ring.height(pos) if ring != null else pos.y
+	# 2D arc-space repulsion from tall buildings (> cur_alt - 1.5 m) & pillar cores so drones cruise cleanly over avenues.
 	var cur_arc := _world_to_arc2(pos)
-	var rep := _tall_obstacle_repulsion(cur_arc)
+	var rep := _tall_obstacle_repulsion(cur_arc, cur_alt)
 	if rep.length_squared() > 1e-4:
 		var rep_w := _arc_dir_to_world(pos, rep)
 		dir = (dir + rep_w * 1.8).normalized()
-	# Keep inside district walls cleanly and flip orbit sign near boundary.
-	if squad != null and squad.get("plan") != null:
-		var ext: Rect2 = (squad.get("plan") as CityPlan).extent.grow(-10.0)
+	# Keep inside own deck's district walls cleanly and flip orbit sign near boundary.
+	var d_plan: CityPlan = squad.deck_plan(spawn_deck) if (squad != null and squad.has_method("deck_plan")) else (squad.get("plan") as CityPlan if squad != null else null)
+	if d_plan != null:
+		var ext: Rect2 = d_plan.extent.grow(-10.0)
 		if not ext.has_point(cur_arc):
 			var center_w := _arc_to_world_alt(ext.get_center(), want_alt)
 			var inward := center_w - pos
@@ -358,32 +440,72 @@ func _fly_toward(goal_w: Vector3, want_alt: float, spd: float, dt: float, space:
 			if inward.length_squared() > 1e-4:
 				dir = (dir * 0.35 + inward.normalized() * 0.95).normalized()
 				_flank_sign = -_flank_sign
-	# Short physics obstacle whisker at current altitude (lift or slide around tall roofs/pillars).
-	var target_alt := clampf(want_alt, ALT_MIN, ALT_MAX)
+	# Ramp / raised-geometry obstacle probing (throttled to 12.5 Hz, reused _ray_query, 0 allocations):
+	# climb cleanly over rising ramps/roofs up to CEILING_CAP; only sidestep full-height pillars/towers!
+	var target_alt := clampf(want_alt, ALT_MIN, CEILING_CAP)
+	var eff_spd := spd
+	var climb_over := false
 	if space != null and world != null and world.use_physics:
-		var look_d := body_radius + 6.0
-		if _ray_blocked(space, pos, pos + dir * look_d):
-			var left_d := dir.rotated(up, 0.85)
-			var right_d := dir.rotated(up, -0.85)
-			if not _ray_blocked(space, pos, pos + left_d * look_d):
-				dir = left_d
-			elif not _ray_blocked(space, pos, pos + right_d * look_d):
-				dir = right_d
-			else:
-				dir = dir.rotated(up, _flank_sign * 1.4)
-				_flank_sign = -_flank_sign
-			target_alt = ALT_MAX
-	var step_h := dir * spd * dt
-	var cur_alt := ring.height(pos) if ring != null else pos.y
-	var d_alt := clampf(target_alt - cur_alt, -6.5 * dt, 6.5 * dt)
+		_air_probe_t -= dt
+		if _air_probe_t <= 0.0:
+			_air_probe_t = 0.08
+			_air_climb_alt = 0.0
+			_air_steer_yaw = 0.0
+			_air_spd_scale = 1.0
+			# 1. Forward-downward slope/ramp ray to detect rising ramp decks or mid-rise roofs ahead.
+			_ray_query.from = pos + dir * 10.0 + up * 4.0
+			_ray_query.to = pos + dir * 10.0 - up * 16.0
+			var rh := space.intersect_ray(_ray_query)
+			if not rh.is_empty():
+				var hit_p: Vector3 = rh["position"]
+				var ground_ahead := ring.height(hit_p) if ring != null else hit_p.y
+				var want_clear := ground_ahead + 5.5
+				if want_clear > target_alt and want_clear <= CEILING_CAP:
+					if not _air_ray_hit(space, pos + up * 7.0, pos + up * 7.0 + dir * 16.0):
+						_air_climb_alt = clampf(want_clear, ALT_MIN, CEILING_CAP)
+			# 2. Forward obstacle ray (16 m) — checks any solid (ramp deck, parapet, building, pillar).
+			_ray_query.from = pos
+			_ray_query.to = pos + dir * 16.0
+			var fh := space.intersect_ray(_ray_query)
+			if not fh.is_empty():
+				var hit_d := pos.distance_to(fh["position"] as Vector3)
+				var high_blocked := _air_ray_hit(space, pos + up * 7.0, pos + up * 7.0 + dir * 16.0)
+				if not high_blocked and cur_alt + 6.0 <= CEILING_CAP:
+					_air_climb_alt = clampf(maxf(_air_climb_alt, cur_alt + 6.5), ALT_MIN, CEILING_CAP)
+					if hit_d < body_radius + 4.5:
+						_air_spd_scale = 0.45
+				else:
+					# Full-height pillar or tower reaching the ceiling: commit lateral avoid side for 1.5 s.
+					if _avoid_t <= 0.0:
+						var left_d := dir.rotated(up, 0.85)
+						var right_d := dir.rotated(up, -0.85)
+						var lb := _air_ray_hit(space, pos, pos + left_d * 14.0)
+						var rb := _air_ray_hit(space, pos, pos + right_d * 14.0)
+						if not lb and rb:
+							_avoid_sign = 1.0
+						elif not rb and lb:
+							_avoid_sign = -1.0
+						else:
+							_avoid_sign = -_avoid_sign
+						_avoid_t = 1.5
+					_air_steer_yaw = _avoid_sign * 0.95
+		if _air_climb_alt > target_alt:
+			target_alt = _air_climb_alt
+			climb_over = true
+		if absf(_air_steer_yaw) > 0.01:
+			dir = dir.rotated(up, _air_steer_yaw)
+		eff_spd *= _air_spd_scale
+	var step_h := dir * eff_spd * dt
+	var climb_rate := 12.5 if (climb_over or target_alt > cur_alt + 1.0) else 6.5
+	var d_alt := clampf(target_alt - cur_alt, -6.5 * dt, climb_rate * dt)
 	var next_pos := pos + step_h + up * d_alt
 	if ring != null:
 		up = ring.up_at(next_pos)
-		var nh := clampf(ring.height(next_pos), ALT_MIN - 1.0, ALT_MAX + 1.5)
+		var nh := clampf(ring.height(next_pos), ALT_MIN - 1.0, CEILING_CAP)
 		var a3 := ring.world_to_arc(next_pos)
 		next_pos = ring.arc_to_world(a3.x, a3.y, nh)
 	else:
-		next_pos.y = clampf(next_pos.y, ALT_MIN - 1.0, ALT_MAX + 1.5)
+		next_pos.y = clampf(next_pos.y, ALT_MIN - 1.0, CEILING_CAP)
 	# Orient forward toward look_target (when orbiting) or flight direction.
 	var want_fwd := dir
 	if not is_nan(look_target.x):
@@ -408,14 +530,20 @@ func _fly_toward(goal_w: Vector3, want_alt: float, spd: float, dt: float, space:
 	_bank_pitch = clampf(-0.22 * move_speed_ratio, -0.30, 0.30)
 
 
-func _tall_obstacle_repulsion(arc2: Vector2) -> Vector2:
+func _air_ray_hit(space: PhysicsDirectSpaceState3D, a: Vector3, b: Vector3) -> bool:
+	_ray_query.from = a
+	_ray_query.to = b
+	return not space.intersect_ray(_ray_query).is_empty()
+
+
+func _tall_obstacle_repulsion(arc2: Vector2, cur_alt: float = ALT_MIN) -> Vector2:
 	if squad == null or not squad.has_method("deck_occluders"):
 		return Vector2.ZERO
 	var occs: Array = squad.deck_occluders(spawn_deck)
 	var rep := Vector2.ZERO
 	var margin := 4.0
 	for item: Dictionary in occs:
-		if float(item["h"]) < ALT_MIN - 0.5:
+		if float(item["h"]) < maxf(ALT_MIN, cur_alt) - 1.5:
 			continue
 		var r: Rect2 = (item["rect"] as Rect2).grow(margin)
 		if not r.has_point(arc2):
@@ -451,8 +579,7 @@ func _update_visuals(dt: float) -> void:
 		var bob := sin(_hover_t * 3.8) * 0.22
 		_body_pivot.position.y = bob
 		_body_pivot.rotation = Vector3(_bank_pitch, _scan_yaw, sin(_hover_t * 2.4) * 0.06)
-	if _cone_mi != null:
-		_cone_mi.visible = not _dead and not heat.shutdown
+	_update_spotlight()
 	if _telegraph_fx != null:
 		if ai_state == STATE_TELEGRAPH and _telegraph_dur > 0.0:
 			var frac := clampf(_telegraph_t / _telegraph_dur, 0.0, 1.0)
@@ -460,15 +587,58 @@ func _update_visuals(dt: float) -> void:
 		else:
 			_telegraph_fx.hide_telegraph()
 			_telegraph_fx.tick_only(dt)
+		_update_reveal_fx(dt)
 	if _status_bar != null:
 		var tag := "OVERHEAT" if heat.shutdown else ("STAGGER" if knock.staggered() else "")
-		_status_bar.refresh(core_hp_ratio(), heat_ratio, is_alerted(), ai_state == STATE_TELEGRAPH, tag, _dead, dt)
+		_status_bar.refresh(core_hp_ratio(), heat_ratio, is_alerted(), ai_state == STATE_TELEGRAPH, tag, _dead, dt, revealed)
+
+
+## Show the belly spotlight ONLY when alerted and locking onto a nearby player mech (<= 45 m), aimed directly at it!
+func _update_spotlight() -> void:
+	if _cone_mi == null or not is_instance_valid(_cone_mi):
+		return
+	var allow := not _dead and not heat.shutdown and is_alerted() and world != null
+	if allow:
+		if puppet:
+			allow = ai_state in [STATE_ENGAGE, STATE_TELEGRAPH, STATE_FLANK]
+		else:
+			allow = _has_los
+	if not allow:
+		_cone_mi.visible = false
+		return
+	var origin := _cone_mi.global_position if _cone_mi.is_inside_tree() else _world_pos()
+	var best_t: CombatTarget = null
+	var best_d2 := SPOTLIGHT_RANGE * SPOTLIGHT_RANGE
+	for t: CombatTarget in world.targets:
+		if not is_instance_valid(t) or t.team != "player" or not t.is_hittable() or not t.is_inside_tree():
+			continue
+		if squad != null and squad.has_method("on_deck") and not squad.on_deck(t.global_position, spawn_deck):
+			continue
+		var tp := _target_aim_center(t)
+		var d2 := origin.distance_squared_to(tp)
+		if d2 <= best_d2:
+			best_d2 = d2
+			best_t = t
+	if best_t == null:
+		_cone_mi.visible = false
+		return
+	_cone_mi.visible = true
+	if _cone_mi.is_inside_tree():
+		var aim_p := _target_aim_center(best_t)
+		var to_p := aim_p - origin
+		var dist := to_p.length()
+		if dist > 0.25:
+			# drone_cone extends from origin along local -Y -> set +Y = -aim_dir so cone points directly at player!
+			var y_ax := -(to_p / dist)
+			var ref := up if absf(y_ax.dot(up)) < 0.95 else Vector3.RIGHT
+			var x_ax := ref.cross(y_ax).normalized()
+			var z_ax := x_ax.cross(y_ax).normalized()
+			var len_scale := clampf(dist / 10.5, 0.85, 2.0)
+			_cone_mi.global_basis = Basis(x_ax, y_ax, z_ax) * Basis.from_scale(Vector3(1.0, len_scale, 1.0))
 
 
 func _spawn_death_debris(_cause: String) -> void:
 	var xf := global_transform if is_inside_tree() else Transform3D(Basis.IDENTITY, _world_pos())
-	# Pop off charred falling core + optic chunk + armor plates so the downed drone crashes onto the deck below!
-	_pop_part("drone_hull", xf, 1.5, 4.0, 3.5, 6.5, 5.5, true)
 	if _optic_mi != null:
 		var oxf := _optic_mi.global_transform if _optic_mi.is_inside_tree() else xf
 		_pop_part("drone_optic", oxf, 4.5, 8.0, 4.0, 7.5, 6.8, false)
@@ -476,19 +646,29 @@ func _spawn_death_debris(_cause: String) -> void:
 
 
 func _on_destroyed_visual() -> void:
-	if _hull_mi != null:
-		_hull_mi.visible = false
-	if _optic_mi != null:
+	if _hull_mi != null and is_instance_valid(_hull_mi):
+		_hull_mi.visible = true
+		_hull_mi.material_override = EnemyMeshes.charred_material()
+	if _optic_mi != null and is_instance_valid(_optic_mi):
 		_optic_mi.visible = false
-	if _cone_mi != null:
+	if _cone_mi != null and is_instance_valid(_cone_mi):
 		_cone_mi.visible = false
 
 
-func _start_wreck_fx() -> void:
-	# Downed aerial drone falls as debris chunks onto the street/roof; don't leave a floating flame mid-air!
-	_clear_flames()
-	_clear_smoke()
-	_wreck_cooled = true
+func _wreck_flame_specs() -> Array[Dictionary]:
+	return [{
+		"parent": _body_pivot if _body_pivot != null else self,
+		"pos": Vector3(0.0, 0.18, 0.0), "dir": Vector3(0.08, 1.0, 0.06),
+		"length": 2.6, "width": 0.68, "speed": 10.0, "count": 5, "root": 0.72, "duration": 6.5, "tag": "drone_core",
+	}]
+
+
+func _core_rupture_pos() -> Vector3:
+	return Vector3(0.0, 0.1, 0.0)
+
+
+func _core_rupture_scale() -> float:
+	return 0.65
 
 
 func _on_reset_visual() -> void:
@@ -498,12 +678,19 @@ func _on_reset_visual() -> void:
 	_investigating = false
 	_investigate_t = 0.0
 	_beacon_count = 0
+	_avoid_t = 0.0
+	_air_probe_t = 0.0
+	_air_climb_alt = 0.0
+	_air_steer_yaw = 0.0
+	_air_spd_scale = 1.0
 	if _hull_mi != null:
 		_hull_mi.visible = true
+		_hull_mi.material_override = null
+		_hull_mi.material_overlay = null
 	if _optic_mi != null:
 		_optic_mi.visible = true
 	if _cone_mi != null:
-		_cone_mi.visible = true
+		_cone_mi.visible = false
 	if _body_pivot != null:
 		_body_pivot.position = Vector3.ZERO
 		_body_pivot.rotation = Vector3.ZERO

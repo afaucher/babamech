@@ -12,8 +12,8 @@ extends RefCounted
 ##    flair_drop, footfall_gain), `pendulums` (how many pendulum springs PilotNeck runs: wattles, ears), `tics` (PilotIdle tic dicts),
 ##    `overrides` ({"moods": {id: {channel: v}}, "poses": {id: {...}}, "reactions": {id: {...}}}, see
 ##    PilotExpressions) and the mapping gains below (brow_turn, lid_skew_gain, jaw_open, ...).
-## 2. `build_pieces()`: create every piece with `add_piece(name, parent, pivot)` and give it a mesh with
-##    `add_mesh(name, k)`, where `k := kit()` is a MeshKit already scaled by `girth`.
+## 2. `build_pieces()`: create every piece with `add_piece(name, parent, pivot)`; give each face / flair piece a mesh
+##    with `add_mesh(name, k)`, where `k := kit()` is a MeshKit already scaled by `girth`.
 ##    COORDINATES: author every mesh AND every pivot in head-rest space, the same space as MechHeadMeshes: origin at the
 ##    neck base, -Z forward, +X the head's right, about 1.2 tall, before girth. The piece's pivot is the point it rotates
 ##    / scales about; `add_mesh` offsets the mesh so it lands where it was authored. Pivots carry no rest rotation, so a
@@ -25,17 +25,26 @@ extends RefCounted
 ##    `set_eye(...)` for each so the standard mapping knows its frame. Jaw: the lower beak / bill / muzzle / mouth plate,
 ##    pivot on the hinge, opening by rotating -X (tip down); put a dark mouth interior in the Skull behind it.
 ##    Flair pieces (comb, ears, husks, warts...) are any other names, listed in `flair_pieces`.
+##    THE BODY IS ONE MESH (user bug 2026-11-22, a neck seam on teammates' heads): NeckLow, NeckHigh and Skull are
+##    joints with NO mesh of their own. Author the whole neck-and-skull surface as ONE loft in a `kit()` (the shell:
+##    every ring from the neck base, at y = 0, up to the crown, `cap_a` false, `cap_b` true; put a ring at each joint
+##    pivot height, and more rings where the neck bends), close its base with `add_neck_plug(shell, base_ring)`, put
+##    the skull's rigid extras (beak / bill / snout / nose, eye discs, the dark mouth: anything that must not bend) in a
+##    second `kit()`, and call `add_body(shell, extras)` once the three joints exist. PilotBody binds the shell's
+##    vertices to the joints by rest height (`body_bend`, `body_skull_blend`) and re-poses it every frame, so the neck
+##    can never open a seam; the extras ride the Skull rigidly. Never sleeve one rigid piece over another for the body.
 ##    REST POSE = STERN: author the brows, lids and mouth as they look at the stern mood (the static head's look). The
 ##    mapping moves pieces by (channel - stern value), so stern is exactly the authored mesh.
-##    LOOK: true low poly, one flat colour per face (MeshKit), no textures, no blend shapes, no skinning. Faces across all
-##    pieces: 150-210.
+##    LOOK: true low poly, one flat colour per face (MeshKit), no textures, no blend shapes; the body's neck faces
+##    stretch with the pose (flat normals re-derived every frame, so they stay faceted). Faces across the body and all
+##    pieces: 150-210 (the collar plug's PLUG_FACES on top).
 ## 3. Optional hooks: `pose_flair(ch, neck, extra)` (move the flair pieces from neck.flair (hinge pitch, roll, radians,
 ##    relative to the head) and neck.pend[i] (pendulum pitch, roll), plus channels), `pose_extra(ch, neck, extra)` (head
 ##    specific channel uses: mouth_curve on a beak, a tongue...), `pose_neck(neck)` (only if the neck is not the standard
 ##    two joints + skull squash, e.g. the pickle's jelly body). Use `set_pose(name, basis, offset)`: the piece's rest
 ##    transform with a basis and an offset (head-rest units, after girth).
 ##    `extra` carries "time" (head seconds), "drift" (0..1 dazed pupil drift), "tremble" (0..1).
-## Flush: every piece mesh gets this head's own copy of the shared matte material (MechMeshes) as surface 0 override;
+## Flush: the body and every piece mesh get this head's own copy of the shared matte material (MechMeshes) as surface 0 override;
 ## `flush` mixes every face colour toward `flush_red` (+) or `flush_pale` (-) by lowering the albedo and adding the
 ## target as flat emission: it reads on dark heads (duck, pickle) as on light ones, faces keep their per-facet shading,
 ## and it works in every renderer. `add_mesh(name, k, false)` keeps a piece out of the flush (pupils). The *_mix gains
@@ -50,9 +59,9 @@ const TINT_LIGHT := 0.7
 
 const STANDARD: Array[String] = ["NeckLow", "NeckHigh", "Skull", "BrowL", "BrowR", "LidL", "LidR", "PupilL", "PupilR",
 	"Jaw"]
-## The neck seal (docs/design/pilot-heads.md section 4): every NeckLow continues below the neck base as a tapered, capped
-## collar plug PLUG_DEPTH deep (head-rest units), so in the cockpit the neck's bottom never shows, however the rig leans
-## (tests/test_pilot_neck_seal.gd). Standalone it reads as a dark collar under the neck.
+## The neck seal (docs/design/pilot-heads.md section 4): the body continues below the neck base as a tapered, capped
+## collar plug PLUG_DEPTH deep (head-rest units, bound to NeckLow), so in the cockpit the neck's bottom never shows,
+## however the rig leans (tests/test_pilot_neck_seal.gd). Standalone it reads as a dark collar under the neck.
 const PLUG_DEPTH := 0.18
 const PLUG_TAPER := 0.72
 const COLLAR := Color(0.21, 0.22, 0.24)
@@ -86,9 +95,16 @@ var flush_pale := Color(0.84, 0.9, 1.0)     ## a full pale flush (afraid)
 var red_mix := 0.6
 var pale_mix := 0.5
 var tint_enabled := true        ## flush on (the lab toggles it to compare)
+## The body's bend (PilotBody.weights_at, head-rest heights): the NeckLow -> NeckHigh weight ramps linearly from
+## body_bend.x to body_bend.y (set it to the whole neck, below any face piece), the skull's squash blends in across
+## body_skull_blend below the Skull's pivot.
+var body_bend := Vector2(0.0, 0.5)
+var body_skull_blend := 0.12
 
 # --- Built ---
 var head: Node3D
+## The one continuous neck-and-skull mesh (add_body).
+var body: PilotBody
 var rest := {}                  ## the stern channel row
 var eyes: Array[Dictionary] = [{}, {}]   ## [left, right]: p, o, across, up, right, upv (head-rest, after girth), travel
 var material: StandardMaterial3D
@@ -108,6 +124,8 @@ func build(h: Node3D) -> void:
 	for n: String in STANDARD:
 		if not _pieces.has(n):
 			push_error("PilotFace %s: missing standard piece %s" % [id, n])
+	if body == null:
+		push_error("PilotFace %s: no body (add_body)" % id)
 
 
 ## Override: build the pieces (see the contract).
@@ -122,9 +140,9 @@ func kit() -> MeshKit:
 	return k
 
 
-## The collar plug under NeckLow's open base ring `base` (an 8-point ring, head-rest space before girth, the first ring
-## of NeckLow's loft) into `k` (NeckLow's kit): a COLLAR-coloured frustum down to a 4-point ring PLUG_DEPTH lower and
-## PLUG_TAPER as wide, capped, sharing the base ring's vertices so the neck is closed (PLUG_FACES triangles).
+## The collar plug under the body shell's open base ring `base` (an 8-point ring, head-rest space before girth, the first
+## ring of the shell's loft) into `k` (the shell kit): a COLLAR-coloured frustum down to a 4-point ring PLUG_DEPTH lower
+## and PLUG_TAPER as wide, capped, sharing the base ring's vertices so the body is closed (PLUG_FACES triangles).
 func add_neck_plug(k: MeshKit, base: PackedVector3Array) -> void:
 	var n := base.size()
 	var c := MeshKit.centroid(base)
@@ -156,6 +174,23 @@ func add_piece(piece_name: String, parent: String, pivot: Vector3) -> Node3D:
 	_pivots[piece_name] = p
 	_rest_xf[piece_name] = n.transform
 	return n
+
+
+## The one body mesh (see the contract): `shell` = the continuous neck-and-skull loft + the collar plug, `extras` = the
+## skull's rigid extras, both authored in head-rest space with `kit()`. Needs NeckLow, NeckHigh and Skull; hangs under
+## the Skull joint (PilotBody), in the flush.
+func add_body(shell: MeshKit, extras: MeshKit) -> PilotBody:
+	var pv: Array[Vector3] = []
+	for n: String in PilotBody.JOINTS:
+		if not _pivots.has(n):
+			push_error("PilotFace %s: add_body needs the joint %s first" % [id, n])
+			return null
+		pv.append(_pivots[n])
+	body = PilotBody.new()
+	body.setup(self, shell, extras, pv, body_bend, body_skull_blend)
+	body.set_surface_override_material(0, material)
+	(_pieces["Skull"] as Node3D).add_child(body)
+	return body
 
 
 ## The mesh of a piece, from a kit authored in head-rest space. `flush` false keeps it out of the colour flush.
@@ -264,6 +299,8 @@ func pose(ch: Dictionary, neck: PilotNeck, extra: Dictionary) -> void:
 	pose_flair(ch, neck, extra)
 	pose_extra(ch, neck, extra)
 	_pose_flush(float(ch["flush"]))
+	if body != null:
+		body.update()
 
 
 ## The standard neck: two joints (pose_neck_joints: the sink / push shift, sealed), the skull squash.

@@ -1,7 +1,8 @@
 class_name CityDistrict
 extends Node3D
 ## One generated urban district standing on a ring deck: the nodes for a CityPlan. Children:
-##   Ground, Ramps, Buildings/Block<n>, Furniture, Ceiling, Strips, Backdrop   meshes (flat palette colours, one lit material)
+##   Ground, Ramps, Buildings/Block<n>, Furniture, Walls, Ceiling, Strips, Backdrop   meshes (flat palette colours, one lit material)
+##   FarmLights                                                         a farm wall's light bars (CityPalette.farm_light_material)
 ##   Props                                                              CityProps: trees, lamps, signs, benches, bins and roof units that fall over
 ##   Collision                                                          a StaticBody3D: deck, sidewalks, building tiers and solids (portico, gable, skylights), ceiling
 ##   LightRig                                                           CityLightRig (optional): every light and the environment
@@ -35,6 +36,7 @@ const BLOCKS_PER_CHUNK := 6             ## finished block meshes instanced per c
 const SHAPE_BUILDINGS_PER_CHUNK := 60   ## buildings whose collision shapes are made per chunk
 const CEILING_BAYS_PER_CHUNK := 2       ## CityStreets.ceiling_range girder bays per chunk (~4-5 ms each)
 const CEILING_LINES_PER_CHUNK := 16     ## and girder lines per chunk (~0.7 ms each)
+const FARM_PARTS := 2                   ## chunks per farm wall side (CityStreets.walls part / parts)
 
 var _queue: Array = []                  ## [label, Callable] chunks of the build in progress, in order
 var _qi := 0                            ## next chunk to run
@@ -57,6 +59,8 @@ var _area := Rect2()                    ## the ceiling's area
 var _ground_geo: CityGeo
 var _ceil_geo: CityGeo
 var _strip_geo: CityGeo
+var _wall_geo: CityGeo
+var _wall_lights: CityGeo
 
 
 func build(params: Dictionary = {}, given: CitySite = null) -> void:
@@ -139,7 +143,8 @@ func _c_plan() -> void:
 	# Walls, backdrop views and the ceiling's area: plan data only, needed now to know how many ceiling chunks to queue.
 	var bounds := plan.boundary()
 	_walled = not bounds.is_empty()
-	# The backdrop: all round an open district, or beyond each window wall that looks out onto it.
+	# The backdrop: all round an open district, or beyond each window wall that looks out onto it (a farm wall is solid:
+	# nothing beyond it, and the ceiling stops at the walls).
 	_open_edge = with_backdrop and not _walled
 	_views.clear()
 	if with_backdrop:
@@ -155,9 +160,10 @@ func _c_plan() -> void:
 	if not plan.ramps.is_empty():
 		_queue.append(["ramps", _c_ramps])
 	var nb := plan.buildings.size()
-	var n := maxi(ceili(float(nb) / BUILDINGS_PER_CHUNK), 1)
+	var batches := _building_batches()
+	var n := batches.size()
 	for j in n:
-		_queue.append(["buildings %d/%d" % [j + 1, n], _c_buildings.bind(j * BUILDINGS_PER_CHUNK, mini((j + 1) * BUILDINGS_PER_CHUNK, nb))])
+		_queue.append(["buildings %d/%d" % [j + 1, n], _c_buildings.bind(batches[j].x, batches[j].y)])
 	if not plan.columns.is_empty():
 		_queue.append(["columns", _c_columns])
 	n = ceili(float(plan.blocks.size()) / BLOCKS_PER_CHUNK)
@@ -165,8 +171,13 @@ func _c_plan() -> void:
 		_queue.append(["blocks %d/%d" % [j + 1, n], _c_blocks.bind(j * BLOCKS_PER_CHUNK, mini((j + 1) * BLOCKS_PER_CHUNK, plan.blocks.size()))])
 	_queue.append(["props", _c_props])
 	_queue.append(["furniture", _c_furniture])
-	if _walled:
-		_queue.append(["walls", _c_walls])
+	# One wall side per chunk, a farm side in FARM_PARTS chunks along its length (its triangles are the heaviest).
+	var wparts: Array = []
+	for w: Dictionary in bounds:
+		for p in (FARM_PARTS if w["kind"] == "farm" else 1):
+			wparts.append([int(w["side"]), p, FARM_PARTS if w["kind"] == "farm" else 1])
+	for i in wparts.size():
+		_queue.append(["walls %d/%d" % [i + 1, wparts.size()], _c_walls.bind(wparts[i][0], wparts[i][1], wparts[i][2], i == 0, i == wparts.size() - 1)])
 	# Ceiling: the girder bays (panels, strip, ribs: heavy) a few per chunk, then the girder lines and openings (light).
 	var steps := CityStreets.ceiling_steps(_area)
 	var bays := (steps - 2) / 2
@@ -188,6 +199,25 @@ func _c_plan() -> void:
 	for j in n:
 		_queue.append(["shapes buildings %d/%d" % [j + 1, n], _col_buildings.bind(j * SHAPE_BUILDINGS_PER_CHUNK, mini((j + 1) * SHAPE_BUILDINGS_PER_CHUNK, nb))])
 	_queue.append(["finish", _c_finish])
+
+
+## The building meshing chunks [a, b) as Vector2i: BUILDINGS_PER_CHUNK buildings each, a downtown tower counting as
+## TOWER_WEIGHT of them (its facade runs up to the ceiling). Without towers: every BUILDINGS_PER_CHUNK, as always.
+const TOWER_WEIGHT := 4
+func _building_batches() -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	var nb := plan.buildings.size()
+	var a := 0
+	var w := 0
+	for i in nb:
+		w += TOWER_WEIGHT if plan.buildings[i]["style"] == "tower" else 1
+		if w >= BUILDINGS_PER_CHUNK:
+			out.append(Vector2i(a, i + 1))
+			a = i + 1
+			w = 0
+	if a < nb or out.is_empty():
+		out.append(Vector2i(a, nb))
+	return out
 
 
 func _c_ground(part: int, last: bool) -> void:
@@ -244,14 +274,32 @@ func _c_furniture() -> void:
 	var furn := CityGeo.new(ring)
 	CityStreets.furniture(furn, plan, props.items)
 	_tris += _add(furn, "Furniture", self)
+	for g in props.find_children("*", "GeometryInstance3D", true, false):
+		(g as GeometryInstance3D).layers = render_layer      # props is not in the tree yet
 	add_child(props)
 	_tris += props.tri_count()
 
 
-func _c_walls() -> void:
-	var wall_geo := CityGeo.new(ring)
-	CityStreets.walls(wall_geo, plan)
-	_tris += _add(wall_geo, "Walls", self, false)
+## Wall `side` into the walls' geos; the last side instances them (Walls, and FarmLights when a farm wall has bars).
+func _c_walls(side: int, part: int, parts: int, first: bool, last: bool) -> void:
+	if first:
+		_wall_geo = CityGeo.new(ring)
+		_wall_lights = CityGeo.new(ring)
+	CityStreets.walls(_wall_geo, plan, _wall_lights, side, part, parts)
+	if not last:
+		return
+	var lights := _wall_lights
+	_tris += _add(_wall_geo, "Walls", self, false)
+	_wall_geo = null
+	_wall_lights = null
+	# A farm wall's light bars: the ceiling strips' emissive material (the rig owns its glow), no Light3D, no shadows.
+	if not lights.is_empty():
+		var bars := lights.instance("FarmLights", CityPalette.farm_light_material())
+		bars.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		bars.layers = render_layer      # before it enters the tree (see _c_finish)
+		add_child(bars)
+		_digest = hash([_digest, lights.verts])
+		_tris += lights.tri_count()
 
 
 ## Ceiling steps a..b-1 (CityStreets.ceiling_range) into the ceiling and strip geos; _c_ceiling_mesh instances them.
@@ -271,6 +319,7 @@ func _c_ceiling_mesh() -> void:
 func _c_strips_mesh() -> void:
 	var strip_node := _strip_geo.instance("Strips", CityPalette.strip_material())
 	strip_node.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	strip_node.layers = render_layer
 	add_child(strip_node)
 	_tris += _strip_geo.tri_count()
 	_strip_geo = null
@@ -287,8 +336,12 @@ func _c_backdrop() -> void:
 
 
 func _c_finish() -> void:
+	# Every mesh got render_layer when it was made, before entering the tree: changing `layers` on an in-tree instance
+	# while lights exist (a rebuild under a stack whose rig keeps its fills) leaves stale light pairings on Forward+
+	# ("indexing did not unpair geometries from light"). This pass only catches a node made without it (a no-op otherwise).
 	for g in find_children("*", "GeometryInstance3D", true, false):
-		(g as GeometryInstance3D).layers = render_layer
+		if (g as GeometryInstance3D).layers != render_layer:
+			(g as GeometryInstance3D).layers = render_layer
 	if with_rig:
 		if rig == null:
 			rig = CityLightRig.new()
@@ -339,6 +392,7 @@ func _add(geo: CityGeo, node_name: String, parent: Node, shadows: bool = true) -
 	var mi := geo.instance(node_name)
 	if not shadows:
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mi.layers = render_layer      # before it enters the tree (see _c_finish)
 	parent.add_child(mi)
 	_digest = hash([_digest, geo.verts, geo.colors])
 	return geo.tri_count()

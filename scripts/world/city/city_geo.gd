@@ -24,6 +24,20 @@ var normals := PackedVector3Array()
 var colors := PackedColorArray()
 var holes: Array[Rect2] = []     ## floor holes (x, s): the ground shapes (g_*) leave out whatever falls inside one
 
+## The geometry audit (tools/geometry_audit/, docs/design/city-geometry-audit.md): while `audit` is true, tag(name)
+## marks where a batch of triangles from one generator starts, and instance() hands the marks to the mesh as meta
+## "audit_tags" [PackedInt32Array first triangle, PackedStringArray name]. Off (always, in the game) a tag() call is one
+## test: no triangle, colour or order changes, so geometry_digest() is the same either way.
+static var audit := false
+var _tag_at := PackedInt32Array()
+var _tag_names := PackedStringArray()
+
+
+func tag(t: String) -> void:
+	if audit:
+		_tag_at.append(verts.size() / 3)
+		_tag_names.append(t)
+
 
 func _init(r: RingFrame = null) -> void:
 	ring = r
@@ -325,4 +339,6 @@ func instance(node_name: String, material: Material = null) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.name = node_name
 	mi.mesh = commit(material)
+	if audit and not _tag_at.is_empty():
+		mi.set_meta("audit_tags", [_tag_at, _tag_names])
 	return mi

@@ -1,29 +1,30 @@
 extends TestCase
-## Exo-Trooper Squads Phase 1 verification (docs/design/enemy-troop-squads.md):
-##   1. Individual trooper kills (t0..t3) reduce active shooters without wiping squad; all 4 dead -> squad destroyed.
-##   2. Splash wipes tightly clustered squads; spread-out anti-cluster formations survive outside blast radius & scatter.
-##   3. Street corner cover selection, peek-to-fire telegraph (1 shot/peeking trooper), and duck-back reload cycle.
-##   4. Rooftop AT squad parapet firing + street squad jump-pack ascent onto adjacent standable low roof (<= 12 m).
-##   5. Host-only mech stomp (3.0 m) crushes troopers underfoot & triggers scatter; client puppet never stomps.
-##   6. Phase 2 hook deploy_from_air() jet-drop descent onto target deck.
-##   7. Co-op EnemySync manifest & puppet_apply round-trip for troop_squad & troop_roof (per-trooper downed state).
+## Exo-Trooper Fireteam Redo verification (docs/design/enemy-troop-squads.md):
+##   1. Variable-sized mixed rifle/AT fireteams (seeded 3-6 ground, 2-4 roof) of individual EnemyTrooper EnemyBase units.
+##   2. Per-trooper seeded jitter (distinct pace, reaction delay, aim error, cooldown mult, idle sway, formation offset).
+##   3. Independent cover selection: troopers in a CityDistrict claim separate cover corners (>= 3.5 m apart).
+##   4. Independent HP / death / morale: killing 1 trooper drops only that trooper & decrements alive_per_deck by 1;
+##      losing >= 50% triggers fireteam.morale_broken & survivor fallback/regroup (overridden by deck hunt-out).
+##   5. Staggered single-shot firing (telegraphs >= 0.55 s rifle / 0.85 s AT, burst == 1), jump-pack ascent, mech stomp crush.
+##   6. Co-op EnemySync replicates every individual trooper puppet and propagates individual kills cleanly.
 
 const DT := 1.0 / 60.0
 
 
 func setup() -> void:
-	await _individual_kills_and_firepower_degradation()
-	await _splash_cluster_wipe_vs_spread_and_scatter()
-	await _corner_cover_peek_fire_duck_and_jump_pack()
-	await _rooftop_at_squad_and_mech_stomp()
-	await _deploy_from_air_and_coop_sync()
+	_variable_composition_and_jitter()
+	await _independent_cover_and_individual_death()
+	await _staggered_single_shots_morale_and_stomp()
+	await _jump_pack_rooftop_ascent()
+	await _coop_enemy_sync_individual_troopers()
 	finish()
 
 
-func _world(physics: bool = false) -> CombatWorld:
+func _world(physics: bool = false, ring: RingFrame = null) -> CombatWorld:
 	var w := CombatWorld.new()
-	w.mission_seed = 55
+	w.mission_seed = 77
 	w.use_physics = physics
+	w.ring = ring
 	add_child(w)
 	return w
 
@@ -41,207 +42,123 @@ func _mock_player(w: CombatWorld, at: Vector3, id: String = "player1") -> Combat
 	return p
 
 
-func _individual_kills_and_firepower_degradation() -> void:
+func _variable_composition_and_jitter() -> void:
+	# 1. Variable-sized seeded fireteam compositions across seeds & weights (3-6 ground, 2-4 roof).
+	var ground_sizes := {}
+	var saw_mixed_at := false
+	for s in range(1, 20):
+		var rng := RandomNumberGenerator.new()
+		rng.seed = s * 1337
+		for w_name: String in ["light", "medium", "heavy"]:
+			var comp := EnemyTroopSquad.roll_composition(rng, w_name, false, 6)
+			check(comp.size() >= 3 and comp.size() <= 6, "ground squad size in 3..6 (%d for %s)" % [comp.size(), w_name])
+			ground_sizes[comp.size()] = true
+			if "trooper_rifle" in comp and "trooper_at" in comp:
+				saw_mixed_at = true
+		var rcomp := EnemyTroopSquad.roll_composition(rng, "medium", true, 4)
+		check(rcomp.size() >= 2 and rcomp.size() <= 4, "roof squad size in 2..4 (%d)" % rcomp.size())
+		eq(rcomp[0], "trooper_at", "rooftop fireteam leader carries AT launcher")
+	check(ground_sizes.size() >= 3, "ground fireteams vary in size across seeds/weights (%s)" % str(ground_sizes.keys()))
+	check(saw_mixed_at, "ground fireteams mix riflemen and AT specialists")
+
+	# 2. Seeded per-trooper jitter produces distinct individuals (never clones in lockstep).
 	var w := _world(false)
 	var sq := EnemySquad.new()
 	add_child(sq)
 	sq.setup(w)
-	var p := _mock_player(w, Vector3(0.0, 0.0, 0.0))
-
-	var tr := EnemyTroopSquad.new()
-	tr.configure("troop_squad", "troops_1", w, sq, null, 1)
-	tr.position = Vector3(0.0, 0.0, -55.0)
-	tr.rotation.y = PI
-	sq.add_enemy(tr)
-	await frames(1)
-
-	eq(tr.alive_trooper_count(), 4, "troop_squad starts with 4 alive troopers")
-	eq(tr.world_spheres().size(), 4, "4 alive hit spheres initially")
-	near(tr.core_hp_ratio(), 1.0, 0.001, "aggregate squad HP ratio = 1.0")
-
-	# Precision kill of t0 does NOT kill the squad!
-	tr.apply_damage(35.0, "t0", p.target_id)
-	check(not tr.destroyed(), "killing t0 does NOT destroy the troop squad")
-	eq(tr.alive_trooper_count(), 3, "3 troopers remain after t0 dies")
-	eq(tr.world_spheres().size(), 3, "dead trooper t0 removed from live world_spheres()")
-	near(tr.core_hp_ratio(), 0.75, 0.01, "aggregate HP drops cleanly to 0.75 (3/4)")
-
-	# Kill t1 and t2 -> 1 survivor left -> verify a single volley only fires 1 shot!
-	tr.apply_damage(35.0, "t1", p.target_id)
-	tr.apply_damage(35.0, "t2", p.target_id)
-	eq(tr.alive_trooper_count(), 1, "1 survivor remains")
-	check(not tr.destroyed(), "squad still alive with 1 survivor")
-
-	var shots := [0]
-	w.fired.connect(func(rec: Dictionary) -> void:
-		if str(rec.get("shooter", "")) == tr.target_id:
-			shots[0] += 1
-	)
-	for _i in 200:
-		w.advance(DT)
-		if shots[0] >= 1 and tr.ai_state == EnemyBase.STATE_COOLDOWN:
-			break
-	eq(shots[0], 1, "1 surviving trooper fires exactly 1 single shot per peek volley")
-
-	# Kill final survivor t3 -> squad destroyed cleanly!
-	var cause := [""]
-	tr.destroyed_enemy.connect(func(_e: EnemyBase, c: String, _at: Vector3) -> void: cause[0] = c)
-	tr.apply_damage(35.0, "t3", p.target_id)
-	check(tr.destroyed() and not tr.is_hittable(), "killing all 4 troopers destroys the squad")
-	eq(cause[0], "squad_wiped", "squad wipe emits squad_wiped cause")
-	eq(tr.world_spheres().size(), 0, "wiped squad has 0 live hit spheres")
-
-	p.queue_free()
+	var paces := {}
+	var reacts := {}
+	var aims := {}
+	var sways := {}
+	for i in 5:
+		var tr := EnemyTrooper.new()
+		tr.configure("trooper_rifle" if i < 4 else "trooper_at", "jit_sq_t%d" % i, w, sq, null, 77 + i)
+		paces[snappedf(tr._pace_mult, 0.001)] = true
+		reacts[snappedf(tr._react_delay, 0.001)] = true
+		aims[snappedf(tr._aim_error_deg, 0.001)] = true
+		sways[snappedf(tr._sway_phase, 0.001)] = true
+		tr.queue_free()
+	check(paces.size() >= 4, "per-trooper pace multipliers vary across squad (%d unique)" % paces.size())
+	check(reacts.size() >= 4, "per-trooper reaction delays vary across squad (%d unique)" % reacts.size())
+	check(aims.size() >= 4, "per-trooper aim error varies across squad (%d unique)" % aims.size())
+	check(sways.size() >= 4, "per-trooper idle sway phases vary across squad (%d unique)" % sways.size())
 	sq.queue_free()
 	w.queue_free()
-	await frames(1)
 
 
-func _splash_cluster_wipe_vs_spread_and_scatter() -> void:
-	var w := _world(false)
-	var sq := EnemySquad.new()
-	add_child(sq)
-	sq.setup(w)
-	var p := _mock_player(w, Vector3(0.0, 0.0, 0.0))
-
-	# A. Tightly clustered squad (1.5 m spacing -> total width 4.5 m): one Mortar blast (R = 8.0 m, dmg = 90) wipes ALL 4!
-	var cl := EnemyTroopSquad.new()
-	cl.configure("troop_squad", "troops_cluster", w, sq, null, 2)
-	cl.position = Vector3(0.0, 0.0, -50.0)
-	cl.rotation.y = PI
-	cl.set_formation_spacing(1.5, 4.0)
-	sq.add_enemy(cl)
-	await frames(1)
-
-	var blast_rec := Combat.fire_record(p.target_id, 1, "mortar", "mortar", Vector3.ZERO, cl.global_position, w.now, 0, 0.0)
-	var mortar_st := {"splash_radius": 8.0, "splash_damage": 90.0, "splash_knockback": 4.0, "splash_lift": 1.0}
-	w.splash(blast_rec, mortar_st, cl.global_position)
-	check(cl.destroyed() and cl.alive_trooper_count() == 0,
-		"one explosive splash blast wipes tightly clustered 4-man squad (alive=%d)" % cl.alive_trooper_count())
-
-	# B. Anti-cluster spread-out squad (5.5 m spacing -> span 16.5 m): small rocket splash (R = 4.2 m) on t0
-	# kills/chunks t0 while distant troopers t2 & t3 survive unscathed AND trigger scatter!
-	var sp_sq := EnemyTroopSquad.new()
-	sp_sq.configure("troop_squad", "troops_spread", w, sq, null, 3)
-	sp_sq.position = Vector3(30.0, 0.0, -60.0)
-	sp_sq.rotation.y = PI
-	sp_sq.set_formation_spacing(5.5, 9.0)
-	sq.add_enemy(sp_sq)
-	await frames(1)
-
-	var t0_pos := sp_sq.trooper_world_pos("t0")
-	var rocket_rec := Combat.fire_record(p.target_id, 1, "rockets", "rockets", Vector3.ZERO, t0_pos, w.now, 1, 0.0)
-	var rocket_st := {"splash_radius": 4.2, "splash_damage": 45.0, "splash_knockback": 2.0, "splash_lift": 0.5}
-	w.splash(rocket_rec, rocket_st, t0_pos)
-	check(not sp_sq.destroyed(), "spread-out squad survives localized rocket splash on edge trooper")
-	check(float(sp_sq.hp["t0"]) <= 0.0, "edge trooper t0 inside blast center killed")
-	check(float(sp_sq.hp["t2"]) > 29.0 and float(sp_sq.hp["t3"]) > 29.0,
-		"distant spread troopers t2 & t3 outside blast radius take 0 splash damage")
-	check(sp_sq._scatter_count >= 1, "surviving spread troopers triggered scatter response on splash hit")
-
-	p.queue_free()
-	sq.queue_free()
-	w.queue_free()
-	await frames(1)
-
-
-func _corner_cover_peek_fire_duck_and_jump_pack() -> void:
+func _independent_cover_and_individual_death() -> void:
 	var city := CityDistrict.new()
 	city.with_rig = false
 	city.with_backdrop = false
 	add_child(city)
-	city.build({"seed": 2.0, "walls": 1.0})
+	city.build({"seed": 3.0, "walls": 1.0})
 	var plan := city.plan
 	var ring := city.ring
 
-	var w := _world(true)
+	var w := _world(true, ring)
 	var sq := EnemySquad.new()
 	add_child(sq)
 	sq.setup(w, plan, ring)
 
-	# 1. Peek -> 3 single shots -> duck cycle on full 4-man street squad.
-	var p_pos := ring.arc_to_world(0.0, -56.0, CityPlan.CURB_H)
-	var p := _mock_player(w, p_pos)
-	var tr := EnemyTroopSquad.new()
-	tr.configure("troop_squad", "troops_peek", w, sq, ring, 4)
-	var tr_pos := ring.arc_to_world(0.0, 0.0, CityPlan.CURB_H)
-	tr.up = ring.up_at(tr_pos)
-	var base_b := ring.basis_at_arc(0.0)
-	tr.transform = Transform3D(Basis(base_b.y, PI) * base_b, tr_pos)  # face -s toward player at s=-56
-	sq.add_enemy(tr)
+	var p := _mock_player(w, ring.arc_to_world(0.0, -55.0, CityPlan.CURB_H))
+	var ft := EnemyTroopSquad.make("cover_sq", 0, ring.arc_to_world(0.0, 12.0, CityPlan.CURB_H), false)
+	sq.register_fireteam(ft)
 
-	var rifle_shots: Array[Vector3] = []
-	var saw_tele := [false]
-	var tele_dur := [0.0]
-	w.fired.connect(func(rec: Dictionary) -> void:
-		if str(rec.get("shooter", "")) == tr.target_id:
-			rifle_shots.append(rec["origin"] as Vector3)
-	)
-	sq.enemy_event.connect(func(kind: String, enemy: Node, pay: Dictionary) -> void:
-		if enemy == tr and kind == "telegraph_started":
-			saw_tele[0] = true
-			tele_dur[0] = float(pay.get("duration", 0.0))
-	)
+	var troopers: Array[EnemyTrooper] = []
+	for i in 4:
+		var tr := EnemyTrooper.new()
+		var kit := "trooper_at" if i == 3 else "trooper_rifle"
+		tr.configure(kit, "cov_t%d" % i, w, sq, ring, 100 + i)
+		tr.spawn_deck = 0
+		tr.attach_fireteam(ft, i)
+		var pos_w := ring.arc_to_world(float(i - 1) * 5.0, 10.0 + float(i % 2) * 4.0, CityPlan.CURB_H)
+		tr.up = ring.up_at(pos_w)
+		tr.transform = Transform3D(ring.basis_at_arc(10.0), pos_w)
+		sq.add_enemy(tr)
+		troopers.append(tr)
 	await frames(2)
 
-	var saw_peek_up := false
-	var saw_duck_after := false
-	for _i in 360:
+	# Alert squad and let each trooper independently pick & claim its own distinct cover corner!
+	troopers[0].hear_fire(p)
+	for _i in 120:
 		w.advance(DT)
-		if tr.ai_state == EnemyBase.STATE_TELEGRAPH and tr._peek_frac > 0.4:
-			saw_peek_up = true
-		if rifle_shots.size() >= 3 and tr._cooldown > 0.0 and tr._peek_frac < 0.2:
-			saw_duck_after = true
-			break
-	check(saw_tele[0] and tele_dur[0] >= 0.59, "troop_squad telegraphs >= 0.60 s before volley (%.2f s)" % tele_dur[0])
-	check(saw_peek_up, "troopers rise/lean out during peek telegraph")
-	check(rifle_shots.size() >= 3, "full 4-man squad fires 3 staggered single shots (got %d)" % rifle_shots.size())
-	if rifle_shots.size() >= 2:
-		check(rifle_shots[0].distance_to(rifle_shots[1]) > 1.0,
-			"each peeking trooper fires from its own distinct world muzzle position")
-	check(saw_duck_after, "troopers duck back behind cover after completing their single-shot volley")
 
-	# 2. Street squad jump-pack ascent onto adjacent standable low roof (<= 12 m) when rushed by player mech!
-	var low_b := {}
-	for b: Dictionary in plan.buildings:
-		if bool(b.get("pillar", false)):
-			continue
-		for t: Dictionary in b.get("tiers", []):
-			if bool(t.get("stand", false)) and str(t.get("kind", "")) != "plant":
-				var y1 := float(t["y1"])
-				var sz: Vector2 = t["size"]
-				if y1 >= 3.0 and y1 <= EnemyTroopSquad.JUMP_MAX_ROOF_H and minf(sz.x, sz.y) >= 6.0:
-					low_b = {"b": b, "t": t}
-					break
-		if not low_b.is_empty():
-			break
-	check(not low_b.is_empty(), "city district has a standable low roof (<= 12 m) for jump-pack test")
-	if not low_b.is_empty():
-		var b: Dictionary = low_b["b"]
-		var t: Dictionary = low_b["t"]
-		var bc: Vector2 = b["center"]
-		var tc := bc + (t["off"] as Vector2)
-		var half: Vector2 = (t["size"] as Vector2) * 0.5
-		var street_arc := Vector2(tc.x - half.x - 4.5, tc.y)
-		var jp := EnemyTroopSquad.new()
-		jp.configure("troop_squad", "troops_jump", w, sq, ring, 5)
-		var jp_w := ring.arc_to_world(street_arc.x, street_arc.y, CityPlan.CURB_H)
-		jp.up = ring.up_at(jp_w)
-		jp.transform = Transform3D(ring.basis_at_arc(street_arc.y), jp_w)
-		sq.add_enemy(jp)
-		await frames(1)
-		# Rush player within 16 m along the street -> triggers 1.4 s jump-pack ascent onto the adjacent roof!
-		p.global_position = ring.arc_to_world(street_arc.x, street_arc.y - 16.0, CityPlan.CURB_H)
-		sq.report_sighting(jp, p, p.global_position + p.up * 4.0)
-		jp.receive_squad_alert(p)
-		for _i in 180:
-			w.advance(DT)
-			if jp._on_roof:
-				break
-		check(jp._jump_count >= 1 and jp._on_roof,
-			"rushed street squad executed jump-pack ascent onto adjacent low roof (jumps=%d, on_roof=%s)" % [jp._jump_count, str(jp._on_roof)])
-		var end_h := ring.height(jp.global_position)
-		check(end_h >= 2.8, "jump-packed squad landed cleanly on roof elevation (h=%.1f m)" % end_h)
+	check(ft.claimed_covers.size() >= 2, "multiple troopers independently claimed cover corners (%d)" % ft.claimed_covers.size())
+	var corners: Array = ft.claimed_covers.values()
+	var min_sep := INF
+	for i in corners.size():
+		for j in range(i + 1, corners.size()):
+			min_sep = minf(min_sep, (corners[i] as Vector3).distance_to(corners[j] as Vector3))
+	if corners.size() >= 2:
+		check(min_sep >= EnemyTroopSquad.COVER_MIN_SEP - 0.1,
+			"claimed cover corners are distinct per trooper (min sep=%.2f m)" % min_sep)
+
+	# Direct projectile Hit + explosive splash Hit both land cleanly on EnemyTrooper without script errors!
+	var direct_h := Hit.new()
+	direct_h.damage = 12.0
+	direct_h.component = "body"
+	direct_h.weapon = "autocannon"
+	direct_h.shooter = "player1"
+	direct_h.point = troopers[1].global_position
+	w.deliver(troopers[1], direct_h)
+	check(not troopers[1].destroyed() and float(troopers[1].hp["body"]) < 20.0,
+		"direct Hit via CombatWorld.deliver damages trooper cleanly without error")
+	var sc_before := troopers[2]._scatter_count
+	var srec := Combat.fire_record("player1", 1, "rockets", "rockets", p.global_position, troopers[2].global_position, w.now, 1)
+	srec["team"] = "player"
+	w.splash(srec, w.stats("rockets"), troopers[2].global_position + Vector3(1.5, 0.0, 0.0))
+	check(not troopers[2].destroyed() and troopers[2]._scatter_count > sc_before,
+		"explosive splash via CombatWorld.splash damages & triggers scatter panic cleanly")
+
+	# Killing ONE trooper must NOT kill the rest and must decrement alive_per_deck by exactly 1!
+	var before := EnemySync.alive_per_deck(sq.enemies, 1)[0]
+	eq(before, 4, "all 4 individual troopers counted in alive_per_deck")
+	troopers[0].apply_damage(35.0, "body", "player1")
+	check(troopers[0].destroyed(), "35 dmg kills individual 30 HP trooper_rifle")
+	eq(EnemySync.alive_per_deck(sq.enemies, 1)[0], 3, "killing 1 trooper leaves 3 alive in alive_per_deck")
+	eq(ft.alive_count(), 3, "fireteam tracks 3 surviving troopers")
+	check(not troopers[1].destroyed() and not troopers[2].destroyed() and not troopers[3].destroyed(),
+		"killing trooper 0 does not harm or destroy squadmates")
 
 	p.queue_free()
 	sq.queue_free()
@@ -250,65 +167,77 @@ func _corner_cover_peek_fire_duck_and_jump_pack() -> void:
 	await frames(1)
 
 
-func _rooftop_at_squad_and_mech_stomp() -> void:
+func _staggered_single_shots_morale_and_stomp() -> void:
 	var w := _world(false)
 	var sq := EnemySquad.new()
 	add_child(sq)
 	sq.setup(w)
+	sq.max_attackers = 4
+
 	var p := _mock_player(w, Vector3(0.0, 0.0, 0.0))
+	var ft := EnemyTroopSquad.make("fire_sq", 0, Vector3(0.0, 0.0, -52.0), false)
+	sq.register_fireteam(ft)
+	var troopers: Array[EnemyTrooper] = []
+	for i in 4:
+		var tr := EnemyTrooper.new()
+		var kit := "trooper_at" if i == 3 else "trooper_rifle"
+		tr.configure(kit, "fire_t%d" % i, w, sq, null, 200 + i)
+		tr.attach_fireteam(ft, i)
+		tr.position = Vector3(float(i) * 5.5 - 8.25, 0.0, -52.0 - float(i % 2) * 3.0)
+		tr.rotation.y = PI
+		sq.add_enemy(tr)
+		troopers.append(tr)
 
-	# 1. Rooftop Anti-Armor Team fires enemy_troop_at at 150 m with >= 0.85 s telegraph.
-	var roof_sq := EnemyTroopSquad.new()
-	roof_sq.configure("troop_roof", "troop_roof_1", w, sq, null, 6)
-	roof_sq.position = Vector3(0.0, 10.0, -150.0)
-	roof_sq.rotation.y = PI
-	sq.add_enemy(roof_sq)
-
-	var at_shots := [0]
-	var at_tele := [0.0]
-	w.fired.connect(func(rec: Dictionary) -> void:
-		if str(rec.get("shooter", "")) == roof_sq.target_id and str(rec.get("weapon", "")) == "enemy_troop_at":
-			at_shots[0] += 1
-	)
+	var tele_times: Array[float] = []
+	var rifle_tele := [INF]
+	var at_tele := [INF]
+	var shots_by := {}
 	sq.enemy_event.connect(func(kind: String, enemy: Node, pay: Dictionary) -> void:
-		if enemy == roof_sq and kind == "telegraph_started":
-			at_tele[0] = float(pay.get("duration", 0.0))
+		if kind == "telegraph_started":
+			tele_times.append(w.now)
+			var w_id := str(pay.get("weapon", ""))
+			var dur := float(pay.get("duration", 0.0))
+			if w_id == "enemy_troop_rifle":
+				rifle_tele[0] = minf(rifle_tele[0], dur)
+			elif w_id == "enemy_troop_at":
+				at_tele[0] = minf(at_tele[0], dur)
+	)
+	w.fired.connect(func(rec: Dictionary) -> void:
+		var sh := str(rec.get("shooter", ""))
+		shots_by[sh] = int(shots_by.get(sh, 0)) + 1
 	)
 	await frames(1)
-	roof_sq.receive_squad_alert(p)
-	for _i in 200:
+
+	# Step 3.5 s: verify staggered telegraphs & single shots from multiple individual troopers!
+	for _i in 210:
 		w.advance(DT)
-		if at_shots[0] >= 2:
-			break
-	check(at_tele[0] >= 0.84, "troop_roof AT telegraph >= 0.85 s (%.2f s)" % at_tele[0])
-	eq(at_shots[0], 2, "troop_roof fires 2 staggered shoulder AT rockets per peek volley")
+	check(tele_times.size() >= 2, "multiple individual troopers telegraphed shots (%d)" % tele_times.size())
+	if tele_times.size() >= 2:
+		check(tele_times[1] - tele_times[0] >= EnemyTroopSquad.FIRE_STAGGER_GAP - 0.02,
+			"trooper fire starts are staggered (dt=%.2f s)" % (tele_times[1] - tele_times[0]))
+	check(rifle_tele[0] >= 0.54 or rifle_tele[0] == INF, "trooper_rifle telegraph >= 0.55 s")
+	check(at_tele[0] >= 0.84 or at_tele[0] == INF, "trooper_at telegraph >= 0.85 s")
+	check(shots_by.size() >= 2, "at least 2 distinct individual troopers fired (%s)" % str(shots_by))
 
-	# 2. Mech Stomp (host-only): moving player walks within 3.0 m of t0 -> crushes t0 immediately & scatters survivors!
-	var st_sq := EnemyTroopSquad.new()
-	st_sq.configure("troop_squad", "troops_stomp", w, sq, null, 7)
-	st_sq.position = Vector3(40.0, 0.0, -20.0)
-	st_sq.ai_mode = "idle"
-	st_sq.set_formation_spacing(5.0, 9.0)
-	sq.add_enemy(st_sq)
+	# Morale check: killing 2 of 4 troopers breaks morale & triggers survivor retreat/displacement!
+	check(not ft.morale_broken, "morale intact with 4/4 troopers alive")
+	troopers[0].apply_damage(40.0, "body", "player1")
+	check(not ft.morale_broken, "morale intact after 1 loss (3/4 alive)")
+	troopers[1].apply_damage(40.0, "body", "player1")
+	check(ft.morale_broken, "morale breaks after >= 50% losses (2/4 down)")
+	check(troopers[2]._retreating or troopers[3]._retreating, "surviving troopers enter retreat/regroup on morale break")
 
-	# Client puppet squad at same spot must NEVER self-stomp!
-	var pup_sq := EnemyTroopSquad.new()
-	pup_sq.configure("troop_squad", "troops_puppet_stomp", w, sq, null, 8)
-	pup_sq.puppet = true
-	pup_sq.position = Vector3(40.0, 0.0, -20.0)
-	pup_sq.set_formation_spacing(5.0, 9.0)
-	sq.add_enemy(pup_sq)
-	await frames(1)
-
-	var t0_spot := st_sq.trooper_world_pos("t0")
-	p.global_position = t0_spot + Vector3(0.0, 0.0, 4.0)
-	w.advance(DT)  # seed _player_prev_pos
-	p.global_position = t0_spot + Vector3(0.0, 0.0, 0.8)  # moving ~192 m/s into 0.8 m of t0
+	# Host-only mech stomp crush: moving mech crushes ONLY the trooper it steps on!
+	var stomp_cause := [""]
+	troopers[2].destroyed_enemy.connect(func(_e: EnemyBase, c: String, _at: Vector3) -> void: stomp_cause[0] = c)
+	var tp2 := troopers[2].global_position
+	p.global_position = tp2 + Vector3(0.0, 0.0, 3.8)
 	w.advance(DT)
-	check(float(st_sq.hp["t0"]) <= 0.0 and st_sq._stomped_count >= 1,
-		"moving player mech stomps trooper t0 underfoot (stomped=%d)" % st_sq._stomped_count)
-	check(st_sq._scatter_count >= 1, "surviving squadmates scatter after a teammate is stomped")
-	eq(pup_sq.alive_trooper_count(), 4, "client puppet squad NEVER runs host mech-stomp logic")
+	p.global_position = tp2 + Vector3(0.0, 0.0, 0.4)
+	w.advance(DT)
+	check(troopers[2].destroyed(), "moving mech crushes individual trooper underfoot")
+	eq(stomp_cause[0], "crushed", "stomp kill emits 'crushed' cause")
+	check(not troopers[3].destroyed(), "stomping trooper 2 does NOT crush distant squadmate trooper 3")
 
 	p.queue_free()
 	sq.queue_free()
@@ -316,7 +245,68 @@ func _rooftop_at_squad_and_mech_stomp() -> void:
 	await frames(1)
 
 
-func _deploy_from_air_and_coop_sync() -> void:
+func _jump_pack_rooftop_ascent() -> void:
+	var city := CityDistrict.new()
+	city.with_rig = false
+	city.with_backdrop = false
+	add_child(city)
+	city.build({"seed": 3.0, "walls": 1.0})
+	var plan := city.plan
+	var ring := city.ring
+
+	var w := _world(false, ring)
+	var sq := EnemySquad.new()
+	add_child(sq)
+	sq.setup(w, plan, ring)
+
+	# Place a ground trooper right next to a low standable roof (<= 12 m) and rush it!
+	var start_arc := Vector2(NAN, NAN)
+	for b: Dictionary in plan.buildings:
+		if bool(b.get("pillar", false)):
+			continue
+		var bc: Vector2 = b["center"]
+		for t: Dictionary in b.get("tiers", []):
+			if not bool(t.get("stand", false)) or str(t.get("kind", "")) == "plant":
+				continue
+			var y1 := float(t["y1"])
+			var sz: Vector2 = t["size"]
+			if y1 >= 3.0 and y1 <= EnemyTrooper.JUMP_MAX_ROOF_H and minf(sz.x, sz.y) >= 5.0:
+				var tc := bc + (t["off"] as Vector2)
+				for side_d: Vector2 in [Vector2(sz.x * 0.5 + 3.5, 0.0), Vector2(-sz.x * 0.5 - 3.5, 0.0),
+						Vector2(0.0, sz.y * 0.5 + 3.5), Vector2(0.0, -sz.y * 0.5 - 3.5)]:
+					var cand := tc + side_d
+					if EnemySpawner.clear_of_buildings(plan, cand, 1.5, 0.0):
+						start_arc = cand
+						break
+			if not is_nan(start_arc.x):
+				break
+		if not is_nan(start_arc.x):
+			break
+	check(not is_nan(start_arc.x), "found standable low roof for jump-pack test")
+	if not is_nan(start_arc.x):
+		var tr := EnemyTrooper.new()
+		tr.configure("trooper_rifle", "jump_t0", w, sq, ring, 301)
+		var pos_w := ring.arc_to_world(start_arc.x, start_arc.y, CityPlan.CURB_H)
+		tr.up = ring.up_at(pos_w)
+		tr.transform = Transform3D(ring.basis_at_arc(start_arc.y), pos_w)
+		sq.add_enemy(tr)
+		var p := _mock_player(w, ring.arc_to_world(start_arc.x, start_arc.y - 12.0, CityPlan.CURB_H))
+		await frames(1)
+		tr._trigger_scatter_or_jump(p.global_position, null)
+		check(tr._jump_active, "individual trooper initiated jump-pack ascent onto adjacent low roof")
+		for _i in 100:
+			w.advance(DT)
+		check(tr.on_roof and not tr._jump_active, "trooper landed cleanly on rooftop parapet")
+		check(ring.height(tr.global_position) >= 2.8, "trooper elevated onto roof (h=%.1f m)" % ring.height(tr.global_position))
+		p.queue_free()
+
+	sq.queue_free()
+	w.queue_free()
+	city.queue_free()
+	await frames(1)
+
+
+func _coop_enemy_sync_individual_troopers() -> void:
 	var hw := _world(false)
 	var hsq := EnemySquad.new()
 	add_child(hsq)
@@ -325,37 +315,10 @@ func _deploy_from_air_and_coop_sync() -> void:
 	hsync.world = hw
 	hsync.squad = hsq
 	hsync.hosting = true
+	hsq.enemy_spawned.connect(hsync._on_spawned)
+	hsq.enemy_removed.connect(hsync._on_removed)
+	hsq.enemy_event.connect(hsync._on_enemy_event)
 	add_child(hsync)
-
-	# 1. deploy_from_air() descends cleanly over 0.8 s onto landing_pos and enters STATE_ENGAGE.
-	var drop_sq := EnemyTroopSquad.new()
-	drop_sq.configure("troop_squad", "sync_troop_drop", hw, hsq, null, 9)
-	hsq.add_enemy(drop_sq)
-	await frames(1)
-	var land_pt := Vector3(12.0, 0.0, -40.0)
-	drop_sq.deploy_from_air(land_pt, 1)
-	check(drop_sq._drop_active and drop_sq.global_position.y > 9.0, "deploy_from_air starts squad 11 m aloft")
-	eq(drop_sq.spawn_deck, 1, "deploy_from_air assigns target spawn_deck")
-	for _i in 65:
-		hw.advance(DT)
-	check(not drop_sq._drop_active and drop_sq.global_position.distance_to(land_pt) < 0.25,
-		"deploy_from_air lands cleanly at landing_pos in 0.8 s (err=%.2f m)" % drop_sq.global_position.distance_to(land_pt))
-
-	# 2. Co-op EnemySync manifest + puppet_apply round-trip (individual trooper HP + downed visuals on client).
-	var roof_e := EnemyTroopSquad.new()
-	roof_e.configure("troop_roof", "sync_troop_roof", hw, hsq, null, 10)
-	roof_e.position = Vector3(-16.0, 9.0, -42.0)
-	hsq.add_enemy(roof_e)
-	hsync._adopt(drop_sq)
-	hsync._adopt(roof_e)
-	await frames(1)
-
-	# Kill t0 and t2 on host BEFORE streaming puppet_state to client!
-	drop_sq.apply_damage(40.0, "t0", "player1")
-	drop_sq.apply_damage(40.0, "t2", "player1")
-
-	var man := hsync.manifest()
-	eq(man.size(), 2, "EnemySync manifest contains both troop_squad and troop_roof")
 
 	var cw := _world(false)
 	var csq := EnemySquad.new()
@@ -366,20 +329,42 @@ func _deploy_from_air_and_coop_sync() -> void:
 	csync.squad = csq
 	csync.hosting = false
 	add_child(csync)
-	for en in man:
-		csync._spawn_puppet(en)
+
+	# Spawn a 4-man mixed fireteam on host; verify manifest spawns 4 distinct puppets on client!
+	var ft := EnemyTroopSquad.make("net_sq", 0, Vector3(0.0, 0.0, -40.0), false)
+	hsq.register_fireteam(ft)
+	var host_troopers: Array[EnemyTrooper] = []
+	for i in 4:
+		var tr := EnemyTrooper.new()
+		var kit := "trooper_at" if i == 3 else "trooper_rifle"
+		tr.configure(kit, "net_t%d" % i, hw, hsq, null, 400 + i)
+		tr.attach_fireteam(ft, i)
+		tr.position = Vector3(float(i) * 5.0 - 7.5, 0.0, -40.0)
+		hsq.add_enemy(tr)
+		host_troopers.append(tr)
 	await frames(1)
 
-	eq(csync.by_net.size(), 2, "client EnemySync spawned both troop squad puppets")
-	var pup_drop := csync.by_net[drop_sq.net_id] as EnemyTroopSquad
-	check(pup_drop != null and pup_drop.puppet, "spawned troop_squad is a client puppet")
-	pup_drop.puppet_apply(drop_sq.puppet_state())
-	pup_drop.puppet_tick(DT)
-	eq(pup_drop.alive_trooper_count(), 2, "client puppet mirrors exact surviving trooper count (2/4)")
-	check(bool(pup_drop._trooper_down.get("t0", false)) and bool(pup_drop._trooper_down.get("t2", false)),
-		"client puppet knocks down killed troopers t0 and t2")
-	check(not bool(pup_drop._trooper_down.get("t1", false)) and not bool(pup_drop._trooper_down.get("t3", false)),
-		"client puppet keeps surviving troopers t1 and t3 upright")
+	var man := hsync.manifest()
+	eq(man.size(), 4, "EnemySync manifest contains all 4 individual troopers")
+	for entry in man:
+		csync._spawn_puppet(entry)
+	await frames(1)
+	eq(csync.by_net.size(), 4, "client spawned 4 independent trooper puppets")
+
+	# Kill trooper 1 on host -> replay discrete events -> only puppet 1 dies on client!
+	hsync._queue.clear()
+	host_troopers[1].apply_damage(40.0, "body", "player1")
+	var q: Array = hsync._queue.duplicate()
+	hsync._queue.clear()
+	for it: Array in q:
+		csync._apply_item(str(it[0]), int(it[1]), it[2])
+	await frames(1)
+
+	var dead_id := host_troopers[1].net_id
+	var live_id := host_troopers[0].net_id
+	check((csync.by_net[dead_id] as EnemyBase).destroyed(), "killed trooper puppet is destroyed on client")
+	check(not (csync.by_net[live_id] as EnemyBase).destroyed(), "surviving squadmate puppet remains alive on client")
+	eq(EnemySync.alive_per_deck(csq.enemies, 1)[0], 3, "client alive_per_deck reflects 3 surviving troopers")
 
 	csync.queue_free()
 	csq.queue_free()

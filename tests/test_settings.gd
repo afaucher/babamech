@@ -64,6 +64,14 @@ func setup() -> void:
 	GameSettings.set_value("accent", "plaid")
 	eq(str(GameSettings.load_settings()["accent"]), "orange", "an unknown accent falls back to orange")
 
+	# Crew option friendly fire: on by default, persists.
+	eq(GameSettings.DEFAULTS["friendly_fire"], true, "friendly fire defaults to on")
+	eq(GameSettings.SECTIONS["friendly_fire"], "crew", "friendly fire lives in the crew section")
+	GameSettings.set_value("friendly_fire", false)
+	eq(GameSettings.load_settings()["friendly_fire"], false, "friendly fire off round-trips")
+	GameSettings.set_value("friendly_fire", "maybe")
+	eq(GameSettings.load_settings()["friendly_fire"], true, "a broken friendly fire value falls back to on")
+
 	# The settings screen.
 	GameSettings.save_settings(GameSettings.DEFAULTS.duplicate(true))
 	var fe := (load(Boot.MENU_SCENE) as PackedScene).instantiate() as FrontEnd
@@ -112,6 +120,20 @@ func setup() -> void:
 	fe.btn_back.pressed.emit()
 	await frames(1)
 	eq(fe.screen, "main", "Back returns to the main menu")
+	# The hangar's friendly fire box (solo): on from the settings, editable; unticking saves it and sets the session's
+	# option, and the solo launch carries it.
+	fe.show_screen("hangar")
+	await frames(1)
+	check(fe.ff_check != null and fe.ff_check.button_pressed and not fe.ff_check.disabled, "solo: friendly fire on, editable")
+	fe.ff_check.button_pressed = false
+	await frames(1)
+	eq(GameSettings.load_settings()["friendly_fire"], false, "unticking friendly fire saves it")
+	eq(Session.friendly_fire, false, "and sets the session's crew option")
+	eq(fe.ff_check.text, "Off", "the box says Off")
+	fe.ff_check.button_pressed = true
+	await frames(1)
+	eq(GameSettings.load_settings()["friendly_fire"], true, "ticking it again saves it")
+	eq(Session.friendly_fire, true, "and the session follows")
 	fe.queue_free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(PATH))
 	finish()

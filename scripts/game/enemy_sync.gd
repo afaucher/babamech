@@ -7,7 +7,7 @@ extends Node
 ## the entry deck) and runs every enemy's AI, as solo. Each enemy gets a net id (`EnemyBase.net_id`, its number in the
 ## manifest) and `spawn_deck`. This node then
 ##   - answers a client's "enemy.req" with the MANIFEST "enemy.spawn" {e: [entry...]} (entry = [n, id, type, deck, xform,
-##     dead, broken components, hp fractions]), so a client that loads late still gets every enemy as it is now;
+##     dead, broken components, hp fractions, wave id ("" = garrison; plan mode)]), so a client that loads late still gets every enemy as it is now;
 ##   - streams pose / AI state / aim / heat / HP (Session.enemies.send, NetWire.T_ENEMY): ACTIVE_RATE while an enemy's
 ##     sample changed since the last one sent, IDLE_RATE as a keep-alive, nothing once it is dead;
 ##   - sends DISCRETE CHANGES as one reliable "enemy.ev" {l: [[kind, n, data]...]} per physics frame (in order):
@@ -148,14 +148,14 @@ func _on_removed(e: EnemyBase) -> void:
 		_queue.append(["gone", e.net_id, {}])
 
 
-## A manifest entry: [n, id, type, deck, transform, dead, broken components, hp fractions].
+## A manifest entry: [n, id, type, deck, transform, dead, broken components, hp fractions, wave].
 func entry_of(e: EnemyBase) -> Array:
 	var broken: Array = []
 	for c in e.comp_order():
 		if float(e.hp.get(c, 1.0)) <= 0.0:
 			broken.append(c)
 	return [e.net_id, e.target_id, e.enemy_type, e.spawn_deck, e.global_transform if e.is_inside_tree() else e.transform,
-		e.destroyed(), broken, e.puppet_state()["hp"]]
+		e.destroyed(), broken, e.puppet_state()["hp"], e.wave]
 
 
 func manifest() -> Array:
@@ -318,6 +318,8 @@ func _spawn_puppet(en: Variant) -> void:
 	e.puppet = true
 	e.net_id = n
 	e.spawn_deck = deck
+	if a.size() > 8:
+		e.wave = str(a[8]).left(32)   # the wave it arrived with (plan mode; the HUD / tests read it)
 	e.up = r.up_at(xf.origin) if r != null else Vector3.UP
 	e.transform = xf
 	squad.add_enemy(e)

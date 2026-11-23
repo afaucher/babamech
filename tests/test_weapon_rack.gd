@@ -293,6 +293,7 @@ func _unusable() -> void:
 	rack.slot_changed.connect(func(n: int) -> void: changed.append(n))
 	for s: Dictionary in rack.slots():
 		check(s.has("usable"), "slots() has `usable` (slot %d)" % int(s["slot"]))
+		check(s.has("hint") and str(s["hint"]) == "", "slots() has `hint`, \"\" for weapons and passives (slot %d)" % int(s["slot"]))
 	check(bool(rack.slots()[0]["usable"]) and bool(rack.slots()[4]["usable"]), "an intact weapon / equipment is usable")
 	# (a) Destroyed hardpoint: slot 1 (autocannon).
 	broken["side_l"] = true
@@ -372,7 +373,7 @@ func _unusable() -> void:
 	eq(shots.size(), 0, "every weapon unusable: LMB fires nothing")
 	eq(rack.enabled.slice(0, 4), [false, false, false, false], "all four deselected")
 	check(not rack.designator_on(), "no track")
-	# Equipment rules unchanged: the ammo bin stays enabled; destroyed it reports DESTROYED / unusable.
+	# Passive equipment rules unchanged: the ammo bin stays enabled; destroyed it reports DESTROYED / unusable.
 	check(rack.enabled[4] and bool(rack.slots()[4]["enabled"]), "the equipment slot stays enabled")
 	broken["back"] = true
 	var s5: Dictionary = rack.slots()[4]
@@ -389,23 +390,22 @@ func _test_drive() -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	add_child(td)
 	await frames(10)
-	if not check(td.combat != null and td.combat.rack != null, "the test drive has a weapon rack"):
-		td.queue_free()
-		return
+	if check(td.combat != null and td.combat.rack != null, "the test drive has a weapon rack"):
+		await _drive_fire(td)
+	td.queue_free()
+	await frames(2)      # gone before the next section builds a drive (one AmbientLife, no props scanning a freed mech)
+
+
+func _drive_fire(td: TestDrive) -> void:
 	var rack := td.combat.rack
 	eq(rack.slot_count(), 5, "five slots on the strider")
 	check(td.combat.enemies.size() >= 3, "test drive spawns seeded enemies (%d)" % td.combat.enemies.size())
 	check(td.combat.player_target != null and td.combat.squad != null, "test drive binds player_target and enemy squad")
-	var ring := td.city.ring
-	check(absf(ring.height(td.combat.enemies[0].global_position)) < 1.5, "%s stands on the avenue ahead (h %.2f)"
-		% [td.combat.enemies[0].name, ring.height(td.combat.enemies[0].global_position)])
-	# The target: the nearest enemy the laser's muzzle really sees (CombatWorld.first_hit meets that enemy first) within
-	# the laser's range. Not blindly enemies[0]: in the stack (the default city since W2) the first spawn can be a deck
-	# below, behind the deck floor (2026-11-22: strider_01 77 m away, 27 m down, a StaticBody between), and the test must
-	# not depend on spawn order.
-	var e := _visible_enemy(td, rack)
-	if not check(e != null, "an enemy in line of sight of the rack within laser range"):
-		td.queue_free()
+	# The target: a hostile dummy of the test's own, placed where slot 1's muzzle really sees it (CombatWorld.first_hit
+	# meets it first) within the laser's range, so the section depends neither on the spawner's order nor on which enemy
+	# types it places (2026-11-22: enemies[0] became a rooftop turret, before that a strider a deck below).
+	var e := _place_target(td, rack)
+	if not check(e != null, "a hostile target in line of sight of the rack within laser range"):
 		return
 	td.drive_override = true
 	td.mech.move_input = Vector2.ZERO
@@ -413,42 +413,57 @@ func _test_drive() -> void:
 	for s in rack.slots():
 		built = built or bool(s["built"])
 	if not check(built, "the loadout has a built weapon"):
-		td.queue_free()
 		return
 	rack.read_input = false
 	rack.manual_aim = true
 	rack.aim_point = (e.world_spheres()[0]["center"] as Vector3)
 	var hp0 := e.total_hp()
 	var heat0 := td.mech.heat
+	var hurt := false             # the dummy resets itself after a kill: note the damage while it happens
 	rack.set_trigger(true)
 	var peak := 0.0
 	for i in 150:
-		if is_instance_valid(e) and not e.destroyed():
+		if not e.destroyed():
 			rack.aim_point = (e.world_spheres()[0]["center"] as Vector3)
 		await frames(1)
+		hurt = hurt or e.destroyed() or e.total_hp() < hp0
 		peak = maxf(peak, td.mech.heat)
 	rack.set_trigger(false)
-	var damaged_or_dead := (not is_instance_valid(e)) or e.destroyed() or e.total_hp() < hp0
-	check(damaged_or_dead, "holding the trigger damaged or destroyed the vanguard enemy")
+	check(hurt, "holding the trigger damaged or destroyed the target")
 	check(peak > heat0 + 5.0, "firing heated the mech (peak %.1f)" % peak)
-	td.queue_free()
-	await frames(1)
 
 
-## The nearest enemy whose first hit point from slot 1's muzzle (the laser) is the enemy itself, within the laser's range.
-func _visible_enemy(td: TestDrive, rack: WeaponRack) -> CombatTarget:
+## A TargetDummy on team "enemy" standing on the mech's floor ahead of it (or to a side), at the first candidate spot
+## where slot 1's muzzle sees it (first_hit from the muzzle meets the dummy first) within the laser's range; else null.
+func _place_target(td: TestDrive, rack: WeaponRack) -> TargetDummy:
+	var world := td.combat.world
+	var d := TargetDummy.new()
+	d.target_id = "test_dummy"
+	d.team = "enemy"
+	var up := td.mech.up()
+	var fwd := td.mech.forward()
+	fwd = (fwd - up * fwd.dot(up)).normalized()
+	var side := fwd.cross(up).normalized()
+	d.up = up
+	world.add_child(d)
+	world.register(d)
+	var reach := float(MechCatalog.weapon("laser")["range"])
 	var from := rack.muzzle(1)
-	var best: CombatTarget = null
-	var best_d := float(MechCatalog.weapon("laser")["range"])
-	for en: CombatTarget in td.combat.enemies:
-		if not is_instance_valid(en) or en.destroyed():
-			continue
-		var c: Vector3 = en.world_spheres()[0]["center"]
-		var d := from.distance_to(c)
-		if d > best_d:
-			continue
-		var h := td.combat.world.first_hit(from, c, 0.0, rack.shooter, [td.combat.player_target.target_id])
-		if not h.is_empty() and h.get("target") == en:
-			best = en
-			best_d = d
-	return best
+	var feet := td.mech.global_position
+	for dist: float in [25.0, 35.0, 18.0, 50.0]:
+		for lat: float in [0.0, -6.0, 6.0]:
+			for dir: Vector3 in [fwd, side, -side, -fwd]:
+				var lat_axis := dir.cross(up).normalized()
+				d.global_position = feet + dir * dist + lat_axis * lat
+				d.global_basis = Basis.looking_at(dir, up)      # -Z away, so the visor (+Z) faces the mech
+				var c: Vector3 = d.world_spheres()[0]["center"]
+				if from.distance_to(c) > reach:
+					continue
+				var h := world.first_hit(from, c, 0.0, rack.shooter, [td.combat.player_target.target_id])
+				if not h.is_empty() and h.get("target") == d:
+					d.home = d.global_position
+					d.ground_y = d.home.dot(up)
+					return d
+	world.unregister(d)
+	d.queue_free()
+	return null

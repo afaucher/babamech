@@ -1,0 +1,21 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-22T20:02:13	v1_crystal_spike_s4242.png	flux3_klein_t2i	4242	1024x576			6.18	v1_crystal_spike_prompt.txt
+2026-11-22T20:02:17	v2_brain_dome_s4242.png	flux3_klein_t2i	4242	1024x576			3.3	v2_brain_dome_prompt.txt
+2026-11-22T20:02:20	v3_halo_ring_s4242.png	flux3_klein_t2i	4242	1024x576			3.27	v3_halo_ring_prompt.txt
+2026-11-22T20:02:24	v4_eye_stalk_s4242.png	flux3_klein_t2i	4242	1024x576			3.37	v4_eye_stalk_prompt.txt
+2026-11-22T20:02:28	v5_bloom_s4242.png	flux3_klein_t2i	4242	1024x576			3.3	v5_bloom_prompt.txt
+2026-11-22T20:02:31	v6_spine_fins_s4242.png	flux3_klein_t2i	4242	1024x576			3.27	v6_spine_fins_prompt.txt
+2026-11-22T20:02:35	v7_cowl_s4242.png	flux3_klein_t2i	4242	1024x576			3.7	v7_cowl_prompt.txt
+2026-11-22T20:02:39	v8_leech_clamp_s4242.png	flux3_klein_t2i	4242	1024x576			3.69	v8_leech_clamp_prompt.txt
+2026-11-22T20:02:42	v9_hex_lantern_s4242.png	flux3_klein_t2i	4242	1024x576			3.3	v9_hex_lantern_prompt.txt
+2026-11-22T20:03:10	v1_crystal_spike_s4242.png	flux3_klein_t2i	4242	1024x576			3.8	v1_crystal_spike_prompt.txt
+2026-11-22T20:03:14	v8_leech_clamp_s4242.png	flux3_klein_t2i	4242	1024x576			3.71	v8_leech_clamp_prompt.txt
+2026-11-22T20:03:29	v1_crystal_spike_s4242.png	flux3_klein_t2i	4242	1024x576			3.75	v1_crystal_spike_prompt.txt
+2026-11-22T20:03:33	v2_brain_dome_s4242.png	flux3_klein_t2i	4242	1024x576			3.68	v2_brain_dome_prompt.txt
+2026-11-22T20:03:37	v3_halo_ring_s4242.png	flux3_klein_t2i	4242	1024x576			3.72	v3_halo_ring_prompt.txt
+2026-11-22T20:03:41	v4_eye_stalk_s4242.png	flux3_klein_t2i	4242	1024x576			3.7	v4_eye_stalk_prompt.txt
+2026-11-22T20:03:45	v5_bloom_s4242.png	flux3_klein_t2i	4242	1024x576			3.69	v5_bloom_prompt.txt
+2026-11-22T20:03:49	v6_spine_fins_s4242.png	flux3_klein_t2i	4242	1024x576			3.68	v6_spine_fins_prompt.txt
+2026-11-22T20:03:53	v7_cowl_s4242.png	flux3_klein_t2i	4242	1024x576			3.7	v7_cowl_prompt.txt
+2026-11-22T20:03:57	v8_leech_clamp_s4242.png	flux3_klein_t2i	4242	1024x576			3.68	v8_leech_clamp_prompt.txt
+2026-11-22T20:04:01	v9_hex_lantern_s4242.png	flux3_klein_t2i	4242	1024x576			3.7	v9_hex_lantern_prompt.txt

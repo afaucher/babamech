@@ -57,6 +57,22 @@ func setup() -> void:
 	if prep != null and alert != null:
 		var dm := absf(float(ShotCheck.stats(prep, stage)["mean"]) - float(ShotCheck.stats(alert, stage)["mean"]))
 		check(dm > 0.02, "the bay's alert lighting differs from prep (mean luminance delta %.3f)" % dm)
+	# Crews of two and four along the bay wall, in prep and in alert (clamps closed): every mech in its alcove, in view.
+	var heads := MechCatalog.HEAD_ORDER
+	for n: int in [2, 4]:
+		var crew: Array = []
+		for i in n:
+			crew.append({"head": heads[i % heads.size()], "name": "Pilot %d" % (i + 1), "accent": MechAccent.ORDER[(i + 1) % MechAccent.ORDER.size()]})
+		fe.stage.set_alert(false)
+		fe.stage.show_mechs(crew, true)
+		await frames(90)
+		var cp := await sc.grab("menu_hangar_crew%d_prep" % n)
+		sc.not_blank(cp, stage, "hangar crew %d prep" % n)
+		fe.stage.set_alert(true)
+		await frames(90)
+		var ca := await sc.grab("menu_hangar_crew%d_alert" % n)
+		sc.not_blank(ca, stage, "hangar crew %d alert" % n)
+	fe.stage.set_alert(false)
 	fe.queue_free()
 	await frames(2)
 

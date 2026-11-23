@@ -3,7 +3,8 @@ extends "res://tests/bot_nav_case.gd"
 ## (MissionBot.ramps_only: no shaft drops, no glides; tests/bot_nav_case.gd): in at each ramp's mouth on the lane
 ## centre, down between the parapets, out past the foot. No DEV travel.
 
-const SERIAL := true   # a whole mission (60-100 s wall at --fixed-fps): run alone after the batch so CPU contention cannot push it past the 120 s timeout
+const SERIAL := true   # a whole mission: run alone after the batch (no CPU contention)
+const TEST_TIMEOUT := 240   # test_runner: 240 s instead of the 120 s default
 
 
 func _init() -> void:

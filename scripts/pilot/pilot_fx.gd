@@ -299,30 +299,28 @@ func _measure() -> void:
 			continue
 		all = m.get_aabb() if first else all.merge(m.get_aabb())
 		first = false
-	var smi: MeshInstance3D = skull.get_node_or_null("Skull_mesh") if skull != null else null
-	if smi != null and smi.mesh != null:
-		var b := smi.mesh.get_aabb()
+	var body := head.face.body
+	if skull != null and body != null:
+		var b := body.skull_box()   # the part of the one body mesh the Skull carries alone (with its extras)
 		crown = Vector3(0.0, b.end.y, b.get_center().z)
 		skull_half = b.size * 0.5
 		skull_centre = b.get_center()
-		chip_colour = _main_colour(smi.mesh)
+		chip_colour = _main_colour(body.skull_colours())
 	if not first:
 		top = Vector3(0.0, all.end.y, crown.z)
 
 
-static func _main_colour(m: Mesh) -> Color:
+static func _main_colour(cols: PackedColorArray) -> Color:
 	var votes := {}
 	var best := Color(0.9, 0.9, 0.85)
 	var most := 0
-	for s in m.get_surface_count():
-		var cols: PackedColorArray = m.surface_get_arrays(s)[Mesh.ARRAY_COLOR]
-		for i in range(0, cols.size(), 3):
-			var c := cols[i]
-			var key := "%d,%d,%d" % [int(c.r * 8.0), int(c.g * 8.0), int(c.b * 8.0)]
-			votes[key] = int(votes.get(key, 0)) + 1
-			if int(votes[key]) > most:
-				most = int(votes[key])
-				best = c
+	for i in range(0, cols.size(), 3):
+		var c := cols[i]
+		var key := "%d,%d,%d" % [int(c.r * 8.0), int(c.g * 8.0), int(c.b * 8.0)]
+		votes[key] = int(votes.get(key, 0)) + 1
+		if int(votes[key]) > most:
+			most = int(votes[key])
+			best = c
 	return best
 
 

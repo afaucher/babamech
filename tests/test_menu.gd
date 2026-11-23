@@ -29,6 +29,8 @@ func setup() -> void:
 	fe.stage.set_alert(true)
 	eq(fe.stage.bay.state, "alert", "launch puts the bay on alert")
 	fe.stage.set_alert(false)
+	await _clamps_clear(fe.stage)
+	fe.show_screen("hangar")
 	var pick: OptionButton = fe.weapon_picks["side_l"]
 	var flamer := -1
 	for i in pick.item_count:
@@ -65,6 +67,48 @@ func setup() -> void:
 	fe.queue_free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(PATH))
 	finish()
+
+
+## The bay's shoulder clamps and brace arms (HangarBay.fit_clamps) clear every crew mech's measured box: open in prep,
+## mid-swing, and closed in alert (where they must also actually reach it: at most CLOSE_MAX off). A crew of four with
+## the widest weapons, in the chicken-leg stance and the forward one.
+const CLEAR_TOL := 0.01     ## m of overlap still counted as touching (box rounding)
+const CLOSE_MAX := 0.2      ## m: a closed clamp's pad stops at most this far from the mech
+
+func _clamps_clear(stage: MechStage) -> void:
+	var wide := {"side_l": "autocannon", "side_r": "gatling", "shoulder_l": "railgun", "shoulder_r": "missiles", "back": "mortar"}
+	var heads := MechCatalog.HEAD_ORDER
+	var entries: Array = []
+	for i in 4:
+		entries.append({"head": heads[i % heads.size()], "chassis": "strider", "name": "P%d" % (i + 1),
+			"loadout": wide if i % 2 == 0 else {}})
+	stage.show_mechs(entries, true)
+	await frames(2)
+	var bay := stage.bay
+	for bend: float in [-1.0, 1.0]:
+		for m in bay.models:
+			m.leg_bend = bend
+			m.rebuild()
+		bay.fit_clamps()
+		var legs := "chicken" if bend < 0.0 else "forward"
+		for phase: String in ["prep", "mid", "alert"]:
+			bay.set_alert(phase != "prep")
+			bay._alert_k = {"prep": 0.0, "mid": 0.5, "alert": 1.0}[phase]
+			bay._apply_lights()
+			await frames(2)
+			var worst := INF
+			var widest := 0.0
+			for i in 4:
+				worst = minf(worst, bay.clamp_clearance(i))
+				for g: float in bay.pad_gaps(i):
+					widest = maxf(widest, g)
+			check(worst > -CLEAR_TOL, "bay %s legs, %s: clamps and brace arms clear the mechs (closest %.3f m)" % [legs, phase, worst])
+			if phase == "alert":
+				check(widest <= CLOSE_MAX, "bay %s legs, alert: every clamp closes onto its mech (farthest %.3f m)" % [legs, widest])
+			print("clamp clearance %s %s: closest mesh %.3f m, farthest pad %.3f m" % [legs, phase, worst, widest])
+	bay.set_alert(false)
+	bay._alert_k = 0.0
+	bay._apply_lights()
 
 
 ## Back-mount equipment in the hangar (docs/design/back-equipment.md): the back slot offers the mortar AND every

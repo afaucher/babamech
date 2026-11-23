@@ -7,12 +7,9 @@ extends RefCounted
 ##
 ## REPAIR DRONE CRADLE: MechModel mounts `Weapon_repair_drone` (mesh `weapon_repair_drone`: cradle + docked drone) under
 ## HP_<hardpoint>. This swaps that MeshInstance3D's mesh, from our side (no MechModel API):
-##   a drone of that shooter is alive here (CombatWorld.drone_of: launched, flying, or flying off) -> the empty cradle
-##   (`weapon_repair_drone_cradle`); no drone and charges left -> docked again; no drone and no charges left -> empty.
-## Charges left: the `charges` source given to `watch` (the owner's WeaponRack: its own count; the lab: unlimited), else
-## (crew puppets on other machines) the catalog's charges minus the launches this world has seen for that shooter
-## (CombatWorld.launch_drone counts them; every launch reaches every machine once through CombatNet). A machine that
-## joined after a launch counts one less: it shows the drone docked until told otherwise (cosmetic only).
+##   a drone of that shooter is alive here (CombatWorld.drone_of: launched, repairing, or flying home) -> the empty
+##   cradle (`weapon_repair_drone_cradle`); otherwise the docked drone (`weapon_repair_drone`), even with no charges left:
+##   it visibly came home (the HUD reports EMPTY from the rack). The same rule on every machine, from the drone effect.
 ## If MechModel rebuilds the node (loadout / art change), the swap re-applies to the new node on the next step; a missing
 ## node or mesh (placeholder art, a part that isn't in MechMeshes.EQUIPMENT) is skipped harmlessly.
 ##
@@ -31,34 +28,25 @@ const HOT := Color(1.0, 0.24, 0.10)   ## red-hot fins near overheat (the HUD's h
 const GLOW_ENERGY := 1.8          ## emission energy at a full gauge
 const HOT_ALBEDO := Color(0.3, 0.3, 0.3)   ## the fins' albedo tint at a full gauge (darker: the glow colour reads)
 
-## shooter -> {"model": Callable () -> MechModel, "heat": Callable () -> float 0..1, "charges": Callable () -> int}
+## shooter -> {"model": Callable () -> MechModel, "heat": Callable () -> float 0..1}
 var watched: Dictionary = {}
-## shooter -> drone launches seen by this world (the remote "charges left" rule)
-var launches: Dictionary = {}
 ## shooter -> {"model", "mi", "hp", "id", "shown", "mat", "surf", "frac", "rescan"}: what is mounted and shown now
 var _slots: Dictionary = {}
 
 
 func net_fields() -> Dictionary:
-	return {"watched": Net.LOCAL, "launches": Net.LOCAL, "_slots": Net.LOCAL}
+	return {"watched": Net.LOCAL, "_slots": Net.LOCAL}
 
 
-## Tell the looks where `shooter`'s model, heat fraction and charges left come from on this machine. Invalid Callables
-## fall back to the anchor (model found under it, its MechController heat) and to counting launches.
-func watch(shooter: String, model: Callable, heat: Callable = Callable(), charges: Callable = Callable()) -> void:
-	watched[shooter] = {"model": model, "heat": heat, "charges": charges}
+## Tell the looks where `shooter`'s model and heat fraction come from on this machine. Invalid Callables fall back to
+## the anchor (model found under it, its MechController heat).
+func watch(shooter: String, model: Callable, heat: Callable = Callable()) -> void:
+	watched[shooter] = {"model": model, "heat": heat}
 
 
-## A launch record reached this world (CombatWorld.launch_drone): count it and show the empty cradle right away.
+## A launch record reached this world (CombatWorld.launch_drone): show the empty cradle right away.
 func on_launch(w: CombatWorld, record: Dictionary) -> void:
-	var s := str(record.get("shooter", ""))
-	launches[s] = int(launches.get(s, 0)) + 1
-	_update(w, s)
-
-
-## Forget the launches counted for `shooter` (a rack rebuilt its loadout: charges start over).
-func reset(shooter: String) -> void:
-	launches.erase(shooter)
+	_update(w, str(record.get("shooter", "")))
 
 
 func step(w: CombatWorld) -> void:
@@ -79,14 +67,6 @@ func shown(shooter: String) -> String:
 func glow_material(shooter: String) -> StandardMaterial3D:
 	var sl: Variant = _slots.get(shooter)
 	return (sl as Dictionary).get("mat") as StandardMaterial3D if sl is Dictionary else null
-
-
-## Charges `shooter` has left on this machine (see the header).
-func charges_left(w: CombatWorld, shooter: String) -> int:
-	var wd: Variant = watched.get(shooter)
-	if wd is Dictionary and ((wd as Dictionary)["charges"] as Callable).is_valid():
-		return int(((wd as Dictionary)["charges"] as Callable).call())
-	return int(w.stats(DRONE).get("charges", 2)) - int(launches.get(shooter, 0))
 
 
 ## `shooter`'s MechModel on this machine (watched source, else found under its anchor), or null.
@@ -128,8 +108,8 @@ static func find_model(root: Node) -> MechModel:
 	return null
 
 
-## The world position (and model-to-world scale) of `shooter`'s docked drone on `hardpoint`: HP_<hardpoint> ×
-## MechMeshes.DRONE_DOCK. {} when the model / node isn't here.
+## The world position, model-to-world scale and orientation (unscaled Basis) of `shooter`'s docked drone on
+## `hardpoint`: HP_<hardpoint> × MechMeshes.DRONE_DOCK. {} when the model / node isn't here.
 func dock(w: CombatWorld, shooter: String, hardpoint: String) -> Dictionary:
 	var m := model_of(w, shooter)
 	if m == null or not m.is_inside_tree():
@@ -138,7 +118,7 @@ func dock(w: CombatWorld, shooter: String, hardpoint: String) -> Dictionary:
 	if hp == null or not hp.is_inside_tree():
 		return {}
 	var xf := hp.global_transform
-	return {"pos": xf * MechMeshes.DRONE_DOCK, "scale": xf.basis.get_scale().x}
+	return {"pos": xf * MechMeshes.DRONE_DOCK, "scale": xf.basis.get_scale().x, "basis": xf.basis.orthonormalized()}
 
 
 ## A MechMeshes equipment part's mesh, or null when it isn't one (a missing part never builds a stray mesh).
@@ -175,7 +155,7 @@ func _update(w: CombatWorld, shooter: String) -> void:
 		return
 	match str(sl["id"]):
 		DRONE:
-			var want := "cradle" if w.drone_of(shooter) != null or charges_left(w, shooter) <= 0 else "docked"
+			var want := "cradle" if w.drone_of(shooter) != null else "docked"
 			if want != str(sl["shown"]):
 				_show_drone(mi, sl, want)
 		RADIATOR:

@@ -15,7 +15,9 @@ extends Node3D
 ##                          footfall  bool, true on the frame a foot lands (a small nod)
 ##                        It picks the mood by priority (pick_mood), detects landings (grounded edge + the last
 ##                        airborne downward speed -> impact, scaled; hard ones add a flinch) and advances everything by
-##                        delta * time_scale.
+##                        delta * time_scale. The input guard (YAW_RATE_SNAP, VEL_SNAP) drops heading / velocity jumps
+##                        and smooths the yaw rate, so a teammate's 30 Hz puppet never jerks the neck harder than local
+##                        input does.
 ##   set_inputs(extra)    sticky state from a second feeder (PilotCombatLink: heat, hp, shutdown, disabled, firing,
 ##                        aiming, effort; EXTRA_KEYS), merged into every later feed so two feeders never fight: an
 ##                        explicit feed key wins, except effort, which ORs. Calls accumulate; clear_inputs() drops them.
@@ -63,6 +65,17 @@ const AIR_STRETCH := 0.05
 const AIR_FLAIR := 0.3
 const FOOTFALL_NOD := 60.0       ## deg / s of nod kick per footfall
 const TREMBLE_DEG := 1.6
+## Input guard (feed). A teammate's puppet is posed from 30 Hz snapshots: its heading is interpolated, extrapolated past a
+## late packet then corrected, and jumps on a respawn, so the yaw rate MechRig derives per frame has steps and spikes, and
+## its streamed velocity steps at the send rate and jumps on a teleport. A mech really turns at most MechController
+## turn_rate (1.8 rad/s), so: a yaw rate beyond YAW_RATE_SNAP is a heading jump (ignored: the last filtered rate holds),
+## the rest is capped at YAW_RATE_MAX and low-passed with INPUT_TAU (smooths the send-rate steps, ~50 ms of lag on the
+## turn lead). A velocity change beyond VEL_SNAP model units / s in one frame, or any change on a heading-jump frame, is a
+## jump, not motion: no acceleration from it (a hard landing changes it by ~20).
+const YAW_RATE_MAX := 6.0
+const YAW_RATE_SNAP := 12.0
+const INPUT_TAU := 0.05
+const VEL_SNAP := 30.0
 const DEFAULTS := {"vel": Vector3.ZERO, "yaw_rate": 0.0, "grounded": true, "heat": 0.0, "hp": 1.0, "shutdown": false,
 	"disabled": false, "firing": false, "aiming": false, "effort": false, "footfall": false}
 ## The keys set_inputs accepts.
@@ -106,6 +119,7 @@ var _fx_rng := RandomNumberGenerator.new()
 var _steam_t := 0.0
 var _sweat_t := 0.0
 var _phase := Vector3.ZERO
+var _yaw_f := 0.0               ## the filtered yaw rate (input guard)
 var _fx_mood := "stern"
 var _fx_dazed := ""
 
@@ -186,6 +200,7 @@ func _process(delta: float) -> void:
 		_in = want
 		_prev_vel = Vector3.ZERO
 		_accel = Vector3.ZERO
+		_yaw_f = 0.0
 		_auto_mood = pick_mood(want)
 		_was_grounded = true
 		_release_effort()
@@ -204,6 +219,11 @@ func feed(delta: float, state: Dictionary) -> void:
 	var vel: Vector3 = _in["vel"]
 	if not vel.is_finite():
 		vel = Vector3.ZERO
+	var yr := float(_in["yaw_rate"])
+	var jumped := not is_finite(yr) or absf(yr) > YAW_RATE_SNAP or (vel - _prev_vel).length() > VEL_SNAP
+	_in["yaw_rate"] = _guard_yaw(yr, dt)
+	if jumped:
+		_prev_vel = vel   # a jump (teleport / respawn: the heading or the velocity leapt), not an acceleration
 	if dt > 0.0:
 		var raw := (vel - _prev_vel) / dt
 		_accel = _accel.lerp(raw, 1.0 - exp(-dt / ACCEL_TAU))
@@ -228,6 +248,16 @@ func feed(delta: float, state: Dictionary) -> void:
 		_release_effort()
 	_auto_mood = pick_mood(_in)
 	advance(dt * time_scale)
+
+
+## The input guard's yaw rate (see YAW_RATE_SNAP): spikes ignored, capped, low-passed.
+func _guard_yaw(raw: float, dt: float) -> float:
+	if not is_finite(raw) or absf(raw) > YAW_RATE_SNAP:
+		raw = _yaw_f
+	raw = clampf(raw, -YAW_RATE_MAX, YAW_RATE_MAX)
+	if dt > 0.0:
+		_yaw_f += (raw - _yaw_f) * (1.0 - exp(-dt / INPUT_TAU))
+	return _yaw_f
 
 
 ## Sticky inputs (EXTRA_KEYS) merged into every later feed / idle step (see the header). Later calls overwrite keys.

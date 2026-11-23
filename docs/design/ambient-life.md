@@ -440,3 +440,273 @@ junction camera's distance). `LifeTraffic.SIZE["pod"]` is now 1.85 x 1.95 x 3.5 
 so changes the stand-alone traffic checksums (seed 1/2/3: `742568104e969d8d`, `f95817faffc270f1`, `3daf84e9a4299bca`);
 riders already left from the middle of the side. Re-rendered: `life_pod_close.png`, `life_traffic.png`,
 `life_panic_traffic.png`, `life_riders.png`, `life_wreck.png`.
+
+### Crowd lab (lab subject `crowd`, 2026-11-22)
+
+`scripts/world/life/crowd_lab.gd` (`CrowdLab`), test `tests/test_crowd_lab.gd`. The civilians on their own, on the real
+systems: a small seeded `CityDistrict` (walled, its own daylight rig) with an `AmbientLife` on it, so the timetables,
+threats, kills and `LifeFigures` drawing are exactly the game's. Made to judge civilian animations and looks: it talks
+only to `AmbientLife`'s public API and the debug hooks below, never to `LifeFigures`, so it keeps working when the
+figure drawing is replaced. Run it with `.\lab.ps1 crowd`, or for a shot
+`--scene res://scenes/lab.tscn --subject crowd --shot out.png --shot-after 4 --crowd camera=close,people=40,inspect=auto`
+(`--crowd k=v,...` presets any param / option; `inspect=auto` picks the visible figure nearest the crowd focus,
+`threat_at=focus` puts the threat on it).
+
+- **Params**: seed, people (1..200, default 24), area (district side 90..240 m, default 130: density = people / area),
+  life clock speed (the lab's pause / speed scale it too), threat_x / threat_s (arc m), threat_r (alarm radius),
+  kill_r (blast kill radius), repeat_s (0 = once), inspect (figure id, -1 none; out of range is reported, not an error).
+- **Options**: camera `lab` (the lab's orbit round the crowd focus) / `close` (2-3 figures) / `group` / `street` /
+  `mech_eye` (10 m up in the street, figures 30-80 m away) / `top` / `follow` (the inspected figure); state `timetable`
+  or any `AmbientLife.DEBUG_STATES` key, on the `crowd` or the `inspected` figure; threat `off` / `gunfire` (three
+  seeded sweeps through the point + a strength-2 threat) / `blast` (`blast(kill_r)` + a strength-3 threat) / `mech`
+  (a stand-in pusher walking 50 m through the point at 3 m/s: proximity threats and kills on contact); quality
+  high / medium / low (`AmbientLife.set_quality` and the rig's); lighting. Buttons: Fire threat, Reset crowd
+  (`restore` of an empty snapshot + the clock back to 900 s: everyone alive and calm), Inspect nearest.
+- **Shown**: a red post and rings at the threat (alarm radius faint, kill radius for a blast), a yellow ring, cone and
+  "#id mode" label on the inspected figure, and a readout (top right): alive / down / outdoors / drawn, the histogram of
+  `state_of` and of `mode_of`, the figures' draw calls (visible GeometryInstance3D under `life.figures`) and instances,
+  life's own `_process` time (ms per frame, averaged over 1 s, display only), the threat, the forced state, and the
+  inspector (`debug_person`: state / mode, timetable activity, speed, heading, trip doors home -> destination, bench,
+  alarm record, down, seeded variety cloth / build / tall / period / phase).
+- **Real states today** (`DEBUG_STATES`, one list; add a new animation there and the lab lists it): walk, idle (the
+  timetable's "wait"), sit, flinch ("wary"), flee ("run"), cower, hands_up, down, and look_around (animation only:
+  one of the idle's variations, forced as mode "look_around"; not a crowd state). "Knocked over" is the kill
+  ("down"): a non-lethal knock-down does not exist.
+- **Shot options** (`--crowd`): `ui=hide` (lab panel and readout hidden), `markers=hide`, `fire_after=s` (first threat
+  this long after a build, default 0.5), `frames=<dir>,frame_n=N,frame_dt=s,frame_after=s` (N viewport PNGs every
+  frame_dt wall seconds, then quit: GIF strips).
+- **Debug hooks on `AmbientLife`** (lab only, `Net.LOCAL`, never sent, never called by the game):
+  `debug_force_state(id | -1, key)` / `debug_clear()` / `debug_forced(id)` (a presentation override applied in the
+  pose sampling: `state_of`, `mode_of`, `pose_of` and the figures follow it; the crowd's own state, threats, kills,
+  `snapshot()` and `tally()` never do; nobody is moved: people indoors stay hidden, the dead stay down; free while
+  unused, one empty-dictionary test per sample), `debug_person(id)`, `mode_of(id)` (public: the animation a drawer is
+  asked for), `debug_people_cap` (passed to `LifePlan.make(..., cap)`, default `PEOPLE_CAP` 60: the lab raises it to
+  200), `debug_profile` / `debug_us`. The test checks a hook-free run is bit-identical (snapshot hash) to the code
+  before the hooks.
+- Shots: `docs/design/ambient-life/crowd_lab_close.png`, `crowd_lab_street.png`, `crowd_lab_mech_eye.png`,
+  `crowd_lab_panic.png`, `crowd_lab_inspect.png`.
+
+## Civilian animation: candidates (prototype, 2026-11-22; the user picked C, built: "Civilian animation: as built")
+
+User: "They are a little too blocky with simple animations. Improve the animations first, then the look for the high
+detail setting if still needed." Step 1 is choosing an animation **style** (art rule: show options before building).
+Same figure look as today in every candidate (LifeFigures' boxes, palette colours, proportions); only the motion differs.
+Nothing in the game changed: the prototype is the lab subject `life_anim` (`scripts/world/life/life_anim_lab.gd`,
+`life_anim_rig.gd`, `life_anim_limbs.gdshader`).
+
+**Today, measured.** 9 baked pose meshes x 5 clothes = 45 MultiMeshInstances a deck, ~84 triangles a figure. Walk = two
+meshes (walk_a / walk_b) flipped every 0.75 m of route distance, run = two meshes every 1.4 m (always arms up in a V),
+flinch = the `wary` mesh, cower / hands-up / sit = one mesh each, killed = the idle mesh tipped over rigidly in 0.4 s.
+The mesh only changes at a person's 20 Hz-group sample (every 0.2 s), so the walk reads as a two-frame shuffle. Per frame
+the CPU writes one interpolated transform per visible person (plus a hide write when the pose mesh changes).
+
+| | How | Draw calls (deck) | Per figure per frame | Feel |
+|---|---|---|---|---|
+| **A  more poses** | today's technique, ~60 baked poses (8-frame walk, 8-frame run x 2 arm styles, 4 idles x 4, flinch 3, cower 4, fall 4 + lying, sit, hands up) | ~300 MMIs (60 poses x 5 clothes; ~60 if clothes move to instance colour) | as today + 2 writes at every frame switch (8 a cycle) | stepped, stop-motion; hard cuts between states |
+| **B  shader limbs** | ONE jointed mesh (10 rigid boxes: torso, head, upper / lower arms, thighs, shins; part id in UV.x), posed in the vertex shader from MultiMesh custom data `(state + 16*prev, t0, seed, dir/turn)` | 5 MMIs (one per clothes) or 1 with clothes as instance colour | as today (1 transform); custom data only on a state change | smooth swing, bob from leg geometry (feet stay planted), lean, 0.2 s blends |
+| **C  limbs + character** | B + secondary motion and acting in the same shader: head leads turns and look-arounds with torso follow, overshoot on starts / stops, hip drop and shoulder counter-twist, idle sub-actions cycling (look around / wrist check / phone / talk with gestures), panic: look back, flailing arms, stumble; cower: anticipation, tremble, peeking; fall: knees buckle, arm fling, whiplash, bounce, settle into a sprawl | same as B | same as B (shader ~2x ALU of B; ~120 tris, ~360 vertices a figure: negligible at 24-60 people a deck) | alive, readable acting |
+
+How the shader is driven: the clock is **one uniform** set once per frame from `AmbientLife.now` (the shared net clock
+online, the local clock x `time_scale` offline), so pause, lab speed and net time just work; the full build would make it
+a global shader uniform (`life_clock`) so every deck's material shares it. Per-figure variety (stride, speed, posture,
+handedness = mirrored poses, phase, idle variant, which way they glance) comes from the seed in the custom data (the
+game would pass `LifePlan.h(id, k)`), never the global generator. Flat shading is intact (rigid parts, normals rotated
+with the part, same lit vertex-colour material as `CityPalette.surface_material()`: albedo sRGB vertex colour,
+roughness 1, specular 0.1); render layers / cull masks are the instance's as usual.
+
+**Sheets** (`docs/design/ambient-life/`): `grid_civilian_anim.png` (the 3x3 to show: A / B / C x walk / panic run /
+knocked over, numbered 1-9, today as a reference row), per motion `anim_sheet_<walk|idle|run|cower|flinch|fall|turn>.png`
+(one row per style, 8 time-ordered frames), `anim_sheet_sequence.png` (walk > flinch > run > cower > fall, frames around
+each transition: popping), `anim_sheet_idle_variety.png` (8 seeds at the same moment), `anim_sheet_exag_<walk|run|fall|idle>.png`
+(C subtle x0.6 / natural x1.0 / cartoony x1.5), `anim_mech_eye_40m.png` / `anim_mech_eye_20m.png` (a mixed crowd per style
+from 10 m up, 70 deg FOV). GIFs: `anim_today.gif`, `anim_A.gif`, `anim_B.gif`, `anim_C.gif` (walk, run, fall),
+`anim_all.gif`, `anim_mech_eye_40m.gif`.
+(The prototype lab subject `life_anim` that rendered them was removed when C was built: its "today" and A previews
+needed the old pose meshes. The crowd lab shows every motion on the game's own rig.)
+
+**Findings.** Limbs stay attached (child boxes overlap their joint), feet stay on the ground (the body height comes
+from the longer leg), flat shading holds. A is visibly B with fewer frames: on a sheet A and B look alike, in motion A
+pops (and every state change cuts). Today's figures cast no visible shadow in these shots (the game's own shots agree;
+likely the sun's large normal bias on thin boxes); the rig's shadow pass did, so the prototype turns rig shadows off for
+a fair comparison (shadows would be a look-step choice). At 40 m from a mech the figures are ~20 px tall at 1080p:
+there, only the big shapes read (lean, arms up, crouch, lying, stride width); C's head / hip / hand detail is invisible,
+but its stumble, look-back and sprawl still read as "panic" / "dead" rather than "posed mannequin".
+Two honest caveats from the sheets: (1) at 40 m today's poses read **as well as or better** than B at natural
+amplitude, because they are extreme silhouettes (both arms up in a V for every runner, one arm raised in cower): the
+jointed poses are more compact (pumping arms, hands on head). Whatever style is picked should keep wide silhouettes for
+the panic states (more hands-up runners, bigger arm swing) and use exaggeration around x1.3. (2) Run -> cower briefly
+stands up before crouching (the cower entry starts from a standing pose; B / C blend over it, A cuts): the full build
+starts the entry from the previous motion. Everything else blends without popping in B / C (`anim_sheet_sequence.png`).
+`anim_mech_eye_40m_crop.png` is the 40 m shot cropped at native pixels.
+
+**Recommendation: C at exaggeration ~x1.3** ("natural-to-cartoony"). It costs the same as B (5 or 1 draw calls a deck
+instead of today's 45, nothing extra per frame), the acting is what makes the street read as people at 15-40 m (look-
+around, phone / wrist / talk idles, look-back and stumble when fleeing, knees-buckle-and-sprawl when knocked over), and
+the bigger amplitude buys back the silhouette at 40-150 m. B is the fallback for LOW. A is not worth it: ~6x today's draw
+calls and more CPU writes for a stepped look that is strictly worse than B.
+
+**What the full build would involve** (after a pick; nothing of this is built):
+- `LifeFigures`: one MultiMesh per clothes variant (or one per deck with clothes as instance colour), `use_custom_data`,
+  the jointed mesh, the shader material; `show_pose(id, pose, xf)` becomes `show(id, xf)` + `set_motion(id, code, t0,
+  w)` written only when the motion changes. Instance counts, HIDDEN transform, `render_layer` before `add_child`
+  unchanged. 45 MMIs a deck -> 5 (or 1).
+- `AmbientLife._sample` returns a motion code and its start time instead of a mesh id: walk / run start at the trip /
+  flee start (walk phase from route distance: custom data carries the distance at t0 and the speed, so feet never
+  slide), flinch = `t_alarm`, flee = `t_flee`, cower = the record's start, down = `dead.t` with the fall direction
+  relative to the heading, turn = a heading change over ~30 deg between samples, sit / idle from the timetable. All of
+  it is already a pure function of `LifeCrowd.pose(id, t)`: no new state, no new message; the host still arbitrates
+  threats and kills (`life.threat`, `life.down`), clients stay cosmetic-only. Hit tests keep using the figure
+  position, not limbs.
+- The shader clock as a global uniform set once a frame by the stack root (pauses and time scale follow `now`).
+- LOW quality: same shader with `character` 0 (B) and the existing draw radius; MEDIUM / HIGH C. Cheaper than today in
+  draw calls at every level.
+- Tests: `test_life` (motion codes per state, deterministic per seed), `test_render_layers`, `test_perf` (the 0.5 ms
+  life budget), a visual shot per motion; the lab subject `life` shows it in the real district.
+
+## Civilian animation: as built (Build C, 2026-11-22)
+
+User pick from `grid_civilian_anim.png`: **C, shader limbs + character, at ~x1.3**. The look (boxes, proportions, palette,
+five clothes sets, builds, heights) is unchanged; only the animation changed. Gameplay and co-op are untouched: the
+crowd's states, timetables, host arbitration, `life.*` messages, `snapshot()` / `restore()`, `tally()` and every hit test
+(positions and the 1.8 m capsule, never the mesh) are bit-identical (the crowd lab's captured hash still passes).
+Animation is cosmetic on every machine, computed locally from the same state and clock.
+
+**Rig** (`LifeAnimRig`, `life_anim_rig.gd`): one jointed figure mesh, 10 rigid parts (torso, head + hair, upper arms,
+forearms, thighs, shins), **132 triangles**; UV.x = part id, UV.y = colour slot (0 vertex colour: skin / hair, 1 shirt,
+2 trousers), so one mesh serves every clothes set. Child boxes overlap their joint, so bends never open a gap.
+`static_figure(geo, v)` gives the same figure standing still as plain geometry (the pod gallery's scale figure).
+
+**Drawing** (`LifeFigures`): **one MultiMeshInstance3D per deck** (was 45: 9 pose meshes x 5 clothes), one instance per
+person (index = id), `use_custom_data`, `material_override` = the shader material, `layers` = the deck's render layer set
+before `add_child`, the district's bounds as `custom_aabb`. Per frame the CPU writes one transform per visible person
+(`place`, as before) and one material uniform (`set_clock`); custom data (`set_motion`) only when that person's motion
+changes / starts or a turn starts (measured: 74 writes in 30 s of a calm 60-person street over 817 visible
+person-seconds, about 0.1 per person-second, against 30 transforms per person-second).
+
+**Shader** (`life_anim_limbs.gdshader`, spatial, `cull_back`, lit like `CityPalette.surface_material()`: vertex colour
+sRGB -> linear, roughness 1, metallic 0, specular 0.1; normals rotate with their part, flat shading intact). Custom data:
+- x = motion + 16 x previous motion + 256 x clothes + 2048 x talk + 4096 x (turn / 5 deg + 36)
+- y = life-clock time the motion began, minus an epoch (a multiple of 4096 s, so float32 keeps ms precision)
+- z = 1024 x walking speed (cm/s) + seed (10 bits, `LifePlan.h(id, 91)`)
+- w = metres walked at y (walk / run: the stride runs from distance, feet do not slide) or the fall direction (radians,
+  model space) for a kill.
+Shirt / trousers palettes are uniform arrays. The pose (root sway / bob / yaw / roll, spine lean / twist / roll, head,
+arms with elbows, legs with knees, topple) is evaluated per vertex; the lower foot is kept on the ground from the leg
+geometry (the bob comes from the legs). Blends: 0.3 s from the previous motion (0.45 s into cower / hands up, 0.18 s
+into a fall), always from the previous motion's pose (fixes the prototype's run -> cower standing-up pop).
+
+**Clock**: `anim_time` = `AmbientLife.now` minus the epoch, set once a frame on the deck's material (one material per
+`LifeFigures`; no global shader uniform: two AmbientLife instances in one process, tests and labs, run different
+clocks). `now` is the shared net clock online and the local clock x `time_scale` offline, so pause, lab speed and net
+time just work.
+
+**Motions** (`LifeAnimRig.MODE_MOTION`: crowd mode -> motion; every `DEBUG_STATES` entry maps to one, tested):
+- **walk** (`walk`): stance-linear gait (the planted foot sweeps exactly the stride: A = asin(stride / 4 / leg)),
+  seeded stride 1.35-1.65 m, knee lift in the swing, arm swing against the legs, hip drop and shoulder counter-twist,
+  now and then a glance aside. Phase = metres walked, so feet do not slide.
+- **idle** (`wait`): weight shift, breathing, sub-actions cycling by seed: look around, check the wrist, phone, talk;
+  `talk` (another idle person within 3 m when the wait starts) makes it mostly talk gestures.
+- **look_around** (lab-forced; in the game an idle variation): head sweeps both ways, torso follows.
+- **sit** (`sit`, the existing benches): thighs on the seat, shins to the floor, occasional head turn.
+- **flinch** (`wary`): recoil with forearms up and a step back, overshoot, then holds wary with a tremble; starts at the
+  alarm record's time.
+- **run** (`run`, fleeing): lean, flight phase, pumping and flailing arms; **40 % of runners (by seed) run with both
+  arms up**, waving (the wide silhouette reads at 40 m); look-back over the shoulder and an occasional stumble.
+- **cower** (`cower`): crouch with hands on the head, entered from the previous motion (anticipation flinch on the way
+  down), trembling, peeking out.
+- **hands_up** (`cower` + a mech within 10 m and no shot for 3 s, the existing local look): arms straight up, half step
+  back, trembling.
+- **fall** (`down`, the kill): knees buckle, the body twists to face (or turn its back on) the **hit direction from the
+  kill event** (`dead.dx / ds`, so it is the same everywhere), topples along it, arms fling, head whiplash, one bounce,
+  then settles into one of four sprawls (by seed) on its front or back and lies still. `pose_of` still returns the old
+  tipped transform (`LifeFigures.tip`) for the dead.
+- **turning** (all upright motions): the drawn heading eases toward the route's (exponential, tau 0.16 s) instead of
+  snapping (`AmbientLife._turned`, rotation only: positions and hits untouched); a gap over ~29 deg at a sample writes a
+  turn into the custom data and the head and shoulders lead into it (a standing person shuffles its feet round).
+Variety (all from the person's seed, never the global generator): stride, arm swing, posture, head pitch, handedness
+(20 % mirrored), phases, idle variant cycle, hands-up runner share, glance / stumble timing, sprawl. Exaggeration
+`LifeAnimRig.EXAGGERATION` = 1.3 (one constant; legs follow the stride, not it).
+
+**Quality**: same shader at every level (the character layer is multiplications, not branches: nothing measurable to
+save by dropping it). HIGH / MEDIUM: real shadows from the posed figure (the shadow pass runs the same vertex
+function); LOW: figure shadows off (`AmbientLife.set_quality` -> `LifeFigures.set_shadows`), plus the existing shorter
+draw radius. No contact blob: the real shadows ground the figures in the shots; no acne or peter-panning seen.
+
+**Costs** (crowd lab, seed 1, 130 m, 40 people + 8 riders, close camera, same frame): before 45 MMIs / 432 instances,
+life update 0.192 ms a frame; after 1 MMI / 48 instances, 0.194 ms (unchanged within noise). Headless `_step` without
+culling: 24 people 0.17 ms, 60 people 0.32 ms, 200 people 0.94 ms a frame. Triangles a figure 84 -> 132; the vertex
+shader is the new GPU cost (~400 vertices a figure, 24-60 figures a deck: negligible).
+
+**Not done / known**: the prototype gallery (`life_anim`) was removed rather than ported. (Timetabled people waiting at
+the same corner node used to stand on the same point: fixed, see "Crowd spacing".) A falling body's limbs can clip a neighbour or a wall. Forced lab states apply where people stand (a forced
+hands-up sitter stands up in place on the bench). Shots: `docs/design/ambient-life/civ_c_*.png`, `civ_c_crowd.gif`.
+Test: `tests/test_life_anim.gd`.
+
+## Crowd spacing (2026-11-23)
+
+User, on `civ_c_crowd.gif` (the crowd lab's `group` camera, 160 people on a 90 m district, a blast): "like 10 people
+standing in the same spot". It was the timetable: everyone waiting for one green at a corner stood exactly on the corner
+node (8-17 people on one point in the lab, 3-4 in the game's districts), sitters on a bench shared one seat point, walkers
+on a side all walked its one centre line, and a blast left the bodies where they stood (on that point). Now people never
+stand, wait, sit, cower or lie on the same spot. Everything below is a pure function of (plan / seed, person id, the
+timetable, host events): no message, no new event, the same on every machine; the timetable's times are unchanged.
+
+- **Standing slots at crossings** (`LifePlan.wait_slots`): per crossing node, slots for each of its crossings laid out
+  once (all the node's crossings together, round robin, after the benches and lower-index crossing nodes within 14-16 m,
+  so the layout never depends on which was asked first): rows 0.9 m apart ahead of / on / behind the node, columns 0.9 m
+  apart along the curb (away from the node's other crossing), at least `SLOT_GAP` 0.9 m from every other slot, on the
+  walkway only (1.7-3.95 m from the curb: not in the road, the furnishing band or a building, clear of props by their
+  radius + 0.3 m, of benches, park fountains and plaza planters), up to 32 a crossing. Nodes in a road (section mode: the
+  spine pieces) never step forward into the lane ahead; nothing waits in the rail lane; at a node beside the rail lane
+  the slots are on the lane's edge line only (the rail crossing's own pair at +-0.45 m, the others further along), and on
+  a rail piece the step to / from a slot takes the last / first 0.4 m (`RAIL_TURN`), so inside the rail lane a walker is
+  never more than 0.45 m off the crossing's line.
+- **Who stands where**: the hold index (`LifePlan._groups`, per 60 s window): everyone whose timetable waits for the same
+  green at that corner, ranked by arrival then id; rank r takes slot r (rail pieces, whose waits end at different times:
+  slots split by window parity). The group then crosses on `CROSS_LANES` by rank (0, +-0.8, +-1.6, +-0.4, +-1.2 m off the
+  crossing's line; +-0.45 on section spine pieces) and walks on in lanes that differ for consecutive ranks.
+- **Benches**: two seats (+-0.5 m); per window parity, the first to arrive sits on that parity's seat, the next stand by
+  the bench at its standing slots of that parity (facing it, 0.9 m apart, on the walkway / in the park or plaza); at most
+  `bench_cap` (1 + 6) stop in a window. Who stops is decided from everyone's *wished* trips (`LifePlan.wish`, which do not
+  depend on each other); the rest walk on to their door without stopping (same doors, same start).
+- **Walking lanes**: an offset to the right of the walking direction, one of five lanes (-0.9 .. 0.9 m, 0.45 m apart) by
+  the id (after a green: by rank in the group), mitred at corners, changed within 2.5 m of a leg's start (of its end when
+  stepping into a slot), plus a seeded surge / lag of up to 0.8 m mid-leg. Fleeing and the walk home after cowering use
+  the same lanes along their routes.
+- **Shelter / cowering**: fleeing people still go in at their door (hidden); cowering people take the nearest spot on
+  rings of 0.8 m round where they were that is 0.8 m clear of everyone already cowering there (`LifeCrowd._cower_spot`,
+  records made in event order), stepping there while they flinch; the spot (`cx`, `cs`) is in the snapshot (version 3).
+- **Bodies**: a body that would lie within 0.8 m of another rests at the nearest clear spot on those rings (it slides
+  there during the 0.4 s fall; kills apply in the host's event order everywhere). Dead bodies are not hit targets (only
+  `_on` people are), so this is cosmetic for gameplay; the dead record keeps the hit point (`x0`, `s0`) besides the rest.
+- **Guaranteed (asserted in `tests/test_life_spacing.gd`**, lab district 24 / 60 / 120 people and 160 people on 90 m,
+  a 220 x 240 district, two section decks; 240 s sampled every 0.5 s, then 40 s after a strength-3 threat and a 4 m blast
+  at the densest spot): standing, waiting and sitting people at least 0.7 m apart (measured: 0.90 m everywhere), at most
+  3 standing people in any 1 m disc (measured: 2); after the blast, cowering / wary people and bodies at least 0.6 m apart
+  (measured 0.70-1.23 m). **Not guaranteed: walkers.** Each walks its own closed-form route, so two strangers on one lane at
+  nearly one speed can overtake slowly; asserted rare instead: within 0.4 m of another walker in at most 5 % of walker
+  samples (measured 0.2-0.3 % at game densities, 1.2-4.6 % in the dense lab; 14.5 % at 160 people on 90 m, reported
+  only), longest such stretch 0.5-18 s.
+- **Costs**: the layouts (slots, bench slots) and the next minutes of the hold index are built in `AmbientLife`'s setup
+  (`WARM_PARTS` = 4 extra setup parts, with the door trees below) and then one person a frame ahead of need
+  (`LifePlan.warm_ahead`, `AHEAD` = 6 windows of 60 s): no first-use spike. Headless `_step` (crowd lab seed 1, no
+  culling, `tests/bench_life.gd`): 24 / 60 / 200 people 0.09-0.10 / 0.18 / 0.48-0.50 ms a frame, worst 0.5 / 0.6 / 1.6 ms
+  (before: 0.09 / 0.17 / 0.47 ms, worst 0.48 / 0.66 / 1.38 ms; the shared PC's noise is about +-0.03 ms). Known: a clock
+  jump (a session starting, the lab's reset) finds the index for the new time unbuilt and builds it on the next frames
+  (one-off, up to ~10-35 ms for 60 people).
+- **Per-shot costs (same results)**: `LifeCrowd.apply_threat` computes a pose only for people whose trip box reaches the
+  tested area (alarmed people, the dead and anyone a change in the event could affect are computed first, exactly as
+  before), `LifeFleet.apply_threat` skips loops whose path cannot reach the threat, `AmbientLife.sweep` / `blast` look up a
+  grid of the displayed feet from the second shot test on the same positions, and the walk graph's door trees are built
+  at setup instead of on the first shot. Each keeps a `brute_force` reference path; `tests/test_life_threat_grid.gd` runs
+  a scripted 120 s stack run both ways and gets the same hits, states, events, tally and snapshot. Stack seed 1:
+  `raise_threat` 24 / 60 people a deck: first 891 / 734 us -> ~250 / ~350 us, median 343 / 522 -> 140-200 / 215-265 us;
+  `sweep` (~3 m chord, 3 decks) median 7 / 10 -> 7 / 8 us, worst 70-90 -> 20-35 us.
+- Checksums: `LifePlan.checksum()` unchanged (slots are derived, not in it); the crowd lab's snapshot hash re-captured
+  (3903048191 -> 3798602067); `test_net_life` (both peers agree, stack phase included) passes.
+- Shots: `civ_c_crowd.gif` re-shot with the same setup (`camera=group,area=90,people=160,seed=1,threat=blast,kill_r=6,
+  threat_at=focus,threat_r=60,fire_after=2.5`), `crowd_spacing_corner.png`, `crowd_spacing_street.png` (mech eye,
+  120 people), `crowd_spacing_shelter.png` (after gunfire), `crowd_spacing_blast.png`. Judged: the corner crowd now stands
+  in rows, each figure on its own spot (at this 18x game density it still reads as a tight crowd, 0.9 m apart); the
+  street is clean; a blast into ~15 people still reads as a pile: the bodies rest 0.8 m apart, but each lies 1.7 m long,
+  so limbs overlap. Not done: bodies spread wider than 0.8 m (they would slide further during the fall).

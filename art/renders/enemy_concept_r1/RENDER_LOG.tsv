@@ -1,0 +1,17 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-22T19:54:59	c1_repainted_civic_s4242.png	flux3_klein_t2i	4242	1024x576			6.25	c1_repainted_civic_prompt.txt
+2026-11-22T19:55:03	c2_control_crown_s4242.png	flux3_klein_t2i	4242	1024x576			3.7	c2_control_crown_prompt.txt
+2026-11-22T19:55:07	c3_parasite_rider_s4242.png	flux3_klein_t2i	4242	1024x576			3.29	c3_parasite_rider_prompt.txt
+2026-11-22T19:55:11	c4_tendril_graft_s4242.png	flux3_klein_t2i	4242	1024x576			3.47	c4_tendril_graft_prompt.txt
+2026-11-22T19:55:14	c5_chitin_biomech_s4242.png	flux3_klein_t2i	4242	1024x576			3.27	c5_chitin_biomech_prompt.txt
+2026-11-22T19:55:18	c6_puppet_tether_s4242.png	flux3_klein_t2i	4242	1024x576			3.28	c6_puppet_tether_prompt.txt
+2026-11-22T19:55:22	c7_crystal_tech_s4242.png	flux3_klein_t2i	4242	1024x576			3.43	c7_crystal_tech_prompt.txt
+2026-11-22T19:55:25	c8_heraldic_occupation_s4242.png	flux3_klein_t2i	4242	1024x576			3.27	c8_heraldic_occupation_prompt.txt
+2026-11-22T19:55:29	c9_alien_built_s4242.png	flux3_klein_t2i	4242	1024x576			3.32	c9_alien_built_prompt.txt
+2026-11-22T19:56:10	c5_chitin_biomech_s4242.png	flux3_klein_t2i	4242	1024x576			3.43	c5_chitin_biomech_prompt.txt
+2026-11-22T19:56:14	c9_alien_built_s4242.png	flux3_klein_t2i	4242	1024x576			3.7	c9_alien_built_prompt.txt
+2026-11-22T19:56:30	c9_alien_built_s77.png	flux3_klein_t2i	77	1024x576			3.3	c9_alien_built_prompt.txt
+2026-11-22T19:56:33	c9_alien_built_s909.png	flux3_klein_t2i	909	1024x576			3.24	c9_alien_built_prompt.txt
+2026-11-22T19:56:51	c9_alien_built_s4242.png	flux3_klein_t2i	4242	1024x576			3.73	c9_alien_built_prompt.txt
+2026-11-22T19:56:54	c9_alien_built_s77.png	flux3_klein_t2i	77	1024x576			2.86	c9_alien_built_prompt.txt
+2026-11-22T19:56:57	c9_alien_built_s909.png	flux3_klein_t2i	909	1024x576			2.89	c9_alien_built_prompt.txt

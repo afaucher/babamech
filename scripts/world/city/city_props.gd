@@ -825,11 +825,20 @@ func _contacts(delta: float) -> void:
 			_scan_in = SCAN_EVERY
 			_scan()
 	var list := _pushers if not _pushers.is_empty() else _found
+	var dead := false
 	for p: Array in list:
+		# A freed body (a mech that left) is checked before any cast: casting a freed object is a script error.
+		if not is_instance_valid(p[0]):
+			dead = true
+			continue
 		var body := p[0] as Node3D
-		if not is_instance_valid(body) or not body.is_inside_tree() or not _owns(body):
+		if body == null or not body.is_inside_tree() or not _owns(body):
 			continue
 		_push(body, float(p[1]), delta)
+	if dead:      # drop freed pushers / found bodies from the list for good
+		var keep := list.filter(func(p: Array) -> bool: return is_instance_valid(p[0]))
+		list.clear()
+		list.append_array(keep)
 
 
 ## The props a pusher at arc (x, s) `here` with `radius` may touch, ascending: every standing prop whose rest position

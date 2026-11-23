@@ -315,9 +315,11 @@ func _check_deck(section: SectionPlan, deck: int, what: String) -> void:
 	eq(sides.size(), 4, "%s: four walls" % what)
 	for w: Dictionary in sides:
 		var src := section.boundary(deck, CityPlan.SIDE_EDGE[int(w["side"])])
-		eq(w["kind"], src["kind"], "%s: wall %d is a %s" % [what, w["side"], src["kind"]])
+		# A section window that would look out at a backdrop is a vertical farm (docs/design/city-styles.md): no backdrop.
+		var farm: bool = src["kind"] == "window" and bool(src["backdrop"])
+		eq(w["kind"], "farm" if farm else src["kind"], "%s: wall %d is a %s" % [what, w["side"], "farm" if farm else src["kind"]])
 		eq((w["gates"] as Array).size(), (src["gates"] as Array).size(), "%s: wall %d has the section's gates" % [what, w["side"]])
-		eq(bool(w["backdrop"]), bool(src["backdrop"]), "%s: wall %d backdrop as the section says" % [what, w["side"]])
+		eq(bool(w["backdrop"]), bool(src["backdrop"]) and not farm, "%s: wall %d backdrop as the section says (none behind a farm)" % [what, w["side"]])
 	eq(plan.checksum(), CityPlan.for_deck(section, deck).checksum(), "%s: same inputs, same checksum" % what)
 	check(plan.checksum() != CityPlan.for_deck(section, (deck + 1) % section.deck_count).checksum(), "%s: another deck, another checksum" % what)
 
@@ -370,7 +372,8 @@ func _check_plan(plan: CityPlan, what: String) -> void:
 	for i in plan.lots.size():
 		for j in range(i + 1, plan.lots.size()):
 			check(not (plan.lots[i]["rect"] as Rect2).grow(-0.01).intersects(plan.lots[j]["rect"]), "%s: lots %d and %d overlap" % [what, i, j])
-	# Heights: only pillars reach the ceiling; a standable roof leaves room for a mech. Footprints stay inside their lot.
+	# Heights: only pillars and downtown shafts reach the ceiling; a standable roof leaves room for a mech. Footprints stay
+	# inside their lot.
 	var r := plan.p("radius")
 	var limit := plan.stand_limit()
 	for i in plan.buildings.size():
@@ -395,7 +398,11 @@ func _check_plan(plan: CityPlan, what: String) -> void:
 		check(lot.grow(0.01).encloses(Rect2(c - size * 0.5, size)), "%s: building %d inside its lot" % [what, i])
 		for t: Dictionary in b["tiers"]:
 			var top: float = t["y1"]
-			check(top <= ceiling - 2.0, "%s: building %d (%s) tier top %.1f under the ceiling" % [what, i, b["style"], top])
+			if str(t.get("kind", "")) == "tower":
+				# A downtown shaft (docs/design/city-downtown.md) reaches into the ceiling slab, never standable.
+				check(b["style"] == "tower" and top >= ceiling and not t["stand"], "%s: building %d shaft meets the ceiling, not standable" % [what, i])
+			else:
+				check(top <= ceiling - 2.0, "%s: building %d (%s) tier top %.1f under the ceiling" % [what, i, b["style"], top])
 			if t["stand"]:
 				check(top <= limit + 0.01, "%s: building %d standable roof %.1f leaves %.1f m for a mech" % [what, i, top, plan.p("clearance")])
 			# Standing radially, the tier's top must still be inside the lot's arc span (walls lean together on a ring).
@@ -557,14 +564,25 @@ func _section_district() -> void:
 	for o in ramp:
 		check((down.call(o.get_center().x, o.get_center().y) as Dictionary).is_empty(), "a ray down the ramp cut at s=%.0f hits nothing" % o.get_center().y)
 	var x := ramp[0].get_center().x
+	# Cross roads bridge the cut except where a mech would not fit under them (CityPlan.BRIDGE_CLEAR: the first past the
+	# ramp's head): there the cut runs on under the road.
 	var bridged := 0
+	var open := 0
 	for road: Dictionary in d.plan.roads_s:
 		var s := (float(road["a"]) + float(road["b"])) * 0.5
 		if s > ramp[0].position.y and s < ramp[-1].end.y:
 			var hit: Dictionary = down.call(x, s)
-			check(not hit.is_empty() and absf(ring.height(hit["position"])) < 0.1, "the cross road at s=%.0f bridges the ramp cut" % s)
-			bridged += 1
+			var cut := false
+			for o in ramp:
+				cut = cut or o.has_point(Vector2(x, s))
+			if cut:
+				check(hit.is_empty(), "the cross road at s=%.0f is too low over the ramp: the cut runs on under it" % s)
+				open += 1
+			else:
+				check(not hit.is_empty() and absf(ring.height(hit["position"])) < 0.1, "the cross road at s=%.0f bridges the ramp cut" % s)
+				bridged += 1
 	check(bridged >= 1, "a cross road bridges the ramp cut (%d)" % bridged)
+	check(open >= 1, "the first cross road past the ramp's head does not (%d)" % open)
 	# Gates: through the portal is the way out; a blast door is solid.
 	var portal := 0
 	var sealed := 0

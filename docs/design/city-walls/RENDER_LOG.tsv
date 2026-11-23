@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-22T22:18:20	farm_shelves_white_s31.png	flux3_klein_t2i	31	1024x576			6.23	farm_shelves_white_prompt.txt
+2026-11-22T22:18:24	farm_shelves_pink_s31.png	flux3_klein_t2i	31	1024x576			3.3	farm_shelves_pink_prompt.txt
+2026-11-22T22:18:29	farm_shelves_sun_s31.png	flux3_klein_t2i	31	1024x576			3.7	farm_shelves_sun_prompt.txt
+2026-11-22T22:18:32	farm_towers_white_s31.png	flux3_klein_t2i	31	1024x576			3.51	farm_towers_white_prompt.txt
+2026-11-22T22:18:36	farm_towers_pink_s31.png	flux3_klein_t2i	31	1024x576			3.72	farm_towers_pink_prompt.txt
+2026-11-22T22:18:40	farm_towers_sun_s31.png	flux3_klein_t2i	31	1024x576			3.73	farm_towers_sun_prompt.txt
+2026-11-22T22:18:44	farm_terraces_white_s31.png	flux3_klein_t2i	31	1024x576			3.7	farm_terraces_white_prompt.txt
+2026-11-22T22:18:49	farm_terraces_pink_s31.png	flux3_klein_t2i	31	1024x576			3.72	farm_terraces_pink_prompt.txt
+2026-11-22T22:18:53	farm_terraces_sun_s31.png	flux3_klein_t2i	31	1024x576			3.71	farm_terraces_sun_prompt.txt

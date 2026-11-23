@@ -14,3 +14,7 @@ func spawn(world: CombatWorld, record: Dictionary, st: Dictionary) -> CombatEffe
 	r.look = look()
 	r.start(world, record, st)
 	return r
+
+
+func prewarm(_st: Dictionary) -> void:
+	Rocket.prewarm_rocket()

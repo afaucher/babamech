@@ -47,6 +47,8 @@ var active_deck := 0
 var quality := CityQuality.HIGH  ## local presentation (CityQuality): set_quality; never touches plans, props or collision
 var _quality_touched := false    ## a level below HIGH was applied since the last HIGH (HIGH then restores every flag)
 
+var mission: MissionWorld        ## the mission's doors, flag, asset and portal (setup_mission); null until fully set up
+var _mission_wip: MissionWorld   ## a stepped mission setup in progress (setup_mission_begin), null otherwise
 var _follow: Node3D
 var _follow_in := 0.0
 var _rings: Array[RingFrame] = []   ## deck_ring(k), made in build()
@@ -145,6 +147,13 @@ var _b_max_us := 0
 
 
 func build_begin(sec: SectionPlan, overrides: Dictionary = {}) -> void:
+	for m: MissionWorld in [mission, _mission_wip]:
+		if m != null:
+			m.teardown(false)            # its pieces live under the decks freed below
+			remove_child(m)
+			m.queue_free()
+	mission = null
+	_mission_wip = null
 	for d in decks:
 		remove_child(d)
 		d.queue_free()
@@ -472,6 +481,60 @@ func _process(delta: float) -> void:
 func set_quality(q: int) -> void:
 	quality = CityQuality.clamp_level(q)
 	apply_quality()
+	if mission != null:
+		mission.set_quality(quality)
+
+
+# --- Mission world (docs/design/city-ramps-and-stack.md "Mission world (phase 1)") ----------------------------------
+
+## Put the mission's pieces in the built stack (wave doors, flag masts, defend relays, the extraction portal and its hold
+## zone) from `plan` (a MissionPlan, or a Dictionary with its fields): a MissionWorld, also kept as `mission`. A second
+## call replaces the first; a new build() frees it. Without it the stack looks and collides exactly as before.
+func setup_mission(plan: Variant) -> MissionWorld:
+	setup_mission_begin(plan)
+	while not setup_mission_step(INF):
+		pass
+	return mission
+
+
+## Start setup_mission without running it (frees the current mission, or one being set up); setup_mission_step does the
+## work in chunks (MissionWorld.setup_step). `mission` stays null until setup_mission_done().
+func setup_mission_begin(plan: Variant) -> void:
+	for m: MissionWorld in [mission, _mission_wip]:
+		if m != null:
+			m.teardown(true)
+			remove_child(m)
+			m.queue_free()
+	mission = null
+	_mission_wip = MissionWorld.new()
+	_mission_wip.name = "Mission"
+	add_child(_mission_wip)
+	_mission_wip.quality = quality
+	_mission_wip.setup_begin(self, plan)
+
+
+## Run mission setup chunks until budget_ms of wall time is spent (at least one); true once finished (and on later calls),
+## when `mission` becomes the finished MissionWorld. False when no setup was begun.
+func setup_mission_step(budget_ms: float = 8.0) -> bool:
+	if _mission_wip == null:
+		return mission != null
+	if _mission_wip.setup_step(budget_ms):
+		mission = _mission_wip
+		_mission_wip = null
+		mission.set_quality(quality)
+		return true
+	return false
+
+
+func setup_mission_done() -> bool:
+	return _mission_wip == null and mission != null
+
+
+## 0..1 through the mission setup (1 once done; 0 when none was begun).
+func setup_mission_progress() -> float:
+	if _mission_wip != null:
+		return _mission_wip.setup_progress()
+	return 1.0 if mission != null else 0.0
 
 
 ## Re-apply the current quality to everything built (set_active_deck calls it, so it runs at the end of every build).

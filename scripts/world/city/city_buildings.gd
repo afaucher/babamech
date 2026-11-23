@@ -23,6 +23,7 @@ class Face:
 static func build(geo: CityGeo, xf: Transform3D, core_xf: Transform3D, plan: CityPlan, index: int, rng: RandomNumberGenerator) -> void:
 	var b: Dictionary = plan.buildings[index]
 	var lot: Dictionary = plan.lots[b["lot"]]
+	geo.tag("bld." + str(b["style"]))
 	match str(b["style"]):
 		"apartment": _apartment(geo, xf, b, lot, rng)
 		"office": _office(geo, xf, b, lot, rng)
@@ -30,6 +31,7 @@ static func build(geo: CityGeo, xf: Transform3D, core_xf: Transform3D, plan: Cit
 		"shops": _shops(geo, xf, b, lot, rng)
 		"civic": _civic(geo, xf, b, lot, rng)
 		"pillar": _pillar(geo, xf, core_xf, b, lot, rng, plan.p("ceiling"))
+		"tower": _tower(geo, xf, b, lot, rng, plan.p("ceiling"))
 
 
 # --- Shared pieces ---------------------------------------------------------------------------------------
@@ -374,7 +376,8 @@ static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 				var col := _pick(rng, awnings)
 				_pane(geo, f, c - h + 0.45, c + h - 0.45, 0.55, 3.0, _c("glass_dark"))
 				_pane(geo, f, c + h - 1.9, c + h - 0.75, 0.0, 2.6, _c("glass_teal"), 0.07)
-				_awning(geo, f, c - h + 0.3, c + h - 0.3, 3.3, 2.75, 1.5, col, col.darkened(0.25))
+				# 2 cm clear of the pilasters (u +/- 0.3): its double-sided end gussets lay in their side faces (z-fighting).
+				_awning(geo, f, c - h + 0.32, c + h - 0.32, 3.3, 2.75, 1.5, col, col.darkened(0.25))
 				_slab(geo, f, c - h + 0.5, c + h - 0.5, 3.5, 4.3, 0.12, _pick(rng, ["cream_light", "sage", "terracotta", "blue_grey"]))
 				_punched(geo, f, FH, PackedFloat32Array([c - h * 0.45, c + h * 0.45]), 0.65, 1.2, 2.5, _c("glass_teal"), trim)
 			for k in bays.size() + 1:
@@ -470,9 +473,12 @@ static func _pillar(geo: CityGeo, xf: Transform3D, core_xf: Transform3D, b: Dict
 		var lo := y0 + 0.8 if not lift else 9.0
 		for c in bays:
 			_pane(geo, f, c - pitch * 0.5 + 0.45, c + pitch * 0.5 - 0.45, lo, flare - 0.6, glass)
+		# Pilasters and the lift's channel stop under the capital's collar (flare - 0.8 .. flare, 0.8 m proud: it covers
+		# them): run up to `flare`, their tops lay in the collar's top face (z-fighting, tools/geometry_audit/).
+		var under := flare - CAPITAL_COLLAR
 		for k in bays.size() + 1:
 			var u := 0.9 + float(k) * pitch
-			_slab(geo, f, u - 0.45, u + 0.45, y0 - (0.5 if y0 <= 0.0 else 0.0), flare, 0.5, stone)
+			_slab(geo, f, u - 0.45, u + 0.45, y0 - (0.5 if y0 <= 0.0 else 0.0), under, 0.5, stone)
 		var y := maxf(y0, 6.5) + FH * 2.0
 		while y < flare - 2.0:
 			_slab(geo, f, 0.0, f.w, y - 0.3, y + 0.3, 0.22, _c("concrete_dark"))
@@ -484,10 +490,13 @@ static func _pillar(geo: CityGeo, xf: Transform3D, core_xf: Transform3D, b: Dict
 			_slab(geo, f, m - 5.8, m - 5.0, -0.5, 8.8, 0.7, _c("tactile"))
 			_slab(geo, f, m + 5.0, m + 5.8, -0.5, 8.8, 0.7, _c("tactile"))
 			_slab(geo, f, m - 5.8, m + 5.8, 8.0, 8.8, 0.7, _c("tactile"))
-			_slab(geo, f, m - 1.8, m + 1.8, 8.8, flare, 0.62, _c("sage_dark"))
+			_slab(geo, f, m - 1.8, m + 1.8, 8.8, under, 0.62, _c("sage_dark"))
 	capital(geo, core_xf, (core["size"] as Vector2) * 0.5, ceiling, stone)
 	if not (b["tiers"] as Array).is_empty():
 		_roof(geo, xf, b, b["tiers"][0], rng, ["planter", "ac"])
+
+
+const CAPITAL_COLLAR := 0.8     ## the collar under a pillar's capital: this tall, 0.8 m proud of the core's faces
 
 
 ## How a pillar meets the ceiling: a collar, a flare, and a drop panel (a thickened patch of the deck above) that the
@@ -495,9 +504,155 @@ static func _pillar(geo: CityGeo, xf: Transform3D, core_xf: Transform3D, b: Dict
 static func capital(geo: CityGeo, xf: Transform3D, half: Vector2, ceiling: float, col: Color) -> void:
 	var flare := ceiling - 7.5
 	var pad := CityStreets.DROP_PANEL
-	geo.box(xf, Vector3(0, flare - 0.4, 0), Vector3(half.x * 2.0 + 1.6, 0.8, half.y * 2.0 + 1.6), _c("concrete_dark"))
+	geo.box(xf, Vector3(0, flare - CAPITAL_COLLAR * 0.5, 0), Vector3(half.x * 2.0 + 1.6, CAPITAL_COLLAR, half.y * 2.0 + 1.6), _c("concrete_dark"))
 	geo.frustum(xf, Vector3.ZERO, flare, half + Vector2(0.5, 0.5), ceiling - 1.4, half + Vector2(pad - 1.0, pad - 1.0), col)
 	geo.box(xf, Vector3(0, ceiling - 0.6, 0), Vector3((half.x + pad) * 2.0, 1.8, (half.y + pad) * 2.0), _c("rib"), CityGeo.ALL - CityGeo.PY)
+
+
+# --- 7. Downtown towers (docs/design/city-downtown.md) ----------------------------------------------------
+# One family on varied bases: cream / sand frame, sky-blue glass. A slab (broad) has piers every 3.2 m and a spandrel
+# every two storeys over ribbon glazing; a point (slender) has broad corner piers, a centre fin and two tall glass strips
+# a face, a band line every two storeys. Every shaft ends in the pillars' collar, flare and drop panel (capital). Bases
+# (podium, terrace, the arcade's lobby and roof, its columns) are plan tiers and solids, drawn from the numbers the
+# collision is made from. Coarse on purpose (the zone's triangle budget).
+
+static func _tower(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary, rng: RandomNumberGenerator, ceiling: float) -> void:
+	var frame := _pick(rng, ["cream", "cream", "sand", "cream_light"])
+	var trim := _c("cream_light") if frame != _c("cream_light") else _c("sand")
+	var glass := _pick(rng, ["sky_blue", "sky_blue", "glass_blue"])
+	var shop := _pick(rng, ["glass_dark", "glass_teal"])
+	var dt: Dictionary = b["dt"]
+	for t: Dictionary in b["tiers"]:
+		match str(t.get("kind", "")):
+			"podium", "terrace":
+				_dt_block(geo, xf, t, lot, frame, trim, glass, shop)
+			"arcade":
+				_dt_block(geo, xf, t, lot, frame, trim, glass, shop)
+				if dt.has("gallery_frame"):      # the gallery's ceiling, seen from under the arcade
+					var g: Rect2 = dt["gallery_frame"]
+					geo.box(xf, Vector3(g.get_center().x, float(t["y0"]) - 0.05, g.get_center().y), Vector3(g.size.x, 0.1, g.size.y),
+							_c("concrete"), CityGeo.NY)
+			"lobby":
+				_dt_lobby(geo, xf, t, lot, int(dt.get("front", -1)), frame, trim, glass, shop)
+			"tower":
+				_dt_shaft(geo, xf, t, lot, b, frame, trim, glass, shop, ceiling)
+	for so: Dictionary in b.get("solids", []):
+		if so["kind"] == "column":
+			var off: Vector2 = so["off"]
+			var top := float(so["y1"]) - 0.1          # under the gallery's ceiling
+			geo.box(xf, Vector3(off.x, (top - 0.5) * 0.5, off.y), Vector3(DT_COL, top + 0.5, DT_COL), frame, CityGeo.NO_BOTTOM)
+			geo.box(xf, Vector3(off.x, 0.25, off.y), Vector3(DT_COL + 0.5, 0.5, DT_COL + 0.5), trim, CityGeo.NO_BOTTOM)
+			geo.box(xf, Vector3(off.x, top - 0.25, off.y), Vector3(DT_COL + 0.5, 0.5, DT_COL + 0.5), trim, CityGeo.ALL - CityGeo.PY)
+
+
+const DT_COL := CityPlan.DT_COLUMN
+
+
+## A podium or terrace box: shop fronts on a podium's street faces, a ribbon window a storey elsewhere, floor bands and
+## a cornice standing a little above the roof.
+static func _dt_block(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Dictionary, frame: Color, trim: Color, glass: Color, shop: Color) -> void:
+	_body(geo, xf, t, frame, _c("roof"))
+	var y0 := float(t["y0"])
+	var y1 := float(t["y1"])
+	var floors := maxi(int(round((y1 - y0) / FH)), 1)
+	for f in _faces(xf, t, lot):
+		if f.w < 3.0:
+			continue
+		for i in floors:
+			var y := y0 + float(i) * FH
+			if y0 <= 0.0 and i == 0 and f.street:
+				var bays := _bays(f.w, 5.2, 0.4)
+				var pitch := _pitch(f.w, 5.2, 0.4)
+				for c in bays:
+					_pane(geo, f, c - pitch * 0.5 + 0.4, c + pitch * 0.5 - 0.4, 0.3, FH - 0.5, shop)
+				for k in bays.size() + 1:
+					var u := 0.4 + float(k) * pitch
+					_slab(geo, f, u - 0.25, u + 0.25, -0.5, FH - 0.25, 0.15, trim)
+			else:
+				_pane(geo, f, 0.7, f.w - 0.7, y + 0.85, y + FH - 0.6, glass)
+			if i > 0:
+				_slab(geo, f, 0.0, f.w, y - 0.18, y + 0.18, 0.12, trim)
+		_slab(geo, f, -0.2, f.w + 0.2, y1 - 0.45, y1 + 0.45, 0.2, trim)
+
+
+## An arcade's lobby behind its gallery: glass across the gallery side, ribbon windows elsewhere (no cornice: the arcade's
+## roof sits on it).
+static func _dt_lobby(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Dictionary, front: int, frame: Color, trim: Color, glass: Color, shop: Color) -> void:
+	_body(geo, xf, t, frame, frame)
+	var y1 := float(t["y1"])
+	for f in _faces(xf, t, lot):
+		if f.w < 3.0:
+			continue
+		if f.side == front:
+			var bays := _bays(f.w, 6.0, 0.4)
+			var pitch := _pitch(f.w, 6.0, 0.4)
+			for c in bays:
+				_pane(geo, f, c - pitch * 0.5 + 0.4, c + pitch * 0.5 - 0.4, 0.3, y1 - 1.2, shop)
+			for k in bays.size() + 1:
+				var u := 0.4 + float(k) * pitch
+				_slab(geo, f, u - 0.25, u + 0.25, -0.5, y1 - 0.9, 0.15, trim)
+			_slab(geo, f, 0.0, f.w, y1 - 0.9, y1 - 0.5, 0.15, trim)
+		else:
+			var floors := maxi(int(round(y1 / FH)), 1)
+			for i in floors:
+				_pane(geo, f, 0.7, f.w - 0.7, float(i) * FH + 0.85, float(i + 1) * FH - 0.6, glass)
+
+
+## The first band height at or above y0 + 2 (bands sit at odd storey lines, clear of the 6.5 / 13 m roofs and cornices).
+static func _dt_first_band(y0: float) -> float:
+	var y := FH
+	while y < maxf(y0, 5.0) + 2.0:
+		y += FH * 2.0
+	return y
+
+
+## A tower shaft: glass box from its base into the ceiling slab, the family's frame over it, the collar and flare.
+static func _dt_shaft(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Dictionary, b: Dictionary, frame: Color, trim: Color,
+		glass: Color, shop: Color, ceiling: float) -> void:
+	var size: Vector2 = t["size"]
+	var off: Vector2 = t["off"]
+	var y0 := float(t["y0"])
+	var flare := ceiling - 7.5
+	var under := flare - CAPITAL_COLLAR
+	_body(geo, xf, t, glass, glass)
+	var slab := str(t.get("tower", "point")) == "slab"
+	var v0 := y0 - (0.5 if y0 <= 0.0 else 0.0)
+	var fin0 := 5.0 if y0 <= 0.0 else v0          # a ground lobby keeps its glass clear of the centre fin
+	for f in _faces(xf, t, lot):
+		var corner := minf(1.6, f.w * 0.16)
+		if slab:
+			var pitch := _pitch(f.w, 3.2, 0.0)
+			var n := int(round(f.w / pitch))
+			for k in n + 1:
+				var u := float(k) * pitch
+				var a := u - 0.3
+				var c := u + 0.3
+				if k == 0:
+					a = -0.35
+					c = 0.6
+				if k == n:
+					a = f.w - 0.6
+					c = f.w + 0.35
+				_slab(geo, f, a, c, v0, under, 0.35, frame)
+			var y := _dt_first_band(y0)
+			while y < under - 1.5:
+				_slab(geo, f, 0.0, f.w, y - 0.5, y + 0.5, 0.2, frame)
+				y += FH * 2.0
+		else:
+			_slab(geo, f, -0.5, corner, v0, under, 0.5, frame)
+			_slab(geo, f, f.w - corner, f.w + 0.5, v0, under, 0.5, frame)
+			if f.w >= 10.0:
+				_slab(geo, f, f.w * 0.5 - 0.35, f.w * 0.5 + 0.35, fin0, under, 0.45, frame)
+			var y := _dt_first_band(y0)
+			while y < under - 1.5:
+				_slab(geo, f, corner, f.w - corner, y - 0.16, y + 0.16, 0.12, trim)
+				y += FH * 2.0
+		if y0 <= 0.0 and f.side == int(b["front"]):
+			# A lobby at the plaza: dark glass and a canopy over the door.
+			if not slab:
+				_pane(geo, f, corner + 0.3, f.w - corner - 0.3, 0.0, 4.2, shop, 0.06)
+			_slab(geo, f, corner + 0.2, f.w - corner - 0.2, 4.4, 4.8, 2.0, trim)
+	capital(geo, xf * Transform3D(Basis.IDENTITY, Vector3(off.x, 0.0, off.y)), size * 0.5, ceiling, frame)
 
 
 ## A park pillar: a slim trunk that branches into the ceiling like a tree, standing in a planted ring.
