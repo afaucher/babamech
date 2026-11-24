@@ -11,8 +11,8 @@ extends TestCase
 ##    them beaten after GRACE), then the hold: "won", banner MISSION COMPLETE.
 
 const SEED := 7
-const PLAN := {"hold": 6.0, "linger": 600.0}
-const DIRECTOR := {"lull": 1.5, "lull_min": 1.5, "grace": 1.5, "follow_gap": 0.5}
+const PLAN := {"hold": 6.0}
+const DIRECTOR := {"rest_first": 1.5, "rest_last": 1.5, "arrival_rest": 1.0, "grace": 1.5, "follow_gap": 0.5}
 
 var td: TestDrive
 
@@ -78,7 +78,7 @@ func _won() -> void:
 		return
 	var rules := mf.rules
 	check(td.mission_checksum().ends_with("/" + mf.plan.checksum()), "the barrier checksum joins the plan's")
-	eq(rules.text(), "Raise the flag: 0 / 20 s", "the headline is deck 1's flag")
+	eq(rules.text(), "Raise the flag: 0%", "the headline is deck 1's flag")
 	var hud := td.get_node_or_null("MechHud") as MechHud
 	var gar := _garrison()
 	print("objectives: garrison per deck at the start %s (share %s)" % [str(gar), str(mf.plan.pool(0)["garrison"])])
@@ -103,13 +103,24 @@ func _won() -> void:
 			"the first line is the flag (%s)" % str(hs.get("lines", [])))
 		check(hud.mission_hud.zone_panel.visible and str(hs["zone"].get("label", "")) == "RAISING THE FLAG", "the zone bar shows")
 	eq(str(mf._pushed.get("zone:" + flag["id"], "")), "ours", "the world's flag ring is ours")
-	if not check(await _until(func() -> bool: return rules.obj_state(flag["id"]) == "done", 30.0, true), "the flag is raised"):
-		return
-	await _seconds(0.5)
-	check(mf.world.flag_raised(flag["id"]), "the world raised the flag")
-	if check(await _until(func() -> bool: return not mf.opened.is_empty(), 5.0, true), "the flag's alarm wave is ordered"):
-		var o: Dictionary = mf.opened[0]
+	# The capture brings its wave at once (step start, playtest 2026-11-23): ordered while the flag is still rising.
+	var wid := ""
+	var fid := ""
+	for w: Dictionary in mf.plan.pool(0)["reserve"]:
+		if str(w["for"]) == str(flag["id"]):
+			fid = str(w["id"])
+	var fo := {}
+	for o0: Dictionary in mf.opened:
+		if str(o0["wave"]) == fid:
+			fo = o0
+	if check(not fo.is_empty() and rules.obj_state(flag["id"]) == "active", "the flag's group (%s) is ordered when the capture starts (orders %s)" % [fid, str(mf.opened)]):
+		var o: Dictionary = fo
+		wid = str(o["wave"])
 		var src := mf.plan.source(o["source"])
+		var fs: Dictionary = rules.objective(flag["id"])["site"]
+		var sd := Vector2(float(src["x"]), float(src["s"])).distance_to(Vector2(float(fs["x"]), float(fs["s"])))
+		print("objectives: flag wave %s from %s, %.0f m from the flag site" % [wid, o["source"], sd])
+		check(sd >= PacingDirector.MIN_SOURCE_DIST, "its source is >= 60 m from the (snapped) flag site (%.0f m)" % sd)
 		if str(src.get("kind", "")) in ["gate", "lift"]:
 			near(float(mf.world.source_state(o["source"])["open_at"]), float(o["open_at"]), 0.001, "the door opens at the order's open_at")
 		if hud != null:
@@ -117,12 +128,18 @@ func _won() -> void:
 			check(hud.mission_hud.alert_panel.visible, "the reinforcement line shows")
 			var al: Array = hud.mission_hud.state().get("alerts", [])
 			check(not al.is_empty() and str(al[-1]["text"]).begins_with("Reinforcements, "), "it names the source (%s)" % str(al))
-		# The wave really arrives (antigravity's EnemySpawner.spawn_wave, called at open_at): units tagged with its id.
-		var wid := str(o["wave"])
+		# The wave really arrives at its door while the crew holds the flag (antigravity's EnemySpawner.spawn_wave).
 		if check(await _until(func() -> bool: return _wave_units(wid) > 0, float(o["open_at"]) - mf.now() + 4.0),
 				"wave %s spawned at its door" % wid):
-			print("objectives: wave %s arrived with %d units" % [wid, _wave_units(wid)])
+			print("objectives: wave %s arrived with %d units during the capture" % [wid, _wave_units(wid)])
 		check(mf.unspawned.is_empty(), "no wave fell back to the stub (%s)" % str(mf.unspawned))
+	if not check(await _until(func() -> bool: return rules.obj_state(flag["id"]) == "done", 30.0, true), "the flag is raised"):
+		return
+	await _seconds(0.5)
+	check(mf.world.flag_raised(flag["id"]), "the world raised the flag")
+	if wid != "":
+		check(mf.director.status(wid) == "released", "the flag's wave stays delivered after the capture")
+
 
 	# Decks 2 and 3: the defends -------------------------------------------------------------------------------------
 	for k in [1, 2]:

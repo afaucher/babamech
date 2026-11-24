@@ -50,7 +50,7 @@ func setup(td: TestDrive) -> void:
 	# Friendly fire (weapons.md §4.6): the crew's mission launch param when the drive carries one, else on (the default).
 	world.friendly_fire = bool(td.get("friendly_fire")) if "friendly_fire" in td else true
 	add_child(world)
-	world.prewarm_mesh_pool(MESH_POOL_PREWARM, ImpactFx.pool_plan() + Rocket.pool_plan())
+	world.prewarm_mesh_pool(MESH_POOL_PREWARM, ImpactFx.pool_plan() + Rocket.pool_plan() + RepairDrone.pool_plan())
 	CombatWorld.warm_target_scripts()    # splash's per-script check, at load instead of on a target's first splash
 	var crew := td.crewed and Net.online()
 	if crew:
@@ -162,9 +162,16 @@ func _bind_hud(td: Node) -> void:
 func _physics_process(delta: float) -> void:
 	if world == null:
 		return
+	var pp0 := Time.get_ticks_usec() if PerfProbe.on else 0   # bench instrumentation (tests/bench_bot_perf.gd)
 	rack.step(delta)
+	var pp1 := Time.get_ticks_usec() if PerfProbe.on else 0
 	if net != null:
 		net.pre_advance()
 	world.advance(delta)
+	var pp2 := Time.get_ticks_usec() if PerfProbe.on else 0
 	if net != null:
 		net.post_step(delta)
+	if PerfProbe.on:
+		PerfProbe.add("combat.rack.local", pp1 - pp0)
+		PerfProbe.add("combat.advance", pp2 - pp1)
+		PerfProbe.add("combat.net_post", Time.get_ticks_usec() - pp2)

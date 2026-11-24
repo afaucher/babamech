@@ -14,6 +14,10 @@ const LOADOUTS := {
 	"missiles_ac": {"side_l": "autocannon", "side_r": "swivel", "shoulder_l": "missiles", "shoulder_r": "", "back": "mortar"},
 	"railgun_laser": {"side_l": "laser", "side_r": "autocannon", "shoulder_l": "railgun", "shoulder_r": "", "back": "mortar"},
 	"flamer_brawler": {"side_l": "flamer", "side_r": "gatling", "shoulder_l": "rockets", "shoulder_r": "", "back": ""},
+	# The Bulwark's four hardpoints (side_l / side_r take side and shoulder weapons, back_l / back_r back items): the bot
+	# Bulwark's kit in tests/test_bot_bulwark_*: a sustained gun, a rocket pod for burst, the mortar for roof turrets it
+	# cannot climb to, a radiator for its heavier heat.
+	"bulwark": {"side_l": "autocannon", "side_r": "rockets", "back_l": "mortar", "back_r": "radiator"},
 }
 
 const PROFILES := {
@@ -51,6 +55,14 @@ const PROFILES := {
 		"wait_on_target": false,
 		"strafe_flip_min_s": 2.6,
 		"strafe_flip_max_s": 4.8,
+		# Mission layer (MissionBot, docs/design/player-ai.md §9.7): weakest-core share that sends it into cover while
+		# holding a zone, s of a stalled hold before it hunts, m to the target enemy where travel turns to fighting,
+		# share of telegraphed dodges it takes while travelling, eagerness to revive (kept for revive, not built).
+		"survival_hp": 0.25,
+		"hunt_patience": 20.0,
+		"engage_radius": 70.0,
+		"travel_dodge": 0.0,
+		"revive_priority": 0.2,
 	},
 	"average": {
 		"id": "average",
@@ -86,6 +98,11 @@ const PROFILES := {
 		"wait_on_target": true,
 		"strafe_flip_min_s": 1.7,
 		"strafe_flip_max_s": 3.4,
+		"survival_hp": 0.4,
+		"hunt_patience": 15.0,
+		"engage_radius": 80.0,
+		"travel_dodge": 0.5,
+		"revive_priority": 0.5,
 	},
 	"veteran": {
 		"id": "veteran",
@@ -121,6 +138,11 @@ const PROFILES := {
 		"wait_on_target": true,
 		"strafe_flip_min_s": 1.2,
 		"strafe_flip_max_s": 2.4,
+		"survival_hp": 0.45,
+		"hunt_patience": 12.0,
+		"engage_radius": 85.0,
+		"travel_dodge": 0.0,
+		"revive_priority": 0.8,
 	},
 	"brawler": {
 		"id": "brawler",
@@ -156,6 +178,11 @@ const PROFILES := {
 		"wait_on_target": true,
 		"strafe_flip_min_s": 1.3,
 		"strafe_flip_max_s": 2.6,
+		"survival_hp": 0.3,
+		"hunt_patience": 6.0,
+		"engage_radius": 50.0,
+		"travel_dodge": 0.3,
+		"revive_priority": 0.4,
 	},
 }
 

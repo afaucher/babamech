@@ -9,7 +9,8 @@ extends Node3D
 ## `chassis_id` picks the chassis (MechCatalog.CHASSIS / ChassisParts): its parts, layout, mounts, leg rest lengths, pose
 ## angles and lab params all come from ChassisParts.of(chassis_id) (parts()). configure() with a different chassis also
 ## resets the leg params and leg_bend to that chassis' defaults. "strider" (default): the description above; "bulwark":
-## the squat heavy biped (BulwarkMeshes: barrel hull, forward-knee sumo legs, two side guns, two back mounts).
+## the heavy gun platform (BulwarkMeshes: a low wide hull slung between two hip pods, the pilot in a well on its deck,
+## long forward-knee legs, two side guns, two back mounts).
 ##
 ## Legs are posed by forward kinematics from a crouch value (with the default `leg_bend` -1: thigh back to the knee,
 ## shin forward to the ankle, tarsus back to the foot; +1 is the same chain mirrored fore-aft), so the hip height
@@ -323,7 +324,10 @@ func _build_placeholder(s: float) -> void:
 
 func _process(delta: float) -> void:
 	_t += delta * time_scale
+	var pp0 := Time.get_ticks_usec() if PerfProbe.on else 0   # bench instrumentation (tests/bench_bot_perf.gd)
 	pose()
+	if PerfProbe.on:
+		PerfProbe.add("proc.model_pose", Time.get_ticks_usec() - pp0)
 
 
 ## Leg segment lengths in model units: (thigh, shin, tarsus).

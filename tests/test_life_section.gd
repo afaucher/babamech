@@ -496,7 +496,7 @@ func _tram_body_checks() -> void:
 				ok = false
 			var cs := LifeTram.car_s(float(u.tram.pose(u.now)["s"]), c)
 			var shape := u.tram_cars.bodies[c].get_child(0) as CollisionShape3D
-			if u.tram.car_inside(cs) == shape.disabled:
+			if u.tram.car_solid(cs) == shape.disabled:
 				ok = false
 			if not shape.disabled:
 				enabled += 1

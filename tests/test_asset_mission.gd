@@ -2,13 +2,13 @@ extends TestCase
 ## Mission assets end to end in a SOLO stack drive in plan mode (TestDrive.objectives; fixture from
 ## tests/test_mission_objectives.gd, seed 7: deck 2's primary is a defend). MissionFlow registers the relay's body through
 ## TestDriveCombat.add_asset; enemy-team hits on that AssetTarget go through CombatWorld.resolve_hit (the path a shell's
-## direct hit takes) and must reach MissionFlow.damage_asset: asset_hp drops by damage / ASSET_MAX_HP, the target's
+## direct hit takes) and must reach MissionFlow.damage_asset: asset_hp drops by damage / asset_max_hp() (ASSET_MAX_HP x the crew scale), the target's
 ## mirrored HP follows (set_hp), and a lethal hit ends the mission "lost" / objective_failed. Before its defend is active
 ## the relay is no target and damage_asset does nothing (Missions' playtest: garrisons destroyed unattended relays).
 
 const SEED := 7
 const PLAN := {"hold": 6.0, "linger": 600.0}
-const DIRECTOR := {"lull": 1.5, "lull_min": 1.5, "grace": 1.5, "follow_gap": 0.5}
+const DIRECTOR := {"rest_first": 1.5, "rest_last": 1.5, "arrival_rest": 1.0, "grace": 1.5, "follow_gap": 0.5}
 
 var td: TestDrive
 
@@ -68,12 +68,12 @@ func _run() -> void:
 	rec["team"] = "enemy"
 	var h := w.resolve_hit(rec, st, t, "body", c, Vector3.UP, Vector3.DOWN, 120.0)
 	check(h != null, "the host decides the enemy hit")
-	near(float(mf.asset_hp.get(id, 0.0)), 1.0 - 120.0 / MissionFlow.ASSET_MAX_HP, 1e-4, "asset_hp dropped by 120 points")
+	near(float(mf.asset_hp.get(id, 0.0)), 1.0 - 120.0 / mf.asset_max_hp(), 1e-4, "asset_hp dropped by 120 points (of the crew-scaled relay HP)")
 	check(await _until(func() -> bool: return absf(t.hp_fraction() - float(mf.asset_hp[id])) < 0.011, 2.0),
 		"the target's mirrored HP follows the mission's (%.3f vs %.3f)" % [t.hp_fraction(), float(mf.asset_hp[id])])
 	eq(mf.rules.outcome, "", "still running")
 	rec["shot_index"] = 9101
-	w.resolve_hit(rec, st, t, "body", c, Vector3.UP, Vector3.DOWN, MissionFlow.ASSET_MAX_HP)
+	w.resolve_hit(rec, st, t, "body", c, Vector3.UP, Vector3.DOWN, mf.asset_max_hp())
 	near(float(mf.asset_hp.get(id, 1.0)), 0.0, 1e-4, "a lethal hit empties the relay")
 	if check(await _until(func() -> bool: return mf.rules.outcome != "", 3.0), "an outcome after the relay is destroyed"):
 		eq(mf.rules.outcome, "lost", "lost")

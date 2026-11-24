@@ -30,6 +30,10 @@ var target_id := ""
 var owner_peer := 0
 var team := ""                    ## faction ("player", "enemy", or "" neutral); same team spared (CombatWorld.spares)
 var mass_class := "mech"
+## ARMOUR (weapons.md §3.10): spawn data, the same on every machine, never changed in play. A hit on an armoured target
+## has its damage scaled by the weapon's `armor_mult` (default 1.0; flak 0.35) where the hit is decided
+## (CombatWorld.armor_scaled). Player mechs, the relay and armoured enemy classes (EnemyCatalog "armored") set it.
+var armored := false
 var max_hp := {"body": 1000.0}
 var hp := {}
 ## Hit spheres in local space: [{"component": String, "center": Vector3, "radius": float}].
@@ -69,7 +73,7 @@ func _init() -> void:
 
 
 func net_fields() -> Dictionary:
-	return {"target_id": Net.SPAWN, "owner_peer": Net.SPAWN, "team": Net.SPAWN, "mass_class": Net.SPAWN, "max_hp": Net.SPAWN, "hp": Net.OWNER,
+	return {"target_id": Net.SPAWN, "owner_peer": Net.SPAWN, "team": Net.SPAWN, "mass_class": Net.SPAWN, "armored": Net.SPAWN, "max_hp": Net.SPAWN, "hp": Net.OWNER,
 		"hit_shapes": Net.SPAWN, "heat": Net.OWNER, "knock": Net.OWNER, "aim_kick": Net.OWNER, "ground_y": Net.SPAWN, "up": Net.SPAWN,
 		"probe_height": Net.SPAWN, "body_radius": Net.SPAWN,
 		"shapes_rev": Net.LOCAL, "wc_xf": Net.LOCAL, "wc_rev": Net.LOCAL, "wc_n": Net.LOCAL, "wc_centers": Net.LOCAL,

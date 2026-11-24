@@ -89,6 +89,10 @@ func _track_aim(target_pos: Vector3, dt: float) -> float:
 	return absf(wrapf(want_yaw - _yaw, -PI, PI)) + absf(want_pitch - _pitch)
 
 
+func _sensor_yaw() -> float:   # perception: the forward cone follows the gun, which glances round while idle
+	return _yaw
+
+
 func puppet_aim() -> Vector2:   # co-op puppet (W4)
 	return Vector2(_yaw, _pitch)
 

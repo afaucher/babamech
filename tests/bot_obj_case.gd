@@ -6,6 +6,8 @@ extends TestCase
 ## objective types the test was written for (`expect`: {id: type}; a plan change that moves them fails loudly: re-scan
 ## the seeds, docs/design/player-ai.md "Mission bot: objectives"). Prints when each objective finished, the bot's task
 ## list and its stats. The sim runs at SPEED x (Engine.time_scale, as tests/bot_nav_case.gd).
+## PROFILE: "veteran" by default; env BABAMECH_BOT_PROFILE=rookie|average|veteran|brawler plays another BotProfile (A/B of
+## the skill profiles in objective missions; an unknown id falls back to veteran). The limits were measured on veteran.
 
 var seed_n := 1
 var goal_id := ""                 ## objective id to finish; "" = the mission won
@@ -13,6 +15,12 @@ var expect := {}                ## {objective id: type} the seed must still have
 var limit := 300.0              ## s of game time
 var bonuses := false            ## MissionBot.bonuses (off: the per-type tests stay short)
 const SPEED := 2.0
+const PROFILE := "veteran"
+
+
+static func profile() -> String:
+	var v := OS.get_environment("BABAMECH_BOT_PROFILE").strip_edges().to_lower()
+	return v if BotProfile.has_profile(v) else PROFILE
 
 
 static func speed() -> float:
@@ -26,7 +34,8 @@ func _init() -> void:
 
 func setup() -> void:
 	TestDrive.solo_launch = {"seed": seed_n, "mode": TestDrive.MODE_STACK, "objectives": true}
-	TestDrive.bot_profile = "veteran"
+	TestDrive.bot_profile = profile()
+	print("[Test] bot profile %s" % TestDrive.bot_profile)
 	TestDrive.dev_bot_travel = false
 	MissionBot.bonuses = bonuses
 	CombatWorld.dev_enemy_damage = 1.0

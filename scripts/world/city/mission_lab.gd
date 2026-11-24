@@ -2,20 +2,25 @@ class_name MissionLab
 extends RefCounted
 ## The city lab's mission options (CityLab, site "stack"): option "mission" (off / doors / flag / asset / portal / all)
 ## puts MissionWorld in the stack from MissionWorld.stand_in_plan (MissionPlan's fields) and loops what it names; option
-## "mission_phase" pins one look for a screenshot instead of the loop (shut / warn / open / sealed / alien / ours / intact
-## / damaged / wreck / half / full). Cameras mission_gate / mission_lift / mission_flag / mission_asset / mission_portal
-## stand at a mech's eye height (8 m) 40-60 m off the piece, on the piece's deck.
+## "mission_phase" pins one look for a screenshot instead of the loop (shut / warn / opening / open / sealed / alien / ours /
+## intact / damaged / wreck / half / full; warn: the silent state before the leaves move, opening: the leaves moving with
+## the siren and lamps). Cameras mission_gate / mission_lift / mission_flag / mission_asset / mission_portal stand at a
+## mech's eye height (8 m) 40-60 m off the piece, on the piece's deck; mission_bay looks into the gate's staging bay from
+## the street (22 m out, 6.5 m up).
 ##   --city site=stack,seed=1,mission=all,mission_phase=warn,camera=mission_gate
 
 const MODES := ["off", "doors", "flag", "asset", "portal", "all"]
-const PHASES := ["loop", "shut", "warn", "open", "sealed", "alien", "ours", "intact", "damaged", "wreck", "half", "full"]
-const CAMERAS := ["mission_gate", "mission_lift", "mission_flag", "mission_flag_far", "mission_asset", "mission_portal"]
-const LOOP := 20.0               ## s per door cycle in the loop (opens 8 s in, holds 6 s)
+const PHASES := ["loop", "shut", "warn", "opening", "open", "sealed", "alien", "ours", "intact", "damaged", "wreck", "half", "full"]
+const CAMERAS := ["mission_gate", "mission_bay", "mission_air", "mission_air_farm", "mission_lift", "mission_flag", "mission_flag_far",
+		"mission_asset", "mission_portal"]
+const LOOP := 20.0               ## s per door cycle in the loop (the leaves start to move 8 s in, open 3 s, hold 6 s)
 
 var mw: MissionWorld
 var t := 0.0                     ## the lab's mission clock
 var _gate: Variant
 var _lift: Variant
+var _air: Variant                ## an air door on a bulkhead end wall (else any), on the deck on show when there is one
+var _air_farm: Variant           ## an air door on a farm end wall, if any
 var _flag: Variant
 var _asset: Variant
 var _mode := "off"
@@ -39,6 +44,10 @@ func apply(lab: CityLab) -> void:
 	mw = lab.stack.setup_mission(plan)
 	_gate = _pick(plan, "gate", lab)
 	_lift = _pick(plan, "lift", lab)
+	_air = _pick_air(lab, "bulkhead")
+	_air_farm = _pick_air(lab, "farm")
+	if _air == null:
+		_air = _air_farm
 	_flag = _first_key(mw._flags)
 	_asset = _first_key(mw._assets)
 	t = 0.0
@@ -88,15 +97,34 @@ func _pick(plan: Variant, kind: String, lab: CityLab) -> Variant:
 	return best
 
 
+## The first air door whose end wall is of `kind` (bulkhead / farm), on the deck on show first; null when none.
+func _pick_air(lab: CityLab, kind: String) -> Variant:
+	var best: Variant = null
+	var best_score := -1
+	for id: Variant in mw._sources:
+		var s: Dictionary = mw._sources[id]
+		if str(s.get("kind", "")) != "air" or not mw._doors.has(id):
+			continue
+		var d := mw._deck(int(s["deck"]))
+		var side := CityPlan.SIDE_EDGE.find(str(s["edge"]))
+		if side < 0 or str(d.plan.boundary()[side]["kind"]) != kind:
+			continue
+		var score := 4 if lab.district != null and int(s["deck"]) == lab.district.plan.deck else 0
+		if score > best_score:
+			best = id
+			best_score = score
+	return best
+
+
 ## A pinned phase: fixed calls, then a clock that loops a short window round the moment worth showing.
 func _pin() -> void:
 	if _phase == "loop" or mw == null:
 		return
-	for id: Variant in [_gate, _lift]:
+	for id: Variant in [_gate, _lift, _air, _air_farm]:
 		if id == null:
 			continue
 		match _phase:
-			"warn", "open": mw.open_source(id, 10.0, 1.0e6)
+			"warn", "opening", "open": mw.open_source(id, 10.0, 1.0e6, 10.0)
 			"sealed": mw.close_source(id)
 	match _phase:
 		"ours": mw.set_flag(_flag, true, 0.0)
@@ -120,8 +148,9 @@ func tick(delta: float) -> void:
 	if _phase != "loop":
 		var clock := 0.0
 		match _phase:
-			"warn": clock = 6.5 + fposmod(t, 1.4)     # beacons turning, leaves still shut (warn ends at 8 for a gate)
-			"open": clock = 12.0 + t
+			"warn": clock = 6.5 + fposmod(t, 1.4)     # silent, leaves still shut (warn ends at open_at 10)
+			"opening": clock = 10.4 + fposmod(t, 2.2)  # leaves moving, siren, lamps flashing (opening 10 .. 13)
+			"open": clock = 14.0 + t
 			_: clock = 20.0 + t
 		mw.advance_to(clock)
 		return
@@ -130,7 +159,7 @@ func tick(delta: float) -> void:
 		_cycle = cyc
 		var base := float(cyc) * LOOP
 		if _mode == "doors" or _mode == "all":
-			for id: Variant in [_gate, _lift]:
+			for id: Variant in [_gate, _lift, _air, _air_farm]:
 				if id != null:
 					mw.open_source(id, base + 8.0, 6.0)
 		if _mode == "flag" or _mode == "all":
@@ -160,6 +189,17 @@ func view(cam: String) -> Dictionary:
 				var gh := (node as MissionProps.GateDoor).gh
 				eye = Vector3(-14.0, 8.0, 44.0)
 				target = Vector3(-6.0, gh * 0.55, 0.0)
+		"mission_air", "mission_air_farm":     # looking up at an air door from the street, 50 m off (its frame is at the sill)
+			var aid: Variant = _air if cam == "mission_air" else _air_farm
+			node = mw._doors.get(aid) if aid != null else null
+			if node != null:
+				eye = Vector3(-3.0, 8.0 - MissionWorld.AIR_SILL, 38.0)     # in its flight corridor (clear of tall buildings)
+				target = Vector3(-1.0, 1.5, 0.0)
+		"mission_bay":
+			node = mw._doors.get(_gate) if _gate != null else null
+			if node != null:
+				eye = Vector3(0.0, 6.5, 22.0)
+				target = Vector3(0.0, 4.5, -20.0)
 		"mission_lift":
 			node = mw._doors.get(_lift) if _lift != null else null
 			eye = Vector3(-12.0, 8.0, 40.0)

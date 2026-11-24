@@ -23,6 +23,7 @@ func setup() -> void:
 	_weapons()
 	_pusher()
 	_decks()
+	_tree_tint()
 	await _grid_matches_brute_force()
 	await _roof()
 	finish()
@@ -175,6 +176,68 @@ func _props() -> CityProps:
 	add_child(p)
 	p.set_physics_process(false)
 	return p
+
+
+## Tree colour jitter (CityPalette.tree_tint, docs/design/city-variety.md "Tree colour"): trees of one district differ in
+## foliage colour, a tree keeps its tint across two builds and through a topple (standing / falling / down / shoved), every
+## tinted leaf green stays within the documented ranges (and in the green family), trunks barely move, untinted props
+## keep plain drawing, and the layout (checksum) and triangle count are what they were.
+func _tree_tint() -> void:
+	var before := CityProps.layout_checksum(CityProps.layout(plan))
+	var a := _props()
+	var b := _props()
+	eq(CityProps.layout_checksum(a.items), before, "tree tint: the layout checksum is unchanged")
+	eq(a.tri_count(), b.tri_count(), "tree tint: same triangles from two builds")
+	var trees: Array[int] = []
+	for it: Dictionary in a.items:
+		if it["type"] == "tree":
+			trees.append(int(it["id"]))
+	check(trees.size() >= 4, "tree tint: the district has trees (%d)" % trees.size())
+	var shades := {}
+	var leaves := [CityPalette.C["leaf_dark"], CityPalette.C["leaf"], CityPalette.C["leaf_light"]]
+	var trunk: Color = CityPalette.C["trunk"]
+	check(not CityPalette.is_leaf(trunk) and not CityPalette.is_leaf(CityPalette.C["cream_light"]), "tree tint: trunk and planter box are not leaf")
+	var worst := Vector3.ZERO
+	for id in trees:
+		var m := a.tint_of(id)
+		eq(m, b.tint_of(id), "tree tint: tree %d has the same tint in two builds" % id)
+		eq(m, CityProps.tree_tint(plan.cosmetic_seed(), id), "tree tint: tree %d drawn with its own tint" % id)
+		shades[m.to_html()] = true
+		for base: Color in leaves:
+			check(CityPalette.is_leaf(base), "tree tint: leaf green %s is leaf" % base.to_html())
+			var c := CityPalette.tree_shade(base, m)
+			var dh := absf(wrapf(c.h - base.h, -0.5, 0.5))
+			var ds := absf(c.s / base.s - 1.0)
+			var dv := absf(c.v / base.v - 1.0)
+			worst = Vector3(maxf(worst.x, dh), maxf(worst.y, ds), maxf(worst.z, dv))
+			# One multiplier for all greens: the documented ranges hold for "leaf" exactly, the others within 25 %.
+			check(dh <= CityPalette.TREE_HUE * 1.25 + 1e-4 and ds <= CityPalette.TREE_SAT * 1.25 + 0.01
+					and dv <= CityPalette.TREE_VAL * 1.25 + 1e-4, "tree tint: tree %d %s within range (dh %.3f ds %.3f dv %.3f)" % [id, base.to_html(), dh, ds, dv])
+			check(c.h > 0.2 and c.h < 0.42 and CityPalette.is_leaf(c), "tree tint: tree %d stays green (hue %.3f)" % [id, c.h])
+		var tc := CityPalette.tree_shade(trunk, m)
+		check(absf(tc.v / trunk.v - 1.0) <= CityPalette.TREE_TRUNK_VAL + 1e-4 and absf(tc.h - trunk.h) < 1e-3, "tree tint: trunk %d barely moves" % id)
+	print("tree tint: %d trees, %d shades, worst dh %.3f ds %.3f dv %.3f" % [trees.size(), shades.size(), worst.x, worst.y, worst.z])
+	check(shades.size() >= trees.size() * 3 / 4,"tree tint: trees differ in foliage colour (%d shades for %d trees)" % [shades.size(), trees.size()])
+	check(a.tint_of(trees[0]) != a.tint_of(trees[1]), "tree tint: two trees of one district differ")
+	# Through every state of one tree: the same instance, the same tint.
+	var id0 := trees[0]
+	var m0 := a.tint_of(id0)
+	a.request(id0, CityProps.TOPPLE, Vector2(1, 0))
+	a.advance_to(0.4)
+	eq(a.state_of(id0), CityProps.FALLING, "tree tint: falling")
+	eq(a.tint_of(id0), m0, "tree tint: the falling tree keeps its tint")
+	a.advance_to(5.0)
+	eq(a.state_of(id0), CityProps.DOWN, "tree tint: down")
+	eq(a.tint_of(id0), m0, "tree tint: the fallen tree keeps its tint")
+	a.request(id0, CityProps.SHOVE, Vector2(0, 1), 6.0)
+	a.advance_to(5.1)
+	eq(a.tint_of(id0), m0, "tree tint: the shoved tree keeps its tint")
+	a.restore(a.snapshot())
+	eq(a.tint_of(id0), m0, "tree tint: after a snapshot round trip")
+	var lamp := _first(a, "lamp")
+	eq(a.tint_of(lamp), Color(1, 1, 1, 1), "tree tint: a lamp is not tinted")
+	a.queue_free()
+	b.queue_free()
 
 
 func _first(p: CityProps, type: String) -> int:

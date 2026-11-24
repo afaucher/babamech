@@ -1353,7 +1353,8 @@ func _tram_step() -> void:
 		var cs := LifeTram.car_s(float(p["s"]), i)
 		var xf := _geo.frame(tram.x, cs, 0.0)
 		var inside := tram.car_inside(cs)
-		tram_cars.place(i, (lights if near else -2) if inside else -1, xf, world * xf)
+		tram_cars.place(i, (lights if near else -2) if inside else -1, xf, world * xf, tram.car_solid(cs))
+	tram_cars.settle(now)      # collision: END_CLEAR rule, no switching on around a body, pinch -> crush + pass through
 
 
 ## Car i's transform in world space now (exact; floor centre, local +Z along +s), and whether it is in the map.

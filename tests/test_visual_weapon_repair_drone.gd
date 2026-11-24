@@ -40,6 +40,10 @@ func setup() -> void:
 		check(r.drone.beamed().size() >= 2, "beams to the lab mech and the repair dummy (%d)" % r.drone.beamed().size())
 		check(r.drone.healed_total > 0.0, "it repairs (%.1f HP)" % r.drone.healed_total)
 		check(r.drone.ring_shown(), "the ground ring shows while it repairs")
+		eq(r.drone.scans_shown(), r.drone.beamed().size(), "a scan look on every repaired target")
+		for t: CombatTarget in r.drone.beamed():
+			var fit := r.drone.scan_fit(t)
+			print("[drone] scan fit %s: h %.2f m, r %.2f m" % [t.target_id, fit["h"], fit["r"]])
 		near(r.drone.orbit_distance(), 5.0, 0.3, "on its orbit 5 m out (%.2f)" % r.drone.orbit_distance())
 	eq(r.world.equipment_look.shown(WeaponRangeLab.SHOOTER), "cradle", "the back mount shows the empty cradle")
 	var img := await sc.grab("weapon_repair_drone")
@@ -52,6 +56,26 @@ func setup() -> void:
 	await frames(4)
 	var img_c := await sc.grab("weapon_repair_drone_close")
 	sc.not_blank(img_c, Rect2(0.3, 0.05, 0.7, 0.9), "repair drone close")
+	# 1b'. The scan on the lab mech, from its front-right: two moments of the travelling ring.
+	lab._yaw = 0.6
+	lab._pitch = 0.12
+	lab._dist = 26.0
+	lab._place_camera()
+	await frames(4)
+	var img_s := await sc.grab("weapon_repair_drone_scan")
+	sc.not_blank(img_s, Rect2(0.2, 0.05, 0.6, 0.9), "repair drone scan")
+	await get_tree().create_timer(RepairDrone.SCAN_PERIOD * 0.3).timeout
+	var img_s2 := await sc.grab("weapon_repair_drone_scan2")
+	if img_s != null and img_s2 != null and img_s.get_size() == img_s2.get_size():
+		var diff := 0.0
+		var n := 0
+		for y in range(0, img_s.get_height(), 8):
+			for x in range(0, img_s.get_width(), 8):
+				var a := img_s.get_pixel(x, y)
+				var b := img_s2.get_pixel(x, y)
+				diff += absf(a.r - b.r) + absf(a.g - b.g) + absf(a.b - b.b)
+				n += 1
+		check(diff / maxf(n, 1) > 0.002, "the scan ring moved between the two shots (%.4f)" % (diff / maxf(n, 1)))
 	# 1c. Mid-return: cut this drone's life so it is halfway home now (fire stays "hold": the next launch waits until it
 	# has docked; changing an option would rebuild the lab and drop the drone).
 	if r.drone != null and is_instance_valid(r.drone):

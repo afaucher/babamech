@@ -77,11 +77,11 @@ func _run() -> void:
 		_cam.fov = 40.0
 		match v:
 			"front34":
-				from = Vector3(10.5, 5.5, -13.0)
-				look = Vector3(0, 3.0, 0)
+				from = Vector3(13.0, 7.5, -16.0)
+				look = Vector3(0, 4.6, 0)
 			"side":
-				from = Vector3(19.0, 3.5, 0.0)
-				look = Vector3(0, 3.0, 0)
+				from = Vector3(23.0, 5.0, 0.0)
+				look = Vector3(0, 4.6, 0)
 			"back_third_person":
 				_cam.fov = 70.0
 				var pivot := Vector3(3.2, 9.5, 0.0)
@@ -89,19 +89,19 @@ func _run() -> void:
 				from = pivot - dir * 16.0
 				look = pivot + dir * 10.0
 			"below":
-				from = Vector3(5.0, 0.4, -9.0)
-				look = Vector3(0, 3.2, 0)
+				from = Vector3(6.0, 0.4, -11.0)
+				look = Vector3(0, 4.8, 0)
 				_cam.fov = 50.0
 			"vs_strider":
 				_other.visible = true
 				_other.position = Vector3(8.5, 0, 2.0)
-				_main.position = Vector3(-4.5, 0, 0)
+				_main.position = Vector3(-5.0, 0, 0)
 				from = Vector3(12.0, 8.0, -26.0)
 				look = Vector3(2.0, 5.0, 0)
 			"stride":
 				_stride(_main)
-				from = Vector3(15.0, 4.0, -9.0)
-				look = Vector3(0, 2.6, 0)
+				from = Vector3(18.0, 5.5, -11.0)
+				look = Vector3(0, 4.2, 0)
 		_cam.look_at_from_position(from, look, Vector3.UP)
 		for i in 4:
 			await RenderingServer.frame_post_draw
@@ -111,17 +111,17 @@ func _run() -> void:
 	get_tree().quit()
 
 
-## Mid-stride: the right foot lifted to the max foot lift and a stride ahead, the left planted a stride behind, the body
-## leaning a little into the step.
+## Mid-stride: the right foot lifted (Gait's 1 m step height, 0.5 model units, or the max foot lift if lower) and half a
+## stride ahead, the left planted half a stride behind (a 2.4 m stride), the body leaning a little into the step.
 static func _stride(m: MechModel) -> void:
 	var l := m.leg_lengths()
-	var lift := m.max_foot_lift()
+	var lift := minf(m.max_foot_lift() * 0.9, 0.5)
 	var off := Vector3(0, -0.03, 0)
 	var rot := Vector3(-0.06, 0, 0.03)
 	var legs: Array = []
 	for side: float in [-1.0, 1.0]:
 		var hip := m.hip_posed(side, off, rot)
-		var foot := Vector3(m.hip_local(side).x, lift * 0.9, -0.32) if side > 0.0 else Vector3(m.hip_local(side).x, 0.0, 0.34)
+		var foot := Vector3(m.hip_local(side).x, lift, -0.6) if side > 0.0 else Vector3(m.hip_local(side).x, 0.0, 0.6)
 		var r := LegIK.solve_leg(hip, foot, l.x, l.y, l.z, Vector3.UP, Vector3.FORWARD, m.tarsus_lean(), m.leg_bend)
 		legs.append({"hip": hip, "knee": r["knee"], "ankle": r["ankle"], "foot": r["foot"]})
 	m.set_external_pose(legs, off, rot, 0.0)

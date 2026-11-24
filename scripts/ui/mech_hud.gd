@@ -1,16 +1,17 @@
 class_name MechHud
 extends CanvasLayer
 ## The in-game mech HUD (docs/design/hud.md; picked layout "corners / holo" from docs/design/hud/grid_hud_r1.png):
-##   bottom-left   the mech damage diagram (MechDiagram, front / schematic: the real mech's outline, a zone per head,
-##                 torso, leg and hardpoint tinted by component health, slot badges 1-5) inside the heat arc, with the
-##                 overheat / shutdown / reboot and thrust states
-##   bottom-right  the weapons, one row per hardpoint, numbered 1-5 like the keys: enabled, name, mount, ammo (or inf),
+##   bottom-left   the mech damage diagram (MechDiagram, front / schematic: the real mech's outline, its own chassis, a
+##                 zone per head, torso, leg and hardpoint tinted by component health, slot badges) inside the heat arc,
+##                 with the overheat / shutdown / reboot and thrust states
+##   bottom-right  the weapons, one row per hardpoint, numbered like the keys (the chassis' hardpoints: Strider 1-5,
+##                 Bulwark 1-4): enabled, name, mount, ammo (or inf),
 ##                 ready / reload bar, heat per shot, and NO LOS / RANGE / HOLD / LOCK / OFFLINE flags; a back-mount
 ##                 equipment slot (docs/design/back-equipment.md) shows drones left, the drone's time left (green bar +
 ##                 seconds) and DRONE OUT / EMPTY, or a dim PASSIVE (_draw_equipment_row); it never gets aim pips
 ##   left column   above the status panel, the crew panel (CrewPanel: one card per teammate; `crew_panel`)
-##   top centre    the mission layer (MissionHud, `mission_hud`): the objective line, the extraction waypoint and the end
-##                 banner, fed by the drive's MissionFlow (`mission.hud_state`)
+##   top right     the mission layer (MissionHud, `mission_hud`): the objective panel (top right), the extraction
+##                 waypoint and the end banner, fed by the drive's MissionFlow (`mission.hud_state`)
 ##   centre        the crosshair, the aim point, and from each enabled weapon's muzzle a line of pips toward the aim
 ##                 point (lit by its ready fraction; amber when its line of sight is blocked)
 ## Read-only: polls WeaponRack (its HUD contract), MechController and the camera every frame. Never writes them, so it
@@ -35,7 +36,8 @@ const STATUS_SIZE := Vector2(300, 260)
 const ROW_SIZE := Vector2(400, 46)
 const ROW_GAP := 6.0
 const CREW_GAP := 8.0               ## between the crew panel's last card and the status panel
-const MOUNT_SHORT := {"side_l": "L SIDE", "side_r": "R SIDE", "shoulder_l": "L SHLDR", "shoulder_r": "R SHLDR", "back": "BACK"}
+const MOUNT_SHORT := {"side_l": "L SIDE", "side_r": "R SIDE", "shoulder_l": "L SHLDR", "shoulder_r": "R SHLDR", "back": "BACK",
+	"back_l": "L BACK", "back_r": "R BACK"}
 const PIPS := 4
 const DIAGRAM_VIEW := "front"       ## the damage diagram (docs/design/hud/grid_hud_diagram_r1.png, pick 3)
 const DIAGRAM_STYLE := "schematic"
@@ -46,6 +48,7 @@ var camera: Camera3D
 var drive: Node                     ## a TestDrive: mech / rack / camera are looked up from it until found
 var component_source: Callable      ## () -> {component id: health 0..1}; S5 replaces the stub
 var demo := false
+var demo_chassis := "strider"       ## the demo's chassis (layout tests, shots): "bulwark" shows its four rows and diagram
 
 var root: Control
 var aim_view: Control               ## screen-centre look reticle (full screen; 3D tracking dots live in WorldAimMarkers)
@@ -54,7 +57,8 @@ var status_panel: Control           ## bottom-left: diagram + heat arc
 var status_diagram: MechDiagram     ## the damage diagram in it (pick 3: front / schematic, from the real mech's meshes)
 var weapon_panel: Control           ## bottom-right: the rows
 var crew_panel: CrewPanel           ## bottom-left, stacked above status_panel: one card per teammate (reads Session)
-var mission_hud: MissionHud         ## objective line, extraction waypoint, end banner (reads the drive's MissionFlow)
+var mission_hud: MissionHud         ## objective panel, extraction waypoint, end banner (reads the drive's MissionFlow)
+
 var rows: Array[Control] = []
 
 var _t := 0.0
@@ -175,6 +179,9 @@ func _sync_diagram() -> void:
 	var hd := pilot_head()
 	if status_diagram.head != hd:
 		status_diagram.head = hd
+	var ch := chassis_id()
+	if status_diagram.chassis != ch:
+		status_diagram.chassis = ch
 	var l := diagram_loadout()
 	if status_diagram.mounted != l:
 		status_diagram.mounted = l
@@ -223,7 +230,7 @@ func _find_sources() -> void:
 ## The rack's rows, read once per frame (WeaponRack.slots builds them, ~0.1 ms; the HUD asks ~10 times a frame).
 func slots() -> Array:
 	if demo:
-		return DEMO_SLOTS
+		return DEMO_SLOTS_BULWARK if demo_chassis == "bulwark" else DEMO_SLOTS
 	if rack != null:
 		var f := Engine.get_process_frames()
 		if f != _slots_frame or rack != _slots_rack:
@@ -271,6 +278,14 @@ func pilot_head() -> String:
 	return m.head_id if (not demo and m != null) else MechDiagram.HEAD
 
 
+## The chassis the diagram draws: the bound mech's (demo_chassis in the demo, the Strider before a mech is bound).
+func chassis_id() -> String:
+	if demo:
+		return demo_chassis
+	var m := _model()
+	return m.chassis_id if m != null else MechDiagram.CHASSIS
+
+
 ## {hardpoint id: weapon id ("" = empty)} for the diagram: the weapon rows' slots, else the model's loadout.
 func diagram_loadout() -> Dictionary:
 	var out := {}
@@ -290,7 +305,8 @@ func components() -> Dictionary:
 	if component_source.is_valid():
 		src = component_source.call()
 	elif demo:
-		src = {"leg_l": 0.45, "shoulder_l": 0.25, "shoulder_r": 0.0, "side_r": 0.8}
+		src = {"leg_l": 0.45, "shoulder_l": 0.25, "shoulder_r": 0.0, "side_r": 0.8} if demo_chassis != "bulwark" \
+			else {"leg_l": 0.45, "back_l": 0.25, "side_r": 0.8, "torso": 0.6}
 	elif mech != null and "components" in mech:
 		src = mech.get("components")
 	if src is Dictionary:
@@ -421,7 +437,7 @@ func _draw_row(c: Control, i: int) -> void:
 	var empty := str(s["weapon"]) == ""
 	var equip := bool(s.get("equipment", false)) and not empty
 	var passive := equip and bool(s.get("passive", false))
-	# Equipment: the active drone is a selectable slot (key 5 selects, the trigger launches): lit while selected and ready.
+	# Equipment: the active drone is a selectable slot (its key selects, the trigger launches): lit while selected and ready.
 	var on := (bool(s["enabled"]) and not empty) if not equip \
 		else (not passive and bool(s["enabled"]) and float(s.get("ready", 0.0)) >= 1.0)
 	var built := bool(s.get("built", true))
@@ -582,6 +598,22 @@ const DEMO_SLOTS := [
 	{"slot": 5, "hardpoint": "back", "weapon": "repair_drone", "name": "Repair Drone", "enabled": true, "ammo": 1, "ammo_max": 2,
 		"ready": 0.0, "reloading": false, "heat_per_shot": 15.0, "blocked": false, "in_range": false, "hold": "DRONE OUT",
 		"built": true, "designating": false, "on_target": false, "equipment": true, "passive": false, "active_left": 42.0},
+]
+## The Bulwark demo (demo_chassis "bulwark"): its four hardpoints, keys 1-4, the repair drone on the right back (key 4).
+const DEMO_SLOTS_BULWARK := [
+	{"slot": 1, "hardpoint": "side_l", "weapon": "autocannon", "name": "Autocannon", "enabled": true, "ammo": 34, "ammo_max": 60,
+		"ready": 0.55, "reloading": false, "heat_per_shot": 2.0, "blocked": false, "in_range": true, "hold": "", "built": true,
+		"designating": false},
+	{"slot": 2, "hardpoint": "side_r", "weapon": "rockets", "name": "Rocket Pod", "enabled": true, "ammo": 12, "ammo_max": 24,
+		"ready": 0.3, "reloading": true, "heat_per_shot": 10.0, "blocked": false, "in_range": true, "hold": "", "built": true,
+		"designating": false},
+	{"slot": 3, "hardpoint": "back_l", "weapon": "mortar", "name": "Mortar", "enabled": true, "ammo": 3, "ammo_max": 3,
+		"ready": 1.0, "reloading": false, "heat_per_shot": 18.0, "blocked": false, "in_range": true, "hold": "", "built": true,
+		"designating": false},
+	{"slot": 4, "hardpoint": "back_r", "weapon": "repair_drone", "name": "Repair Drone", "enabled": false, "ammo": 2, "ammo_max": 2,
+		"ready": 1.0, "reloading": false, "heat_per_shot": 15.0, "blocked": false, "in_range": false, "hold": "",
+		"built": true, "designating": false, "on_target": false, "equipment": true, "passive": false, "active_left": 0.0,
+		"hint": "PRESS 4"},
 ]
 ## Demo muzzle positions in screen space, relative to the centre (at 1600x900): the mech below the crosshair.
 const DEMO_MUZZLES := [Vector2(-70, 210), Vector2(70, 210), Vector2(-55, 120), Vector2(55, 120), Vector2(0, 110)]

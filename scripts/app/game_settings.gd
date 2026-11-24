@@ -5,15 +5,17 @@ extends RefCounted
 ##
 ## Profile (carried in the join handshake): player_name ("" = the Steam persona), head (MechCatalog.HEADS), accent
 ## (MechAccent.ACCENTS id: the livery colour that replaces the safety orange; default "orange").
-## Hangar (the pre-mission choice, remembered): chassis, loadout {hardpoint id: weapon id}.
+## Hangar (the pre-mission choice, remembered): chassis, loadout {hardpoint id: weapon id} (the current chassis'), loadouts
+## {chassis id: loadout}: the loadout last flown on each other chassis (the hangar brings it back on a chassis switch).
 ## Video: fullscreen, vsync, msaa (0 off, 1 2x, 2 4x), quality (CityQuality.LOW / MEDIUM / HIGH = 0 / 1 / 2, GraphicsQuality;
 ## -1 in DEFAULTS = never chosen: load_settings auto-detects, LOW on an integrated GPU, else HIGH), renderer (auto /
 ## forward_plus / gl_compatibility: GraphicsQuality.sync_renderer, takes effect at the next launch).
 ## Audio: master, music, sfx (0..1, linear).
 ## Crew: friendly_fire (default true): the crew option this machine sets when it hosts (or plays solo); remembered.
 ## Network: link_sim (off / coast / rough): the crew's simulated link when this machine hosts (NetSession).
-## Dev: objectives (default false): play the mission plan (objectives, waves, the extraction hold; mission-objectives.md
-## phase 1) instead of clear + extract, solo and in the crews this machine hosts (also `--objectives`). No menu control.
+## Crew: objectives (default true, user 2026-11-23 "make the objectives the default"): play the mission plan (objectives,
+## the pacing director, depots, the extraction hold) instead of the old clear-and-extract, solo and in the crews this
+## machine hosts; the hangar's "Objectives" box. Flags override it: `--no-objectives` (old mission), `--objectives` (on).
 
 const DEFAULT_PATH := "user://settings.cfg"
 const DEFAULTS := {
@@ -22,6 +24,7 @@ const DEFAULTS := {
 	"accent": "orange",
 	"chassis": "strider",
 	"loadout": {},
+	"loadouts": {},
 	"fullscreen": false,
 	"vsync": true,
 	"msaa": 1,
@@ -32,17 +35,17 @@ const DEFAULTS := {
 	"sfx": 0.8,
 	"link_sim": "off",
 	"friendly_fire": true,
-	"objectives": false,
+	"objectives": true,
 }
 ## Which ConfigFile section each key lives in.
 const SECTIONS := {
 	"player_name": "profile", "head": "profile", "accent": "profile",
-	"chassis": "hangar", "loadout": "hangar",
+	"chassis": "hangar", "loadout": "hangar", "loadouts": "hangar",
 	"fullscreen": "video", "vsync": "video", "msaa": "video", "quality": "video", "renderer": "video",
 	"master": "audio", "music": "audio", "sfx": "audio",
 	"link_sim": "network",
 	"friendly_fire": "crew",
-	"objectives": "dev",
+	"objectives": "crew",
 }
 const BUSES := ["Music", "SFX"]
 

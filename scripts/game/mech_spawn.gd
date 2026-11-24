@@ -30,12 +30,12 @@ static func make(head: String = "chicken", chassis: String = "strider", loadout:
 	var audio := MechAudio.new()
 	audio.name = "Audio"
 	m.add_child(audio)
-	var sc := rig.mech_scale
-	cap.radius = 1.1 * sc
-	cap.height = 4.0 * sc        # matches the ~8 m visual height (head + raised shoulder pods) so the mech stops under the ceiling
-	shape.position = Vector3(0, cap.height * 0.5, 0)
+	# The chassis' movement numbers and capsule (MechCatalog "movement": the Strider's r 2.2 / h 8, the Bulwark's r 3.6 / h 8),
+	# the same on every machine (puppets too): the crew entry carries the chassis id.
+	m.apply_chassis(chassis)
 	m.ready.connect(func() -> void:
 		rig.model.configure(head, chassis, loadout)
+		rig.sync_chassis()   # the chassis' rig numbers, before max_step()
 		if accent != "":
 			MechAccent.apply(rig.model, accent)
 		m.max_step_up = rig.max_step())

@@ -25,6 +25,11 @@ class MockPlayerTarget extends Node:
 		add_to_group("player_target")
 
 
+## Stands in for TestDrive / ThrusterLab: the parent whose `mech` is the mech this machine pilots (MechAudio._local()).
+class PilotHost extends Node3D:
+	var mech: MechController
+
+
 func setup() -> void:
 	var a := get_tree().root.get_node_or_null("Audio") as AudioDirector
 	if not check(a != null, "Audio autoload is an AudioDirector"):
@@ -38,6 +43,7 @@ func setup() -> void:
 	_test_pooling_limits_stealing_and_ducking(a)
 	await _test_mech_audio(a)
 	await _test_mech_step_signal(a)
+	await _test_remote_mech_audio(a)
 	await _test_combat_props_and_enemy_contract(a)
 	await _test_real_end_to_end_firefight(a)
 	await _test_audio_lab(a)
@@ -229,13 +235,17 @@ func _test_mech_audio(a: AudioDirector) -> void:
 	a.reset_state()
 	a.record_events = true
 	a.pilot_cues_enabled = true
+	var host := PilotHost.new()
+	add_child(host)
 	var mech := MechSpawn.make("pickle", "strider")
-	add_child(mech)
+	host.mech = mech
+	host.add_child(mech)
 	await frames(2)
 	var ma := mech.get_node_or_null("Audio") as MechAudio
 	if not check(ma != null, "MechSpawn.make attaches MechAudio child"):
-		mech.queue_free()
+		host.queue_free()
 		return
+	check(ma._local(), "the parent's piloted mech (TestDrive.mech) counts as the local pilot's")
 	var rig := MechSpawn.rig_of(mech)
 	# Floor collider so mech walks on ground.
 	var floor_body := StaticBody3D.new()
@@ -298,6 +308,8 @@ func _test_mech_audio(a: AudioDirector) -> void:
 	check(a.has_loop("mech.heat.%d" % ma.get_instance_id()), "heat > 55% runs thermal turbine loop")
 	mech.add_heat(20.0)   # triggers overheated signal
 	check(_has_cue(a, "mech.heat.shutdown"), "overheat triggers shutdown cue")
+	a.advance_clock(0.1)
+	check(a.duck_world_db() < -1.0, "own overheat ducks the world (%.2f dB)" % a.duck_world_db())
 	mech.heat = mech.reboot_heat - 1.0
 	ma.step(0.05)
 	check(_has_cue(a, "mech.heat.reboot_spool"), "cooling to reboot_heat triggers reboot spool")
@@ -319,7 +331,7 @@ func _test_mech_audio(a: AudioDirector) -> void:
 			eq(ma.surface_at(city.to_global(city.ring.arc_to_world(c.x, c.y, 12.0))), "rooftop", "elevated point resolves to rooftop")
 			break
 	city.queue_free()
-	mech.queue_free()
+	host.queue_free()
 	floor_body.queue_free()
 	await frames(2)
 
@@ -329,8 +341,11 @@ func _test_mech_audio(a: AudioDirector) -> void:
 func _test_mech_step_signal(a: AudioDirector) -> void:
 	a.reset_state()
 	a.record_events = true
+	var host := PilotHost.new()
+	add_child(host)
 	var mech := MechSpawn.make("pickle", "strider")
-	add_child(mech)
+	host.mech = mech
+	host.add_child(mech)
 	var floor_body := StaticBody3D.new()
 	var cs := CollisionShape3D.new()
 	var box := BoxShape3D.new()
@@ -343,7 +358,7 @@ func _test_mech_step_signal(a: AudioDirector) -> void:
 	var ma := mech.get_node_or_null("Audio") as MechAudio
 	var rig := MechSpawn.rig_of(mech)
 	if not check(ma != null and rig != null and rig.gait != null, "step-signal mech has MechAudio, rig and gait"):
-		mech.queue_free()
+		host.queue_free()
 		floor_body.queue_free()
 		return
 	rig.set_physics_process(false)   # no real gait steps in between: only the emitted ones below
@@ -408,9 +423,183 @@ func _test_mech_step_signal(a: AudioDirector) -> void:
 	for e: Dictionary in walk:
 		all_world = all_world and str(e["bus"]) == AudioDirector.BUS_SFX_WORLD
 	check(all_world, "every puppet footfall is on the world bus")
-	mech.queue_free()
+	host.queue_free()
 	floor_body.queue_free()
 	await frames(2)
+
+
+## Only the mech this machine pilots plays cockpit cues (docs/coordination 2026-11-23 audio fix). A host-run bot (a
+## non-puppet mech that is not the parent's `mech`, like a CrewBot's on TestDrive), a mech nobody marked, and a puppet
+## (even one forced is_local) are REMOTE: no 2D / player-bus / telegraph-bus cue, no pilot voice, no heat duck; their
+## steps, thrusters, landings and power-down play 3D on SFX_World at the mech.
+func _test_remote_mech_audio(a: AudioDirector) -> void:
+	a.reset_state()
+	a.record_events = true
+	a.pilot_cues_enabled = true
+	var host := PilotHost.new()
+	add_child(host)
+	var floor_body := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var box := BoxShape3D.new()
+	box.size = Vector3(400, 1, 400)
+	cs.shape = box
+	cs.position = Vector3(0, -0.5, 0)
+	floor_body.add_child(cs)
+	add_child(floor_body)
+	var mine := MechSpawn.make("pickle", "strider", {}, 1)
+	host.mech = mine
+	host.add_child(mine)
+	var bot := MechSpawn.make("corn", "strider", {}, 1)      # host-run bot: same owner peer as mine, not host.mech
+	bot.position = Vector3(20, 0, 0)
+	host.add_child(bot)
+	var stray := MechSpawn.make("dog", "strider")           # nobody marked it (its parent has no `mech`)
+	stray.position = Vector3(-20, 0, 0)
+	add_child(stray)
+	var pup := MechSpawn.make("chicken", "strider", {}, 2)  # a teammate's puppet
+	pup.position = Vector3(0, 0, 20)
+	host.add_child(pup)
+	await frames(2)
+	var all: Array[MechController] = [mine, bot, stray, pup]
+	for m: MechController in all:
+		MechSpawn.rig_of(m).set_physics_process(false)
+		(m.get_node("Audio") as MechAudio).set_physics_process(false)
+	await frames(10)   # settle onto the floor
+	for m: MechController in all:
+		m.set_physics_process(false)
+	pup.puppet = true
+	pup.puppet_grounded = true
+	var pup_ma := pup.get_node("Audio") as MechAudio
+	pup_ma.is_local = true   # a puppet is never local, even when forced
+	check((mine.get_node("Audio") as MechAudio)._local(), "remote test: the piloted mech is local")
+	for m: MechController in [bot, stray, pup]:
+		var label := str(m.name) + (" (bot)" if m == bot else (" (unmarked)" if m == stray else " (puppet)"))
+		check(not (m.get_node("Audio") as MechAudio)._local(), "%s is not local" % label)
+		await _check_remote_mech(a, m, label)
+	# The local pilot's mech still gets its cockpit cues (after the remote ones: its heat duck would mask theirs).
+	var ma := mine.get_node("Audio") as MechAudio
+	a.advance_clock(1.0)
+	a.clear_events()
+	mine.heat = mine.heat_cap * 0.86
+	ma.step(0.05)
+	check(_has_cue(a, "mech.heat.tick"), "own mech: heat > 80% still ticks")
+	a.advance_clock(0.1)
+	check(a.duck_world_db() < -1.0, "own mech: high heat still ducks the world (%.2f dB)" % a.duck_world_db())
+	mine.heat = 0.0
+	ma.step(0.05)
+	a.advance_clock(1.0)
+	a.clear_events()
+	mine.thrusting = true
+	mine.emergency = true
+	ma.step(1.0 / 60.0)
+	check(_kinds(a, "mech.thrust.emergency").has("2d"), "own mech: emergency burn alert is 2D")
+	var ign := _events(a, "mech.thrust.ignite")
+	check(ign.size() == 1 and str(ign[0]["bus"]) == AudioDirector.BUS_SFX_PLAYER, "own mech: ignition on the player bus")
+	mine.thrusting = false
+	mine.emergency = false
+	(mine.get_node("Thrusters") as ThrusterFx).level = 0.0
+	ma.step(1.0 / 60.0)
+	host.queue_free()
+	stray.queue_free()
+	floor_body.queue_free()
+	await frames(2)
+	a.reset_state()
+	a.record_events = true
+
+
+## Heat, overheat, reboot, thrusters, emergency, landings and a footfall of a remote mech `m`.
+func _check_remote_mech(a: AudioDirector, m: MechController, label: String) -> void:
+	var ma := m.get_node("Audio") as MechAudio
+	var at := m.global_position
+	a.reset_state()
+	a.record_events = true
+	a.clear_events()
+	var leaks: Array = []   ## cues of this remote mech on 2D / SFX_Player / SFX_Telegraph (must stay empty)
+	m.heat = m.heat_cap * 0.9
+	for i in 6:
+		ma.step(0.05)
+		a.advance_clock(0.05)
+	check(not _has_prefix(a, "mech.heat."), "%s: heat > 80%% plays no heat loop / tick" % label)
+	check(not a.has_loop("mech.heat.%d" % ma.get_instance_id()), "%s: no cockpit heat loop" % label)
+	near(a.duck_world_db(), 0.0, 0.05, "%s: high heat does not duck the world" % label)
+	_take_leaks(a, leaks)
+	m.overheated.emit()
+	for i in 4:
+		ma.step(0.05)
+		a.advance_clock(0.05)
+	var sd := _events(a, "mech.heat.shutdown")
+	var sd_ok := true
+	for e: Dictionary in sd:
+		sd_ok = sd_ok and str(e["kind"]) == "3d" and str(e["bus"]) == AudioDirector.BUS_SFX_WORLD \
+			and (e["pos"] as Vector3).distance_to(at) < 0.5
+	check(sd_ok, "%s: overheat power-down (if any) is 3D on the world bus at the mech (%d)" % [label, sd.size()])
+	check(not _has_prefix(a, "pilot."), "%s: overheat plays no pilot voice" % label)
+	near(a.duck_world_db(), 0.0, 0.05, "%s: overheat does not duck the world" % label)
+	m.heat = m.reboot_heat - 1.0
+	ma.step(0.05)
+	m.rebooted.emit()
+	check(not _has_cue(a, "mech.heat.reboot_spool") and not _has_cue(a, "mech.heat.reboot_ok"),
+		"%s: no cockpit reboot spool / chime" % label)
+	m.heat = 0.0
+	a.advance_clock(1.0)
+	_take_leaks(a, leaks)
+	m.thrusting = true
+	m.emergency = true
+	ma.step(1.0 / 60.0)
+	check(not _has_cue(a, "mech.thrust.emergency"), "%s: no emergency-burn alarm" % label)
+	var ign := _events(a, "mech.thrust.ignite")
+	check(ign.size() == 1 and str(ign[0]["kind"]) == "3d" and str(ign[0]["bus"]) == AudioDirector.BUS_SFX_WORLD
+		and (ign[0]["pos"] as Vector3).distance_to(at) < 0.5, "%s: ignition is 3D on the world bus at the mech" % label)
+	var lp := _events(a, "mech.thrust.loop")
+	check(lp.size() == 1 and str(lp[0]["bus"]) == AudioDirector.BUS_SFX_WORLD and (lp[0]["pos"] as Vector3).distance_to(at) < 0.5,
+		"%s: thruster loop on the world bus at the mech" % label)
+	m.thrusting = false
+	m.emergency = false
+	(m.get_node("Thrusters") as ThrusterFx).level = 0.0
+	ma.step(1.0 / 60.0)
+	a.advance_clock(1.0)
+	_take_leaks(a, leaks)
+	m.hard_landing.emit(17.0, 0.85)
+	var hl := _events(a, "mech.land.hard")
+	check(hl.size() == 1 and str(hl[0]["kind"]) == "3d" and str(hl[0]["bus"]) == AudioDirector.BUS_SFX_WORLD,
+		"%s: hard landing is 3D on the world bus" % label)
+	check(not _has_prefix(a, "pilot."), "%s: hard landing plays no pilot voice" % label)
+	_take_leaks(a, leaks)
+	var foot := at + Vector3(1.0, 0.0, 0.5)
+	var g := MechSpawn.rig_of(m).gait
+	if g != null and m.grounded():
+		g.stepped.emit(0, {"kind": "stride", "length": g.step_length, "weight": 1.0, "pos": foot})
+		ma.step(1.0 / 60.0)
+		var st := _cues_with_prefix(a, "mech.step.")
+		check(st.size() == 1 and str(st[0]["kind"]) == "3d" and str(st[0]["bus"]) == AudioDirector.BUS_SFX_WORLD
+			and (st[0]["pos"] as Vector3).distance_to(foot) < 0.01, "%s: footfall is 3D on the world bus at the foot" % label)
+	else:
+		check(false, "%s: grounded with a gait for the footfall check" % label)
+	_take_leaks(a, leaks)
+	check(leaks.is_empty(), "%s: no cue on 2D / player bus / telegraph bus all along (%s)" % [label, str(leaks)])
+	await frames(1)
+
+
+## Append the recorded cues that are 2D or on SFX_Player / SFX_Telegraph to `leaks`, then clear the recorder.
+static func _take_leaks(a: AudioDirector, leaks: Array) -> void:
+	for e: Dictionary in a.recent_events:
+		if str(e["kind"]) == "2d" or str(e["bus"]) in [AudioDirector.BUS_SFX_PLAYER, AudioDirector.BUS_SFX_TELEGRAPH]:
+			leaks.append(str(e["cue"]))
+	a.clear_events()
+
+
+static func _events(a: AudioDirector, cue_id: String) -> Array:
+	var out: Array = []
+	for ev: Dictionary in a.recent_events:
+		if str(ev["cue"]) == cue_id:
+			out.append(ev)
+	return out
+
+
+static func _kinds(a: AudioDirector, cue_id: String) -> Array:
+	var out: Array = []
+	for ev: Dictionary in _events(a, cue_id):
+		out.append(str(ev["kind"]))
+	return out
 
 
 static func _cues_with_prefix(a: AudioDirector, prefix: String) -> Array:
@@ -445,6 +634,19 @@ func _test_combat_props_and_enemy_contract(a: AudioDirector) -> void:
 	var rec := Combat.fire_record("player1", 1, "side_r", "autocannon", Vector3(0, 2, 0), Vector3(0, 2, -20), world.now, 0, 0.0)
 	world.fire(rec)
 	check(_has_cue(a, "wpn.autocannon.fire"), "CombatWorld.fired triggers weapon audio")
+	var own_fire := _events(a, "wpn.autocannon.fire")
+	check(own_fire.size() == 1 and str(own_fire[0]["bus"]) == AudioDirector.BUS_SFX_PLAYER,
+		"the local shooter's fire stays on the player bus")
+	# A teammate's and a host-run bot's fire: 3D on the world bus at the record's origin.
+	for sh: Array in [["player2", 2], ["player-1", 1]]:
+		a.advance_clock(0.3)
+		a.clear_events()
+		var o := Vector3(12, 3, -4)
+		world.fire(Combat.fire_record(str(sh[0]), int(sh[1]), "side_r", "autocannon", o, Vector3(12, 3, -30), world.now, 0, 0.0))
+		var rf := _events(a, "wpn.autocannon.fire")
+		check(rf.size() == 1 and str(rf[0]["kind"]) == "3d" and str(rf[0]["bus"]) == AudioDirector.BUS_SFX_WORLD
+			and (rf[0]["pos"] as Vector3).distance_to(o) < 0.01, "%s's fire is 3D on the world bus at its origin" % str(sh[0]))
+	a.clear_events()
 	var enemy_rec := Combat.fire_record("enemy_1", 1, "gun", "autocannon", Vector3(0, 2, -20), Vector3(0, 2, 0), world.now, 0, 0.0)
 	enemy_rec["enemy"] = true
 	a.advance_clock(0.1)
@@ -462,6 +664,25 @@ func _test_combat_props_and_enemy_contract(a: AudioDirector) -> void:
 	check(_has_cue(a, "combat.hit.tick"), "local shooter hit triggers hit-confirm tick")
 	check(_has_cue(a, "combat.hit.break"), "zeroing component HP triggers component break cue")
 	check(_has_cue(a, "combat.kill"), "destroying target triggers kill cue")
+	# A teammate's hit: no hit-confirm in this pilot's ears.
+	var dummy2 := TargetDummy.new()
+	dummy2.target_id = "dummy_2"
+	dummy2.set_max_hp({"torso": 400.0})
+	dummy2.position = Vector3(5, 0, -20)
+	add_child(dummy2)
+	world.register(dummy2)
+	ca.step(0.05)
+	a.advance_clock(0.5)
+	a.clear_events()
+	var h2 := Hit.new()
+	h2.damage = 10.0
+	h2.component = "torso"
+	h2.shooter = "player2"
+	h2.point = Vector3(5, 2, -20)
+	world.deliver(dummy2, h2)
+	check(not _has_cue(a, "combat.hit.tick"), "a teammate's hit plays no hit-confirm tick here")
+	world.unregister(dummy2)
+	dummy2.queue_free()
 	dummy.staggered_by.emit("player1")
 	check(_has_cue(a, "combat.stagger"), "staggered_by triggers stagger cue")
 	dummy.slammed.emit(12.0, 28.0)
@@ -512,8 +733,23 @@ func _test_combat_props_and_enemy_contract(a: AudioDirector) -> void:
 	check(not _has_cue(a, "enemy.alert.spotted"), "regular alerted(spotted) does not play non-diegetic warning chime")
 	sq.enemy_event.emit("alerted", sq, {"id": "e1", "state": "revealed", "pos": Vector3(0, 2, -25)})
 	check(not _has_cue(a, "ui.hangar.alert"), "revealed straggler does not play non-diegetic 2D HUD beep")
-	sq.enemy_event.emit("component_damaged", sq, {"id": "e1", "component": "core", "hp_ratio": 0.5, "weak_point": true, "pos": Vector3(0, 2, -25)})
-	check(_has_cue(a, "combat.hit.weak"), "EnemySquad weak_point hit plays combat.hit.weak")
+	# Squad hit-confirms carry no shooter: they play (2D, player bus) only for an enemy this pilot just hit.
+	var dmg_e1 := {"id": "e1", "component": "core", "hp_ratio": 0.5, "weak_point": true, "pos": Vector3(0, 2, -25)}
+	sq.enemy_event.emit("component_damaged", sq, dmg_e1)
+	sq.enemy_event.emit("component_destroyed", sq, {"id": "e1", "component": "core", "pos": Vector3(0, 2, -25)})
+	ca.step(0.05)
+	check(not _has_cue(a, "combat.hit.weak"), "a squad weak-point hit nobody here made plays no hit-confirm")
+	check(not _kinds(a, "combat.hit.break").has("2d"), "a squad component break nobody here made plays no 2D break")
+	check(_kinds(a, "combat.hit.break").has("3d"), "a squad component break still plays 3D at the enemy")
+	var lh := Hit.new()
+	lh.shooter = "player1"
+	lh.damage = 5.0
+	world.remote_hit.emit("e1", lh)   # this machine's shot on a host-owned enemy
+	a.advance_clock(0.3)
+	sq.enemy_event.emit("component_damaged", sq, dmg_e1)
+	check(not _has_cue(a, "combat.hit.weak"), "the squad hit-confirm waits for step()")
+	ca.step(0.05)
+	check(_has_cue(a, "combat.hit.weak"), "EnemySquad weak_point hit by this pilot plays combat.hit.weak")
 	sq.enemy_event.emit("overheated", sq, {"id": "e1", "pos": Vector3(0, 2, -25)})
 	check(_has_cue(a, "enemy.overheat"), "EnemySquad overheated plays enemy.overheat")
 	sq.enemy_event.emit("destroyed", sq, {"id": "e1", "cause": "hp", "pos": Vector3(0, 2, -25), "radius": 5.0})

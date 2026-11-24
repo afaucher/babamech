@@ -28,6 +28,9 @@ var designator := false             ## the guided-missile track is on (WeaponRac
 var comp := PackedFloat32Array()
 var disabled := false               ## PlayerTarget.disabled: downed (a core component destroyed), needs a revive
 var disable_cause := ""             ## PlayerTarget.disable_cause: the component that downed it ("" = none)
+var redeploying := false            ## PlayerTarget.redeploying: held to respawn, the penalty runs (still disabled)
+var revive := 0.0                   ## PlayerTarget.revive_progress as 0..1 of DownedRules.REVIVE_TIME (the crew's revive bar)
+var aid := 0                        ## PlayerTarget.aid_charges: repair-drone charges left (0..3; the crew's "can revive")
 ## WeaponMount.aim_yaw, aim_pitch (deg, body frame) per hardpoint in NetMechCodec.MOUNTS order: 10 values.
 var mount_aim := PackedFloat32Array()
 
@@ -53,5 +56,8 @@ func copy() -> NetMechState:
 	s.comp = comp.duplicate()
 	s.disabled = disabled
 	s.disable_cause = disable_cause
+	s.redeploying = redeploying
+	s.revive = revive
+	s.aid = aid
 	s.mount_aim = mount_aim.duplicate()
 	return s

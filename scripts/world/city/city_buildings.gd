@@ -79,7 +79,7 @@ static func _lane_face(geo: CityGeo, f: Face) -> void:
 		var u := f.w * (float(k) + 0.5) / float(n)
 		_slab(geo, f, u - 0.06, u + 0.06, 4.9, 5.05, 0.9, _c("metal_dark"))
 		geo.box(f.xf, Vector3(u, 4.75, 0.85), Vector3(0.36, 0.3, 0.36), _c("cream_light"), CityGeo.ALL, _c("metal_dark"))
-	var us := f.w * (0.25 + 0.5 * _vr.randf())
+	var us := f.w * (LANE_SIGN_U0 + LANE_SIGN_SPAN * _vr.randf())
 	_slab(geo, f, us - 0.05, us + 0.05, 6.1, 6.2, 1.5, _c("metal_dark"))
 	geo.box(f.xf, Vector3(us, 5.525, 1.0), Vector3(0.08, 1.15, 0.9), _pick(_vr, ["fascia_teal", "fascia_rose", "fascia_sand", "sage_dark", "terracotta"]))
 
@@ -91,16 +91,16 @@ static func _alley_face(geo: CityGeo, f: Face) -> void:
 	geo.tag("alley.dressing")
 	var n := maxi(int(f.w / 12.0), 1)
 	for k in n:
-		var c := f.w * (float(k) + 0.5) / float(n) + _vr.randf_range(-1.5, 1.5)
-		c = clampf(c, 1.5, f.w - 1.5)
+		var c := f.w * (float(k) + 0.5) / float(n) + _vr.randf_range(-ALLEY_DOOR_JITTER, ALLEY_DOOR_JITTER)
+		c = clampf(c, ALLEY_DOOR_END, f.w - ALLEY_DOOR_END)
 		# 0.16 out: in front of an apartment's 0.12 m base band. Pipes stand 0.41 / 0.47 m proud, clear of every style's
 		# piers (0.3), cornices (0.35) and ledges (0.3), so no face of theirs lies in a facade's plane.
 		_pane(geo, f, c - 0.6, c + 0.6, 0.0, 2.3, _c("door_back"), 0.16)
-		_slab(geo, f, c - 0.8, c + 0.8, 2.45, 2.65, 0.7, _c("metal_dark"))
+		_slab(geo, f, c - ALLEY_HOOD_HALF, c + ALLEY_HOOD_HALF, ALLEY_HOOD_V0, ALLEY_HOOD_V1, ALLEY_HOOD_D, _c("metal_dark"))
 	for u: float in [0.6, f.w - 0.6]:
-		_slab(geo, f, u - 0.12, u + 0.12, -0.3, f.y1 - 0.4, 0.41, _c("pipe"))
+		_slab(geo, f, u - 0.12, u + 0.12, -0.3, f.y1 - 0.4, ALLEY_PIPE_D, _c("pipe"))
 	# 4.95..5.2: clear of every style's sills, ledges and balcony tops (their top faces lay in a pipe run at 4.45).
-	_slab(geo, f, 0.75, f.w - 0.75, 4.95, 5.2, 0.47, _c("pipe"))
+	_slab(geo, f, 0.75, f.w - 0.75, ALLEY_RUN_V0, ALLEY_RUN_V1, ALLEY_RUN_D, _c("pipe"))
 
 
 # --- Shared pieces ---------------------------------------------------------------------------------------
@@ -191,6 +191,171 @@ static func _awning(geo: CityGeo, f: Face, u0: float, u1: float, v_top: float, v
 	geo.tri(a, d, wb0, under)
 	geo.tri(b, c, wb1, col)
 	geo.tri(b, wb1, c, under)
+
+
+# --- Facade relief (what stands out from a wall: docs/design/banners.md "Clear of the facade") --------------------
+# The numbers below are the meshers' own (they draw with these constants), so relief() and the drawn facade agree.
+# Plain floats (a Vector3 would round them to single precision and move the drawn vertices): *_HALF a half width,
+# *_V0 / *_V1 heights, *_D how far the piece stands proud of the wall.
+const APT_BAY := 3.4
+const APT_BAY_MARGIN := 1.0
+const APT_BALCONY_HALF := 1.3     ## v0 / v1 from the storey line
+const APT_BALCONY_V0 := -0.12
+const APT_BALCONY_V1 := 1.05
+const APT_BALCONY_D := 1.1
+const APT_CANOPY_HALF := 1.6         ## over the front door
+const APT_CANOPY_V0 := 2.7
+const APT_CANOPY_V1 := 2.95
+const APT_CANOPY_D := 1.3
+const OFFICE_CANOPY_HALF := 3.2
+const OFFICE_CANOPY_V0 := 3.0
+const OFFICE_CANOPY_V1 := 3.35
+const OFFICE_CANOPY_D := 2.2
+const SAGE_CANOPY_HALF := 2.4
+const SAGE_CANOPY_V0 := 2.85
+const SAGE_CANOPY_V1 := 3.1
+const SAGE_CANOPY_D := 1.6
+const SHOP_BAY := 5.6
+const SHOP_MARGIN := 0.3
+const SHOP_AWNING_IN := 0.32
+const SHOP_AWNINGS := [[3.3, 2.75, 1.5], [3.3, 3.05, 1.3], [3.4, 2.5, 0.9]]   ## (v top, v bottom, depth) per shape
+const SHOP_VALANCE := 0.35                          ## a sloped awning's valance hangs this far below its bottom edge
+const SHOP_JAMB_D := 0.45                           ## a recessed entrance's jambs and head (0..2.8 m)
+const SHOP_BLADE_V0 := 3.6        ## the corner blade sign, 0.08 either side of its u
+const SHOP_BLADE_V1 := 5.9
+const SHOP_BLADE_D := 0.95
+const DT_SHOP_BAY := 5.2
+const DT_SHOP_MARGIN := 0.4
+const DT_AWNING_IN := 0.55
+const DT_AWNING_D := 1.3
+const DT_CANOPY_V0 := 4.4         ## a tower lobby's canopy (DT_CANOPY_D proud of the plan line)
+const DT_CANOPY_V1 := 4.8
+const DT_CANOPY_D := 1.6
+const ALLEY_DOOR_JITTER := 1.5
+const ALLEY_DOOR_END := 1.5
+const ALLEY_HOOD_HALF := 0.8
+const ALLEY_HOOD_V0 := 2.45
+const ALLEY_HOOD_V1 := 2.65
+const ALLEY_HOOD_D := 0.7
+const ALLEY_PIPE_D := 0.41
+const ALLEY_RUN_V0 := 4.95        ## the pipe run
+const ALLEY_RUN_V1 := 5.2
+const ALLEY_RUN_D := 0.47
+const LANE_SIGN_U0 := 0.25        ## a lane's hanging sign: u = w * (U0 + SPAN * roll)
+const LANE_SIGN_SPAN := 0.5
+const RELIEF_MIN := 0.4      ## relief() lists what stands out at least this far (bands, sills, piers, cornices are shallower)
+
+
+## Whether an apartment's face on `side` with `n_bays` bays carries balconies (the street side and its opposite).
+static func _apt_balconied(b: Dictionary, side: int, n_bays: int) -> bool:
+	return side / 2 == int(b["front"]) / 2 and n_bays >= 2
+
+
+## What stands out of tier `ti` of building `index` at least RELIEF_MIN deep, per side (0..3, CityPlan.SIDE_N; the
+## Face frame: u along the wall from its left end seen from outside, v up from the building's ground, depth out from the
+## tier's plan line): [[{u0, u1, v0, v1, d}, ...] x 4]. Deterministic from the plan alone. Where the drawn piece depends on
+## a cosmetic roll (which bays of an apartment get balconies, a shop row's awning shape, an alley door's jitter, a lane
+## sign's place) it lists every place / shape the roll can give, so it is never smaller than what is drawn.
+static func relief(plan: CityPlan, index: int, ti: int) -> Array:
+	var b: Dictionary = plan.buildings[index]
+	var lot: Dictionary = plan.lots[b["lot"]]
+	var tiers: Array = b["tiers"]
+	var t: Dictionary = tiers[ti]
+	var out: Array = [[], [], [], []]
+	var faces := _faces(Transform3D.IDENTITY, t, lot)
+	var style := str(b["style"])
+	var front := int(b["front"])
+	var add := func(side: int, u0: float, u1: float, v0: float, v1: float, d: float) -> void:
+		if d >= RELIEF_MIN:
+			(out[side] as Array).append({"u0": u0, "u1": u1, "v0": v0, "v1": v1, "d": d})
+	for f in faces:
+		match style:
+			"apartment":
+				if ti != 0:
+					continue
+				var bays := _bays(f.w, APT_BAY, APT_BAY_MARGIN)
+				if f.street and f.side == front and bays.size() > 0:
+					var c := bays[bays.size() / 2]
+					add.call(f.side, c - APT_CANOPY_HALF, c + APT_CANOPY_HALF, APT_CANOPY_V0, APT_CANOPY_V1, APT_CANOPY_D)
+				if _apt_balconied(b, f.side, bays.size()):
+					for i in range(1, int(b["floors"])):
+						var y := float(i) * FH
+						for c in bays:      # either phase: every bay
+							add.call(f.side, c - APT_BALCONY_HALF, c + APT_BALCONY_HALF, y + APT_BALCONY_V0, y + APT_BALCONY_V1, APT_BALCONY_D)
+			"office":
+				if ti == 0 and f.side == front:
+					add.call(f.side, f.w * 0.5 - OFFICE_CANOPY_HALF, f.w * 0.5 + OFFICE_CANOPY_HALF, OFFICE_CANOPY_V0, OFFICE_CANOPY_V1, OFFICE_CANOPY_D)
+			"sage":
+				if f.y0 <= 0.0 and f.side == front:
+					add.call(f.side, f.w * 0.5 - SAGE_CANOPY_HALF, f.w * 0.5 + SAGE_CANOPY_HALF, SAGE_CANOPY_V0, SAGE_CANOPY_V1, SAGE_CANOPY_D)
+			"shops":
+				if ti != 0 or not f.street:
+					continue
+				var bays := _bays(f.w, SHOP_BAY, SHOP_MARGIN)
+				var h := _pitch(f.w, SHOP_BAY, SHOP_MARGIN) * 0.5
+				var vlo := INF
+				var vhi := -INF
+				var dmax := 0.0
+				for k in SHOP_AWNINGS.size():
+					var a: Array = SHOP_AWNINGS[k]
+					vlo = minf(vlo, float(a[1]) - (SHOP_VALANCE if k != 1 else 0.0))
+					vhi = maxf(vhi, float(a[0]))
+					dmax = maxf(dmax, float(a[2]))
+				for c in bays:
+					add.call(f.side, c - h + SHOP_AWNING_IN, c + h - SHOP_AWNING_IN, vlo, vhi, dmax)
+					add.call(f.side, c + h - 2.1, c + h - 0.55, 0.0, 2.8, SHOP_JAMB_D)
+				var corner := _corner_side(lot, front)
+				if corner >= 0 and f.side == corner:
+					var ub := f.w - 0.35 if _corner_at_high_u(f.side, front) else 0.35
+					add.call(f.side, ub - 0.08, ub + 0.08, SHOP_BLADE_V0, SHOP_BLADE_V1, SHOP_BLADE_D)
+			"tower":
+				var kind := str(t.get("kind", ""))
+				var base := str(b.get("base", "podium"))
+				if kind in ["podium", "terrace", "arcade"] and f.w >= 3.0 and float(t["y0"]) <= 0.0 and f.street \
+						and (base == "podium" or base == "twin"):
+					var bays := _bays(f.w, DT_SHOP_BAY, DT_SHOP_MARGIN)
+					var pitch := _pitch(f.w, DT_SHOP_BAY, DT_SHOP_MARGIN)
+					for c in bays:
+						add.call(f.side, c - pitch * 0.5 + DT_AWNING_IN, c + pitch * 0.5 - DT_AWNING_IN, FH - 1.15 - SHOP_VALANCE, FH - 0.55, DT_AWNING_D)
+				elif kind == "tower" and float(t["y0"]) <= 0.0 and f.side == front:
+					var size: Vector2 = t["size"]
+					var slab := str(t.get("tower", "point")) == "slab"
+					var recess := DT_SPANDREL if slab else DT_PIER
+					var corner_w := minf(1.8, minf(size.x, size.y) * 0.18) if not slab else 0.9
+					var inset := maxf(corner_w - recess, 0.3)
+					var wi := f.w - recess * 2.0      # the recessed glass face the canopy is drawn on; u shifts by recess
+					add.call(f.side, recess + inset + 0.2, recess + wi - inset - 0.2, DT_CANOPY_V0, DT_CANOPY_V1, DT_CANOPY_D)
+		if ti == 0 and style in ["apartment", "office", "sage", "shops"]:
+			if not plan.alleys.is_empty() and plan.alley_side(int(b["lot"])) == f.side and f.w >= 4.0:
+				var n := maxi(int(f.w / 12.0), 1)
+				for k in n:
+					var c := f.w * (float(k) + 0.5) / float(n)
+					var lo := clampf(c - ALLEY_DOOR_JITTER, ALLEY_DOOR_END, f.w - ALLEY_DOOR_END)
+					var hi := clampf(c + ALLEY_DOOR_JITTER, ALLEY_DOOR_END, f.w - ALLEY_DOOR_END)
+					add.call(f.side, lo - ALLEY_HOOD_HALF, hi + ALLEY_HOOD_HALF, ALLEY_HOOD_V0, ALLEY_HOOD_V1, ALLEY_HOOD_D)
+				for u: float in [0.6, f.w - 0.6]:
+					add.call(f.side, u - 0.12, u + 0.12, -0.3, f.y1 - 0.4, ALLEY_PIPE_D)
+				add.call(f.side, 0.75, f.w - 0.75, ALLEY_RUN_V0, ALLEY_RUN_V1, ALLEY_RUN_D)
+			if not plan.forms.is_empty() and f.street and f.w >= 5.0 and plan.block_side_form(int(lot["block"]), f.side) == "lane":
+				var n := maxi(int(f.w / 8.0), 1)
+				for k in n:
+					var u := f.w * (float(k) + 0.5) / float(n)
+					add.call(f.side, u - 0.18, u + 0.18, 4.6, 5.05, 1.03)        # bracket (0.9) and lamp (to 1.03)
+				add.call(f.side, f.w * LANE_SIGN_U0 - 0.05, f.w * (LANE_SIGN_U0 + LANE_SIGN_SPAN) + 0.05, 4.95, 6.2, 1.5)
+	return out
+
+
+## Where on face `side` of tier `ti` a plan point (x, s) lies: Vector2(u, depth out of the wall) in relief()'s frame.
+static func face_coords(plan: CityPlan, index: int, ti: int, side: int, pt: Vector2) -> Vector2:
+	var b: Dictionary = plan.buildings[index]
+	var t: Dictionary = b["tiers"][ti]
+	var n: Vector2 = CityPlan.SIDE_N[side]
+	var sz: Vector2 = t["size"]
+	var u2 := Vector2(n.y, -n.x)      # Face u = up x n
+	var w := sz.y if side < 2 else sz.x
+	var depth := sz.x if side < 2 else sz.y
+	var origin := (b["center"] as Vector2) + (t["off"] as Vector2) + n * depth * 0.5 - u2 * w * 0.5
+	return Vector2((pt - origin).dot(u2), (pt - origin).dot(n))
 
 
 # --- Roof furniture --------------------------------------------------------------------------------------
@@ -299,26 +464,26 @@ static func _apartment(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictio
 	var faces := _faces(xf, main, lot)
 	var phase := rng.randi_range(0, 1)
 	for f in faces:
-		var bays := _bays(f.w, 3.4, 1.0)
+		var bays := _bays(f.w, APT_BAY, APT_BAY_MARGIN)
 		_slab(geo, f, -0.12, f.w + 0.12, -0.5, FH, 0.12, base)
 		var door := bays.size() / 2
 		for k in bays.size():
 			var c := bays[k]
 			if f.street and f.side == int(b["front"]) and k == door:
 				_pane(geo, f, c - 0.9, c + 0.9, 0.05, 2.5, _c("glass_dark"), 0.17)
-				_slab(geo, f, c - 1.6, c + 1.6, 2.7, 2.95, 1.3, trim)
+				_slab(geo, f, c - APT_CANOPY_HALF, c + APT_CANOPY_HALF, APT_CANOPY_V0, APT_CANOPY_V1, APT_CANOPY_D, trim)
 			elif f.street:
 				_pane(geo, f, c - 1.15, c + 1.15, 0.85, 2.55, glass, 0.17)
 			else:
 				_pane(geo, f, c - 0.6, c + 0.6, 1.3, 2.4, glass, 0.17)
-		var with_balconies := (f.side / 2 == int(b["front"]) / 2) and bays.size() >= 2
+		var with_balconies := _apt_balconied(b, f.side, bays.size())
 		for i in range(1, floors):
 			var y := float(i) * FH
 			for k in bays.size():
 				var c := bays[k]
 				if with_balconies and (k + phase) % 2 == 0:
 					_pane(geo, f, c - 0.65, c + 0.65, y + 0.1, y + 2.35, glass)
-					_slab(geo, f, c - 1.3, c + 1.3, y - 0.12, y + 1.05, 1.1, balcony)
+					_slab(geo, f, c - APT_BALCONY_HALF, c + APT_BALCONY_HALF, y + APT_BALCONY_V0, y + APT_BALCONY_V1, APT_BALCONY_D, balcony)
 				else:
 					_pane(geo, f, c - 0.7, c + 0.7, y + 0.95, y + 2.45, glass)
 					_slab(geo, f, c - 0.85, c + 0.85, y + 0.79, y + 0.95, 0.2, trim)
@@ -359,7 +524,7 @@ static func _office(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionar
 	for f in faces:
 		if f.side == int(b["front"]):
 			_pane(geo, f, f.w * 0.5 - 1.7, f.w * 0.5 + 1.7, 0.0, 2.9, _c("glass_dark"), 0.03)
-			_slab(geo, f, f.w * 0.5 - 3.2, f.w * 0.5 + 3.2, 3.0, 3.35, 2.2, accent)
+			_slab(geo, f, f.w * 0.5 - OFFICE_CANOPY_HALF, f.w * 0.5 + OFFICE_CANOPY_HALF, OFFICE_CANOPY_V0, OFFICE_CANOPY_V1, OFFICE_CANOPY_D, accent)
 	var top: Dictionary = tiers[int(plan_top(b))]
 	var ts: Vector2 = top["size"]
 	if not plant.is_empty():      # plant room (a plan tier: solid, standable) and mast
@@ -434,7 +599,7 @@ static func _sage(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary,
 			_slab(geo, f, -0.3, f.w + 0.3, f.y1 - 0.2, f.y1 + 0.5, 0.3, ledge)
 			if f.y0 <= 0.0 and f.side == int(b["front"]):
 				_pane(geo, f, f.w * 0.5 - 1.2, f.w * 0.5 + 1.2, 0.0, 2.7, _c("glass_dark"), 0.07)
-				_slab(geo, f, f.w * 0.5 - 2.4, f.w * 0.5 + 2.4, 2.85, 3.1, 1.6, ledge)
+				_slab(geo, f, f.w * 0.5 - SAGE_CANOPY_HALF, f.w * 0.5 + SAGE_CANOPY_HALF, SAGE_CANOPY_V0, SAGE_CANOPY_V1, SAGE_CANOPY_D, ledge)
 	# Roof garden on the main roof, units on the penthouse.
 	_roof(geo, xf, b, tiers[0], rng, ["planter", "planter", "skylight"] if tiers.size() == 1 else ["planter"])
 	if tiers.size() > 1:
@@ -462,8 +627,8 @@ static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 	var more_awnings := ["awning_teal", "awning_sky", "awning_cream", "terracotta", "sage_dark"]
 	for f in faces:
 		if f.street:
-			var bays := _bays(f.w, 5.6, 0.3)
-			var pitch := _pitch(f.w, 5.6, 0.3)
+			var bays := _bays(f.w, SHOP_BAY, SHOP_MARGIN)
+			var pitch := _pitch(f.w, SHOP_BAY, SHOP_MARGIN)
 			for k in bays.size():
 				var c := bays[k]
 				var h := pitch * 0.5
@@ -477,14 +642,14 @@ static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 				_pane(geo, f, c + h - 1.9, c + h - 0.75, 0.0, 2.6, _c("glass_teal"), 0.07)
 				if recessed:
 					# A recessed entrance: deep jambs and a head round the door, so the door reads as set into the front.
-					_slab(geo, f, c + h - 2.1, c + h - 1.9, 0.0, 2.8, 0.45, trim)
-					_slab(geo, f, c + h - 0.75, c + h - 0.55, 0.0, 2.8, 0.45, trim)
-					_slab(geo, f, c + h - 2.1, c + h - 0.55, 2.6, 2.8, 0.45, trim)
+					_slab(geo, f, c + h - 2.1, c + h - 1.9, 0.0, 2.8, SHOP_JAMB_D, trim)
+					_slab(geo, f, c + h - 0.75, c + h - 0.55, 0.0, 2.8, SHOP_JAMB_D, trim)
+					_slab(geo, f, c + h - 2.1, c + h - 0.55, 2.6, 2.8, SHOP_JAMB_D, trim)
 				# 2 cm clear of the pilasters (u +/- 0.3): its double-sided end gussets lay in their side faces (z-fighting).
 				match shape:
-					0: _awning(geo, f, c - h + 0.32, c + h - 0.32, 3.3, 2.75, 1.5, col, col.darkened(0.25))
-					1: _slab(geo, f, c - h + 0.32, c + h - 0.32, 3.05, 3.3, 1.3, col)
-					_: _awning(geo, f, c - h + 0.32, c + h - 0.32, 3.4, 2.5, 0.9, col, col.darkened(0.25))
+					0: _awning(geo, f, c - h + SHOP_AWNING_IN, c + h - SHOP_AWNING_IN, float(SHOP_AWNINGS[0][0]), float(SHOP_AWNINGS[0][1]), float(SHOP_AWNINGS[0][2]), col, col.darkened(0.25))
+					1: _slab(geo, f, c - h + SHOP_AWNING_IN, c + h - SHOP_AWNING_IN, float(SHOP_AWNINGS[1][1]), float(SHOP_AWNINGS[1][0]), float(SHOP_AWNINGS[1][2]), col)
+					_: _awning(geo, f, c - h + SHOP_AWNING_IN, c + h - SHOP_AWNING_IN, float(SHOP_AWNINGS[2][0]), float(SHOP_AWNINGS[2][1]), float(SHOP_AWNINGS[2][2]), col, col.darkened(0.25))
 				_slab(geo, f, c - h + 0.5, c + h - 0.5, 3.5, 4.3, 0.12, fascia)
 				_punched(geo, f, FH, PackedFloat32Array([c - h * 0.45, c + h * 0.45]), 0.65, 1.2, 2.5, _c("glass_teal"), trim)
 			for k in bays.size() + 1:
@@ -497,7 +662,7 @@ static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 				var u0 := f.w - 1.9 if at_hi else 0.75
 				_pane(geo, f, u0, u0 + 1.15, 0.0, 2.6, _c("glass_dark"), 0.09)
 				var ub := f.w - 0.35 if at_hi else 0.35
-				_slab(geo, f, ub - 0.08, ub + 0.08, 3.6, 5.9, 0.95, _pick(_vr, fascias))
+				_slab(geo, f, ub - 0.08, ub + 0.08, SHOP_BLADE_V0, SHOP_BLADE_V1, SHOP_BLADE_D, _pick(_vr, fascias))
 		else:
 			_punched(geo, f, FH, _bays(f.w, 5.0, 1.0), 0.6, 1.2, 2.4, _c("glass_teal"), trim)
 	_band(geo, faces, roof - 0.2, roof + 0.6, 0.2, trim)
@@ -711,12 +876,12 @@ static func _dt_block(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Diction
 			if base == "corner" and not terrace:
 				pass
 			elif y0 <= 0.0 and i == 0 and f.street and base != "stepped":
-				var bays := _bays(f.w, 5.2, 0.4)
-				var pitch := _pitch(f.w, 5.2, 0.4)
+				var bays := _bays(f.w, DT_SHOP_BAY, DT_SHOP_MARGIN)
+				var pitch := _pitch(f.w, DT_SHOP_BAY, DT_SHOP_MARGIN)
 				for c in bays:
 					_pane(geo, f, c - pitch * 0.5 + 0.4, c + pitch * 0.5 - 0.4, 0.3, FH - 0.5, shop)
 					if base == "podium" or base == "twin":
-						_awning(geo, f, c - pitch * 0.5 + 0.55, c + pitch * 0.5 - 0.55, FH - 0.55, FH - 1.15, 1.3, awning, awning.darkened(0.25))
+						_awning(geo, f, c - pitch * 0.5 + DT_AWNING_IN, c + pitch * 0.5 - DT_AWNING_IN, FH - 0.55, FH - 1.15, DT_AWNING_D, awning, awning.darkened(0.25))
 				for k in bays.size() + 1:
 					var u := 0.4 + float(k) * pitch
 					_slab(geo, f, u - 0.25, u + 0.25, -0.5, FH - 0.25, 0.15, trim)
@@ -833,7 +998,7 @@ static func _dt_shaft(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Diction
 			var inset := maxf(corner - recess, 0.3)
 			if not slab:
 				_pane(geo, f, inset + 0.3, f.w - inset - 0.3, 0.0, 4.2, shop, 0.06)
-			_slab(geo, f, inset + 0.2, f.w - inset - 0.2, 4.4, 4.8, recess + 1.6, trim)
+			_slab(geo, f, inset + 0.2, f.w - inset - 0.2, DT_CANOPY_V0, DT_CANOPY_V1, recess + DT_CANOPY_D, trim)
 	capital(geo, xf * Transform3D(Basis.IDENTITY, Vector3(off.x, 0.0, off.y)), size * 0.5, ceiling, frame, DT_COLLAR, DT_COLLAR_PROUD)
 
 ## A park pillar: a slim trunk that branches into the ceiling like a tree, standing in a planted ring.

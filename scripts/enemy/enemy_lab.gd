@@ -9,6 +9,7 @@ const PRESETS := ["showcase", "skirmish", "turret_only", "strider_only", "tank_o
 const AI_MODES := ["live", "idle", "telegraph_loop", "overheat"]
 const TARGET_MODES := ["strafe", "stationary", "hidden", "bot_rookie", "bot_average", "bot_veteran", "bot_brawler"]
 const DEBUG_MODES := ["on", "off"]
+const STAGGER_DEMO := ["off", "every_2.5s"]   ## knock every enemy every 2.5 s (alternating sides) to tune the stagger
 
 const PARAMS := [
 	["telegraph_scale", "Telegraph scale (min 0.3s)", 0.6, 2.0],
@@ -16,6 +17,10 @@ const PARAMS := [
 	["enemy_speed_scale", "Enemy speed scale", 0.25, 2.0],
 	["hp_scale", "Enemy HP scale", 0.25, 3.0],
 	["sight_range", "Sight range (m)", 40.0, 200.0],
+	["anim_stagger_amp", "Stagger anim strength", 0.0, 2.0],
+	["anim_reach_scale", "Gait reach (x leg reach)", 0.5, 1.3],
+	["anim_lift_scale", "Gait step lift", 0.3, 2.0],
+	["anim_crouch_depth", "Trooper crouch depth", 0.0, 1.0],
 ]
 
 var time_scale := 1.0
@@ -23,6 +28,13 @@ var preset := "showcase"
 var ai_mode := "live"
 var target_mode := "strafe"
 var debug_overlay := "on"
+var stagger_demo := "off"
+var anim_stagger_amp := 1.0
+var anim_reach_scale := 1.0
+var anim_lift_scale := 1.0
+var anim_crouch_depth := 1.0
+var _stagger_t := 0.0
+var _stagger_n := 0
 
 var telegraph_scale := 1.0
 var attack_slots := 2.0
@@ -310,6 +322,10 @@ func _sync_params() -> void:
 		e.telegraph_scale = telegraph_scale
 		e.speed_scale = enemy_speed_scale
 		e.sight_range = sight_range
+		e.anim_stagger_amp = anim_stagger_amp
+		for f: String in ["anim_reach_scale", "anim_lift_scale", "anim_crouch_depth"]:
+			if f in e:
+				e.set(f, get(f))
 		if preset != "showcase":
 			e.ai_mode = ai_mode
 
@@ -352,6 +368,16 @@ func step(dt: float) -> void:
 					return
 		else:
 			_bot_reset_t = -1.0
+	if stagger_demo != "off" and squad != null:
+		_stagger_t += dt
+		if _stagger_t >= 2.5:
+			_stagger_t = 0.0
+			_stagger_n += 1
+			var sgn := 1.0 if _stagger_n % 2 == 0 else -1.0
+			for e in squad.enemies:
+				if is_instance_valid(e) and not e.destroyed() and e.mass_factor() > 0.0:
+					var dv := Vector3(4.0 * sgn, 0.0, 7.5) / e.mass_factor()
+					e.apply_impulse(e.global_basis * dv, "lab")
 	world.advance(dt)
 	_draw_debug()
 
@@ -427,6 +453,8 @@ func lab_params() -> Array:
 	var vals := {
 		"telegraph_scale": telegraph_scale, "attack_slots": attack_slots,
 		"enemy_speed_scale": enemy_speed_scale, "hp_scale": hp_scale, "sight_range": sight_range,
+		"anim_stagger_amp": anim_stagger_amp, "anim_reach_scale": anim_reach_scale,
+		"anim_lift_scale": anim_lift_scale, "anim_crouch_depth": anim_crouch_depth,
 	}
 	var out: Array = []
 	for p: Array in PARAMS:
@@ -444,6 +472,10 @@ func set_lab_param(id: String, v: float) -> void:
 			_rebuild()
 			return
 		"sight_range": sight_range = v
+		"anim_stagger_amp": anim_stagger_amp = v
+		"anim_reach_scale": anim_reach_scale = v
+		"anim_lift_scale": anim_lift_scale = v
+		"anim_crouch_depth": anim_crouch_depth = v
 	_sync_params()
 
 
@@ -453,6 +485,7 @@ func lab_options() -> Array:
 		{"id": "ai_mode", "label": "AI mode", "choices": AI_MODES, "value": ai_mode},
 		{"id": "target_mode", "label": "Target bot", "choices": TARGET_MODES, "value": target_mode},
 		{"id": "debug_overlay", "label": "Debug overlay", "choices": DEBUG_MODES, "value": debug_overlay},
+		{"id": "stagger_demo", "label": "Stagger demo", "choices": STAGGER_DEMO, "value": stagger_demo},
 	]
 
 
@@ -476,6 +509,10 @@ func set_lab_option(id: String, v: String) -> void:
 		"debug_overlay":
 			if v in DEBUG_MODES:
 				debug_overlay = v
+		"stagger_demo":
+			if v in STAGGER_DEMO:
+				stagger_demo = v
+				_stagger_t = 0.0
 
 
 func lab_focus() -> Vector3:

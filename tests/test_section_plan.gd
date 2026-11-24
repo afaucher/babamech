@@ -36,17 +36,143 @@ func setup() -> void:
 	_deck_views()
 	_geometry()
 	_forms_sweep()
+	_hop_only()
 	finish()
+
+
+## The hop-only rule (docs/design/mission-section.md "Walkable connectors"): a mech that walks, hops at most 6 m and never
+## glides gets from every deck to the one below without a lift: a ramp, or a shaft whose drop lands on that deck's floor
+## (not into the next hole down). Checked here from the connectors directly, independent of walkable_down(), over seeds
+## 1..300 at 2, 3 and 5 decks, plus the whole critical path on a hop-only graph. Walking back up (ramps only) is counted.
+func _hop_only() -> void:
+	var up_missing := {}
+	var repaired := {}
+	for decks in [2, 3, 5]:
+		up_missing[decks] = 0
+		repaired[decks] = 0
+		for seed_ in range(1, 301):
+			var plan := SectionPlan.make({"seed": float(seed_), "decks": float(decks)})
+			var tag := "hop-only seed %d x%d" % [seed_, decks]
+			var key := "%d:%d" % [decks, seed_]
+			if GOLDEN_UNCHANGED.has(key):
+				eq(plan.checksum(), GOLDEN_UNCHANGED[key], tag + ": a plan that met the rule is byte-identical")
+				eq(plan.walk_repairs.size(), 0, tag + ": nothing repaired")
+			if GOLDEN_CHANGED.has(key):
+				check(plan.checksum() != GOLDEN_CHANGED[key] and not plan.walk_repairs.is_empty(), tag + ": repaired")
+			if not plan.walk_repairs.is_empty():
+				repaired[decks] += 1
+			eq(plan.validate().size(), 0, tag + ": validate() " + str(plan.validate()))
+			for k in plan.deck_count - 1:
+				var ci := _hop_down(plan, k)
+				check(ci >= 0, "%s: deck %d walkable from deck %d" % [tag, k + 1, k])
+				eq(plan.walkable_down_connector(k), ci, "%s: walkable_down_connector(%d)" % [tag, k])
+				eq(plan.walkable_down(k), ci >= 0, "%s: walkable_down(%d)" % [tag, k])
+				if not plan.walkable_up(k):
+					up_missing[decks] += 1
+			_hop_path(plan, tag)
+	print("[section] hop-only: plans repaired 2 / 3 / 5 decks: %d / %d / %d of 300; deck pairs with no way back up (no ramp): %d of 300 / %d of 600 / %d of 1200" % [
+			repaired[2], repaired[3], repaired[5], up_missing[2], up_missing[3], up_missing[5]])
+	# Seed 9 (the Bulwark case, 2026-11-24): deck 1 used to be reachable from deck 0 only by gliding over the deck-1
+	# atrium hole (shaft 0 -> 1 stacked over shaft 1 -> 2, no ramp, lifts not carrying mechs). Now a ramp 0 -> 1 is the
+	# critical way down and the crew arrives at its foot.
+	var s9 := SectionPlan.make({"seed": 9.0})
+	var r9 := s9.walkable_down_connector(0)
+	check(r9 >= 0 and s9.connectors[r9]["kind"] == "ramp", "seed 9: a ramp from deck 0 to deck 1")
+	eq(str(s9.connectors[r9]["role"]), "critical", "seed 9: the ramp is the critical way down")
+	eq(int(s9.arrival(1)["connector"]), r9, "seed 9: the crew arrives on deck 1 at the ramp's foot")
+	eq(int(s9.departure(0)["connector"]), r9, "seed 9: and leaves deck 0 by it")
+	eq(str(s9.arrival(1)["kind"]), "ramp", "seed 9: arrival kind")
+	check(s9.walkable_down(1), "seed 9: deck 2 walkable from deck 1")
+	# The fallbacks when no ramp fits (a grade too gentle for the grid): the stacked shaft moves, or a shaft is cut.
+	for o: Dictionary in [{"ramp_grade": 0.08}, {"ramp_grade": 0.08, "decks": 5.0}, {"ramp_grade": 0.08, "shafts": 0.0},
+			{"arc": 300.0}]:
+		var hows := {}
+		for seed_ in range(1, 21):
+			var oo := o.duplicate()
+			oo["seed"] = float(seed_)
+			var plan := SectionPlan.make(oo)
+			for w: Dictionary in plan.walk_repairs:
+				hows[w["how"]] = true
+			for k in plan.deck_count - 1:
+				check(_hop_down(plan, k) >= 0, "%s seed %d: deck %d walkable from deck %d" % [str(o), seed_, k + 1, k])
+			_hop_path(plan, "%s seed %d" % [str(o), seed_])
+		check(not hows.has("ramp"), "%s: no ramp fits, none added" % str(o))
+		check(not hows.is_empty(), "%s: some plan needed a fallback repair" % str(o))
+
+
+## The connector a hop-only mech takes from deck k to k+1 (an unlocked ramp first, else a shaft from k whose landing
+## overlaps no hole of deck k+1), recomputed from the connector list; -1 if none.
+func _hop_down(plan: SectionPlan, k: int) -> int:
+	var shaft := -1
+	for ci in plan.connectors.size():
+		var c: Dictionary = plan.connectors[ci]
+		if c["locked"] or int(c["from"]) != k or int(c["to"]) != k + 1:
+			continue
+		if c["kind"] == "ramp":
+			return ci
+		if c["kind"] != "shaft" or shaft >= 0:
+			continue
+		var land := plan.connector_rect(ci, k + 1)
+		var lands := true
+		for h in plan.connectors.size():
+			var o: Dictionary = plan.connectors[h]
+			if h != ci and o["kind"] != "lift" and int(o["from"]) == k + 1 and plan.connector_rect(h, k + 1).intersects(land):
+				lands = false
+		if lands:
+			shaft = ci
+	return shaft
+
+
+## The critical path on a hop-only graph: the plan's walkable cells, ramps both ways, shafts one way only where the drop
+## lands, no lifts: the entry reaches every cell of every deck and the extraction.
+func _hop_path(plan: SectionPlan, tag: String) -> void:
+	var adj := plan.mech_graph(false)
+	for a in adj.size():
+		var kept := []
+		for e: Array in adj[a]:
+			var via := int(e[2])
+			if via < 0:
+				kept.append(e)
+				continue
+			var c: Dictionary = plan.connectors[via]
+			if c["kind"] == "ramp" or (c["kind"] == "shaft" and _hop_down(plan, int(c["from"])) == via):
+				kept.append(e)
+		adj[a] = kept
+	var found := SectionPlan.walk(adj, plan.entry_cell())
+	check(float(found["dist"][plan.extraction_cell()]) < INF, tag + ": hop-only, the entry reaches the extraction")
+	for k in plan.deck_count:
+		check(float(found["dist"][plan.cell_id(k, 0, 0)]) < INF, "%s: hop-only, deck %d reached" % [tag, k])
 
 
 ## Legacy digest of seeds 1..40, recorded before ramp bridges and segment forms existed (2026-11-23): everything rolled
 ## before them (grid, zones, regions, pillars, connectors, roads, mech route, hooks, walls and gates, ends) is unchanged.
-const LEGACY_1_40 := "3ac644959496e0cf"
+## Re-recorded 2026-11-24 for the hop-only rule (_ensure_walkable_down): seeds 9, 12, 19 and 36 (3 decks) had no ramp
+## and a stacked atrium as the only drop from deck 0 to 1, so each gained a ramp 0 -> 1 (was "3ac644959496e0cf"); the
+## other 36 seeds are byte-identical (GOLDEN_UNCHANGED below holds their checksums from before the rule).
+const LEGACY_1_40 := "5e98a671b4bc534c"
 ## checksum() of seeds 1..40, concatenated and sha256'd, recorded before ramp bridges and segment forms: with the forms
 ## off (fractions 0, the defaults until 2026-11-23) and the bridge rule on, the whole plan hashes exactly as before.
-const CHECKSUM_1_40 := "af844bf36222946e"
+## Re-recorded 2026-11-24 for the hop-only rule, same four seeds (was "af844bf36222946e").
+const CHECKSUM_1_40 := "a8418dac1af36fdb"
 ## The same digest at the DEFAULTS since the forms went live (2026-11-23: f_lane 0.20, f_pedestrian 0.15, f_none 0.08).
-const CHECKSUM_DEFAULT_1_40 := "730d587c09108457"
+## Re-recorded 2026-11-24 for the hop-only rule, same four seeds (was "730d587c09108457").
+const CHECKSUM_DEFAULT_1_40 := "f72178587ddf045e"
+## checksum() at the defaults recorded BEFORE the hop-only rule existed, for seeds that already met it: they must never
+## move. Key "decks:seed". Seeds the project pins elsewhere (mission, city, bot and net tests) included.
+const GOLDEN_UNCHANGED := {
+	"3:1": "e700861b676804be", "3:2": "ef9e0d7a8a993b42", "3:3": "370b9dec18720682", "3:4": "caffe96bbb70e675",
+	"3:5": "cd47a331c85a5b7e", "3:6": "4a380ce7f69cfeb2", "3:7": "cf28c7ae7beeb2b2", "3:10": "23ac05ac695dc885",
+	"3:16": "d13de6fdb2d2d149", "3:17": "fc9261af3c0fdf7e", "3:21": "d15aaa0164c287ee", "3:22": "7ceacce00fe79bc0",
+	"3:26": "e95e24276d9b9cf7", "3:30": "349679d2ec3a3938", "3:32": "265b697c89ee42d6", "3:100": "9846a008fac9eec7",
+	"3:200": "8ad2283997dffc41", "3:300": "29e290dc68a1cd74", "3:403112": "318ac97042a655c0",
+	"3:747612": "01462e097f133ddb", "3:297535": "ffc9c65b84f5cb07", "3:295676": "b2121ac7aeb88ee0",
+	"5:1": "149059f2d843a8cd", "5:2": "ce98374a8be8d6f7", "5:3": "3b204fd4bce2681e", "5:5": "d361cabd3411b04d",
+	"5:6": "4823ccf917c00225", "5:7": "804beb15df7416b5", "5:9": "0364f89b3f798af0", "5:10": "6bb213fe0568007a",
+	"5:16": "d9fd5735267c344b", "2:1": "6102607788dee884", "2:9": "a837a7611873cb14", "2:50": "ef3787f6d0774b3c",
+}
+## Plans the rule changed (checksum before it): seed 9 is the case that found it (deck 1 reachable only by a glide).
+const GOLDEN_CHANGED := {"3:9": "0f07fdb6ead9f69c", "5:4": "e582e75aa48518a9", "5:22": "101ecacd184833a1",
+		"5:32": "ac65a0a8c37a9f42"}
 const ZERO_FORMS := {"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0}
 ## The mix the DEFAULTS roll (forms live since 2026-11-23).
 const FORM_MIX := {"f_lane": 0.20, "f_pedestrian": 0.15, "f_none": 0.08}
@@ -478,6 +604,13 @@ func _check_plan(plan: SectionPlan, tag: String) -> void:
 		if h["kind"] == "checkpoint" and h["size"] == "heavy":
 			checkpoints += 1
 	check(checkpoints >= n - 1, tag + ": a heavy checkpoint at every way down")
+	# --- The hop-only rule: every deck walkable from the one above (no lift, no glide); a repair ramp leads the route.
+	eq(plan.validate().size(), 0, tag + ": validate() " + str(plan.validate()))
+	for w: Dictionary in plan.walk_repairs:
+		if w["how"] == "ramp":
+			var k := int(w["deck"])
+			eq(int(plan.departure(k)["connector"]), int(w["connector"]), tag + ": the repair ramp is the way down from deck %d" % k)
+			eq(int(plan.arrival(k + 1)["connector"]), int(w["connector"]), tag + ": the crew arrives at the repair ramp's foot")
 	_check_encounters(plan, tag)
 	_check_bridges(plan, tag)
 	_check_forms(plan, tag)

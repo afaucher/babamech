@@ -41,12 +41,20 @@ var accent_picks: Dictionary = {}   ## accent id -> Button (the swatches in Sett
 var chassis_pick: OptionButton
 var weapon_picks: Dictionary = {}   ## hardpoint id -> OptionButton
 var crew_list: VBoxContainer
+## Hangar, host online (docs/design/hangar-bots.md): seat an AI pilot, its skill (crew-wide), remove one (bot id -> Button).
+var btn_add_bot: Button
+var bot_skill_pick: OptionButton
+var bot_remove: Dictionary = {}
 var ff_check: CheckBox               ## Hangar: the crew's friendly fire (host / solo edit it; a client sees the host's)
+var obj_check: CheckBox              ## Hangar, host / solo only: objectives (the mission plan) or the old clear-and-extract
 var stats_label: Label
 
 var _shot_path := ""
 var _shot_after := 1.5
 var _crew_shot_size := 0
+## The hangar's bot skill picker (rookie / average / veteran / brawler). One switch: false hides it (bots then play the
+## default skill) if the profiles turn out not to differ in missions.
+const SHOW_BOT_SKILL := true
 
 
 func _ready() -> void:
@@ -171,7 +179,11 @@ func show_screen(s: String) -> void:
 	chassis_pick = null
 	weapon_picks.clear()
 	crew_list = null
+	btn_add_bot = null
+	bot_skill_pick = null
+	bot_remove.clear()
 	ff_check = null
+	obj_check = null
 	stats_label = null
 	match s:
 		"settings": _build_settings()
@@ -285,11 +297,23 @@ func _build_hangar() -> void:
 	ff_check.tooltip_text = "The host's choice for the whole crew." if client_ff else "Your shots can hurt your crew."
 	_row("Friendly fire", ff_check)
 	_mark_friendly_fire()
+	if not client_ff:   # the host's choice reaches the crew in mission.launch; a client has no say
+		var args := OS.get_cmdline_user_args()
+		var forced := args.has(MissionFlow.NO_OBJECTIVES_FLAG) or args.has("--objectives")
+		obj_check = _check(MissionFlow.objectives_wanted(args, settings), func(v: bool) -> void:
+			_set_setting("objectives", v)
+			Session.objectives = v
+			obj_check.text = "On" if v else "Off (clear and extract)")
+		obj_check.name = "Objectives"
+		obj_check.text = "On" if obj_check.button_pressed else "Off (clear and extract)"
+		obj_check.disabled = forced
+		obj_check.tooltip_text = "Set by a command-line flag." if forced else "Objectives, waves and depots (off: the old clear-and-extract mission)."
+		_row("Objectives", obj_check)
 	_section("Mech")
 	chassis_pick = _option(MechCatalog.CHASSIS_ORDER.map(func(c: String) -> String: return str(MechCatalog.chassis(c)["name"])),
 		MechCatalog.CHASSIS_ORDER.find(str(settings["chassis"])),
 		func(i: int) -> void:
-			_set_profile("chassis", MechCatalog.CHASSIS_ORDER[i])
+			_set_chassis(str(MechCatalog.CHASSIS_ORDER[i]))
 			show_screen("hangar"))
 	_row("Chassis", chassis_pick)
 	_text(str(MechCatalog.chassis(str(settings["chassis"]))["blurb"]), 13, Color(0.6, 0.62, 0.65))
@@ -297,10 +321,12 @@ func _build_hangar() -> void:
 	var loadout := _loadout()
 	for hp: Dictionary in MechCatalog.chassis(str(settings["chassis"]))["hardpoints"]:
 		var ids: Array = [""]
-		ids.append_array(MechCatalog.weapons_for(str(hp["mount"])))
-		ids.append_array(MechCatalog.equipment_for(str(hp["mount"])))   # back-mount equipment (docs/design/back-equipment.md)
-		var labels: Array = ids.map(func(w: String) -> String: return "(empty)" if w == "" else _weapon_label(w))
+		# Every weapon then equipment item the hardpoint takes, over all its mount kinds (the Bulwark's side guns take side
+		# and shoulder weapons; back-mount equipment: docs/design/back-equipment.md).
+		ids.append_array(MechCatalog.items_for(hp))
 		var hp_id := str(hp["id"])
+		var key := MechCatalog.slot_key(str(settings["chassis"]), hp_id)   # its key in play (the Bulwark's back mounts: 3, 4)
+		var labels: Array = ids.map(func(w: String) -> String: return "(empty)" if w == "" else _weapon_label(w, key))
 		var pick := _option(labels, ids.find(str(loadout.get(hp_id, ""))), func(i: int) -> void:
 			var l := _loadout()
 			var chosen := str(ids[i])
@@ -496,6 +522,20 @@ func _set_profile(key: String, value: Variant) -> void:
 	_mark_accent()
 
 
+## A new chassis: the loadout flown on the old one is remembered for it ("loadouts", per chassis), the new one's
+## remembered loadout comes back ({} = its default), made valid for its hardpoints, and the crew hears about it.
+func _set_chassis(id: String) -> void:
+	var old := str(settings["chassis"])
+	if id == old:
+		return
+	var memo: Dictionary = (settings.get("loadouts", {}) as Dictionary).duplicate()
+	memo[old] = _loadout()
+	_set_setting("loadouts", memo)
+	_set_setting("loadout", MechCatalog.sanitize_loadout(id, memo.get(id, {}) as Dictionary))
+	_set_profile("chassis", id)
+	_update_stats()
+
+
 ## The accent swatches: one square button per MechAccent colour, the picked one outlined in white.
 func _accent_swatches() -> Control:
 	accent_picks.clear()
@@ -548,12 +588,13 @@ func _loadout() -> Dictionary:
 	return MechCatalog.sanitize_loadout(str(settings["chassis"]), settings["loadout"] as Dictionary)
 
 
-static func _weapon_label(w: String) -> String:
+static func _weapon_label(w: String, key: int = 5) -> String:
 	var d := MechCatalog.weapon(w)
 	if MechCatalog.is_equipment(w):
 		if str(d.get("equipment", "")) == "passive":
 			return "%s  (%.0ft, passive: %s)" % [d["name"], d["weight"], str(d.get("note", "")).trim_prefix("Passive: ").trim_suffix(".")]
-		return "%s  (%.0ft, key 5, %.0f heat per use, %d per mission)" % [d["name"], d["weight"], d["active_heat"], int(d.get("charges", 0))]
+		return "%s  (%.0ft, key %d, %.0f heat per use, %d per mission)" % [d["name"], d["weight"], key, d["active_heat"],
+			int(d.get("charges", 0))]
 	return "%s  (%.0ft, %.1f heat/s, %.0f per shot)" % [d["name"], d["weight"], d["passive_heat"], d["active_heat"]]
 
 
@@ -583,17 +624,69 @@ func _fill_crew() -> void:
 	for c in crew_list.get_children():
 		crew_list.remove_child(c)
 		c.queue_free()
+	btn_add_bot = null
+	bot_skill_pick = null
+	bot_remove.clear()
 	var entries := _crew_entries()
+	var host_lobby := _can_seat_bots()
 	for e: Dictionary in entries:
 		var l := Label.new()
-		l.text = "%d  %s   %s head, %s%s" % [int(e["seat"]), str(e["name"]), MechCatalog.head_name(str(e["head"])),
-			str(MechCatalog.chassis(str(e["chassis"]))["name"]), "   (you)" if bool(e.get("you", false)) else ""]
+		var bot := bool(e.get("bot", false))
+		if bot:   # its mech is picked at launch from the mission seed (BotLoadout)
+			l.text = "%d  %s   %s head, bot (%s), picks its mech at launch" % [int(e["seat"]), str(e["name"]),
+				MechCatalog.head_name(str(e["head"])), str(e.get("skill", NetSession.BOT_SKILL))]
+		else:
+			l.text = "%d  %s   %s head, %s%s" % [int(e["seat"]), str(e["name"]), MechCatalog.head_name(str(e["head"])),
+				str(MechCatalog.chassis(str(e["chassis"]))["name"]), "   (you)" if bool(e.get("you", false)) else ""]
 		l.add_theme_font_size_override("font_size", 16)
-		crew_list.add_child(l)
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		if bot and host_lobby:
+			var row := HBoxContainer.new()
+			l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			row.add_child(l)
+			var id := int(e["peer"])
+			var rm := Button.new()
+			rm.name = "RemoveBot%d" % -id
+			rm.text = "Remove"
+			rm.pressed.connect(func() -> void:
+				_play_ui("ui.back")
+				Session.remove_bot(id))
+			row.add_child(rm)
+			bot_remove[id] = rm
+			crew_list.add_child(row)
+		else:
+			crew_list.add_child(l)
 	if Session.online():
 		var free := NetSession.MAX_CREW - entries.size()
 		if free > 0:
 			_text_into(crew_list, "%d seat%s open" % [free, "" if free == 1 else "s"], 13, Color(0.6, 0.62, 0.65))
+	if host_lobby:
+		var row2 := HBoxContainer.new()
+		btn_add_bot = Button.new()
+		btn_add_bot.name = "AddBot"
+		btn_add_bot.text = "Add bot"
+		btn_add_bot.disabled = Session.seats_free() <= 0
+		btn_add_bot.tooltip_text = "Seat an AI pilot. It picks its own mech and loadout at launch."
+		btn_add_bot.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn_add_bot.pressed.connect(func() -> void:
+			_play_ui("ui.click")
+			Session.add_bot(Session.bot_skill))
+		row2.add_child(btn_add_bot)
+		if SHOW_BOT_SKILL:
+			bot_skill_pick = OptionButton.new()
+			bot_skill_pick.name = "BotSkill"
+			for k: String in NetSession.BOT_SKILLS:
+				bot_skill_pick.add_item(k.capitalize())
+			bot_skill_pick.select(maxi(NetSession.BOT_SKILLS.find(Session.bot_skill), 0))
+			bot_skill_pick.tooltip_text = "How well the bots play (every bot)."
+			bot_skill_pick.item_selected.connect(func(i: int) -> void: Session.set_bot_skill(str(NetSession.BOT_SKILLS[i])))
+			row2.add_child(bot_skill_pick)
+		crew_list.add_child(row2)
+
+
+## Only the host of an online crew, in the hangar before launch, seats bots.
+func _can_seat_bots() -> bool:
+	return Session.online() and Session.hosting and Session.crew_state == "lobby"
 
 
 ## The crew as the hangar shows it: the roster online, else just this player.
@@ -616,7 +709,7 @@ func _refresh_stage() -> void:
 		var mechs: Array = []
 		for e: Dictionary in _crew_entries():
 			mechs.append({"head": e["head"], "chassis": e["chassis"], "name": e["name"], "accent": e.get("accent", MechAccent.DEFAULT),
-				"loadout": _loadout() if bool(e.get("you", false)) else {}})
+				"loadout": _loadout() if bool(e.get("you", false)) else e.get("loadout", {})})
 		stage.show_mechs(mechs, true)
 	else:
 		stage.show_mechs([{"head": Session.local_head(), "chassis": Session.local_chassis(), "loadout": _loadout(), "name": "",

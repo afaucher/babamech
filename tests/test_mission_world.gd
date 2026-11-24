@@ -132,7 +132,9 @@ func _state(mw: MissionWorld, id: Variant, t: float) -> String:
 
 
 func _doors_over_time(mw: MissionWorld, id: Variant, kind: String) -> void:
-	var t_open := MissionWorld.GATE_OPEN if kind == "gate" else MissionWorld.LIFT_OPEN
+	# open_at is the moment the leaves START to move; passable (fully open) passable_after(kind) s later; hold s open.
+	var t_open := MissionWorld.passable_after(kind)
+	eq(t_open, MissionWorld.OPENING if kind == "gate" else MissionWorld.LIFT_OPEN, "%s: passable_after" % kind)
 	var base := 100.0 if kind == "gate" else 200.0
 	mw.advance_to(base)
 	eq(_state(mw, id, base), "shut", "%s: shut before any order" % kind)
@@ -140,37 +142,46 @@ func _doors_over_time(mw: MissionWorld, id: Variant, kind: String) -> void:
 	mw.open_source(id, oa, 12.0)
 	eq(_state(mw, id, oa - 5.1), "shut", "%s: still shut 5.1 s before open_at" % kind)
 	eq(_state(mw, id, oa - 4.9), "warn", "%s: warning from open_at - 5 s" % kind)
-	eq(_state(mw, id, oa - t_open + 0.05), "opening", "%s: opening over the last %.1f s" % [kind, t_open])
-	eq(_state(mw, id, oa + 0.01), "open", "%s: open at open_at" % kind)
-	eq(_state(mw, id, oa + 11.9), "open", "%s: open through the hold" % kind)
-	eq(_state(mw, id, oa + 12.5), "closing", "%s: closing after the hold" % kind)
-	eq(_state(mw, id, oa + 14.1), "shut", "%s: shut 2 s later" % kind)
+	eq(_state(mw, id, oa - 0.05), "warn", "%s: still warning (leaves still) just before open_at" % kind)
+	eq(_state(mw, id, oa + 0.05), "opening", "%s: the leaves start to move at open_at" % kind)
+	eq(bool(mw.source_state(id)["passable"]), false, "%s: not passable while opening" % kind)
+	near(float(mw.source_state(id)["passable_at"]), oa + t_open, 1e-6, "%s: passable_at = open_at + %.1f" % [kind, t_open])
+	eq(_state(mw, id, oa + t_open - 0.05), "opening", "%s: opening for %.1f s" % [kind, t_open])
+	eq(_state(mw, id, oa + t_open + 0.01), "open", "%s: open at open_at + %.1f" % [kind, t_open])
+	eq(bool(mw.source_state(id)["passable"]), true, "%s: passable once open" % kind)
+	near(float(mw.source_state(id)["t"]), oa + t_open, 1e-6, "%s: open since passable_at" % kind)
+	eq(_state(mw, id, oa + t_open + 11.9), "open", "%s: open through the hold" % kind)
+	eq(_state(mw, id, oa + t_open + 12.5), "closing", "%s: closing after the hold" % kind)
+	eq(bool(mw.source_state(id)["passable"]), false, "%s: not passable while closing" % kind)
+	eq(_state(mw, id, oa + t_open + 14.1), "shut", "%s: shut 2 s later" % kind)
 	# A late call snaps: the order arrives when the door should already be open.
 	var oa2 := base + 40.0
 	mw.open_source(id, oa2, 12.0)
-	eq(_state(mw, id, oa2 + 3.0), "open", "%s: a late order snaps straight to open" % kind)
+	eq(_state(mw, id, oa2 + t_open + 0.5), "open", "%s: a late order snaps straight to open" % kind)
 	# A repeat open while open only extends the hold and keeps the earlier open_at.
 	mw.open_source(id, oa2 + 5.0, 12.0)
 	near(float(mw.source_state(id)["open_at"]), oa2, 1e-6, "%s: a repeat open keeps the earlier open_at" % kind)
-	near(float(mw.source_state(id)["close_at"]), oa2 + 17.0, 1e-6, "%s: and extends the hold" % kind)
+	near(float(mw.source_state(id)["close_at"]), oa2 + 17.0 + t_open, 1e-6, "%s: and extends the hold" % kind)
 	mw.hold_source(id, oa2 + 30.0)
 	eq(_state(mw, id, oa2 + 29.0), "open", "%s: hold_source keeps it open" % kind)
 	eq(_state(mw, id, oa2 + 31.0), "closing", "%s: and it closes after" % kind)
 	eq(_state(mw, id, oa2 + 40.0), "shut", "%s: shut again" % kind)
 
 
-## The gate's collision: shut blocks at the wall plane, open lets a ray into the recess (stopped by its back plate), sealed
-## blocks again; physically, through the physics server.
+## The gate's collision: shut blocks at the wall plane, open lets a ray into the staging bay (stopped by its back wall),
+## sealed blocks again; physically, through the physics server. And source_bay / source_point agree with the bay.
 func _collision(stack: CityStack, mw: MissionWorld, id: Variant) -> void:
 	var door := mw._doors[id] as MissionProps.GateDoor
 	var space := stack.get_world_3d().direct_space_state
 	var from := door.global_transform * Vector3(0, 3.0, 4.0)
-	var to := door.global_transform * Vector3(0, 3.0, -12.0)
+	var to := door.global_transform * Vector3(0, 3.0, -40.0)
 	var base := 300.0
 	var sp := mw.source_point(id)
 	var ext: Rect2 = stack.decks[int(sp["deck"])].plan.extent
-	check(not ext.has_point(Vector2(float(sp["x"]), float(sp["s"]))), "a gate's spawn point is behind the wall plane, in the recess")
-	check(ext.grow(4.0).has_point(Vector2(float(sp["x"]), float(sp["s"]))), "and only a few metres behind it")
+	var spt := Vector2(float(sp["x"]), float(sp["s"]))
+	check(not ext.grow(MissionProps.GateDoor.USE_FROM - 0.5).has_point(spt), "a gate's spawn point is in the bay, past the wall and the leaves")
+	check(ext.grow(MissionProps.GateDoor.USE_TO).has_point(spt), "and in front of the back door")
+	_bay(mw, id, sp)
 	mw.advance_to(base)
 	await frames(2)
 	var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(from, to))
@@ -178,25 +189,69 @@ func _collision(stack: CityStack, mw: MissionWorld, id: Variant) -> void:
 	check(door.door_shape.disabled == false, "gate shut: the door shape is on")
 	mw.open_source(id, base + 6.0, 10.0)
 	mw.advance_to(base + 4.5)
-	check(door.door_shape.disabled == false, "gate opening: still solid until open_at")
-	mw.advance_to(base + 6.5)
+	check(door.door_shape.disabled == false, "gate warning: solid")
+	mw.advance_to(base + 7.5)
+	check(door.door_shape.disabled == false, "gate opening: still solid until passable")
+	mw.advance_to(base + 6.0 + MissionWorld.OPENING + 0.1)
 	check(door.door_shape.disabled, "gate open: the door shape is off")
 	await frames(2)
 	hit = space.intersect_ray(PhysicsRayQueryParameters3D.create(from, to))
-	check(not hit.is_empty() and from.distance_to(hit["position"]) > 9.0, "gate open: a ray goes into the recess (%s)" % str(hit.get("position")))
-	check(not hit.is_empty() and from.distance_to(hit["position"]) < 11.5, "and stops at the recess's back plate")
-	mw.advance_to(base + 17.0)
+	var back := 4.0 + MissionProps.GateDoor.BAY_DEPTH
+	check(not hit.is_empty() and from.distance_to(hit["position"]) > back - 1.5, "gate open: a ray goes through the bay (%s)" % str(hit.get("position")))
+	check(not hit.is_empty() and from.distance_to(hit["position"]) < back + 0.5, "and stops at the bay's back wall")
+	var close_at := base + 6.0 + MissionWorld.OPENING + 10.0
+	mw.advance_to(close_at + 1.0)
 	check(door.door_shape.disabled, "gate closing: still open to walk through")
-	mw.advance_to(base + 18.5)
+	mw.advance_to(close_at + MissionWorld.CLOSE + 0.5)
 	check(not door.door_shape.disabled, "gate shut again: solid")
 	mw.close_source(id)
 	eq(str(mw.source_state(id)["state"]), "sealed", "close_source seals it")
-	mw.advance_to(base + 18.6)
+	mw.advance_to(close_at + MissionWorld.CLOSE + 0.6)
 	check(not door.door_shape.disabled, "sealed is solid")
 	check(door.sealed_look.visible, "and looks welded")
 	mw.open_source(id, base + 30.0)
 	eq(_state(mw, id, base + 31.0), "sealed", "an order after sealing does nothing")
 	eq(_state(mw, id, base + 100.0), "sealed", "sealed is final")
+
+
+## source_bay(id): its keys, values that agree with the door (usable rectangle >= 20 m wide, clear height >= 12 m, facing
+## into the map, exit in front, origin mid-depth behind door_s), source_point = its centre, the sign panel beside the frame;
+## an unknown id or a lift gives {ok = false}.
+func _bay(mw: MissionWorld, id: Variant, sp: Dictionary) -> void:
+	var b := mw.source_bay(id)
+	var door := mw._doors[id] as MissionProps.GateDoor
+	if not check(bool(b.get("ok", false)), "source_bay is ok for a gate"):
+		return
+	for key: String in ["deck", "frame", "center", "x", "s", "h", "half_width", "depth_from", "depth_to", "height", "facing", "exit",
+			"origin", "out", "width", "depth", "door_w", "door_h", "door_s", "door"]:
+		check(b.has(key), "source_bay has %s" % key)
+	near(float(b["x"]), float(sp["x"]), 1e-3, "source_point is the bay centre (x)")
+	near(float(b["s"]), float(sp["s"]), 1e-3, "source_point is the bay centre (s)")
+	check(float(b["width"]) >= 20.0 - 1e-3, "usable width >= 20 m (%.1f)" % float(b["width"]))
+	check(float(b["depth"]) >= 16.0 - 1e-3, "usable depth %.1f m" % float(b["depth"]))
+	check(float(b["height"]) >= 12.0, "clear height >= 12 m (%.2f)" % float(b["height"]))
+	check(float(b["depth_to"]) <= MissionProps.GateDoor.BAY_DEPTH - 1.0, "usable depth ends clear of the back door")
+	near(float(b["door_w"]), door.half * 2.0, 1e-3, "door_w")
+	near(float(b["door_h"]), door.gh, 1e-3, "door_h")
+	near((b["out"] as Vector2).length(), 1.0, 1e-4, "out is a unit vector")
+	var fr := b["frame"] as Transform3D
+	check((b["facing"] as Vector3).dot(fr.basis.z.normalized()) > 0.999, "facing is the frame's +Z (into the map)")
+	check(((b["exit"] as Vector3) - fr.origin).dot(b["facing"]) > 5.0, "exit is on the street in front of the door")
+	var o := b["origin"] as Vector2
+	var out := b["out"] as Vector2
+	var along := o.x if absf(out.x) > 0.5 else o.y
+	near(absf(along - float(b["door_s"])), (float(b["depth_from"]) + float(b["depth_to"])) * 0.5, 0.05, "origin lies mid-depth behind door_s")
+	eq(mw.source_bay("nope"), {"ok": false}, "an unknown id has no bay")
+	for s: Dictionary in (MissionWorld.field(mw.plan, "sources", []) as Array):
+		if str(s["kind"]) == "lift" and mw._doors.has(s["id"]):
+			eq(bool(mw.source_bay(s["id"]).get("ok", true)), false, "a lift has no bay")
+			break
+	var panel := mw.source_sign_panel(id)
+	if check(bool(panel.get("ok", false)), "a sign panel beside the frame"):
+		eq(panel["size"], MissionProps.GateDoor.PANEL, "panel size")
+		var pf := panel["frame"] as Transform3D
+		check(pf.basis.z.normalized().dot(fr.basis.z.normalized()) > 0.999, "the panel faces the street")
+		check(absf((fr.affine_inverse() * pf.origin).x) > door.half + 4.0, "beside the opening, past the buttress")
 
 
 ## close_source(id, at) while the door is open: it closes over 2 s from `at`, then is sealed; "seal" fires once at `at`;
@@ -340,7 +395,8 @@ func _call(w: MissionWorld, c: Array) -> void:
 	match str(c[1]):
 		"open":
 			if c[2] != null:
-				w.open_source(c[2], float(c[0]) + 6.0, float(c[3]))
+				# The order time given: by default it is the caller's clock (the last advance_to), which differs by stepping.
+				w.open_source(c[2], float(c[0]) + 6.0, float(c[3]), float(c[0]))
 		"hold":
 			if c[2] != null:
 				w.hold_source(c[2], float(c[3]))
@@ -410,7 +466,9 @@ func _flag_sites(stack: CityStack, mw: MissionWorld, plan: Dictionary) -> void:
 			var o2: Dictionary = mw._sites[id]
 			if int(o2["deck"]) == int(o["deck"]):
 				avoid.append([Vector2(float(o2["x"]), float(o2["s"])), float(o2["clear"])])
-		var again := MissionProps.snap_site(d, at, MissionWorld.snap_reach(o), MissionWorld.FLAG_CLEAR if o["type"] == "flag" else MissionWorld.ASSET_CLEAR, avoid)
+		# The rule MissionWorld._site uses (the fit rule: snap_site's pick unless the widest mech cannot reach it; test_site_fit).
+		var again := MissionProps.snap_site_fit(d, at, MissionWorld.snap_reach(o), MissionWorld.FLAG_CLEAR if o["type"] == "flag" else MissionWorld.ASSET_CLEAR,
+				avoid, MissionWorld.obj_radius(o))
 		check(is_equal_approx(float(again["x"]), got.x) and is_equal_approx(float(again["s"]), got.y), "%s: the snap is deterministic" % o["id"])
 
 

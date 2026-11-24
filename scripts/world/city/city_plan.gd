@@ -2837,6 +2837,10 @@ func court_open(axis: String, line: int, index: int) -> bool:
 
 
 const MECH_R := 2.2              ## the mech's collision capsule radius (walk_graph / court_open)
+## The WIDEST player chassis capsule radius (MechCatalog movement "capsule_radius": the Bulwark's 3.6 m; tests/test_site_fit
+## asserts it covers every chassis). Mission objective sites must be reachable by it (MissionProps.snap_site_fit); the
+## layout itself (walk_graph, court_open) still uses MECH_R.
+const MECH_R_MAX := 3.6
 const WALK_MARGIN := 1.0         ## a walk corridor is at least this much wider than the capsule
 const STEP_H := 0.5              ## anything up to this high is stepped onto, not walked round (curbs, courts: 0.2 m)
 

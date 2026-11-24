@@ -19,6 +19,11 @@ extends RefCounted
 ##   params       the lab params (MechModel.PARAMS' form) with this chassis' defaults; none = MechModel.PARAMS
 ##   thigh_angle / shin_angle / tarsus_lean: the standing pose's angles (rad) at crouch 0 and 1 (MechModel.pose)
 ##   socket_tilt / socket_follow: the hip socket's lean (MechModel._seat_socket)
+##   twist_max    (optional, rad) the hip twist the body allows (none = MechRig's default); MechRig reads it
+##   thrusters    (optional) the right lift jet's nozzle in body space (mirrored on the left; ThrusterFx); none = the
+##                Strider's jets behind and below the posed hips
+##   rig          (optional) MechRig / Gait numbers over the Strider's ({rig var or "gait.<var>": value}; MechRig.RIG_KEYS,
+##                GAIT_KEYS); none = the Strider's
 ## Cosmetic data only (no gameplay state).
 
 const ORDER := ["strider", "bulwark"]
@@ -73,8 +78,9 @@ static func _strider() -> Dictionary:
 	}
 
 
-## The Bulwark (BulwarkMeshes): sumo legs with forward knees (bend +1), thigh / shin / a short ankle block (the "tarsus",
-## kept vertical: the ankle drum stays straight above the boot), a wide stance, a deep crouch.
+## The Bulwark (BulwarkMeshes): long heavy sumo legs with forward knees (bend +1), thigh / shin / a short ankle block (the "tarsus",
+## kept vertical: the ankle drum stays straight above the boot), a wide stance (the hips under the hull's flank pods), a
+## deep crouch, no hip twist.
 static func _bulwark() -> Dictionary:
 	return {
 		"body_scale": BulwarkMeshes.BODY_SCALE,
@@ -82,7 +88,7 @@ static func _bulwark() -> Dictionary:
 		"mounts": BulwarkMeshes.MOUNTS,
 		"rest": BulwarkMeshes.REST_LENGTH,
 		"body": [["torso", "bulwark_torso"], ["pelvis", "bulwark_pelvis"], ["nose", "bulwark_nose"], ["hatch", "hatch"]],
-		"mirrored": [],
+		"mirrored": [["pod", "bulwark_pod"]],
 		"mount_hw": {"side": ["bulwark_side_mount", BulwarkMeshes.SIDE_REACH]},
 		"legs": {"thigh": "bulwark_thigh", "shin": "bulwark_shin", "tarsus": "bulwark_ankle", "socket": "bulwark_hip_socket",
 			"hip": "bulwark_hip_cap", "knee": "bulwark_knee_cap", "ankle": "bulwark_ankle_cap", "foot": "bulwark_boot"},
@@ -91,19 +97,40 @@ static func _bulwark() -> Dictionary:
 		"spur": ["bulwark_spur", BulwarkMeshes.SPUR_ROOT],
 		"bend": 1.0,
 		"params": [
-			{"id": "thigh", "label": "Thigh length", "min": 0.45, "max": 1.0, "value": 0.66},
-			{"id": "shin", "label": "Shin length", "min": 0.4, "max": 1.0, "value": 0.58},
-			{"id": "tarsus", "label": "Ankle length", "min": 0.15, "max": 0.5, "value": 0.22},
-			{"id": "crouch", "label": "Crouch", "min": 0.0, "max": 1.0, "value": 0.6},
-			{"id": "stance", "label": "Stance width", "min": 1.4, "max": 2.6, "value": 2.0},
+			{"id": "thigh", "label": "Thigh length", "min": 0.8, "max": 1.8, "value": BulwarkMeshes.REST_LENGTH["thigh"]},
+			{"id": "shin", "label": "Shin length", "min": 0.7, "max": 1.7, "value": BulwarkMeshes.REST_LENGTH["shin"]},
+			{"id": "tarsus", "label": "Ankle length", "min": 0.2, "max": 0.6, "value": BulwarkMeshes.REST_LENGTH["tarsus"]},
+			{"id": "crouch", "label": "Crouch", "min": 0.0, "max": 1.0, "value": 0.5},
+			{"id": "stance", "label": "Stance width", "min": 2.2, "max": 3.8, "value": BulwarkMeshes.STANCE},
 			{"id": "body", "label": "Body scale", "min": 0.6, "max": 1.6, "value": 1.0},
 			{"id": "head", "label": "Head scale", "min": 0.5, "max": 2.0, "value": 1.15},
 			{"id": "gait", "label": "Walk rate (cycles/s)", "min": 0.0, "max": 2.0, "value": 0.0},
 			{"id": "stride", "label": "Stride swing (rad)", "min": 0.0, "max": 0.8, "value": 0.3},
 		],
-		"thigh_angle": Vector2(0.45, 1.05),
-		"shin_angle": Vector2(0.55, 1.25),
+		"thigh_angle": Vector2(0.3, 0.9),    # 0.6 rad at the default crouch: hip ~4.8 m, step-up ~1.8 m at mech scale 2
+		"shin_angle": Vector2(0.36, 1.0),   # 0.68 rad
 		"tarsus_lean": Vector2(0.0, 0.0),
 		"socket_tilt": 0.5236,
 		"socket_follow": 0.6,
+		# The hips hang under pods fixed to the hull's flanks (layout B1), so the legs cannot turn about the body's centre
+		# like the Strider's (MechRig.twist_max 90 deg would swing a hip out from under its pod and the thighs into the
+		# nose). MechRig reads it (apply_chassis_rig): the Bulwark strafes by side-stepping, its feet stepping sideways.
+		"twist_max": 0.0,
+		"rig": BULWARK_RIG,
+		# The lift jets (ThrusterFx), body space, the right one (mirrored on the left): under the rear engine block, below
+		# its two exhaust stacks (the mesh has no downward nozzle of its own: the jets leave the block's underside).
+		"thrusters": Vector3(0.42, 0.24, 1.42),
 	}
+
+
+## The Bulwark's rig numbers (MechRig.apply_chassis_rig; anything not named keeps the Strider's): longer, slower,
+## higher steps for legs twice as long at two thirds of the speed, a wider gap between the big boots, a heavier bob and
+## landing, less lean, a slower slump. test_rig_bulwark drives the real rig with them (no foot sliding, legs clear of the
+## hull, footsteps).
+const BULWARK_RIG := {
+	"gait.step_length": 4.4, "gait.min_stride": 1.0, "gait.step_time": 0.55, "gait.run_step_time": 0.32,
+	"gait.min_step_time": 0.26, "gait.step_height": 1.3, "gait.land_time": 0.24, "gait.settle_time": 0.4,
+	"gait.settle_error": 0.25, "gait.step_clearance": 0.3, "gait.overlap_k": 0.0, "gait.reach_err": 2.5,
+	"foot_gap": 0.9, "bob": 0.12, "lean": 0.08, "sway": 0.035, "absorb": 0.38, "absorb_time": 0.13,
+	"sag_depth": 0.42, "sag_pitch": 0.12, "sag_roll": 0.03, "sag_time": 0.8,
+}

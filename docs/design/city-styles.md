@@ -54,6 +54,11 @@ point, the pillars' collar at the ceiling) on six bases (podium, stepped, plaza,
 shopfronts; service alleys through blocks (param `alleys`); road forms per segment (lane, pedestrian street, superblock
 court) drawn from the SectionPlan, or rolled on their own (param `road_variety`).
 
+**Deck lettering** (`city-signs.md`, 2026-11-23): "DECK 02" in stencil beside and above every wall gate and over every
+freight lift door, and arrow + destination deck on panels hung at both ends of every ramp and over shafts. User pick
+2026-11-24: cell 6, cream on a dark panel (`CitySigns.style` "dark", the default; compared in game against cell 4, kept
+as the lab-only "white"), lab option `deck_signs`.
+
 ## Streets
 
 Grid in arc coordinates: a central **avenue** runs along the spin direction (it climbs the curve, the Cluckipede view),

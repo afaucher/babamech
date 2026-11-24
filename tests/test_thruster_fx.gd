@@ -5,11 +5,22 @@ extends TestCase
 ## leans back, and is long enough to read from the chase camera. Off when the thrust stops.
 
 func setup() -> void:
+	await _run("strider")
+	await _run("bulwark")
+	finish()
+
+
+## The Bulwark (ChassisParts "thrusters"): its jets leave the underside of its rear engine block, on the posed body.
+func _run(chassis: String) -> void:
 	var lab := ThrusterLab.new()
 	add_child(lab)
 	await frames(3)
+	if chassis != "strider":
+		lab.set_lab_option("chassis", chassis)
+		await frames(3)
 	lab.bot_enabled = false
 	var m := lab.mech
+	eq(MechSpawn.rig_of(m).model.chassis_id, chassis, "the lab flies a " + chassis)
 	var fx := m.get_node("Thrusters") as ThrusterFx
 	lab.place(-20.0, 0.05)
 	await frames(20)
@@ -19,14 +30,44 @@ func setup() -> void:
 	for phase: Array in [["lift-off", 8], ["airborne", 50]]:
 		for i in int(phase[1]):
 			await get_tree().process_frame
-		_check_jets(m, fx, str(phase[0]))
+		if chassis == "strider":
+			_check_jets(m, fx, str(phase[0]))
+		else:
+			_check_body_jets(m, fx, "%s %s" % [chassis, phase[0]])
 	m.thrust_input = false
 	for i in 40:
 		await get_tree().process_frame
 	check(not fx.jet(-1.0).visible and not fx.jet(1.0).visible, "flames go out when the thrust stops (level %.2f)" % fx.level)
 	lab.queue_free()
-	await frames(1)
-	finish()
+	await frames(2)
+
+
+## Body-mounted jets (ChassisParts "thrusters"): at the nozzle point on the posed body (the Chassis node), behind the
+## legs and under the hull deck (within a frame of the body's motion), pointing down and back, long enough to read.
+func _check_body_jets(m: MechController, fx: ThrusterFx, when: String) -> void:
+	check(m.thrusting, "%s: thrusting" % when)
+	var model := MechSpawn.rig_of(m).model
+	var ch := model.find_child("Chassis", true, false) as Node3D
+	var bn: Vector3 = model.parts()["thrusters"]
+	var to_local := m.global_transform.affine_inverse()
+	for i in 2:
+		var side := -1.0 if i == 0 else 1.0
+		var j := fx.jet(side)
+		var tag := "%s %s jet" % [when, "left" if side < 0.0 else "right"]
+		check(j.visible, "%s shows" % tag)
+		var noz := to_local * j.global_position
+		var want := to_local * ch.to_global(Vector3(side * bn.x, bn.y, bn.z))
+		check(noz.distance_to(want) < 0.1, "%s: at the engine block's nozzle (%.3f m off)" % [tag, noz.distance_to(want)])
+		var hip := to_local * model.to_global(model.leg_points(i)["hip"])
+		var st := fx.stream(side)
+		var tip := to_local * (j.global_transform * Vector3(0.0, -st.length, 0.0))
+		var dir := (tip - noz).normalized()
+		check(noz.z > hip.z + 1.5, "%s: behind the legs (z %.2f, hip z %.2f)" % [tag, noz.z, hip.z])
+		check(noz.y < hip.y + 2.0 and noz.y > hip.y - 0.5, "%s: low on the hull's back (nozzle %.2f, hip %.2f m)" % [tag, noz.y, hip.y])
+		check(signf(noz.x) == side, "%s: on its own side (x %.2f)" % [tag, noz.x])
+		check(dir.y < -0.8 and dir.z > 0.2, "%s: points down and back (dir %s)" % [tag, dir])
+		check(noz.y - tip.y > 3.0, "%s: long enough to read (%.1f m)" % [tag, noz.y - tip.y])
+		print("  %s: nozzle %s (hip %s)" % [tag, str(noz.snapped(Vector3.ONE * 0.01)), str(hip.snapped(Vector3.ONE * 0.01))])
 
 
 func _check_jets(m: MechController, fx: ThrusterFx, when: String) -> void:

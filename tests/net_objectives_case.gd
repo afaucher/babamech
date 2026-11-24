@@ -5,13 +5,14 @@ extends NetTest
 ## 1. Every machine runs plan mode from the launch params; the barrier passed with the plan's checksum joined.
 ## 2. The host kills every enemy; the LAST client stands its mech in deck 1's flag ring: the host's rules count the
 ##    flag's progress from that mech's streamed position; mid-way every client shows the zone bar and a rising progress.
-## 3. The flag is raised: its alarm wave is ordered. Every machine has the same objective states / progress, the same
+##    The flag's wave is ordered when the capture starts: mid-way every client shows the reinforcement line.
+## 3. The flag is raised (its wave was ordered at the start). Every machine has the same objective states / progress, the same
 ##    wave counters (director.state()), the same wave orders and called open_source with the same open_at for each (its
 ##    MissionWorld schedule agrees), and raised the flag in its world.
 
 const SEED := 7
 const PLAN := {"hold": 6.0}
-const DIRECTOR := {"lull": 1.5, "lull_min": 1.5, "grace": 1.5}
+const DIRECTOR := {"rest_first": 1.5, "rest_last": 1.5, "arrival_rest": 1.0, "grace": 1.5}
 
 var td: TestDrive
 
@@ -52,8 +53,11 @@ func run_host() -> void:
 			eq(str(v["state"].get(flag["id"], "")), "active", "client %d: the flag is active" % p)
 			check(float(v["progress"].get(flag["id"], 0.0)) >= 2.0, "client %d: progress rises (%s)" % [p, str(v["progress"])])
 			check(bool(v["zone_bar"]), "client %d: the zone bar shows" % p)
+			# The capture brings its wave at once (step start): every client shows the reinforcement line mid-flag.
+			check(bool(v["alert"]), "client %d shows the reinforcement line during the capture" % p)
+	check(not mf.opened.is_empty(), "the flag's wave is ordered while the flag is rising")
 
-	# 3. Raised, the alarm wave everywhere ---------------------------------------------------------------------------
+	# 3. Raised, the flag's wave everywhere ---------------------------------------------------------------------------
 	if not check(await until(func() -> bool:
 			_kill_all()
 			return mf.rules.obj_state(flag["id"]) == "done" and not mf.opened.is_empty(), 40.0), "the flag is raised and its wave ordered"):
@@ -84,7 +88,6 @@ func run_host() -> void:
 			eq(str(v["opened"]), str(mine["opened"]), "client %d: same open_source calls (wave, source, open_at)" % p)
 			eq(str(v["doors"]), str(mine["doors"]), "client %d: same door schedules in the world" % p)
 			check(bool(v["flag_up"]), "client %d raised the flag in its world" % p)
-			check(bool(v["alert"]), "client %d shows the reinforcement line" % p)
 	check(bool(mine["flag_up"]), "the host raised the flag in its world")
 	for p in _clients():
 		command(p, "finish", {})

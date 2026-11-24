@@ -12,6 +12,10 @@ extends Node
 ##   ca.bind_player_target(player_target) # optional (also auto-discovered via group "player_target")
 
 const MORTAR_WHISTLE_LEAD := 1.3    ## s before impact to start the descending whistle telegraph
+## ms an enemy counts as "hit by this machine's pilot" after local_shooter's hit on it: EnemySquad component_damaged /
+## component_destroyed carry no shooter, so their 2D hit-confirm plays only within this window (covers a client's wait
+## for the host's replay). A teammate's or bot's hit on the same enemy inside it is the accepted false positive.
+const LOCAL_HIT_WINDOW_MS := 1500
 
 var world: CombatWorld
 var rack: WeaponRack
@@ -31,6 +35,8 @@ var _slot_batch_count := 0
 var _slot_batch_last := 0
 var _slot_batch_on := false
 var _reveal_ping_t := 0.0
+var _local_hits: Dictionary = {}         ## target_id -> Time.get_ticks_msec() of local_shooter's last hit on it
+var _pending_marks: Array = []           ## [target_id, cue, db, pitch]: squad hit-confirms, played in step() if local
 
 
 func net_fields() -> Dictionary:
@@ -40,6 +46,7 @@ func net_fields() -> Dictionary:
 		"_whistled_shells": Net.LOCAL, "_enemy_fired_recent": Net.LOCAL, "_was_trigger": Net.LOCAL,
 		"_scan_t": Net.LOCAL, "_slot_batch_t": Net.LOCAL, "_slot_batch_count": Net.LOCAL,
 		"_slot_batch_last": Net.LOCAL, "_slot_batch_on": Net.LOCAL, "_reveal_ping_t": Net.LOCAL,
+		"_local_hits": Net.LOCAL, "_pending_marks": Net.LOCAL,
 	}
 
 
@@ -131,7 +138,10 @@ func _stop_all_loops() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	var pp0 := Time.get_ticks_usec() if PerfProbe.on else 0   # bench instrumentation (tests/bench_bot_perf.gd)
 	step(delta)
+	if PerfProbe.on:
+		PerfProbe.add("main.combat_audio", Time.get_ticks_usec() - pp0)
 
 
 ## Public step so headless tests can drive weapon loops, mortar whistles, and group discovery deterministically.
@@ -142,6 +152,7 @@ func step(delta: float) -> void:
 	if a == null:
 		return
 	_flush_slot_audio(a)
+	_flush_hit_marks(a)
 	_scan_t -= delta
 	if _scan_t <= 0.0 and is_inside_tree():
 		_scan_t = 0.5
@@ -339,14 +350,39 @@ func _on_hit_landed(target: CombatTarget, hit: Hit) -> void:
 	if hit.shooter == local_shooter:
 		var pt := clampf(0.95 + hit.damage * 0.004, 0.92, 1.25)
 		a.play_2d("combat.hit.tick", 0.0, pt, AudioDirector.BUS_SFX_PLAYER)
+		if target != null and is_instance_valid(target):
+			_local_hits[target.target_id] = Time.get_ticks_msec()
 	if target != null and is_instance_valid(target):
 		_check_target_transitions(a, target, hit)
 
 
-func _on_remote_hit(_target_id: String, hit: Hit) -> void:
+func _on_remote_hit(target_id: String, hit: Hit) -> void:
 	var a := _audio()
 	if a != null and hit != null and hit.shooter == local_shooter:
 		a.play_2d("combat.hit.tick", 0.0, 1.0, AudioDirector.BUS_SFX_PLAYER)
+		_local_hits[target_id] = Time.get_ticks_msec()
+
+
+## Squad hit-confirms (component_damaged / component_destroyed) are cockpit cues for this machine's pilot only: played
+## when local_shooter hit that enemy within LOCAL_HIT_WINDOW_MS. Deferred to step() because the host's squad event fires
+## inside apply_hit, before hit_landed tells us who shot.
+func _flush_hit_marks(a: AudioDirector) -> void:
+	if _pending_marks.is_empty():
+		return
+	var now := Time.get_ticks_msec()
+	for m: Array in _pending_marks:
+		var id := str(m[0])
+		if _local_hits.has(id) and now - int(_local_hits[id]) <= LOCAL_HIT_WINDOW_MS:
+			a.play_2d(str(m[1]), float(m[2]), float(m[3]), AudioDirector.BUS_SFX_PLAYER)
+	_pending_marks.clear()
+	for id: String in _local_hits.keys():
+		if now - int(_local_hits[id]) > LOCAL_HIT_WINDOW_MS:
+			_local_hits.erase(id)
+
+
+func _queue_hit_mark(target_id: String, cue: String, db: float, pitch: float) -> void:
+	if _pending_marks.size() < 32:
+		_pending_marks.append([target_id, cue, db, pitch])
 
 
 func _sync_targets() -> void:
@@ -488,10 +524,10 @@ func _on_enemy_event(kind: String, _enemy: Node, payload: Dictionary) -> void:
 				a.music.bump_combat(0.16)
 		"component_damaged":
 			var weak := bool(payload.get("weak_point", false))
-			a.play_2d("combat.hit.weak" if weak else "combat.hit.tick", 0.0, 1.0, AudioDirector.BUS_SFX_PLAYER)
+			_queue_hit_mark(id, "combat.hit.weak" if weak else "combat.hit.tick", 0.0, 1.0)
 		"component_destroyed":
 			a.play_3d("combat.hit.break", pos)
-			a.play_2d("combat.hit.break", -3.0, 1.05, AudioDirector.BUS_SFX_PLAYER)
+			_queue_hit_mark(id, "combat.hit.break", -3.0, 1.05)
 		"overheated":
 			a.play_3d("enemy.overheat", pos)
 		"rebooted":

@@ -9,6 +9,8 @@ extends Node3D
 ## Fire modes: "hold" keeps the trigger down; "single" presses it every TAP_EVERY s and holds it only until one shot
 ## (one salvo) has left, so spin-up and charge weapons fire once per tap too; "off". A charging weapon shows its charge
 ## telegraph (ChargeGlow) at the muzzle, and the laser beam follows the live muzzle (CombatWorld.set_muzzle).
+## Option "Chassis" puts any built chassis on the stand (the Bulwark: side guns and two back saddles; the hardpoint's own
+## aim range, WeaponMount.hardpoint_range, applies as in the game).
 ## Direct-fire weapons pivot at the mount toward the aim point and the model turns with them (WeaponPose); "Aim at"
 ## ground_10m picks a point on the ground close ahead, so a shoulder weapon visibly pitches down to it.
 ## BACK EQUIPMENT (docs/design/back-equipment.md) is in the Weapon list too; it works only on the back hardpoint. The
@@ -55,6 +57,7 @@ const PARAMS := [
 ]
 
 var time_scale := 1.0
+var chassis := "strider"          ## option "Chassis": any built chassis (ChassisParts.ORDER), its hardpoints and ranges
 var weapon := "autocannon"
 var hardpoint := "side_r"
 var mass := "light"
@@ -178,8 +181,8 @@ func _add_block(size: Vector3, at: Vector3, c: Color, yaw: float = 0.0) -> void:
 func _rebuild() -> void:
 	if mech == null:
 		return
-	mech.configure("chicken", "strider", {hardpoint: weapon})
-	var c := MechCatalog.chassis("strider")
+	mech.configure("chicken", chassis, {hardpoint: weapon})
+	var c := MechCatalog.chassis(chassis)
 	var eq := equipped()
 	var cool := float(c["cooling"]) + (float(world.stats(eq).get("cooling_bonus", 0.0)) if eq != "" else 0.0)
 	heat = Heat.new(float(c["heat_cap"]), cool, float(MechCatalog.weapon(weapon).get("passive_heat", 0.0)))
@@ -191,6 +194,7 @@ func _rebuild() -> void:
 	_setup_repair(eq == "repair_drone")
 	mount = WeaponMount.new()
 	mount.setup(weapon, hardpoint, SHOOTER, 1, world.stats(weapon))
+	mount.set_hardpoint_range(WeaponMount.hardpoint_range(chassis, hardpoint))   # e.g. the Bulwark's yaw_in_max
 	world.muzzles.clear()
 	world.set_muzzle(SHOOTER, hardpoint, muzzle)
 	_t = 0.0
@@ -214,10 +218,32 @@ func _lab_heat() -> float:
 func equipped() -> String:
 	if not MechCatalog.is_equipment(weapon):
 		return ""
-	for hp: Dictionary in MechCatalog.chassis("strider")["hardpoints"]:
-		if hp["id"] == hardpoint and str(hp["mount"]) in (MechCatalog.weapon(weapon)["mounts"] as Array):
+	for hp: Dictionary in MechCatalog.chassis(chassis)["hardpoints"]:
+		if hp["id"] == hardpoint and MechCatalog.fits(hp, weapon):
 			return weapon
 	return ""
+
+
+## The chassis' hardpoint `id`, or {}.
+func _hp(id: String) -> Dictionary:
+	for hp: Dictionary in MechCatalog.chassis(chassis)["hardpoints"]:
+		if str(hp["id"]) == id:
+			return hp
+	return {}
+
+
+## Keep `hardpoint` on the chassis and on one that takes `weapon`: else the first hardpoint that does (else the first).
+func _fit_hardpoint() -> void:
+	var hps: Array = MechCatalog.chassis(chassis)["hardpoints"]
+	var cur := _hp(hardpoint)
+	if not cur.is_empty() and MechCatalog.fits(cur, weapon):
+		return
+	for hp: Dictionary in hps:
+		if MechCatalog.fits(hp, weapon):
+			hardpoint = str(hp["id"])
+			return
+	if cur.is_empty():
+		hardpoint = str((hps[0] as Dictionary)["id"])
 
 
 ## The repair demo's targets: made (and damaged, in "damaged") while the drone is selected, removed otherwise.
@@ -303,12 +329,13 @@ func muzzle() -> Vector3:
 	return rest_muzzle()
 
 
-## The unturned muzzle: `muzzle` straight ahead of the hardpoint node (what the mount derives its pivot from).
+## The unturned muzzle: `muzzle` straight ahead of the hardpoint node (what the mount derives its pivot from); the
+## mortar's tube mouth (WeaponPose.rest_offset).
 func rest_muzzle() -> Vector3:
 	var hp := mech.find_child("HP_" + hardpoint, true, false) as Node3D
 	if hp == null:
 		return mech.global_position + Vector3(0, 4, -2)
-	return hp.global_transform * Vector3(0, 0, -float(MechCatalog.weapon(weapon).get("muzzle", 1.0)))
+	return hp.global_transform * WeaponPose.rest_offset(weapon, float(MechCatalog.weapon(weapon).get("muzzle", 1.0)))
 
 
 func trigger() -> bool:
@@ -416,7 +443,7 @@ func lab_options() -> Array:
 		if not w in weapons:
 			weapons.append(w)
 	var hps: Array = []
-	for hp: Dictionary in MechCatalog.chassis("strider")["hardpoints"]:
+	for hp: Dictionary in MechCatalog.chassis(chassis)["hardpoints"]:
 		hps.append(str(hp["id"]))
 	var aims: Array = []
 	for d: Array in DUMMIES:
@@ -433,6 +460,7 @@ func lab_options() -> Array:
 		{"id": "designator", "label": "Designator", "choices": DESIGNATOR_MODES, "value": designator},
 		{"id": "arcs", "label": "Fixed arcs", "choices": ["off", "on"], "value": "on" if Combat.FIXED_ARC_ENABLED else "off"},
 		{"id": "repair", "label": "Repair demo (drone)", "choices": REPAIR_MODES, "value": repair},
+		{"id": "chassis", "label": "Chassis", "choices": ChassisParts.ORDER, "value": chassis},
 	]
 
 
@@ -447,17 +475,11 @@ func set_lab_option(id: String, v: String) -> void:
 					designator = "hold"
 				elif v != "missiles" and _designator_auto:
 					designator = "off"
-				var mounts: Array = MechCatalog.weapon(v)["mounts"]
-				var cur := ""
-				for hp: Dictionary in MechCatalog.chassis("strider")["hardpoints"]:
-					if hp["id"] == hardpoint:
-						cur = str(hp["mount"])
-				if not cur in mounts:      # move to the first hardpoint that takes it
-					for hp: Dictionary in MechCatalog.chassis("strider")["hardpoints"]:
-						if str(hp["mount"]) in mounts:
-							hardpoint = str(hp["id"])
-							break
+				_fit_hardpoint()           # move to the first hardpoint that takes it
 		"hardpoint": hardpoint = v
+		"chassis":
+			chassis = v if v in ChassisParts.ORDER else "strider"
+			_fit_hardpoint()
 		"mass": mass = v if Combat.MASS.has(v) else "light"
 		"fire": fire_mode = v if v in FIRE_MODES else "off"
 		"aim": aim = v

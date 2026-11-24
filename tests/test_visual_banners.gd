@@ -118,10 +118,15 @@ func _stack() -> void:
 	td.add_child(cam)
 	cam.make_current()
 	var mid := ax.origin - up * clen * 0.5
+	# The close views look from across the street: a street tree can stand in the line, so the deck's loose props are
+	# hidden for them (the chase shot above keeps them).
+	td.stack.decks[k].props.visible = false
 	cam.look_at_from_position(mid + out * 13.0 - up * 1.5, mid, up)
 	await frames(10)
 	var before := await sc.grab("banners_stack_close")
 	sc.not_blank(before, Rect2(0.3, 0.2, 0.4, 0.6), "the banner on its facade")
+	await _apartment_shot(f, td)
+	cam.make_current()
 	(p["target"] as BannerTarget).apply_damage(BannerTarget.MAX_HP, "", "test")
 	check(f.is_torn(k, best), "the banner tears")
 	await frames(24)
@@ -137,6 +142,38 @@ func _stack() -> void:
 		check(diff > 0.05, "the banner region changes after the tear (mean diff %.3f)" % diff)
 	td.queue_free()
 	await frames(2)
+
+
+## banners_apartment: a wall banner on an apartment face with balconies (docs/design/banners.md "Clear of the facade"),
+## seen at an angle from across the street, so the balconies beside it show; it must hang clear of them.
+func _apartment_shot(f: OccupationBanners, td: TestDrive) -> void:
+	var pick := Vector2i(-1, -1)
+	var best := -1      # 1: its face has relief (balconies), 0: an apartment banner on a plain side
+	for k in f.plans.size():
+		var plan: CityPlan = td.stack.decks[k].plan
+		for b: Dictionary in f.plans[k]:
+			if str(b["kind"]) != "wall" or str(plan.buildings[int(b["bi"])]["style"]) != "apartment":
+				continue
+			var score := 0 if CityBuildings.relief(plan, int(b["bi"]), 0)[CityPlan.SIDE_N.find(b["n"])].is_empty() else 1
+			if score > best:
+				best = score
+				pick = Vector2i(k, int(b["id"]))
+	if not check(pick.x >= 0, "a wall banner on an apartment"):
+		return
+	td.stack.set_active_deck(pick.x)
+	var p := f.parts(pick.x, pick.y)
+	var ax := (p["anchor"] as Node3D).global_transform
+	var out := ax.basis.z.normalized()
+	var up := ax.basis.y.normalized()
+	var side_dir := ax.basis.x.normalized()
+	var mid := ax.origin - up * float(p["len"]) * 0.5
+	cam.make_current()
+	cam.look_at_from_position(mid + out * 17.0 + side_dir * 11.0 - up * 2.0, mid + side_dir * 1.5, up)
+	await frames(10)
+	var img := await sc.grab("banners_apartment")
+	sc.not_blank(img, Rect2(0.3, 0.2, 0.4, 0.6), "the banner on the apartment")
+	print("banners_apartment: deck %d banner %d %s" % [pick.x, pick.y, str(f.plans[pick.x][pick.y])])
+	td.stack.set_active_deck(int(td.stack.section.entry["deck"]))
 
 
 func _diff(a: Image, b: Image, frac: Rect2) -> float:

@@ -7,6 +7,7 @@ extends Node
 ## Never teleports, never writes transforms/velocity/heat directly, never wallhacks, and uses
 ## only its private seeded RandomNumberGenerator (zero global randomness).
 
+const HOP_ROOF_MARGIN := 0.3   ## m under a hop-only chassis' thrust_ceiling a roof must be to stay a vantage (bind)
 const STATE_EXPLORE := "explore"
 const STATE_ADVANCE := "advance"
 const STATE_ENGAGE := "engage"
@@ -19,6 +20,9 @@ const STATE_DISABLED := "disabled"
 const SIGHT_RANGE := 175.0
 const MEMORY_DECAY := 18.0
 const EYE_HEIGHT := 6.5
+const SPHERE_REACH := 30.0         ## m: no enemy hit sphere lies farther than this from the unit's origin (range prefilter)
+const LOS_REFRESH := 1.0 / 12.0    ## s between two sight casts to the same enemy (_los_refreshed)
+const WP_REFRESH := 0.2            ## s a weak point's "unoccluded" answer is reused (_wp_unoccluded)
 
 signal dodge_triggered(threat_kind: String, with_hop: bool)
 
@@ -49,6 +53,8 @@ var _aim_dir := Vector3.FORWARD
 var _aim_init := false
 var _aim_err := Vector2.ZERO            ## OU angular aim drift (yaw, pitch) in radians
 var _memory: Dictionary = {}            ## enemy_id -> {enemy, pos, last_seen_t, has_los, est_vel, ready_at, prev_pos, prev_t}
+var _los_cache: Dictionary = {}         ## enemy_id -> [next cast at _sim_t, last answer] (_los_refreshed)
+var _wp_cache: Dictionary = {}          ## "enemy_id|component" -> [valid until _sim_t, unoccluded] (_wp_unoccluded)
 var _threat_queue: Array[Dictionary] = []   ## [{key, trigger_t, kind, origin, landing, is_mortar}]
 var _seen_telegraphs: Dictionary = {}   ## "enemy_id:shot_index" -> true
 var _seen_mortars: Dictionary = {}      ## effect key -> true
@@ -85,7 +91,7 @@ func net_fields() -> Dictionary:
 		"bot_squad": Net.LOCAL, "_nav": Net.LOCAL, "_profile": Net.LOCAL,
 		"ai_state": Net.PRIVATE, "_rng": Net.PRIVATE, "_sim_t": Net.PRIVATE,
 		"_aim_dir": Net.PRIVATE, "_aim_init": Net.PRIVATE, "_aim_err": Net.PRIVATE,
-		"_memory": Net.PRIVATE, "_threat_queue": Net.PRIVATE, "_seen_telegraphs": Net.PRIVATE,
+		"_memory": Net.PRIVATE, "_los_cache": Net.PRIVATE, "_wp_cache": Net.PRIVATE, "_threat_queue": Net.PRIVATE, "_seen_telegraphs": Net.PRIVATE,
 		"_seen_mortars": Net.PRIVATE, "_dodge_left": Net.PRIVATE, "_dodge_dir": Net.PRIVATE,
 		"_dodge_hop_left": Net.PRIVATE, "_strafe_sign": Net.PRIVATE, "_strafe_flip_t": Net.PRIVATE,
 		"_overheat_wait": Net.PRIVATE, "_current_enemy": Net.LOCAL, "_active_roof": Net.PRIVATE,
@@ -126,6 +132,8 @@ func bind(m: MechController, r: WeaponRack, pt: PlayerTarget, w: CombatWorld, sq
 		target.damaged.connect(_on_player_damaged)
 	_nav = BotNavigator.new()
 	_nav.setup(city_plan, ring, _rng)
+	if mech != null and mech.thrust_ceiling > 0.0:
+		_nav.drop_roofs_above(mech.thrust_ceiling - HOP_ROOF_MARGIN)   # a hop-only chassis: only the roofs it can hop onto
 	_reset_runtime()
 
 
@@ -139,6 +147,8 @@ func _reset_runtime() -> void:
 	_aim_init = false
 	_aim_err = Vector2.ZERO
 	_memory.clear()
+	_los_cache.clear()
+	_wp_cache.clear()
 	_threat_queue.clear()
 	_seen_telegraphs.clear()
 	_seen_mortars.clear()
@@ -193,12 +203,26 @@ func step(dt: float) -> void:
 		_aim_init = true
 
 	var sp := world.space() if world != null else null
+	var pf := PerfProbe.on   # bench instrumentation (tests/bench_bot_perf.gd): per-phase timers, off in play
+	var ta := Time.get_ticks_usec() if pf else 0
 	_sense(dt, sp)
+	var tb := Time.get_ticks_usec() if pf else 0
 	_update_threats(dt, sp)
 	_current_enemy = _choose_target()
+	var tc := Time.get_ticks_usec() if pf else 0
 	_update_tactics(dt, sp)
+	var td := Time.get_ticks_usec() if pf else 0
 	_update_movement(dt, sp)
+	var te := Time.get_ticks_usec() if pf else 0
 	_update_aim_and_weapons(dt, sp)
+	if pf:
+		var tf := Time.get_ticks_usec()
+		PerfProbe.add("bot.pb.sense", tb - ta)
+		PerfProbe.add("bot.pb.threats", tc - tb)
+		PerfProbe.add("bot.pb.tactics", td - tc)
+		PerfProbe.add("bot.pb.move", te - td)
+		PerfProbe.add("bot.pb.aim", tf - te)
+		PerfProbe.add("bot.player", tf - ta)
 
 
 func _clear_inputs() -> void:
@@ -247,6 +271,22 @@ func _sense(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 		var e := t as EnemyBase
 		if e.destroyed() or e.team != "enemy":
 			_memory.erase(e.target_id)
+			_los_cache.erase(e.target_id)
+			continue
+		# Cheap range test on the origin first (perf): every hit sphere lies within SPHERE_REACH of it, so a unit this far
+		# out is past SIGHT_RANGE whatever its core sphere is; world_spheres() is only built for the ones that may be in.
+		var od2 := eye.distance_squared_to(e.global_position)
+		if od2 > (SIGHT_RANGE + SPHERE_REACH) * (SIGHT_RANGE + SPHERE_REACH):
+			if _memory.has(e.target_id):
+				(_memory[e.target_id] as Dictionary)["has_los"] = false
+			continue
+		var fresh := is_instance_valid(_current_enemy) and _current_enemy == e   # the current target is cast every frame (_los_refreshed)
+		# Surely in range and the held sight answer is "blocked": the occluded branch below needs no core position.
+		if not fresh and od2 < (SIGHT_RANGE - SPHERE_REACH) * (SIGHT_RANGE - SPHERE_REACH) and _los_held_blocked(e.target_id):
+			if _memory.has(e.target_id):
+				var mb: Dictionary = _memory[e.target_id]
+				mb["has_los"] = false
+				mb["est_vel"] = (mb["est_vel"] as Vector3).lerp(Vector3.ZERO, clampf(dt * 3.0, 0.0, 1.0))
 			continue
 		var core_p := _enemy_core_pos(e)
 		var dist := eye.distance_to(core_p)
@@ -254,7 +294,7 @@ func _sense(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 			if _memory.has(e.target_id):
 				(_memory[e.target_id] as Dictionary)["has_los"] = false
 			continue
-		var has_los := _has_los(eye, core_p, sp, excl)
+		var has_los := _los_refreshed(e.target_id, eye, core_p, sp, excl, fresh)
 		if has_los:
 			if bot_squad != null:
 				bot_squad.report_sighting(self, e, core_p, _sim_t)
@@ -299,12 +339,40 @@ func _sense(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 				cm["pos"] = cpos
 				cm["last_seen_t"] = maxf(float(cm["last_seen_t"]), float(c["seen_t"]))
 
+	# Units freed without a destroyed() frame (despawned) leave cache keys behind: drop the caches now and then.
+	if _los_cache.size() > 256:
+		_los_cache.clear()
+	if _wp_cache.size() > 256:
+		_wp_cache.clear()
 	# Expire stale / dead memories.
 	for eid: String in _memory.keys():
 		var m: Dictionary = _memory[eid]
 		var e: Variant = m.get("enemy")
 		if e == null or not is_instance_valid(e) or (e as EnemyBase).destroyed() or _sim_t - float(m["last_seen_t"]) > MEMORY_DECAY:
 			_memory.erase(eid)
+
+
+## True when _los_refreshed would return a held "blocked" answer for `eid` this frame (no cast due).
+func _los_held_blocked(eid: String) -> bool:
+	var c: Variant = _los_cache.get(eid)
+	return c != null and _sim_t < float((c as Array)[0]) and not bool((c as Array)[1])
+
+
+## The sight line to enemy `eid`, re-cast at most every LOS_REFRESH s (perf: 20+ enemies in range per bot made the
+## per-frame casts the bot's largest cost). Each enemy gets a seeded phase so the casts spread over the frames; between
+## casts the last answer holds. A first sighting is cast at once, and so is the bot's current target every frame
+## (`fresh`): what it shoots at is always judged on this frame's line.
+func _los_refreshed(eid: String, from: Vector3, to: Vector3, sp: PhysicsDirectSpaceState3D, excl: Array,
+		fresh: bool = false) -> bool:
+	var c: Variant = _los_cache.get(eid)
+	if not fresh and c != null and _sim_t < float((c as Array)[0]):
+		return bool((c as Array)[1])
+	var v := _has_los(from, to, sp, excl)
+	var phase := 1.0
+	if c == null:   # first cast: a per-(bot, enemy) phase in [0.25, 1] staggers the next casts of a crowd seen together
+		phase = 0.25 + 0.75 * float(hash(eid + "|" + bot_id) & 0xFFFF) / 65535.0
+	_los_cache[eid] = [_sim_t + LOS_REFRESH * phase, v]
+	return v
 
 
 func _has_los(from: Vector3, to: Vector3, sp: PhysicsDirectSpaceState3D, excl: Array) -> bool:
@@ -315,6 +383,8 @@ func _has_los(from: Vector3, to: Vector3, sp: PhysicsDirectSpaceState3D, excl: A
 		return true
 	var q := PhysicsRayQueryParameters3D.create(from, to)
 	q.exclude = excl
+	if PerfProbe.on:
+		PerfProbe.count("ray.pb.los")   # bench instrumentation (tests/bench_bot_perf.gd)
 	var h := sp.intersect_ray(q)
 	return h.is_empty() or from.distance_to(h["position"] as Vector3) >= d - 2.6
 
@@ -879,7 +949,7 @@ func _pick_aim_point(e: EnemyBase, mem: Dictionary, eye: Vector3, has_los: bool)
 			"tank": wp_id = "vents"
 		if wp_id != "" and float(e.hp.get(wp_id, 0.0)) > 0.0:
 			var wp_center := _sphere_center(spheres, wp_id)
-			if not is_nan(wp_center.x) and _component_unoccluded(eye, wp_center, e, wp_id):
+			if not is_nan(wp_center.x) and _wp_unoccluded(eye, wp_center, e, wp_id):
 				# Deterministic per-target decision modulated by profile priority.
 				var roll := fposmod(float(hash([bot_seed, e.target_id, int(_sim_t * 0.5)])) * 0.000001, 1.0)
 				if wp_prio >= 0.85 or roll < wp_prio:
@@ -887,9 +957,20 @@ func _pick_aim_point(e: EnemyBase, mem: Dictionary, eye: Vector3, has_los: bool)
 		# For a tank seen from the front (vents occluded by hull), Veteran targets turret to strip Siege Cannon.
 		if e.enemy_type == "tank" and wp_prio >= 0.75 and float(e.hp.get("turret", 0.0)) > 0.0:
 			var tc := _sphere_center(spheres, "turret")
-			if not is_nan(tc.x) and _component_unoccluded(eye, tc, e, "turret"):
+			if not is_nan(tc.x) and _wp_unoccluded(eye, tc, e, "turret"):
 				return tc
 	return core_center
+
+
+## _component_unoccluded, reused for WP_REFRESH s per (enemy, component) (perf: a world.first_hit per frame per bot).
+func _wp_unoccluded(eye: Vector3, pt: Vector3, e: EnemyBase, want_comp: String) -> bool:
+	var key := e.target_id + "|" + want_comp
+	var c: Variant = _wp_cache.get(key)
+	if c != null and _sim_t < float((c as Array)[0]):
+		return bool((c as Array)[1])
+	var v := _component_unoccluded(eye, pt, e, want_comp)
+	_wp_cache[key] = [_sim_t + WP_REFRESH, v]
+	return v
 
 
 ## Verify a direct ray from `eye` to `pt` reaches `want_comp` on `e` first (not occluded by hull/walls).

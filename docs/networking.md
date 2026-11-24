@@ -188,18 +188,21 @@ host -> crew     mission.go     {start_at, state?}   carries the latest state (i
   each client, everyone back to the hangar (the menu opens on the hangar online). A client that hears no `mission.end`
   leaves on its own `CLIENT_GRACE` (6 s) later. Esc still leaves as before.
 - **Solo** (offline): the same rules evaluated locally (local seconds for t), the same banner, then back to the menu on
-  its hangar (`FrontEnd.next_screen = "hangar"`). Solo mechs keep their auto-respawn; no downed / revive and no
-  crew-wipe loss yet (user decision, 2026-11-22): `MissionRules` "wipe" stays off, so the outcome is only ever "won".
-- **Plan mode** (mission objectives phase 1, docs/design/mission-objectives.md §7 / §9; DEV: `--objectives` or
-  GameSettings dev `objectives` on the host -> `Session.objectives` -> `mission.launch` `objectives: true`, so every
-  machine agrees; solo: `TestDrive.solo_launch.objectives` / `--objectives`). Every machine builds `MissionPlan.make(sec)`,
-  `MissionRules.make(sec, {plan})`, `WaveDirector.make(plan)`, then `stack.setup_mission(plan)` (MissionWorld, behind the
+  its hangar (`FrontEnd.next_screen = "hangar"`). No automatic respawn any more (user decision 2026-11-24): a downed mech
+  waits for a crewmate's repair drone or its pilot holds SPACE to respawn (docs/design/pacing-director.md §4,
+  `DownedRules`); `MissionRules` "wipe" stays off by default (on: lost when every pilot is down and nobody redeploys).
+- **Plan mode** (mission objectives, docs/design/mission-objectives.md §7 / §9; THE DEFAULT since 2026-11-23: GameSettings
+  `objectives` (default true, the hangar's Objectives box) unless `--no-objectives` (`--objectives` still forces it) on
+  the host -> `Session.objectives` -> `mission.launch` `objectives`, so every machine plays the HOST's mode whatever its
+  own flags; solo: `TestDrive.solo_launch.objectives`). Every machine builds `MissionPlan.make(sec)`,
+  `MissionRules.make(sec, {plan})`, `PacingDirector.make(plan, {}, crew size)` (docs/design/pacing-director.md), then `stack.setup_mission(plan)` (MissionWorld, behind the
   loading screen, before the barrier) and `rules.set_site` from its `flag_site` / `asset_site` (kept on the plan's site
   when `ok` is false). The barrier's checksum is `"<stack>/<plan.checksum()>"`. The host's garrison is
   `plan.pool(k).garrison` of each deck's budget (`EnemySpawner.spawn_all(..., garrison_share)`).
   ```
-  host -> crew   mission.wave  {order: {wave, deck, source, open_at, max_units}}   reliable, one per director order (~120 B)
-  host -> crew   mission.state {state}   rules.state() + {"dir": WaveDirector.state(), "assets": {defend id: hp}}, on change
+  host -> crew   mission.wave  {order: {wave, deck, source, open_at, max_units, reason}}   reliable, one per director order (~130 B)
+  host -> crew   mission.state {state}   rules.state() + {"dir": PacingDirector.state() (waves, next, left, pace, intensity),
+                                         "assets": {defend id: hp}, "depots": {...}}, on change
   host -> crew   mission.go    {start_at, state?, waves?}   + the orders whose open_at is still ahead (late barrier member)
   ```
   The host tick (4 Hz, same gate) evaluates the rules first (facts t, enemies, crew, waves_left, waves, zone_enemies,
@@ -225,18 +228,21 @@ host -> crew     mission.go     {start_at, state?}   carries the latest state (i
 
 ## Mech snapshots (co-op step 2)
 ```
-client -> host   T_SNAP  its own mech (57 bytes)                          30 Hz, unreliable, sequenced (newest wins)
-host -> client   T_SNAP  the host's mech + the other clients' (<= 155 B)  each forwarded sample once, with its age
+client -> host   T_SNAP  its own mech (60 bytes)                          30 Hz, unreliable, sequenced (newest wins)
+host -> client   T_SNAP  the host's mech + the other clients' (<= 164 B)  each forwarded sample once, with its age
 ```
-- **Entry (49 bytes, `NetMechCodec`)**: seat (3 bits) + teleport counter (4 bits); flags grounded / thrusting / emergency /
-  shutdown / hover / designator / disabled; age (2 ms units: a forwarded sample keeps its moment on the shared clock); position
+- **Entry (52 bytes, `NetMechCodec`)**: seat (3 bits) + teleport counter (4 bits); flags grounded / thrusting / emergency /
+  shutdown / hover / designator / disabled / redeploying; age (2 ms units: a forwarded sample keeps its moment on the shared clock); position
   (i24 mm x3); velocity (i16 cm/s x3); yaw in the ring frame (u16); hip twist `leg_yaw` (i8); heat (u8 of heat_cap); last
-  touchdown speed (u8, the landing dip); aim point relative to the mech (i16 x3, 1/4 m); PlayerTarget component HP (u8 x 9,
-  `NetMechCodec.COMPONENTS`: torso (the hull), head, leg_l, leg_r, side_l, side_r, shoulder_l, shoulder_r, back; 255 =
-  absent); `disable_cause` (u8: 0 none, else 1 + index in COMPONENTS); WeaponMount `aim_yaw` / `aim_pitch` per hardpoint
-  (i8 x 10, 1.5 deg steps, `NetMechCodec.MOUNTS`). Packet = 7 (NetWire header) + 1 (count) + 49 per mech: 57 B up, 155 B
-  down in a full crew (budget `MAX_PACKET` 160, raised from 100 for the damage and mount fields; the unreliable MTU is
-  ~1200 B). Crouch is not runtime state (a
+  touchdown speed (u8, the landing dip); aim point relative to the mech (i16 x3, 1/4 m); PlayerTarget component HP (u8 x 11,
+  `NetMechCodec.COMPONENTS`: torso (the hull), head, leg_l, leg_r, then the union of every chassis' hardpoint ids: side_l,
+  side_r, shoulder_l, shoulder_r, back, back_l, back_r (the Bulwark's back saddles; its side guns reuse side_l / side_r);
+  255 = absent, e.g. a Strider's back_l); `disable_cause` (u8: 0 none, else 1 + index in COMPONENTS); WeaponMount `aim_yaw` / `aim_pitch` per hardpoint
+  (i8 x 10, 1.5 deg steps, `NetMechCodec.MOUNTS`); `aid` (u8: the owner's repair-drone charges in bits 0-1, the revive bar in
+  bits 2-7: downed / revive, pacing-director.md §4). Packet = 7 (NetWire header) + 1 (count) + 52 per mech: 60 B up, 164 B
+  down in a full crew. `MAX_PACKET` (512) is a bandwidth budget, not a transport limit (user decision 2026-11-24: don't
+  trim bytes while far under the ceiling; pack tighter only when a packet approaches it). The hard limit is one datagram,
+  the ~1200 B unreliable MTU of ENet / Steam: above it a packet fragments and one lost fragment loses it all. Crouch is not runtime state (a
   model parameter, SPAWN), so it isn't sent.
 - **Owner side**: `CrewSync` (test drive, crew mission) feeds the local mech every physics step (after its rig posed it):
   `Session.mechs.feed(state, delta)`. Velocity is taken from the motion over the step; the sample time runs on a step
@@ -253,14 +259,15 @@ host -> client   T_SNAP  the host's mech + the other clients' (<= 155 B)  each f
   its MechPuppet (only the owner's machine ticks a target). `MechPuppet.aim_point` / `designator` hold the owner's
   aim and guided-missile track for co-op step 3; nothing crosses owners yet (hits on a puppet are not applied here).
 - **Damage and mounts**: `MechPuppet.components` {name: 0..1}, `hull` (torso fraction), `downed` (the owner's
-  `PlayerTarget.disabled`), `disable_cause`; copied every frame onto the puppet's PlayerTarget (`hp`, `disabled`,
-  `disable_cause`: a read-only mirror, the owner decides). Each weapon model on a puppet turns to the owner's
+  `PlayerTarget.disabled`), `disable_cause`, `redeploying`; copied every frame onto the puppet's PlayerTarget (`hp`, `disabled`,
+  `disable_cause`, `redeploying`, `revive_progress`, `aid_charges`: a read-only mirror, the owner decides; a revive is applied by
+  the downed mech's owner from the repair drone it sees beaming it, nothing is sent). Each weapon model on a puppet turns to the owner's
   `aim_yaw` / `aim_pitch` (`WeaponPose.apply`). Owner side: `CrewSync.component_fractions(pt)`, `CrewSync.mount_aims(rack)`.
 - **Crew panel**: `hud.crew_panel.status_source = CrewSync.status`: hp = the hull, heat, state "disabled" (downed) /
   "overheat" / "ok" from the snapshots.
 - **Contract**: `NetMechCodec.MECH_FIELDS` lists the vars the snapshot carries; `test_net_contract` checks each is OWNER
   and every OWNER var of MechController / MechRig is carried. `PARTIAL_FIELDS` (PlayerTarget hp / disabled /
-  disable_cause, WeaponMount aim_yaw / aim_pitch) only get the first check: the rest of their owner state stays with the
+  disable_cause / redeploying / revive_progress / aid_charges, WeaponMount aim_yaw / aim_pitch) only get the first check: the rest of their owner state stays with the
   owner (written reasons in the codec).
 - **Tests**: `test_net_snap` (2), `test_net_snap_4` (full crew), scenario `tests/net_snap_case.gd`: each machine drives its
   mech through the same script (walk, thrust hop, diagonal strafe, turn in place, stand, forced overheat); the host checks
@@ -268,6 +275,36 @@ host -> client   T_SNAP  the host's mech + the other clients' (<= 155 B)  each f
   under a quarter of that; measured max 0.1-0.35 m, mean 0.01-0.08 m), heading (< 0.12 rad), final spot (< 0.3 m), heat /
   thrust / overheat crossing, the crew panel's state, PlayerTarget owners, and the packet budget; then hull damage, the
   downed state + cause (and their PlayerTarget mirror, crew panel "disabled") and the largest barrel yaw (within 3 deg).
+
+## Hangar bots (AI pilots in crew seats; docs/design/hangar-bots.md)
+- **Identity.** A bot's pilot id is negative (-1..-3, its slot). `Session.bots` (pilot id -> entry with `"bot": true`,
+  `skill`) sits beside `Session.roster`, which stays players only, so every transport path (sends, silence watchdogs,
+  kicks, telemetry, `NetMission.members()` and the load barrier, `Net.crewed()`) never sees a bot. `Session.crew()` lists
+  players and bots by seat; `sys.roster` / `sys.welcome` carry both (a client files flagged entries under `bots`).
+  Helpers: `is_bot_id`, `is_bot`, `has_member`, `member`, `machine_of(id)` (1 for a bot), `bot_ids`.
+- **Hangar (host, crew "lobby" only):** `add_bot(skill)`, `remove_bot(id)`, `set_bot_skill(skill)`; players + bots <=
+  MAX_CREW (a joiner is refused "Crew is full", seats skip bot seats). `set_bot_fields(id, fields)` (any state: the
+  accent derived at launch). A session's end clears the bots. Offline: none.
+- **Launch:** `mission.launch.crew` includes the bots. Every machine derives each bot's chassis / loadout
+  (`BotLoadout.pick(seed, slot)`) and accent (`BotLoadout.accents(seed, crew)`: a palette colour no other member wears)
+  from the launch: nothing about them travels.
+- **Owned actor, owner = the host's machine.** The host runs each bot (`CrewBot`: a real MechController, PlayerTarget
+  "player<id>", WeaponRack shooter "player<id>" peer 1, MissionBot from mission_go) and streams it on T_SNAP like its own
+  mech: `NetMechStream.begin(local, seats, owned)` + `feed_owned(id, state, dt)` (own teleport counter and step clock per
+  bot). A client's packet from the host carries the host's mech, its bots and the other clients' (<= 3 entries, 155 B).
+  Everywhere else a bot is a puppet. Bot mechs' and PlayerTargets' `owner_peer` is 1, so every hit on a bot is decided
+  and applied on the host (victim's owner), a bot's hit on a mech by its victim, on host-owned targets by the host.
+- **Fire records:** CombatNet `add_bot(id)`: `combat.fire {r, b: id}` / `combat.drone {t, hp, b}` from the host; a
+  receiver accepts `b` only from the host for a seated bot and rebuilds shooter "player<b>", peer 1. Charge glows too:
+  `add_bot(id, rack)` watches the bot's rack like the local one and sends `combat.charge {hp, t, on, b}`.
+- **Puppet accuracy:** a bot's puppet holds the same bound as a player's (test_net_hangar_bots: <= 0.5 m at render
+  time, measured 0.040-0.049 m max / 0.02 m mean while the bot ran 88 m). The earlier 2.3 m was the test comparing on
+  host_time() at poll time instead of the snapshot stamps (the step clock eases toward host_time, up to 0.25 s apart).
+- **Friendly fire:** `BotFireGuard` (scripts/game/bot_fire_guard.gd), called last every physics frame by MissionBot for
+  the local `--bot` and every hangar bot: per slot, the shot from its real muzzle over the weapon's whole range (spread,
+  splash, flak fuse, missile curve, mortar landing + descent, crew motion over the travel time) against every crew mech
+  in `TestDrive.mechs`; unsafe slots are held, flying missiles are led away from a mate.
+- Tests: `test_net_hangar_bots` (2), `test_bot_loadout`, `test_bot_fire_guard`, `test_layout` (hangar controls).
 
 ## Enemies (W4, the host-owned world)
 ```

@@ -2,7 +2,9 @@ extends TestCase
 ## The Bulwark's hardpoints physically connect and clear (docs/design/chassis-rules.md 4.2-4.7, 5.5, 9.2;
 ## test_hardpoint_contact does the Strider and owns the triangle-soup helpers). Pure geometry, in body space (the
 ## "Chassis" node's frame: model units before BODY_SCALE), meshes built from source:
-##  - each side mount touches the hull (barrel + side pad) and its disc's back face sits on the pad (SEAT_TOL);
+##  - each side mount touches the hull (the slung hull, its hip pods and the side pad on the pod's front) and its
+##    flange's back face sits on the pad (SEAT_TOL);
+##  - every pilot head clears the coaming round the pilot's well, with both eyes (the pupils) above its top;
 ##  - every item the catalog allows on each hardpoint (MechCatalog.items_for: side guns take side and shoulder weapons,
 ##    the back saddles every back item) touches its mount (side) or the hull (back), a back item's base footprint on its
 ##    plinth within SEAT_TOL;
@@ -21,18 +23,22 @@ const HC := preload("res://tests/test_hardpoint_contact.gd")
 const TCB := preload("res://tests/test_torso_clearance_bulwark.gd")
 
 
-## The side mount's disc back face (radius 0.3 at x -0.06): its centre and eight points at r 0.27.
+## The side mount's flange back face (SIDE_FLANGE half size, 1 cm behind the mount origin on the pad's face): its centre,
+## corners and edge middles at 0.9 of the half size.
 static func side_seats() -> PackedVector3Array:
-	var out := PackedVector3Array([Vector3(-0.06, 0, 0)])
-	for i in 8:
-		var a := TAU * float(i) / 8.0
-		out.append(Vector3(-0.06, cos(a) * 0.27, sin(a) * 0.27))
+	var out := PackedVector3Array()
+	var f := BulwarkMeshes.SIDE_FLANGE * 0.9
+	for sx: float in [-1.0, 0.0, 1.0]:
+		for sy: float in [-1.0, 0.0, 1.0]:
+			out.append(Vector3(sx * f.x, sy * f.y, 0.01))
 	return out
 
 
 func setup() -> void:
 	timeout_sec = 300.0
 	var hull := HC.tris(BulwarkMeshes.build("bulwark_torso"), Transform3D.IDENTITY)
+	for side: float in [-1.0, 1.0]:   # the hip pods (their own mirrored part) are hull too
+		hull.append_array(HC.tris(BulwarkMeshes.build("bulwark_pod"), Transform3D(Basis.from_scale(Vector3(side, 1, 1)), Vector3.ZERO)))
 	var mount_mesh := BulwarkMeshes.build("bulwark_side_mount")
 	var m := MechModel.new()
 	m.configure("chicken", "bulwark", {})
@@ -50,13 +56,24 @@ func setup() -> void:
 	# Every pilot head (the live PilotHead meshes) in body space.
 	var heads := PackedVector3Array()
 	var head_list := {}
+	var coaming := HC.tris(BulwarkMeshes.coaming(), Transform3D.IDENTITY)
 	for h: String in MechCatalog.HEAD_ORDER:
 		m.configure(h, "bulwark", {})
 		await frames(1)
 		var ch := m.find_child("Chassis", true, false) as Node3D
-		var t := _node_tris(m.find_child("Head_" + h, true, false), ch.global_transform.affine_inverse())
+		var hn := m.find_child("Head_" + h, true, false)
+		var t := _node_tris(hn, ch.global_transform.affine_inverse())
 		head_list[h] = t
 		heads.append_array(t)
+		var cg := HC.contact(t, coaming)
+		check(cg > 0.0, "%s: clear of the coaming (gap %.3f)" % [h, cg])
+		var eye := INF
+		for pn in hn.find_children("Pupil*", "MeshInstance3D", true, false):
+			var pm := pn as MeshInstance3D
+			if pm.mesh != null:
+				eye = minf(eye, (ch.global_transform.affine_inverse() * (pm.global_transform * pm.mesh.get_aabb().get_center())).y)
+		check(eye < INF and eye > BulwarkMeshes.COAMING_TOP + 0.05, "%s: eyes above the coaming (pupils at %.3f, coaming top %.3f)" % [h, eye, BulwarkMeshes.COAMING_TOP])
+		print("  head %-8s coaming gap %.3f, pupils %.3f over the coaming top" % [h, cg, eye - BulwarkMeshes.COAMING_TOP])
 	m.queue_free()
 	check(heads.size() > 0, "the pilot heads have triangles (%d)" % (heads.size() / 3))
 	var items := {}
@@ -150,6 +167,12 @@ func setup() -> void:
 						worst_pose = "yaw %+.0f pitch %+.0f" % [yaw, pitch]
 			if not check(pivot >= PIVOT_CLEAR, "%s/%s: clears the hull, pads, legs, back items and heads across its aim range (closest %.3f at %s)"
 					% [id, w, pivot, worst_pose]):
+				# Which obstacle it meets at the worst pose.
+				var wp := worst_pose.split(" ")
+				var pw := HC.tris(_item(items, w), Transform3D(WeaponPose.rotation(float(wp[1]), float(wp[3])), at))
+				var groups := {"hull": hull, "pads": pads, "legs": legs, "slump": slump, "back": back_items[side], "heads": heads}
+				for gname: String in groups:
+					print("    %s/%s at %s: %s gap %.3f" % [id, w, worst_pose, gname, HC.surface_gap(pw, groups[gname], 0.3)])
 				# Report the widest inward yaw that would clear, to cut the range in data.
 				var a := y_in
 				while a > 0.0:

@@ -15,6 +15,7 @@ extends Node
 ##                         pre-stack test drive); the host's Launch sends it with the seed (TestDrive.launch_mode)
 ##   --no-renderer-relaunch  this process is the first launch's Compatibility relaunch (GraphicsQuality): don't again
 ##   --dev-pretend-integrated  DEV, hidden: treat the GPU as integrated (exercises that relaunch and the LOW auto quality)
+##   --no-combat-log       no [Flow] damage lines in missions (CombatLog.FLAG, read by scripts/game/combat_log.gd)
 ##   --net-host, --net-join <ip[:port]>, --net-port <P>, --net-link <preset>, --net-name <name>
 ##                         online dev flags (NetSession); the menu opens on the hangar once the crew is up.
 

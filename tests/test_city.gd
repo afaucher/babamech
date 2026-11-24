@@ -599,7 +599,11 @@ func _section_district() -> void:
 			var ray := PhysicsRayQueryParameters3D.create(ring.arc_to_world(gx, at + inward * 10.0, 4.0), ring.arc_to_world(gx, at - inward * 10.0, 4.0))
 			var hit := space.intersect_ray(ray)
 			if g["kind"] == "portal":
-				check(hit.is_empty(), "a ray through the portal hits nothing")
+				# 2026-11-23 (map sealed): was "a ray through the portal hits nothing"; a mech walked out that way and
+				# fell off the map. Now the ray goes into the recess and stops at its back plate (test_map_sealed).
+				var beyond := -inward * (ring.world_to_arc(hit["position"]).y - at) if not hit.is_empty() else INF
+				check(not hit.is_empty() and absf(beyond - CityStreets.GATE_RECESS) < 0.3,
+						"a ray through the portal goes into the recess and stops at its back plate (%.1f m past the wall plane)" % beyond)
 				portal += 1
 			elif g["kind"] == "blast_door":
 				check(not hit.is_empty(), "a ray into a blast door hits the wall")

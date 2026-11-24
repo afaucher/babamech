@@ -24,6 +24,10 @@ extends Node3D
 ## overshoots, rebounds and settles); when the mech reboots it rises the same way with a short shudder. Not in the air.
 ## Cosmetic only: no effect on the body, collision, speeds or the gait.
 ##
+## Per chassis: the numbers below (and Gait's) are the Strider's; another chassis' ChassisParts "rig" entries and its
+## "twist_max" replace them when the model's chassis changes (apply_chassis_rig: the Bulwark has no twist, so it strafes
+## by side-stepping, with longer, slower, higher steps for its long legs).
+##
 ## Presentation only (Net LOCAL): every machine runs it from the mech's synced motion (own mech or puppet alike).
 
 var mech_scale := 2.0
@@ -74,6 +78,17 @@ var _pilot_facing := Vector3.ZERO      ## the body's facing last frame (the pilo
 var _pilot_steps: Array = [{}, {}]     ## each foot's last landed step info last frame (the pilot head's footfall)
 var _sag_v := 0.0                      ## the slump spring's velocity (share of sag_depth per second)
 var _rise_t := INF                     ## seconds since the reboot rise began (the shudder)
+var _rig_chassis := "strider"          ## the chassis whose rig numbers are applied (apply_chassis_rig; the vars' initial
+                                       ## values are the Strider's, so a Strider never re-applies them over a lab's tuning)
+
+## Per-chassis rig numbers (ChassisParts "rig": {rig var or "gait.<Gait var>": value}, plus "twist_max"): applied over
+## these defaults, which are the Strider's (the vars' own initial values above and Gait's), whenever the model's chassis
+## changes (update_pose checks it), so a respawn, a puppet, the hangar and the lab all pose a chassis the same way.
+const RIG_KEYS := ["bob", "lean", "sway", "foot_gap", "step_margin", "air_tuck", "absorb", "absorb_time", "sag_depth",
+	"sag_pitch", "sag_roll", "sag_time", "twist_max", "twist_rate"]
+const GAIT_KEYS := ["step_length", "min_stride", "step_time", "run_step_time", "min_step_time", "step_height", "land_time",
+	"settle_time", "settle_error", "step_clearance", "overlap_k", "reach_err"]
+static var _defaults: Dictionary = {}
 
 
 ## Authority (scripts/net/net.gd): presentation, recomputed on every machine from the mech's motion, except `leg_yaw`,
@@ -86,7 +101,45 @@ func net_fields() -> Dictionary:
 		"model": Net.LOCAL, "gait": Net.LOCAL, "leg_yaw": Net.OWNER, "reached_fraction": Net.LOCAL,
 		"twist_override": Net.LOCAL, "sag": Net.LOCAL, "_body": Net.LOCAL, "_air_time": Net.LOCAL, "_airborne": Net.LOCAL,
 		"_prev_xf": Net.LOCAL, "_land_t": Net.LOCAL, "_land_depth": Net.LOCAL, "_reversed": Net.LOCAL,
-		"_pilot_facing": Net.LOCAL, "_pilot_steps": Net.LOCAL, "_sag_v": Net.LOCAL, "_rise_t": Net.LOCAL}
+		"_pilot_facing": Net.LOCAL, "_pilot_steps": Net.LOCAL, "_sag_v": Net.LOCAL, "_rise_t": Net.LOCAL,
+		"_rig_chassis": Net.LOCAL}
+
+
+## The Strider's rig and gait numbers (a fresh MechRig / Gait's), once.
+static func defaults() -> Dictionary:
+	if _defaults.is_empty():
+		var r := MechRig.new()
+		for k: String in RIG_KEYS:
+			_defaults[k] = r.get(k)
+		for k: String in GAIT_KEYS:
+			_defaults["gait." + k] = r.gait.get(k)
+		r.free()
+	return _defaults
+
+
+## Pose chassis `id`: the defaults (the Strider's), then its ChassisParts "rig" entries and its "twist_max". The feet
+## re-plant at the next update.
+func apply_chassis_rig(id: String) -> void:
+	_rig_chassis = id
+	var pa := ChassisParts.of(id)
+	var over: Dictionary = pa.get("rig", {})
+	var d := defaults()
+	for k: String in d:
+		var v: Variant = over.get(k, d[k])
+		if k.begins_with("gait."):
+			gait.set(k.trim_prefix("gait."), v)
+		else:
+			set(k, v)
+	if pa.has("twist_max"):
+		twist_max = float(pa["twist_max"])
+	leg_yaw = clampf(leg_yaw, -twist_max, twist_max)
+	gait.reset([])
+
+
+## Apply the model's chassis' rig numbers if they are not the ones in use.
+func sync_chassis() -> void:
+	if model != null and model.chassis_id != _rig_chassis:
+		apply_chassis_rig(model.chassis_id)
 
 
 func _ready() -> void:
@@ -107,12 +160,19 @@ func set_scale_factor(v: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if PerfProbe.on:   # bench instrumentation (tests/bench_bot_perf.gd), off in play
+		var t0 := Time.get_ticks_usec()
+		update_pose(delta)
+		var bot := _body != null and str(_body.name).begins_with("Mech_bot")
+		PerfProbe.add("mech.rig.bot" if bot else "mech.rig.other", Time.get_ticks_usec() - t0)
+		return
 	update_pose(delta)
 
 
 func update_pose(delta: float) -> void:
 	if _body == null or model == null:
 		return
+	sync_chassis()
 	var up := _body.up()
 	var vel := _body.velocity
 	var on_floor := _body.grounded()

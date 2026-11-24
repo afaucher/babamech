@@ -1,0 +1,185 @@
+extends TestCase
+## Air doors (docs/design/city-ramps-and-stack.md "Air doors"): high hangar doors for dropships in the end walls, derived
+## by MissionWorld from the stack (air_spot). Over seeds 1, 4, 7, 403112, every deck: the count (printed as a table), each
+## door in its end wall with its opening at 21 .. 27 m, 12 m wide, clear of every deck sign on its wall, of every gate's
+## staging bay and span, and a dropship-sized box flies 40 m straight out of the opening into the deck without touching
+## anything (physics); the air_door dictionary; the door machinery (warn silent, opening with alarm and siren on the active
+## deck, passable after OPENING, closing, sealed, snapshot / restore); source_point = hide, source_bay {ok = false}; the
+## wrappers; the wall face and a farm wall leave the opening clear (no wall triangle inside the opening); teardown gives
+## the district back exactly.
+
+const SEEDS := [1, 4, 7, 403112]
+const HULL := Vector3(5.2 + 1.6 * 2.0 - 1.0, 2.8 + 1.0, 1.0)     ## the box flown out (a dropship hull's width + margins, a thin slice)
+
+var table: Array[String] = []
+
+
+func setup() -> void:
+	timeout_sec = 240.0
+	for seed_: int in SEEDS:
+		await _seed(seed_)
+	print("[air] placement (seed, deck, wall, kind, x, avenue centre, offset):")
+	for line in table:
+		print("[air]   " + line)
+	finish()
+
+
+func _seed(seed_: int) -> void:
+	var sec := SectionPlan.make({"seed": seed_})
+	var stack := CityStack.new()
+	add_child(stack)
+	stack.build(sec)
+	var before := _fingerprint(stack)
+	var mw := stack.setup_mission(MissionLab.make_plan(stack))
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var space := stack.get_world_3d().direct_space_state
+	var av := sec.lane_x("avenue")
+	var centre := (av.x + av.y) * 0.5
+	var total := 0
+	for k in stack.decks.size():
+		var d := stack.decks[k]
+		var n := mw.air_door_count(k)
+		total += n
+		check(n <= 2, "seed %d deck %d: at most two air doors (%d)" % [seed_, k, n])
+		if n == 0:
+			table.append("seed %d deck %d: none" % [seed_, k])
+		var signs := CitySigns.layout(d.plan, d.ring)
+		for i in n:
+			var a := mw.air_door(k, i)
+			if not check(bool(a.get("ok", false)), "seed %d deck %d door %d: air_door ok" % [seed_, k, i]):
+				continue
+			var id := str(a["id"])
+			eq(id, "air_d%d_%d" % [k, i], "the id")
+			for key: String in ["deck", "frame", "center", "x", "s", "h_bottom", "h_top", "width", "height", "depth", "hide", "out", "facing"]:
+				check(a.has(key), "%s: air_door has %s" % [id, key])
+			near(float(a["h_bottom"]), 21.0, 1e-6, "%s: sill 21 m" % id)
+			near(float(a["h_top"]), 27.0, 1e-6, "%s: head 27 m" % id)
+			check(float(a["width"]) >= 10.0 and float(a["height"]) >= 6.0, "%s: opening %.0f x %.0f m" % [id, float(a["width"]), float(a["height"])])
+			var src: Dictionary = mw._sources[id]
+			var side := CityPlan.SIDE_EDGE.find(str(src["edge"]))
+			check(side >= 2, "%s: on an end wall (%s)" % [id, str(src["edge"])])
+			var w: Dictionary = d.plan.boundary()[side]
+			near(float(a["s"]), float(w["at"]), 0.01, "%s: on the wall plane" % id)
+			var x := float(a["x"])
+			check(x - MissionWorld.air_half() > d.plan.extent.position.x and x + MissionWorld.air_half() < d.plan.extent.end.x, "%s: inside its wall" % id)
+			table.append("seed %d deck %d %s (%s): x %.1f, avenue %.1f, offset %.1f" % [seed_, k, str(src["edge"]), str(w["kind"]), x, centre, x - centre])
+			# Clear of signs on its wall and of gates' bays.
+			var hole := MissionWorld.air_hole(x)
+			for s: Dictionary in signs:
+				if int(s.get("side", -1)) != side:
+					continue
+				var overlap := float(s["u1"]) > float(hole["fa"]) and float(s["u0"]) < float(hole["fb"]) \
+						and float(s["y1"]) > float(hole["fy0"]) and float(s["y0"]) < float(hole["fy1"])
+				check(not overlap, "%s: clear of the %s sign at u %.1f..%.1f y %.1f..%.1f" % [id, s["kind"], float(s["u0"]), float(s["u1"]), float(s["y0"]), float(s["y1"])])
+			for g: Dictionary in w["gates"]:
+				var mid := (float(g["a"]) + float(g["b"])) * 0.5
+				var r := maxf(MissionWorld.bay_half(d, w, g), (float(g["b"]) - float(g["a"])) * 0.5) + MissionProps.GateDoor.PLATE
+				check(absf(x - mid) >= r + MissionWorld.air_half(), "%s: clear of the %s gate at %.0f (%.1f m apart)" % [id, g["kind"], mid, absf(x - mid)])
+			# The flight corridor: a hull-sized box from in front of the frame 40 m into the deck touches nothing.
+			var fr := a["frame"] as Transform3D
+			var q := PhysicsShapeQueryParameters3D.new()
+			var box := BoxShape3D.new()
+			box.size = HULL
+			q.shape = box
+			q.transform = Transform3D(fr.basis, fr * Vector3(0, 0, 3.0))
+			q.motion = fr.basis.z.normalized() * (MissionWorld.AIR_CORRIDOR - 3.0)
+			var r := space.cast_motion(q)
+			check(r[0] >= 1.0, "%s: the flight corridor is clear for %.0f m (stopped at %.0f %%)" % [id, MissionWorld.AIR_CORRIDOR, float(r[0]) * 100.0])
+			eq(mw.source_bay(id), {"ok": false}, "%s: no staging bay" % id)
+			var sp := mw.source_point(id)
+			check(Vector2(float(sp["x"]), float(sp["s"])).distance_to(Vector2(x, float(w["at"]) + (1.0 if side == 2 else -1.0) * MissionWorld.AIR_HIDE)) < 0.05,
+					"%s: source_point is the hide point in the recess" % id)
+			_no_wall_in_opening(d, mw._doors[id] as MissionProps.GateDoor, id)
+	check(total >= 1, "seed %d: at least one air door on the stack (%d)" % [seed_, total])
+	if total > 0:
+		await _machinery(stack, mw, seed_)
+	mw.teardown(true)
+	stack.remove_child(mw)
+	mw.free()
+	stack.mission = null
+	await frames(1)
+	var after := _fingerprint(stack)
+	eq(after, before, "seed %d: teardown gives every Walls mesh and shape back" % seed_)
+	stack.queue_free()
+	await frames(2)
+
+
+func _fingerprint(stack: CityStack) -> Array:
+	var out := []
+	for d in stack.decks:
+		var wm := d.get_node("Walls") as MeshInstance3D
+		var arr: Array = wm.mesh.surface_get_arrays(0)
+		var col := d.get_node("Collision")
+		var dis := 0
+		for c in col.get_children():
+			dis += 1 if (c as CollisionShape3D).disabled else 0
+		out.append([(arr[Mesh.ARRAY_VERTEX] as PackedVector3Array).size(), hash(arr[Mesh.ARRAY_VERTEX]), col.get_child_count(), dis])
+	return out
+
+
+## No triangle of the deck's Walls mesh (wall face, farm backing, racks, fins, bars, posts) lies inside the opening's box
+## (the wall plane 2 m out to 1.8 m in, the opening less 0.2 m): the opening is clear to see and fly through.
+func _no_wall_in_opening(d: CityDistrict, door: MissionProps.GateDoor, id: String) -> void:
+	var wm := d.get_node("Walls") as MeshInstance3D
+	var arr: Array = wm.mesh.surface_get_arrays(0)
+	var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+	var inv := door.transform.affine_inverse() * wm.transform
+	var hx := door.half - 0.2
+	var bad := 0
+	var i := 0
+	while i < verts.size():
+		var c := (inv * verts[i] + inv * verts[i + 1] + inv * verts[i + 2]) / 3.0
+		if absf(c.x) < hx and c.y > 0.2 and c.y < door.gh - 0.2 and c.z < 2.0 and c.z > -1.8:
+			bad += 1
+		i += 3
+	eq(bad, 0, "%s: no wall / farm triangle inside the opening" % id)
+
+
+## The door machinery for the first air door: warn silent, opening with the alarm (siren on its deck only), passable,
+## closing, a restore mid-opening, sealed solid; the wrappers.
+func _machinery(stack: CityStack, mw: MissionWorld, seed_: int) -> void:
+	var k := -1
+	for kk in stack.decks.size():
+		if mw.air_door_count(kk) > 0:
+			k = kk
+			break
+	var id := str(mw.air_door(k, 0)["id"])
+	var door := mw._doors[id] as MissionProps.GateDoor
+	stack.set_active_deck(k)
+	eq(MissionWorld.passable_after("air"), MissionWorld.OPENING, "air doors open over OPENING s")
+	var base := 100.0
+	mw.advance_to(base)
+	mw.open_air_door(k, 0, base + 6.0, 5.0)
+	mw.advance_to(base + 2.0)
+	eq(str(mw.source_state(id)["state"]), "warn", "seed %d %s: warn" % [seed_, id])
+	check(not mw.alarm(id) and not door.siren_on, "warn is silent")
+	check(not door.door_shape.disabled, "shut while warning")
+	mw.advance_to(base + 6.5)
+	eq(str(mw.source_state(id)["state"]), "opening", "opening from open_at")
+	check(mw.alarm(id) and door.siren_on and door.lamps_lit(), "the alarm and siren run while it opens")
+	check(not mw.air_door_passable(k, 0), "not passable while opening")
+	check(not door.door_shape.disabled, "solid while opening")
+	var snap := mw.snapshot()
+	mw.advance_to(base + 9.1)
+	check(mw.air_door_passable(k, 0) and door.door_shape.disabled, "passable (and open) at open_at + OPENING")
+	check(not mw.alarm(id) and not door.siren_on, "the siren stops once open")
+	near(float(mw.source_state(id)["passable_at"]), base + 9.0, 1e-6, "passable_at")
+	mw.advance_to(base + 15.0)
+	eq(str(mw.source_state(id)["state"]), "closing", "closes after the hold")
+	snap["now"] = base + 7.0
+	mw.restore(snap)
+	eq(str(mw.source_state(id)["state"]), "opening", "restored mid-opening")
+	check(door.siren_on, "restored: siren on")
+	var other := (k + 1) % stack.decks.size()
+	stack.set_active_deck(other)
+	mw.advance_to(base + 7.5)
+	check(mw.alarm(id) and not door.siren_on, "on another deck the siren is quiet")
+	stack.set_active_deck(k)
+	mw.advance_to(base + 30.0)
+	mw.close_air_door(k, 0)
+	mw.advance_to(base + 31.0)
+	eq(str(mw.source_state(id)["state"]), "sealed", "close_air_door seals it")
+	check(not door.door_shape.disabled and door.sealed_look.visible, "sealed: solid and welded")
+	eq(mw.air_door(k, 9), {"ok": false}, "no such door: ok false")
+	check(not mw.air_door_passable(k, 9), "no such door: not passable")

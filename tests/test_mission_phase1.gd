@@ -5,16 +5,18 @@ extends TestCase
 ## lethal EnemyBase.apply_damage (garrison: one unit on the mech's deck every GAR_EVERY s; a wave unit KILL_AFTER s after
 ## it appears). Bonuses are left alone (never found) and timings shortened (MissionFlow.test_plan / test_director) to stay fast. Asserts:
 ## - the mission is won through every primary (flag, sweep, defend, hold) and the wave spawner really spawned (no stub);
-## - every new wave order on a deck comes at least the deck's lull after its previous wave was mostly beaten, except a
-##   defend's / the hold's first wave (released at once); a defend's later waves keep the lull after its own previous
-##   wave; the alive caps (WaveDirector.DECK_CAP / SECTION_CAP) are never exceeded;
+## - the flag capture brings its wave: ordered while the flag is rising (step start) and its units really spawn;
+## - (PacingDirector, pacing-director.md 1.3) every "build" release on a deck comes after the deck's previous build release
+##   was mostly beaten or BUILD_GAP s after its door; the hard alive ceilings (PacingDirector.DECK_ALIVE_MAX /
+##   SECTION_ALIVE_MAX) are never exceeded (DECK_CAP / SECTION_CAP count enemies in play, not idle garrison);
 ## - the sweep completes within lull + telegraph + margin of the last enemy death on its deck, and is not done while a
 ##   wave ordered for its deck has not spawned its units yet (no units appear on the deck after it is done);
-## - the garrison is the plan's share (fewer standing than a full deck), every wave unit spawns at its door's open_at.
+## - the garrison is the plan's share (fewer standing than a full deck); a group from a gate with a staging bay spawns at
+##   its ORDER (staged, not hittable until the door is passable), any other group at its door's open_at.
 
 const SEED := 1
-const PLAN := {"hold": 8.0, "linger": 900.0}
-const DIRECTOR := {"lull": 4.0, "lull_min": 2.0, "grace": 3.0, "follow_gap": 0.5}
+const PLAN := {"hold": 8.0}
+const DIRECTOR := {"rest_first": 4.0, "rest_last": 2.0, "arrival_rest": 1.0, "grace": 3.0, "follow_gap": 0.5}
 const GAR_EVERY := 1.0
 const KILL_AFTER := 1.0
 const SIM_LIMIT := 300.0
@@ -23,7 +25,7 @@ const SWEEP_MARGIN := 3.0
 var td: TestDrive
 var mf: MissionFlow
 var seen := {}             # enemy instance id -> {t, wave, deck}
-var orders: Array = []     # {t, wave, deck, open_at, follow}
+var orders: Array = []     # {t, wave, deck, open_at, follow, reason, bay}
 var wave_first := {}       # wave id -> t of its first unit
 var wave_beaten := {}      # wave id -> t mostly beaten
 var deaths := {}           # deck -> [t of each death]
@@ -85,6 +87,8 @@ func _play() -> void:
 			_tick()
 		if str(o["type"]) == "sweep" and mf.rules.obj_state(id) == "done":
 			sweep_done = mf.now()
+		if str(o["type"]) == "flag":
+			await _check_flag_wave(id, mf.now())
 		if not check(mf.rules.obj_state(id) == "done", "%s (%s) done by t=%.0f (state %s, waves %s, alive %s)" % [id,
 				o["type"], mf.now(), mf.rules.obj_state(id), str(mf.director.state()), str(td.enemies_alive_per_deck())]):
 			return
@@ -92,37 +96,38 @@ func _play() -> void:
 	check(mf.unspawned.is_empty(), "every wave went through EnemySpawner.spawn_wave (stub: %s)" % str(mf.unspawned))
 	print("phase1: won at t=%.1f, %d orders, peak alive deck %d / section %d" % [mf.now(), orders.size(), peak_deck, peak_sec])
 
-	# Waves: arrival at the door, spacing, caps.
+	# Groups: arrival (order for a staged bay group, door otherwise), build spacing, ceilings.
 	check(not wave_first.is_empty(), "waves spawned units")
-	var last_new := {}
-	var last_obj := {}     # defend / hold objective id -> its last wave ordered
+	var last_build := {}   # deck -> its last build order
+	var staged := 0
 	for e: Dictionary in orders:
 		var w := str(e["wave"])
 		var k := int(e["deck"])
 		if wave_first.has(w) and not bool(e["follow"]):
-			near(float(wave_first[w]), float(e["open_at"]), 0.5, "wave %s spawns at its door's open_at" % w)
-		if bool(e["follow"]):
+			if bool(e["bay"]):
+				staged += 1
+				near(float(wave_first[w]), float(e["t"]), 0.5, "bay group %s spawns (staged) at its order" % w)
+			else:
+				near(float(wave_first[w]), float(e["open_at"]), 0.5, "group %s spawns at its door's open_at" % w)
+		if bool(e["follow"]) or str(e["reason"]) != "build":
 			continue
-		var obj := _priority_objective(w)
-		var prev := ""
-		if obj != "":
-			prev = str(last_obj.get(obj, ""))     # a defend's / the hold's first wave: no spacing
-			last_obj[obj] = w
-		elif last_new.has(k):
-			prev = str(last_new[k])
-		if prev != "" and wave_beaten.has(prev):
-			var gap := float(e["t"]) - float(wave_beaten[prev])
-			check(gap >= mf.director.lull(k) - 0.3, "wave %s ordered %.1f s after %s was beaten (lull %.1f)" % [w, gap,
-				prev, mf.director.lull(k)])
-		last_new[k] = w
-	check(peak_deck <= WaveDirector.DECK_CAP, "deck cap: peak %d" % peak_deck)
-	check(peak_sec <= WaveDirector.SECTION_CAP, "section cap: peak %d" % peak_sec)
+		if last_build.has(k):
+			var p: Dictionary = last_build[k]
+			var prev := str(p["wave"])
+			var beaten_ok := wave_beaten.has(prev) and float(wave_beaten[prev]) <= float(e["t"]) + 0.3
+			var gap := float(e["t"]) - float(p["open_at"])
+			check(beaten_ok or gap >= float(mf.director.options["build_gap"]) - 0.3,
+				"build group %s ordered %.1f s after %s's door (beaten %s)" % [w, gap, prev, str(wave_beaten.get(prev, "no"))])
+		last_build[k] = e
+	print("phase1: %d groups staged in gate bays" % staged)
+	check(peak_deck <= PacingDirector.DECK_ALIVE_MAX, "deck alive ceiling: peak %d" % peak_deck)
+	check(peak_sec <= PacingDirector.SECTION_ALIVE_MAX, "section alive ceiling: peak %d" % peak_sec)
 
 	# Sweep: done soon after the deck's last death (lull + the source's telegraph + margin).
 	# (Measured from the last death up to the sweep's completion: units of a wave ordered just before it arrive after it.)
 	var before: Array = (deaths.get(1, []) as Array).filter(func(x: float) -> bool: return x <= sweep_done + 0.01)
 	if check(sweep_done > 0.0 and not before.is_empty(), "the sweep's deck saw deaths before it was done"):
-		var limit := mf.director.lull(1) + 5.0 + SWEEP_MARGIN
+		var limit := mf.director.rest_length(1) + 5.0 + SWEEP_MARGIN
 		var lag := sweep_done - float(before.max())
 		print("phase1: sweep done %.1f s after the last death on deck 2" % lag)
 		check(lag <= limit, "sweep done %.1f s after the last death (limit %.1f)" % [lag, limit])
@@ -147,6 +152,28 @@ func _play() -> void:
 	await frames(3)
 
 
+## The flag's start wave: ordered before the flag was done (during the capture), and its units spawned.
+func _check_flag_wave(id: String, done_t: float) -> void:
+	var wid := ""
+	for pw: Dictionary in mf.plan.pool(0)["reserve"]:
+		if str(pw["for"]) == id:
+			wid = str(pw["id"])
+	if not check(wid != "", "the flag %s has a wave in its deck's pool" % id):
+		return
+	var ot := -1.0
+	for e: Dictionary in orders:
+		if e["wave"] == wid and ot < 0.0:
+			ot = float(e["t"])
+	check(ot >= 0.0 and ot < done_t, "the flag's wave %s is ordered during the capture (t %.1f, flag done %.1f)" % [wid, ot, done_t])
+	var t_end := mf.now() + 8.0
+	while not wave_first.has(wid) and mf.now() < t_end:
+		for i in 6:
+			await get_tree().physics_frame
+		_tick()
+	check(wave_first.has(wid), "the flag capture spawned wave units (%s, %d seen)" % [wid, int(mf._wave_total.get(wid, 0))])
+	print("phase1: flag wave %s ordered at %.1f, flag done at %.1f, first unit at %s" % [wid, ot, done_t, str(wave_first.get(wid, "none"))])
+
+
 func _place(o: Dictionary) -> void:
 	var k := int(o["deck"])
 	var ro := mf.rules.objective(o["id"])
@@ -162,27 +189,13 @@ func _place(o: Dictionary) -> void:
 		td.mech.velocity = Vector3.ZERO
 
 
-## The defend / hold objective a wave belongs to ("" for any other wave).
-func _priority_objective(w: String) -> String:
-	for pl: Dictionary in mf.plan.pools:
-		for pw: Dictionary in pl["waves"]:
-			if pw["id"] != w:
-				continue
-			var tr: Dictionary = pw["trigger"]
-			if tr["kind"] != "objective" or str(tr.get("step", "")) != "start":
-				return ""
-			var ty := str(mf.plan.objective(str(tr["id"])).get("type", ""))
-			return str(tr["id"]) if ty == "defend" or ty == "hold" else ""
-	return ""
-
-
 func _on_order(o: Dictionary) -> void:
 	var follow := false
 	for p: Dictionary in orders:
 		if p["wave"] == o["wave"]:
 			follow = true
 	orders.append({"t": mf.now(), "wave": str(o["wave"]), "deck": int(o["deck"]), "open_at": float(o["open_at"]),
-		"follow": follow})
+		"follow": follow, "reason": str(o.get("reason", "")), "bay": not mf.source_bay(str(o["source"])).is_empty()})
 
 
 func _tick() -> void:
@@ -232,5 +245,5 @@ func _tick() -> void:
 		for e in td.combat.squad.enemies:
 			if is_instance_valid(e) and not e.destroyed() and e.wave == id:
 				n += 1
-		if int(mf._pending.get(id, 0)) == 0 and float(n) <= WaveDirector.BEATEN * float(int(mf._wave_total[id])):
+		if int(mf._pending.get(id, 0)) == 0 and float(n) <= PacingDirector.BEATEN * float(int(mf._wave_total[id])):
 			wave_beaten[id] = t

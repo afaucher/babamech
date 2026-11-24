@@ -23,7 +23,7 @@ func setup() -> void:
 
 
 ## The lab's stack site: the deck slider moves the active deck, the ramp camera stands on the ramp's upper deck, and a
-## section with no ramp (seed 9) falls back to the avenue view.
+## section with no ramp (seed 54) falls back to the avenue view.
 func _lab() -> void:
 	var lab := CityLab.new()
 	lab.options["site"] = "stack"
@@ -51,7 +51,7 @@ func _lab() -> void:
 		near(d.ring.height(d.to_local(cam.global_position)), 9.0, 0.05, "at a cockpit's height")
 	lab.set_lab_option("camera", "shaft")
 	check(get_viewport().get_camera_3d() == cam, "the shaft camera is the lab's own")
-	lab.params["seed"] = 9.0
+	lab.params["seed"] = 54.0
 	lab.rebuild()
 	lab.set_lab_option("camera", "avenue")
 	var avenue := cam.global_transform

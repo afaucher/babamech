@@ -1,0 +1,19 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-23T17:34:41	A1_utility_cradles_s4242.png	flux3_klein_t2i	4242	1024x576			5.81	A1_utility_cradles_prompt.txt
+2026-11-23T17:34:45	A1_utility_cradles_s777.png	flux3_klein_t2i	777	1024x576			3.28	A1_utility_cradles_prompt.txt
+2026-11-23T17:34:49	A2_utility_hive_s4242.png	flux3_klein_t2i	4242	1024x576			3.73	A2_utility_hive_prompt.txt
+2026-11-23T17:34:52	A2_utility_hive_s777.png	flux3_klein_t2i	777	1024x576			3.32	A2_utility_hive_prompt.txt
+2026-11-23T17:34:56	A3_utility_crane_s4242.png	flux3_klein_t2i	4242	1024x576			3.71	A3_utility_crane_prompt.txt
+2026-11-23T17:34:59	A3_utility_crane_s777.png	flux3_klein_t2i	777	1024x576			3.32	A3_utility_crane_prompt.txt
+2026-11-23T17:35:04	B1_cargo_cradles_s4242.png	flux3_klein_t2i	4242	1024x576			4.18	B1_cargo_cradles_prompt.txt
+2026-11-23T17:35:07	B1_cargo_cradles_s777.png	flux3_klein_t2i	777	1024x576			3.3	B1_cargo_cradles_prompt.txt
+2026-11-23T17:35:11	B2_cargo_hive_s4242.png	flux3_klein_t2i	4242	1024x576			3.71	B2_cargo_hive_prompt.txt
+2026-11-23T17:35:14	B2_cargo_hive_s777.png	flux3_klein_t2i	777	1024x576			3.3	B2_cargo_hive_prompt.txt
+2026-11-23T17:35:18	B3_cargo_crane_s4242.png	flux3_klein_t2i	4242	1024x576			3.72	B3_cargo_crane_prompt.txt
+2026-11-23T17:35:22	B3_cargo_crane_s777.png	flux3_klein_t2i	777	1024x576			3.3	B3_cargo_crane_prompt.txt
+2026-11-23T17:35:26	C1_rescue_cradles_s4242.png	flux3_klein_t2i	4242	1024x576			3.69	C1_rescue_cradles_prompt.txt
+2026-11-23T17:35:29	C1_rescue_cradles_s777.png	flux3_klein_t2i	777	1024x576			3.32	C1_rescue_cradles_prompt.txt
+2026-11-23T17:35:33	C2_rescue_hive_s4242.png	flux3_klein_t2i	4242	1024x576			3.68	C2_rescue_hive_prompt.txt
+2026-11-23T17:35:36	C2_rescue_hive_s777.png	flux3_klein_t2i	777	1024x576			3.3	C2_rescue_hive_prompt.txt
+2026-11-23T17:35:40	C3_rescue_crane_s4242.png	flux3_klein_t2i	4242	1024x576			3.72	C3_rescue_crane_prompt.txt
+2026-11-23T17:35:43	C3_rescue_crane_s777.png	flux3_klein_t2i	777	1024x576			3.32	C3_rescue_crane_prompt.txt

@@ -288,6 +288,14 @@ func _drone() -> void:
 	eq(float(me.hp["side_l"]), 0.0, "the destroyed hardpoint stays destroyed")
 	check(d.beamed().has(me), "a beam points at the damaged mech")
 	check(d.ring_shown(), "the ground ring shows while it repairs")
+	eq(d.scans_shown(), d.beamed().size(), "one scan look per repaired target")
+	var fit := d.scan_fit(me)
+	check(float(fit["h"]) > 1.0 and float(fit["r"]) > 0.5, "the scan fits the mech (h %.2f, r %.2f)" % [fit["h"], fit["r"]])
+	var sf0 := d.scan_fraction(d.t0 + 0.4)
+	near(d.scan_fraction(d.t0 + 0.4), sf0, 0.0, "the scan height is a pure function of the clock")
+	near(d.scan_fraction(d.t0 + RepairDrone.SCAN_PERIOD + 0.4), sf0, 1e-6, "the scan repeats every SCAN_PERIOD")
+	check(absf(d.scan_fraction(d.t0 + RepairDrone.SCAN_PERIOD * 0.5) - RepairDrone.SCAN_HI) < 1e-6
+		and absf(d.scan_fraction(d.t0) - RepairDrone.SCAN_LO) < 1e-6, "it travels the body bottom to top and back")
 	# Only targets this machine owns, not enemies, only within 15 m of the LAUNCHER horizontally.
 	var remote := _target(world, "remote", 2, "player", mech.position + Vector3(4, 0, 0))
 	var enemy := _target(world, "foe", 0, "enemy", mech.position + Vector3(-4, 0, 0))
@@ -319,6 +327,7 @@ func _drone() -> void:
 	me.repair_all()
 	_run(rack, world, 0.2)
 	check(d.beamed().is_empty() and not d.ring_shown(), "everyone full: no beam, no ring")
+	eq(d.scans_shown(), 0, "everyone full: no scan")
 	check(d.active(), "and no early return")
 	me.apply_damage(100.0, "torso", "x")
 	# 60 s life, then home to the dock.
@@ -332,6 +341,7 @@ func _drone() -> void:
 	_run(rack, world, 0.5)
 	near(float(me.hp["torso"]), torso1, 1e-6, "no repair on the way home")
 	check(d.beamed().is_empty() and not d.ring_shown(), "nothing green on the way home (the launcher is damaged)")
+	eq(d.scans_shown(), 0, "no scan on the way home")
 	var dock := world.equipment_look.dock(world, "medic", "back")
 	var steps := 0
 	while d in world.effects and steps < 200:

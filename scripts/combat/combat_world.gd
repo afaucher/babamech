@@ -1023,7 +1023,7 @@ func resolve_hit(record: Dictionary, st: Dictionary, target: CombatTarget, compo
 	if not decides(target, int(record.get("peer", 1))):
 		return null
 	var h := Hit.new()
-	h.damage = damage
+	h.damage = armor_scaled(st, target, damage)
 	h.impulse = dir.normalized() * float(st.get("knockback", 0.0))
 	h.heat = float(st.get("target_heat", 0.0))
 	h.point = point
@@ -1034,6 +1034,15 @@ func resolve_hit(record: Dictionary, st: Dictionary, target: CombatTarget, compo
 	h.shot = Combat.shot_key(record)
 	deliver(target, h)
 	return h
+
+
+## THE armour rule (weapons.md §3.10), applied once where a hit is decided, before it travels (resolve_hit, _splash;
+## FlakShell's combined direct + splash Hit goes through resolve_hit): `damage` × the weapon's `armor_mult` (absent =
+## 1.0) when `target.armored`, else `damage` unchanged. Knockback, heat and prop blast never scale.
+static func armor_scaled(st: Dictionary, target: CombatTarget, damage: float) -> float:
+	if target == null or not target.armored:
+		return damage
+	return damage * float(st.get("armor_mult", 1.0))
 
 
 func deliver(target: CombatTarget, h: Hit) -> void:
@@ -1122,7 +1131,7 @@ func _splash(record: Dictionary, st: Dictionary, point: Vector3, exclude: Combat
 			continue
 		var k := 1.0 - best / rad
 		var h := Hit.new()
-		h.damage = dmg * k
+		h.damage = armor_scaled(st, t, dmg * k)
 		var out: Vector3 = centre - point
 		out -= t.up * out.dot(t.up)
 		h.impulse = (out.normalized() * float(st.get("splash_knockback", 0.0)) + t.up * float(st.get("splash_lift", 0.0))) * k

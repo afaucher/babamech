@@ -30,6 +30,11 @@ const EDGE_CLEAR := 8.0
 const HOOK_RADIUS := 45.0
 const POLE_CLEAR := 2.6         ## m round the pole and round the cloth's centre
 const PER_BUILDING := 2
+const MARGIN := 0.3             ## m: a wall banner's envelope keeps this clear of facade relief and other boxes
+const HALF_SPAN := BannerMeshes.W * 0.5 + 0.37  ## m: the cross-bar's end caps reach this far either side of its centre
+const BAR_UP := 0.12            ## m: the bar and its caps stand this far above `top`
+const SLIDE := 3.5              ## m: a blocked facade step looks this far either way along the face for a clear place
+const SLIDE_STEP := 0.5
 
 
 static func make(plan: CityPlan, seed: int) -> Array:
@@ -133,7 +138,9 @@ static func _take(c: Dictionary, src: String, picked: Array, per_b: Dictionary) 
 		per_b[bi] = int(per_b.get(bi, 0)) + 1
 
 
-## Every facade spot that passes the rules, in a fixed order (buildings, sides, steps).
+## Every facade spot that passes the rules, in a fixed order (buildings, sides, steps). A step whose banner would meet
+## the facade's relief or another box (clear_at_face) slides along the face to the nearest clear place within SLIDE,
+## trying the full cloth first, then the shortest; a step with no clear place is dropped.
 static func facade_spots(plan: CityPlan, blk: _Blockers = null, gates: Array[Vector2] = []) -> Array:
 	if blk == null:
 		blk = _Blockers.new(plan)
@@ -145,11 +152,16 @@ static func facade_spots(plan: CityPlan, blk: _Blockers = null, gates: Array[Vec
 			continue
 		var c: Vector2 = b["center"]
 		var style := str(b.get("style", ""))
-		for t: Dictionary in b.get("tiers", []):
+		var tiers: Array = b.get("tiers", [])
+		for ti in tiers.size():
+			var t: Dictionary = tiers[ti]
 			if float(t["y0"]) > 1.5 or float(t["y1"]) < MIN_FACADE:
 				continue
 			var off: Vector2 = t["off"]
 			var sz: Vector2 = t["size"]
+			var relief: Array = []
+			var top := minf(float(t["y1"]) - 0.8, BannerMeshes.H + 4.0)
+			var full := clampf(top - 1.6, 4.8, BannerMeshes.H)
 			for side in 4:
 				var n: Vector2 = CityPlan.SIDE_N[side]
 				var along := Vector2(absf(n.y), absf(n.x))
@@ -157,35 +169,80 @@ static func facade_spots(plan: CityPlan, blk: _Blockers = null, gates: Array[Vec
 				if span < BannerMeshes.W + 2.0:
 					continue
 				var steps := maxi(int((span - BannerMeshes.W - 2.0) / FACE_STEP), 0)
+				var umax := (span - BannerMeshes.W - 2.0) * 0.5
+				var mid := c + off + Vector2(n.x * sz.x, n.y * sz.y) * 0.5
 				for i in steps + 1:
-					var u := (float(i) - float(steps) * 0.5) * FACE_STEP
-					if side == int(b.get("front", -1)) and absf(u) < DOOR_CLEAR:
-						continue
-					var face := c + off + Vector2(n.x * sz.x, n.y * sz.y) * 0.5 + along * u
-					if not inner.has_point(face):
-						continue
-					var ahead := face + n * (CityPlan.SIDEWALK + 3.0)
-					var front_kind := blk.ground_kind(ahead)
-					if front_kind == "":
-						continue
-					if not blk.clear(face + n * OPEN_CLEAR, 1.0):
-						continue
-					if blk.near_cut(face + n * 3.0, CUT_CLEAR + BannerMeshes.W * 0.5) or not plan.clear_at(face + n * 2.0):
-						continue
-					var gate := false
-					for g: Vector2 in gates:
-						if face.distance_to(g) < GATE_CLEAR:
-							gate = true
+					var u0 := (float(i) - float(steps) * 0.5) * FACE_STEP
+					if not _rules_ok(plan, blk, gates, inner, b, side, n, u0, mid + along * u0):
+						continue      # a step the rules drop stays dropped (only a blocked one slides)
+					var found := {}
+					for k in int(SLIDE / SLIDE_STEP) * 2 + 1:      # 0, +0.5, -0.5, +1.0, -1.0, ...
+						var u := u0 + SLIDE_STEP * float((k + 1) / 2) * (1.0 if k % 2 == 1 else -1.0)
+						if absf(u) > umax + 1e-4:
+							continue
+						var face := mid + along * u
+						if not _rules_ok(plan, blk, gates, inner, b, side, n, u, face):
+							continue
+						if relief.is_empty():
+							relief = CityBuildings.relief(plan, bi, ti)
+						for length: float in ([full, 4.8] if full > 4.8 else [full]):
+							if clear_at_face(plan, blk, relief[side], bi, ti, side, face, top, length):
+								found = {"face": face, "len": length}
+								break
+						if not found.is_empty():
 							break
-					if gate:
+					if found.is_empty():
 						continue
-					var top := minf(float(t["y1"]) - 0.8, BannerMeshes.H + 4.0)
-					var at := face + n * OUT
+					var fp: Vector2 = found["face"]
+					var at := fp + n * OUT
+					var front_kind := blk.ground_kind(fp + n * (CityPlan.SIDEWALK + 3.0))
 					var prio := 0 if (style == "civic" or front_kind in ["spine", "arterial", "plaza"]) else 1
-					out.append({"kind": "wall", "x": at.x, "s": at.y, "top": top,
-						"len": clampf(top - 1.6, 4.8, BannerMeshes.H), "n": n, "bi": bi, "prio": prio})
+					out.append({"kind": "wall", "x": at.x, "s": at.y, "top": top, "len": found["len"], "n": n, "bi": bi,
+						"prio": prio})
 			break
 	return out
+
+
+## The placement rules of a facade spot at `face` (the wall point under the bar's centre, u along the face from its
+## middle): not over the front door, inside the deck's edge, road or open lot ahead with nothing built OPEN_CLEAR out,
+## clear of floor cuts, ramps, kept-clear ground and checkpoint / cordon hooks.
+static func _rules_ok(plan: CityPlan, blk: _Blockers, gates: Array[Vector2], inner: Rect2, b: Dictionary, side: int,
+		n: Vector2, u: float, face: Vector2) -> bool:
+	if side == int(b.get("front", -1)) and absf(u) < DOOR_CLEAR:
+		return false
+	if not inner.has_point(face):
+		return false
+	if blk.ground_kind(face + n * (CityPlan.SIDEWALK + 3.0)) == "":
+		return false
+	if not blk.clear(face + n * OPEN_CLEAR, 1.0):
+		return false
+	if blk.near_cut(face + n * 3.0, CUT_CLEAR + BannerMeshes.W * 0.5) or not plan.clear_at(face + n * 2.0):
+		return false
+	for g: Vector2 in gates:
+		if face.distance_to(g) < GATE_CLEAR:
+			return false
+	return true
+
+
+## Whether a wall banner on face `side` of tier `ti` of building `bi`, its bar over wall point `face` at `top` with a
+## `length` cloth, is clear: its envelope (cloth, bar with its end caps, brackets, + MARGIN; out to the bar + MARGIN)
+## meets none of the face's relief boxes (CityBuildings.relief: all deeper than the cloth's back) and no other tier
+## box, plan solid, park column or pillar core.
+static func clear_at_face(plan: CityPlan, blk: _Blockers, relief: Array, bi: int, ti: int, side: int, face: Vector2,
+		top: float, length: float) -> bool:
+	var fu := CityBuildings.face_coords(plan, bi, ti, side, face).x
+	var u0 := fu - HALF_SPAN - MARGIN
+	var u1 := fu + HALF_SPAN + MARGIN
+	var v0 := top - length - MARGIN
+	var v1 := top + BAR_UP + MARGIN
+	for r: Dictionary in relief:
+		if float(r["u0"]) < u1 and float(r["u1"]) > u0 and float(r["v0"]) < v1 and float(r["v1"]) > v0:
+			return false
+	var n: Vector2 = CityPlan.SIDE_N[side]
+	var along := Vector2(n.y, -n.x)
+	var p0 := face + along * (u0 - fu) + n * 0.02
+	var p1 := face + along * (u1 - fu) + n * (OUT + BAR_UP + MARGIN)
+	return blk.box_clear(Rect2(p0, Vector2.ZERO).expand(p1), v0, v1, bi, ti)
 
 
 ## Plaza spots for a pole banner: the middle of every plaza lot that is clear round the pole and round the cloth (which
@@ -238,21 +295,32 @@ class _Blockers:
 	var grid: Dictionary = {}       ## Vector2i -> [Rect2]
 	var cuts: Array[Rect2] = []
 	var ramps: Array[Rect2] = []
+	var boxes: Array = []           ## [Rect2, y0, y1, building, tier (-1: solid / column / core)]
+	var box_grid: Dictionary = {}   ## Vector2i -> [index into boxes]
 
 	func _init(p: CityPlan) -> void:
 		plan = p
-		for b: Dictionary in p.buildings:
+		for bi in p.buildings.size():
+			var b: Dictionary = p.buildings[bi]
 			var c: Vector2 = b["center"]
-			for t: Dictionary in b.get("tiers", []):
+			var tiers: Array = b.get("tiers", [])
+			for ti in tiers.size():
+				var t: Dictionary = tiers[ti]
 				var sz: Vector2 = t["size"]
 				_add(Rect2(c + (t["off"] as Vector2) - sz * 0.5, sz))
+				_add_box(Rect2(c + (t["off"] as Vector2) - sz * 0.5, sz), float(t["y0"]), float(t["y1"]), bi, ti)
+			for so: Dictionary in b.get("solids", []):
+				var ss: Vector2 = so["size"]
+				_add_box(Rect2(c + (so["off"] as Vector2) - ss * 0.5, ss), float(so["y0"]), float(so["y1"]), bi, -1)
 			if bool(b.get("pillar", false)) and b.has("core"):
 				var core: Dictionary = b["core"]
 				var cs: Vector2 = core["size"]
 				_add(Rect2(Vector2(float(core["x"]), float(core["s"])) - cs * 0.5, cs))
+				_add_box(Rect2(Vector2(float(core["x"]), float(core["s"])) - cs * 0.5, cs), -INF, INF, bi, -1)
 		for col: Dictionary in p.columns:
 			var h := float(col["half"])
 			_add(Rect2(float(col["x"]) - h, float(col["s"]) - h, h * 2.0, h * 2.0))
+			_add_box(Rect2(float(col["x"]) - h, float(col["s"]) - h, h * 2.0, h * 2.0), -INF, INF, -1, -1)
 		if p.site != null:
 			cuts = p.floor_cuts()
 		for r: Dictionary in p.ramps:
@@ -269,6 +337,33 @@ class _Blockers:
 				if not grid.has(k):
 					grid[k] = []
 				grid[k].append(r)
+
+	func _add_box(r: Rect2, y0: float, y1: float, bi: int, ti: int) -> void:
+		var idx := boxes.size()
+		boxes.append([r, y0, y1, bi, ti])
+		var a := Vector2i(floori(r.position.x / CELL), floori(r.position.y / CELL))
+		var b := Vector2i(floori(r.end.x / CELL), floori(r.end.y / CELL))
+		for i in range(a.x, b.x + 1):
+			for j in range(a.y, b.y + 1):
+				var k := Vector2i(i, j)
+				if not box_grid.has(k):
+					box_grid[k] = []
+				box_grid[k].append(idx)
+
+	## No box (tier, solid, column, core) other than tier `ti` of building `bi` meets the plan rect `r` between heights
+	## y0 and y1.
+	func box_clear(r: Rect2, y0: float, y1: float, bi: int, ti: int) -> bool:
+		var a := Vector2i(floori(r.position.x / CELL), floori(r.position.y / CELL))
+		var b := Vector2i(floori(r.end.x / CELL), floori(r.end.y / CELL))
+		for i in range(a.x, b.x + 1):
+			for j in range(a.y, b.y + 1):
+				for idx: int in box_grid.get(Vector2i(i, j), []):
+					var e: Array = boxes[idx]
+					if ti >= 0 and int(e[3]) == bi and int(e[4]) == ti:
+						continue
+					if (e[0] as Rect2).intersects(r) and float(e[1]) < y1 and float(e[2]) > y0:
+						return false
+		return true
 
 	## Nothing built within `radius` of the point (any height).
 	func clear(pt: Vector2, radius: float) -> bool:

@@ -195,3 +195,19 @@ values above, built with the explicit zero mix, and the default (live) plans, di
 **Lab.** Params `alleys`, `road_variety`; option `road_forms` (on, the default since 2026-11-23: the section's default,
 live forms; off: the section / stack site plans the section with the forms explicitly off); cameras `tint_street`, `variety_top`, `alley`, `alley_top`, `lane`,
 `pedestrian`, `court`.
+
+## Tree colour (2026-11-23, user playtest: "jitter the colour a bit, it might give them more character")
+
+Every tree (street, median, park, garden, plaza, court, pedestrian street) and every planter (roof and pedestrian
+street) gets its own shade of the leaf greens: `CityPalette.tree_tint(base, u)` with u in [-1, 1]^3 moves hue by up to
+`TREE_HUE` 0.04 of the circle (~14 deg; + toward blue-green, - toward yellow-green), saturation by up to `TREE_SAT` 6 %
+and value by up to `TREE_VAL` 9 %; trunks and planter boxes only a value shift of up to `TREE_TRUNK_VAL` 3 %. All greens
+of one tree take one per-channel multiplier (`tree_multiplier`, relative to `leaf`), so its light and dark facets keep
+their relation. The numbers come from the prop's OWN generator (`CityProps.tree_jitter`: hash of the plan's cosmetic
+seed and the prop id), never a shared stream, so no other look and not the layout move (props layout checksum
+f321076ebd6e98f1 unchanged). Drawn per instance: the tree and planter MultiMeshes carry the tint as custom data and use
+`CityPalette.tree_material()` (surface_material's look: vertex colour sRGB albedo, roughness 1, specular 0.1; leaf greens
+= green the largest channel x rgb, everything else x a). Same meshes, same MultiMeshes: triangles and draw calls
+unchanged; standing, falling, down and shoved states are the same instance with the same tint on every machine. Tested
+in test_city_props (`_tree_tint`). Shots: `city-variety/trees_before_avenue.png` (no jitter), `trees_jitter_avenue.png`,
+`trees_jitter_park.png`. Fixed plaza planters (part of the furniture mesh) keep the plain greens.

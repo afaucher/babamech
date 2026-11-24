@@ -57,3 +57,12 @@
 2026-11-23T10:38:11	wasp_legs_c_stubby_s11.png	flux3_klein_refs	11	768x768	pick_wasp_four_fans_pod.png		8.82	wasp_legs_c_stubby_prompt.txt
 2026-11-23T10:38:19	wasp_legs_c_stubby_s22.png	flux3_klein_refs	22	768x768	pick_wasp_four_fans_pod.png		7.87	wasp_legs_c_stubby_prompt.txt
 2026-11-23T10:38:27	wasp_legs_c_stubby_s33.png	flux3_klein_refs	33	768x768	pick_wasp_four_fans_pod.png		8.25	wasp_legs_c_stubby_prompt.txt
+2026-11-23T17:49:46	bulwark2_a2_s11.png	flux3_klein_t2i	11	768x768			4.14	bulwark2_a2_prompt.txt
+2026-11-23T17:49:50	bulwark2_a3_s11.png	flux3_klein_t2i	11	768x768			3.72	bulwark2_a3_prompt.txt
+2026-11-23T17:49:53	bulwark2_b1_s11.png	flux3_klein_t2i	11	768x768			3.31	bulwark2_b1_prompt.txt
+2026-11-23T17:49:57	bulwark2_b2_s11.png	flux3_klein_t2i	11	768x768			3.46	bulwark2_b2_prompt.txt
+2026-11-23T17:50:00	bulwark2_b3_s11.png	flux3_klein_t2i	11	768x768			3.27	bulwark2_b3_prompt.txt
+2026-11-23T17:50:04	bulwark2_c1_s11.png	flux3_klein_t2i	11	768x768			3.28	bulwark2_c1_prompt.txt
+2026-11-23T17:50:08	bulwark2_c2_s11.png	flux3_klein_t2i	11	768x768			3.46	bulwark2_c2_prompt.txt
+2026-11-23T17:50:11	bulwark2_c3_s11.png	flux3_klein_t2i	11	768x768			3.29	bulwark2_c3_prompt.txt
+2026-11-23T18:54:04	bulwark2_a1_s11.png	flux3_klein_t2i	11	768x768			6.34	bulwark2_a1_prompt.txt

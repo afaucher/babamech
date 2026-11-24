@@ -57,6 +57,15 @@ const PARK_YAW := 0.0
 const PARK_PITCH := -12.0
 const PARK_SLEW := 40.0
 var parked := false               ## this step ran shut down (the barrel is parking / parked)
+## HARDPOINT RANGE (chassis-rules.md 4.6): the hardpoint's own aim range in the body frame, Vector4(yaw_min, yaw_max,
+## pitch_down, pitch_up) in degrees (yaw + = right, pitch_down a positive angle below level), INF = no limit. The firer
+## sets it from the chassis (set_hardpoint_range(hardpoint_range(chassis, hp))). The barrel's range is the weapon's own
+## (Combat.pivot_limits, the swivel's SwivelBoom.limits) intersected with it: aim_range(). The Strider's hardpoints add
+## no limit; the Bulwark's side guns cap the INWARD yaw at the catalog's `yaw_in_max` (+ yaw on the left gun, - on the
+## right). THE CAN'T-BEAR RULE (both chassis): the barrel slews to the nearest point of aim_range and parks there; a
+## pivoting weapon fires along its parked barrel (Combat.FIXED_ARC_ENABLED off, the default) or holds with OUT_OF_ARC
+## (on); the swivel always holds with OUT_OF_ARC. Shots always leave along the barrel, never bent toward the aim point.
+var hp_range := Vector4(-INF, INF, INF, INF)
 
 
 func net_fields() -> Dictionary:
@@ -65,7 +74,7 @@ func net_fields() -> Dictionary:
 		"spin": Net.OWNER, "bloom": Net.OWNER, "charge": Net.OWNER, "held": Net.PRIVATE, "muzzle_at": Net.PRIVATE,
 		"aim_at": Net.PRIVATE, "hold_reason": Net.PRIVATE, "heat_due": Net.PRIVATE,
 		"body_basis": Net.PRIVATE, "aim_yaw": Net.OWNER, "aim_pitch": Net.OWNER, "aim_dir": Net.OWNER, "aim_from": Net.PRIVATE,
-		"_arc_held": Net.PRIVATE, "parked": Net.PRIVATE}
+		"_arc_held": Net.PRIVATE, "parked": Net.PRIVATE, "hp_range": Net.SPAWN}
 
 
 func setup(id: String, hp: String, shooter_id: String, shooter_peer: int, st: Dictionary) -> void:
@@ -94,6 +103,99 @@ func set_body_basis(b: Basis) -> void:
 	body_basis = b
 
 
+## The hardpoint's aim range (see hp_range). Set once after setup; optional (default: no limit).
+func set_hardpoint_range(r: Vector4) -> void:
+	hp_range = r
+
+
+## The aim range hardpoint `hp_id` of chassis `chassis_id` allows, as hp_range: from its catalog entry's `yaw_in_max`
+## (deg the barrel may turn INWARD, toward the hull's centreline) and, when present, `yaw_out_max`, `pitch_down_max`,
+## `pitch_up_max`. Inward is + yaw for a hardpoint left of the centreline (ChassisParts mount x < 0, or an id ending
+## "_l"), - yaw for one on the right; a centred hardpoint caps both sides with yaw_in_max. No keys: no limit.
+static func hardpoint_range(chassis_id: String, hp_id: String) -> Vector4:
+	var hp := {}
+	for h: Dictionary in MechCatalog.chassis(chassis_id)["hardpoints"]:
+		if str(h["id"]) == hp_id:
+			hp = h
+	var y_in := float(hp.get("yaw_in_max", INF))
+	var y_out := float(hp.get("yaw_out_max", INF))
+	var r := Vector4(-INF, INF, float(hp.get("pitch_down_max", INF)), float(hp.get("pitch_up_max", INF)))
+	var side := hardpoint_side(chassis_id, hp_id)
+	if side < 0.0:          # left gun: inward is to the right (+ yaw)
+		r.x = -y_out
+		r.y = y_in
+	elif side > 0.0:        # right gun: inward is to the left (- yaw)
+		r.x = -y_in
+		r.y = y_out
+	else:
+		r.x = -y_in
+		r.y = y_in
+	return r
+
+
+## -1 for a hardpoint left of the chassis' centreline, +1 right of it, 0 on it (the art's mount point, else the id).
+static func hardpoint_side(chassis_id: String, hp_id: String) -> float:
+	var mounts: Dictionary = ChassisParts.of(chassis_id).get("mounts", {})
+	if mounts.has(hp_id):
+		var x := (mounts[hp_id] as Vector3).x
+		return 0.0 if absf(x) < 1e-4 else signf(x)
+	return -1.0 if hp_id.ends_with("_l") else (1.0 if hp_id.ends_with("_r") else 0.0)
+
+
+## The weapon's own range: Vector3(yaw half-width, pitch down, pitch up) (the swivel's arc, else Combat.pivot_limits).
+func weapon_limits() -> Vector3:
+	if behaviour != null and behaviour.has_method("shape_record"):
+		return SwivelBoom.limits(stats)
+	return Combat.pivot_limits(stats)
+
+
+## The barrel's range now: the weapon's own intersected with the hardpoint's, Vector4(yaw_min, yaw_max, pitch_down,
+## pitch_up) degrees.
+func aim_range() -> Vector4:
+	var w := weapon_limits()
+	var lo := maxf(-w.x, hp_range.x)
+	var hi := minf(w.x, hp_range.y)
+	if lo > hi:             # no overlap (bad data): the hardpoint's limit nearest the weapon's range
+		lo = clampf(0.0, hp_range.x, hp_range.y)
+		hi = lo
+	return Vector4(lo, hi, minf(w.y, hp_range.z), minf(w.z, hp_range.w))
+
+
+## MINIMUM CONVERGENCE RANGE: a barrel pivoting `lateral` m off the mech's centreline that may turn at most `yaw_in`
+## degrees inward can bear on a point of the centreline only `lateral / tan(yaw_in)` m or more ahead of its pivot
+## (straight lines: the barrel's line passes through its pivot; pitch does not change the body-frame yaw). Closer, the
+## barrel parks at its inward limit and its shots cross the centreline at that distance. INF for yaw_in <= 0.
+## Bulwark side guns (pivots 3.57 m out at mech scale 2): 6.18 m for every pivoting weapon (yaw_in = min(30, yaw_in_max
+## 55) = 30), 2.50 m for the swivel (55); the Strider's side guns (2.90 m out, 30 deg): 5.03 m.
+static func min_convergence_range(lateral: float, yaw_in: float) -> float:
+	if yaw_in <= 0.0:
+		return INF
+	return absf(lateral) / tan(deg_to_rad(minf(yaw_in, 89.9)))
+
+
+## The most this barrel may turn inward, toward the centreline on hardpoint side `side` (-1 left, +1 right; 0: the
+## smaller of both ways), degrees (from aim_range()).
+func inward_limit(side: float) -> float:
+	var r := aim_range()
+	if side < 0.0:
+		return r.y
+	if side > 0.0:
+		return -r.x
+	return minf(r.y, -r.x)
+
+
+## Body-frame (yaw, pitch) clamped into aim_range().
+func clamp_aim(a: Vector2) -> Vector2:
+	var r := aim_range()
+	return Vector2(clampf(a.x, r.x, r.y), clampf(a.y, -r.z, r.w))
+
+
+## Body-frame (yaw, pitch) inside aim_range() (the barrel can bear on it).
+func in_aim_range(a: Vector2) -> bool:
+	var r := aim_range()
+	return a.x >= r.x - 1e-4 and a.x <= r.y + 1e-4 and a.y >= -r.z - 1e-4 and a.y <= r.w + 1e-4
+
+
 ## The fixed-weapon arc (Combat.FIXED_ARC_ENABLED, off by default): outside it, hold with Combat.OUT_OF_ARC. Clears
 ## only the reason it set itself, so a behaviour's own hold_reason is left alone.
 func _check_fixed_arc() -> void:
@@ -101,8 +203,7 @@ func _check_fixed_arc() -> void:
 	if Combat.fixed_arc_applies(weapon_id, stats):
 		if pivoting():      # the fire arc is the pivot range, seen from the pivot
 			var to := aim_at - pivot()
-			var lim := Combat.pivot_limits(stats)
-			out = to.length_squared() >= 1e-6 and not Combat.in_arc(Combat.arc_angles(body_basis, to), lim.x, lim.y, lim.z)
+			out = to.length_squared() >= 1e-6 and not in_aim_range(Combat.arc_angles(body_basis, to))
 		else:
 			out = not Combat.in_fixed_arc(body_basis, muzzle_at, aim_at)
 	if out:
@@ -144,15 +245,13 @@ func on_target() -> bool:
 
 ## One step of the pivoting barrel: slew toward pivot -> aim point, clamped to the pivot range.
 func _track(dt: float) -> void:
-	var lim := Combat.pivot_limits(stats)
 	var cur := Vector2(aim_yaw, aim_pitch)
 	var to := aim_at - pivot()
 	if to.length_squared() < 1e-6:
 		aim_from = cur
 		aim_dir = Combat.arc_dir(body_basis, cur)
 		return
-	var want := Combat.arc_angles(body_basis, to)
-	var goal := Vector2(clampf(want.x, -lim.x, lim.x), clampf(want.y, -lim.y, lim.z))
+	var goal := clamp_aim(Combat.arc_angles(body_basis, to))
 	if aim_dir == Vector3.ZERO:
 		cur = goal                   # a fresh mount starts on the aim
 	aim_from = cur
@@ -164,11 +263,10 @@ func _track(dt: float) -> void:
 	aim_dir = Combat.arc_dir(body_basis, cur)
 
 
-## The parked pose in the body's frame: Vector2(PARK_YAW, PARK_PITCH), each clamped to this barrel's own limits (the
-## swivel's arc, else Combat.pivot_limits).
+## The parked pose in the body's frame: Vector2(PARK_YAW, PARK_PITCH), clamped to this barrel's range (aim_range: the
+## swivel's arc or Combat.pivot_limits, with the hardpoint's).
 func park_pose() -> Vector2:
-	var lim := SwivelBoom.limits(stats) if behaviour != null and behaviour.has_method("shape_record") else Combat.pivot_limits(stats)
-	return Vector2(clampf(PARK_YAW, -lim.x, lim.x), clampf(PARK_PITCH, -lim.y, lim.z))
+	return clamp_aim(Vector2(PARK_YAW, PARK_PITCH))
 
 
 ## One step of a shut-down barrel: ease toward park_pose at PARK_SLEW °/s (from the rest pose if it never tracked).

@@ -5,11 +5,16 @@ extends WeaponBehaviour
 ## charge cancels it and costs stats.cancel_heat (paid through WeaponMount.heat_due); a full shot costs active_heat
 ## (paid by WeaponMount when the cycle starts). The shot is a RailSlug (scripts/combat/rail_slug.gd): a straight 200 m/s
 ## scheduled effect that pierces up to stats.pierce targets losing stats.pierce_loss each. Per-mount state:
-## WeaponMount.charge (OWNER).
+## WeaponMount.charge (OWNER). AMMO: stats.ammo rounds (18; 27 with the ammo bin), one spent when the slug leaves (the
+## charge completing, WeaponMount's fire loop), never on a cancelled charge; at 0 no charge starts (tick) and the rack's
+## UNUSABLE rule deselects the slot until a supply depot's core refills it (WeaponRack.refill_ammo).
 
 
 func tick(m: WeaponMount, held: bool, dt: float) -> void:
 	var need := float(m.stats.get("charge", 0.0))
+	if m.ammo == 0:
+		m.charge = 0.0      # dry (stats.ammo, 18): no charge starts, no glow, no cancel heat (the rack deselects it too)
+		return
 	if not held:
 		if m.charge > 0.0 and m.charge < need:
 			m.heat_due += float(m.stats.get("cancel_heat", 0.0))    # an early release cancels, and still heats

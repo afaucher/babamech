@@ -1113,6 +1113,7 @@ static func _opening(geo: CityGeo, strips: CityGeo, o: Rect2, h: float, slab: fl
 # --- Boundary walls --------------------------------------------------------------------------------------
 
 const WALL_THICK := 6.0
+const GATE_RECESS := 6.0     ## m from the wall plane to the back of a portal's recess (CityDistrict seals it there)
 const HULL_SILL := 8.0       ## solid base of the hull's window wall
 
 
@@ -1145,11 +1146,12 @@ static func walls(geo: CityGeo, plan: CityPlan, lights: CityGeo = null, only_sid
 		var u1 := e.end.x if across else e.end.y
 		var gates: Array = w["gates"]
 		var spans := wall_spans(u0, u1, gates)
+		var holes := _air_holes(plan, side)
 		geo.tag("wall." + str(w["kind"]))
 		if lights != null:
 			lights.tag("farm_light")
 		if w["kind"] == "farm":
-			_farm_wall(geo, lights, across, at, inward, u0, u1, h, gates, farm_look, part, parts)
+			_farm_wall(geo, lights, across, at, inward, u0, u1, h, gates, farm_look, part, parts, holes)
 			if part > 0:
 				continue      # the gates are part 0's
 		elif w["kind"] == "bulkhead":
@@ -1159,9 +1161,10 @@ static func walls(geo: CityGeo, plan: CityPlan, lights: CityGeo = null, only_sid
 			while u < u1:
 				var col := _c("ceil_b") if i % 2 == 0 else _c("ceil_a")
 				for sp: Array in wall_spans(maxf(u, u0), minf(u + pitch, u1), gates):
-					_wface(geo, across, at, sp[0], sp[1], 0.0, h, inward, col)
+					_wface_holed(geo, across, at, sp[0], sp[1], 0.0, h, inward, col, holes)
 				if _in_gate(gates, maxf(u, u0)) < 0:
-					_wpost(geo, across, at, inward, maxf(u, u0), 0.7, h * 0.5, Vector3(1.6, h, 1.4), _c("rib"))
+					for yy: Array in _air_cut(holes, maxf(u, u0) - 0.8, maxf(u, u0) + 0.8, 0.0, h):
+						_wpost(geo, across, at, inward, maxf(u, u0), 0.7, (float(yy[0]) + float(yy[1])) * 0.5, Vector3(1.6, float(yy[1]) - float(yy[0]), 1.4), _c("rib"))
 				u += pitch
 				i += 1
 			for g: Dictionary in gates:
@@ -1197,7 +1200,65 @@ static func walls(geo: CityGeo, plan: CityPlan, lights: CityGeo = null, only_sid
 		for g: Dictionary in gates:
 			if not doors.is_empty() and doors.has("%d:%.2f" % [side, float(g["a"])]):
 				g["leaf"] = false
+				g["frame"] = false      # its bunker frame (MissionProps.GateDoor) replaces the hazard portal
 			_gate(geo, across, at, inward, g, look)
+
+
+# --- Air doors (MissionWorld) ------------------------------------------------------------------------------
+# An air door is an opening high on an end wall (MissionWorld, docs/design/city-ramps-and-stack.md "Air doors"). Plan meta
+# "mission_air" = {side: [{a, b, y0, y1, fa, fb, fy0, fy1}]}, set only by CityStack.setup_mission: the opening a..b along
+# the wall, y0..y1 up (left out of the wall's face and a farm's backing), and its frame's rect fa..fb, fy0..fy1 (posts,
+# fins, racks and light bars stop round it). Absent: nothing changes.
+
+static func _air_holes(plan: CityPlan, side: int) -> Array:
+	var m: Dictionary = plan.get_meta("mission_air", {})
+	return m.get(side, [])
+
+
+## A wall face u0..u1, h0..h1 less the air openings in it (pieces left, right, below and above each).
+static func _wface_holed(geo: CityGeo, across: bool, at: float, u0: float, u1: float, h0: float, h1: float, inward: float, col: Color,
+		holes: Array) -> void:
+	var pieces := [[u0, u1, h0, h1]]
+	for ho: Dictionary in holes:
+		var next := []
+		for p: Array in pieces:
+			var ha := float(ho["a"])
+			var hb := float(ho["b"])
+			if hb <= p[0] or ha >= p[1] or float(ho["y1"]) <= p[2] or float(ho["y0"]) >= p[3]:
+				next.append(p)
+				continue
+			if ha > p[0]:
+				next.append([p[0], ha, p[2], p[3]])
+			if hb < p[1]:
+				next.append([hb, p[1], p[2], p[3]])
+			var m0 := maxf(p[0], ha)
+			var m1 := minf(p[1], hb)
+			if float(ho["y0"]) > p[2]:
+				next.append([m0, m1, p[2], float(ho["y0"])])
+			if float(ho["y1"]) < p[3]:
+				next.append([m0, m1, float(ho["y1"]), p[3]])
+		pieces = next
+	for p: Array in pieces:
+		_wface(geo, across, at, p[0], p[1], p[2], p[3], inward, col)
+
+
+## What is left of a vertical span y0..y1 of something standing across ua..ub after the air doors' frame rects: [[ya, yb]].
+static func _air_cut(holes: Array, ua: float, ub: float, y0: float, y1: float) -> Array:
+	var out := [[y0, y1]]
+	for ho: Dictionary in holes:
+		if ub <= float(ho["fa"]) or ua >= float(ho["fb"]):
+			continue
+		var next := []
+		for r: Array in out:
+			if r[1] <= float(ho["fy0"]) or r[0] >= float(ho["fy1"]):
+				next.append(r)
+				continue
+			if r[0] < float(ho["fy0"]):
+				next.append([r[0], float(ho["fy0"])])
+			if r[1] > float(ho["fy1"]):
+				next.append([float(ho["fy1"]), r[1]])
+		out = next
+	return out
 
 
 # --- Farm wall ---------------------------------------------------------------------------------------------
@@ -1251,7 +1312,7 @@ static func _fin_front(y: float, h: float) -> float:
 
 
 static func _farm_wall(geo: CityGeo, lights: CityGeo, across: bool, at: float, inward: float, u0: float, u1: float, h: float,
-		gates: Array, look: RandomNumberGenerator, part: int = 0, parts: int = 1) -> void:
+		gates: Array, look: RandomNumberGenerator, part: int = 0, parts: int = 1, holes: Array = []) -> void:
 	var r := FARM_RECESS
 	var ux := inward if across else -inward       # local +X of _wframe is +u (1) or -u (-1)
 	var pitch := FARM_PITCH_X if across else FARM_PITCH_S
@@ -1264,7 +1325,7 @@ static func _farm_wall(geo: CityGeo, lights: CityGeo, across: bool, at: float, i
 	# Backing: floor to ceiling, above a gate from its lintel up; a ledge on the lintel; cheeks closing the recess at the
 	# wall's ends and beside each gate (part 0).
 	for sp: Array in spans:
-		_wface(geo, across, at - inward * r, sp[0], sp[1], 0.0, h, inward, back)
+		_wface_holed(geo, across, at - inward * r, sp[0], sp[1], 0.0, h, inward, back, holes)
 		var y_a := 0.0 if is_equal_approx(float(sp[0]), u0) else _gate_top(gates, sp[0])
 		var y_b := 0.0 if is_equal_approx(float(sp[1]), u1) else _gate_top(gates, sp[1])
 		_farm_cheek(geo, across, at, inward, ux, sp[0], 1.0, h if y_a == 0.0 else y_a, back)
@@ -1298,7 +1359,7 @@ static func _farm_wall(geo: CityGeo, lights: CityGeo, across: bool, at: float, i
 			for f: float in FARM_BARS:
 				var y := h * f
 				var z0 := _fin_front(y, h) + FARM_BAR_GAP
-				for sp: Array in _bar_spans(pa, pb, gates, y):
+				for sp: Array in _bar_spans(pa, pb, gates, y, holes):
 					var br := PackedFloat32Array([sp[0], sp[1]]) if across else CityGeo.breaks(sp[0], sp[1])
 					for j in br.size() - 1:
 						_farm_band(lights, across, at, inward, ux, br[j], br[j + 1], y - FARM_BAR_H * 0.5, y + FARM_BAR_H * 0.5,
@@ -1316,12 +1377,20 @@ static func _farm_wall(geo: CityGeo, lights: CityGeo, across: bool, at: float, i
 			continue
 		var y0 := _farm_floor(gates, u - FARM_FIN_W * 0.5, u + FARM_FIN_W * 0.5)
 		var ff := _wframe(geo, across, at, inward, u)
-		_farm_fin(geo, ff, y0, h, fin)
+		var fin_cut := _air_cut(holes, u - FARM_FIN_W * 0.5, u + FARM_FIN_W * 0.5, y0, h)
+		if fin_cut.size() == 1 and is_equal_approx(float(fin_cut[0][1]), h):
+			_farm_fin(geo, ff, float(fin_cut[0][0]), h, fin)
+		else:
+			for yy: Array in fin_cut:       # an air door's frame splits the fin: a stub under it, the rest from over it
+				if is_equal_approx(float(yy[1]), h):
+					_farm_fin(geo, ff, float(yy[0]), h, fin)
+				else:
+					_farm_fin_stub(geo, ff, float(yy[0]), float(yy[1]), h, fin)
 		# A short dark bracket from the fin face to each light bar that runs past it.
 		if lights != null:
 			for f: float in FARM_BARS:
 				var y := h * f
-				if y > y0 + 0.5 and not _bar_spans(u - 0.05, u + 0.05, gates, y).is_empty():
+				if y > y0 + 0.5 and not _bar_spans(u - 0.05, u + 0.05, gates, y, holes).is_empty():
 					var d0 := _fin_front(y, h)
 					geo.box(ff, Vector3(0, y, d0 + FARM_BAR_GAP * 0.5), Vector3(0.3, 0.22, FARM_BAR_GAP + 0.06), _c("metal_dark"),
 							CityGeo.PX | CityGeo.NX | CityGeo.NY)
@@ -1333,7 +1402,12 @@ static func _farm_wall(geo: CityGeo, lights: CityGeo, across: bool, at: float, i
 		if uc - FARM_COL_HALF < u0 + FARM_FIN_W or uc + FARM_COL_HALF > u1 - FARM_FIN_W or uc < wa or uc >= wb:
 			continue
 		var yb := _farm_floor(gates, uc - FARM_COL_HALF, uc + FARM_COL_HALF)
-		_farm_rack(geo, _wframe(geo, across, at, inward, uc), yb if yb > 0.0 else FARM_PLINTH, h - 2.2, yb == 0.0, look)
+		var rb := yb if yb > 0.0 else FARM_PLINTH
+		for yy: Array in _air_cut(holes, uc - FARM_COL_HALF, uc + FARM_COL_HALF, rb, h - 2.2):
+			var ya := float(yy[0])
+			var ye := float(yy[1]) - (0.0 if is_equal_approx(float(yy[1]), h - 2.2) else 0.5)
+			if ye - ya > 3.0:       # an air door's frame splits the rack: one under it, one over it
+				_farm_rack(geo, _wframe(geo, across, at, inward, uc), ya, ye, yb == 0.0 and is_equal_approx(ya, rb), look)
 
 
 ## The top of the gate whose edge is at u (its lintel), 0 if no gate edge is there.
@@ -1345,12 +1419,29 @@ static func _gate_top(gates: Array, u: float) -> float:
 
 
 ## [pa, pb] where a light bar at height y runs: everywhere but across a gate's opening and frame below its lintel.
-static func _bar_spans(pa: float, pb: float, gates: Array, y: float) -> Array:
+static func _bar_spans(pa: float, pb: float, gates: Array, y: float, holes: Array = []) -> Array:
 	var cut := []
 	for g: Dictionary in gates:
 		if y < float(g["h"]) + 1.6:
 			cut.append({"a": float(g["a"]) - 1.2, "b": float(g["b"]) + 1.2})
+	for ho: Dictionary in holes:      # an air door's frame (MissionWorld)
+		if y + FARM_BAR_H > float(ho["fy0"]) and y - FARM_BAR_H < float(ho["fy1"]):
+			cut.append({"a": float(ho["fa"]), "b": float(ho["fb"])})
 	return wall_spans(pa, pb, cut)
+
+
+## The lower piece of a fin an air door's frame cuts (frame f, y0 .. y1, all under the haunch): face, sides, a flat top.
+static func _farm_fin_stub(geo: CityGeo, f: Transform3D, y0: float, y1: float, h: float, col: Color) -> void:
+	if y1 - y0 < 0.05:
+		return
+	var hw := FARM_FIN_W * 0.5
+	var r := FARM_RECESS
+	var da := _fin_front(y0, h)
+	var db := _fin_front(y1, h)
+	geo.quad(f * Vector3(-hw, y0, da), f * Vector3(hw, y0, da), f * Vector3(hw, y1, db), f * Vector3(-hw, y1, db), col)
+	geo.quad(f * Vector3(hw, y0, da), f * Vector3(hw, y0, -r), f * Vector3(hw, y1, -r), f * Vector3(hw, y1, db), col)
+	geo.quad(f * Vector3(-hw, y0, -r), f * Vector3(-hw, y0, da), f * Vector3(-hw, y1, db), f * Vector3(-hw, y1, -r), col)
+	geo.quad(f * Vector3(-hw, y1, db), f * Vector3(hw, y1, db), f * Vector3(hw, y1, -r), f * Vector3(-hw, y1, -r), col)
 
 
 ## A straight band along the wall from ua to ub (one piece: a bay at most), from y0 to y1 up and z0 to z1 out from the
@@ -1511,9 +1602,9 @@ static func _wbox(geo: CityGeo, across: bool, at: float, inward: float, u0: floa
 
 
 ## A gate in the wall, in a frame whose local +Z points into the map: a hazard portal round the opening, and behind it
-## the sealed door leaves (blast_door), a dark recess, the way in or out (portal), or a recess choked with rubble
-## (collapsed).
-static func _gate(geo: CityGeo, across: bool, at: float, inward: float, g: Dictionary, look: RandomNumberGenerator) -> void:
+## the sealed door leaves (blast_door, and collapsed: since the 2026-11-23 playtest a collapsed gate is built as a plain
+## shut blast door, no rubble; its kind in the plan is unchanged), or a dark recess, the way in or out (portal).
+static func _gate(geo: CityGeo, across: bool, at: float, inward: float, g: Dictionary, _look: RandomNumberGenerator) -> void:
 	var ga: float = g["a"]
 	var gb: float = g["b"]
 	var gh: float = g["h"]
@@ -1525,7 +1616,7 @@ static func _gate(geo: CityGeo, across: bool, at: float, inward: float, g: Dicti
 	else:
 		f = geo.frame(at, mid, 0.0, PI * 0.5 if inward > 0.0 else -PI * 0.5)
 	var kind := str(g["kind"])
-	if kind == "blast_door":
+	if kind == "blast_door" or kind == "collapsed":
 		if g.get("leaf", true):      # false: a MissionWorld door node stands here instead
 			geo.box(f, Vector3(0, gh * 0.5, 0.5), Vector3(half * 2.0, gh, 1.0), _c("metal_dark"), CityGeo.NO_BACK)
 			geo.box(f, Vector3(0, gh * 0.5, 1.05), Vector3(0.5, gh, 0.12), _c("metal"), CityGeo.NO_BACK)
@@ -1537,14 +1628,9 @@ static func _gate(geo: CityGeo, across: bool, at: float, inward: float, g: Dicti
 			var gx := ga + 0.6 + (float(k) + 0.25) * (half * 2.0 / float(n))
 			_wrect(geo, across, at + inward * 1.5, inward, 5.0, gx, gx + 0.5, MARK, _c("marking_yellow"), true)
 	else:
-		_recess(geo, f, half + 0.6, gh, 6.0, _c("glass_dark") if kind == "portal" else _c("concrete_dark"))
-	if kind == "collapsed":
-		var count := look.randi_range(8, 12)
-		for i in count:
-			var size := Vector3(look.randf_range(2.5, 6.0), look.randf_range(1.5, 4.0), look.randf_range(2.0, 5.0))
-			var pos := Vector3(look.randf_range(-half + 1.5, half - 1.5), look.randf_range(0.5, gh * 0.7), look.randf_range(-4.0, 1.0))
-			var tilt := Basis.from_euler(Vector3(look.randf_range(-0.5, 0.5), look.randf_range(-PI, PI), look.randf_range(-0.5, 0.5)))
-			geo.box(f * Transform3D(tilt, pos), Vector3.ZERO, size, _c("concrete") if i % 2 == 0 else _c("concrete_dark"))
+		_recess(geo, f, half + 0.6, gh, GATE_RECESS, _c("glass_dark"))
+	if not g.get("frame", true):    # a MissionWorld door draws its own frame
+		return
 	for k: float in [-1.0, 1.0]:
 		geo.box(f, Vector3(k * (half + 0.9), (gh + 1.6) * 0.5, 0.9), Vector3(1.8, gh + 1.6, 1.8), _c("tactile"), CityGeo.NO_BACK)
 	geo.box(f, Vector3(0, gh + 0.8, 0.9), Vector3(half * 2.0 + 3.6, 1.6, 1.8), _c("tactile"), CityGeo.NO_BACK)

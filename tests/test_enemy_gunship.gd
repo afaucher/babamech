@@ -8,6 +8,10 @@ extends TestCase
 ##   4. Co-op EnemySync manifest/puppet round-trip replicates gunship pose, aim, pods break, and destruction cleanly.
 
 const DT := 1.0 / 60.0
+const TEST_TIMEOUT := 400
+const ENGAGED_SEEDS := [4, 1]
+const ENGAGED_WINDOW := 30.0      ## s after first contact the gunship is watched for
+const ENGAGED_MIN_SHARE := 0.7    ## of the window: within its rockets' range AND in line of sight of the mech
 
 
 func setup() -> void:
@@ -15,7 +19,13 @@ func setup() -> void:
 	await _approach_salvo_alternating_pods_and_breakoff()
 	await _hearing_and_puppet_silence()
 	await _coop_enemy_sync_roundtrip()
+	for seed_n: int in ENGAGED_SEEDS:
+		await _engaged_stays_in_range_and_visible(seed_n)
 	finish()
+
+
+func _init() -> void:
+	timeout_sec = float(TEST_TIMEOUT)
 
 
 func _world(physics: bool = false) -> CombatWorld:
@@ -245,3 +255,97 @@ func _coop_enemy_sync_roundtrip() -> void:
 	hsq.queue_free()
 	hw.queue_free()
 	await frames(1)
+
+
+## Behaviour in the real game (TestDrive, plan mode): a hunting wave gunship put 120 m from a mech parked on a deck-0
+## street crossing (kept standing) closes in, and for ENGAGED_WINDOW s after first contact (within CLOSE_ENGAGE_R)
+## stays within its rockets' range and in line of sight of the mech (ray from the mech's eye height to its hull) for at
+## least ENGAGED_MIN_SHARE of the time: a gunship that is shooting can be shot back. Then its pods are shot off: the
+## disarmed gunship circles in reach (never farther than EVADE_RING_MAX + 25 m) instead of fleeing out of sight
+## (seed 4: it used to fly to the deck's far end, 400 m out, and the sweep never ended).
+func _engaged_stays_in_range_and_visible(seed_n: int) -> void:
+	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td.city_mode = TestDrive.MODE_STACK
+	td.seed_value = seed_n
+	td.objectives = true
+	add_child(td)
+	await frames(4)
+	td.drive_override = true
+	td.mech.move_input = Vector2.ZERO
+	var sq: EnemySquad = td.combat.squad
+	var pt: PlayerTarget = td.combat.player_target
+	var plan: CityPlan = sq.deck_plan(0)
+	var nodes: Array = plan.walk_graph()["nodes"]
+	var tag := "seed %d" % seed_n
+	# The crossing nearest the deck centre, the gunship 120 m along the deck from it (inside the keep-in rect).
+	var c := plan.extent.get_center()
+	var mn: Vector2 = nodes[0]
+	for n: Vector2 in nodes:
+		if n.distance_to(c) < mn.distance_to(c):
+			mn = n
+	var mp := td.stack.from_deck_arc(0, mn.x, mn.y, 0.5)
+	td.mech.global_position = mp
+	td.mech.velocity = Vector3.ZERO
+	pt.global_position = mp
+	await frames(2)
+	var g := EnemySpawner.make_enemy("gunship") as EnemyGunship
+	g.configure("gunship", "test_gs_%d" % seed_n, td.combat.world, sq, sq.deck_ring(0), seed_n)
+	g.spawn_deck = 0
+	g.wave = "test_engaged"
+	var ga := Vector2(mn.x, mn.y + (120.0 if mn.y < c.y + 1.0 else -120.0))
+	var gp := sq.deck_ring(0).arc_to_world(ga.x, ga.y, 14.0)
+	g.up = sq.deck_ring(0).up_at(gp)
+	g.transform = Transform3D(Basis(Vector3.RIGHT, g.up, Vector3.RIGHT.cross(g.up)).orthonormalized(), gp)
+	sq.add_enemy(g)
+	await frames(1)
+	g.begin_hunt_pursuit(pt, g._target_aim_center(pt))
+	var w_range := float(EnemyCatalog.weapon(str(EnemyCatalog.unit("gunship")["primary_weapon"])).get("range", 88.0))
+	var space := td.mech.get_world_3d().direct_space_state
+	var q := PhysicsRayQueryParameters3D.new()
+	q.exclude = [td.mech.get_rid()]
+	var t := 0.0
+	var contact := -1.0
+	var samples := 0
+	var good := 0
+	var max_d := 0.0
+	var disarmed_at := -1.0
+	var max_disarmed := 0.0
+	while t < 75.0:
+		await get_tree().physics_frame
+		t += 1.0 / float(Engine.physics_ticks_per_second)
+		pt.repair_all()
+		if not is_instance_valid(g) or g.destroyed():
+			break
+		var d := g._world_pos().distance_to(mp)
+		if contact < 0.0:
+			if d <= EnemyGunship.CLOSE_ENGAGE_R:
+				contact = t
+			continue
+		if t - contact <= ENGAGED_WINDOW:
+			samples += 1
+			max_d = maxf(max_d, d)
+			q.from = mp + g.up * 6.0
+			q.to = g._world_pos()
+			var hit := space.intersect_ray(q)
+			var vis := hit.is_empty() or q.from.distance_to(hit["position"] as Vector3) > q.from.distance_to(q.to) - 3.0
+			if vis and d <= w_range:
+				good += 1
+			continue
+		if disarmed_at < 0.0:
+			g.apply_damage(1.0e4, "pods", "test")
+			disarmed_at = t
+			continue
+		if t - disarmed_at > 3.0:
+			max_disarmed = maxf(max_disarmed, d)
+		if t - disarmed_at > 25.0:
+			break
+	var share := float(good) / maxf(float(samples), 1.0)
+	print("[Test] engaged gunship %s: contact at %.1f s, in range + visible %.0f %% of %.0f s (max %.1f m), disarmed max %.1f m" % [
+		tag, contact, share * 100.0, ENGAGED_WINDOW, max_d, max_disarmed])
+	check(contact >= 0.0, tag + ": the gunship makes contact (within %.0f m)" % EnemyGunship.CLOSE_ENGAGE_R)
+	check(share >= ENGAGED_MIN_SHARE, tag + ": in range and visible to its target %.0f %% of the window (>= %.0f %%)" % [
+		share * 100.0, ENGAGED_MIN_SHARE * 100.0])
+	check(disarmed_at > 0.0 and max_disarmed <= EnemyGunship.EVADE_RING_MAX + 25.0,
+		tag + ": disarmed, it circles in reach (max %.1f m)" % max_disarmed)
+	td.queue_free()
+	await frames(2)

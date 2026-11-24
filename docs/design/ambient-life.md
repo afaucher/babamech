@@ -408,8 +408,22 @@ traffic checksums, same ids, no viewer culling unless a viewer is registered).
   stands to the stop it was heading for, dwells there and rejoins its timetable at that departure, shifted (episodes in
   `LifeTram`). Not wreckable, not pushable; sweeps / blasts / pushers ignore it. `vehicle_event("tram_bell", pos)` on
   leaving a stop or restarting. Collision: one `AnimatableBody3D` per car (`sync_to_physics` off, layer 1, a 3 x 3.2 x 9
-  box), moved to the pose every frame; a car wholly beyond an end wall is hidden and its shape disabled. Queries:
+  box), moved to the pose every frame; a car wholly beyond an end wall is hidden. Queries:
   `tram_state(k)`, unit `tram_car_pose(i)`.
+  **Tram collision and crushing (2026-11-23, playtest seed 403112: the cars shoved the mech out through the portal, then,
+  once the recess was sealed, pinched it against the back plate).** `LifeTramCars.settle()` after every pose: (1) a car
+  is solid only while all of it is at least `LifeTram.END_CLEAR` = 5 m inside both end walls (`car_solid`; a mech is
+  4.4 m across, so it can be shoved at most to 0.6 m short of the wall plane, never into a portal's recess nor against a
+  solid end wall; the end car parked 3 m from a solid end wall is therefore not solid during its turn); (2) a car
+  switching on stays off while a character body overlaps it (a returning car passes through a mech in or near the
+  recess, never launches it); (3) pinch: a moving solid car pressing a body ahead of it that has something solid within
+  0.5 m ahead (above 1 m: curbs and steps do not count), or that does not make way (< 30 % of the car's advance over
+  0.2 s), or a car entering the END_CLEAR zone while pressing one, switches off and passes through it: a **crush**,
+  `LifeTram.CRUSH_DAMAGE` = 60 HP to each leg (like a 40 m/s fall), once per body per 8 s (one train pass; every car
+  touching it then passes through). Damage only on the machine whose mech it is (not a puppet), through the
+  `PlayerTarget` (group `player_target`) whose `mech` is the body, `apply_damage(.., "leg_l"/"leg_r", "crush")`; signal
+  `LifeTramCars.crushed(body, amount, applied)`. Enemies are never damaged by it. Timing, state and snapshot unchanged
+  (collision is local presentation of the same pose). Test: `tests/test_tram_portal.gd`.
 - **Lab.** Option `site` (alone / section / stack), param `deck`, cameras `station`, `tram` (close), `checkpoint`
   (the clock is moved on to a dwell / a pod at the checkpoint); in section / stack a viewer node stands on the focus.
   `--life site=stack,seed=4,camera=station`.

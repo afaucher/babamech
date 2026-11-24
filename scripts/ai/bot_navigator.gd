@@ -54,6 +54,14 @@ func setup(p: CityPlan, r: RingFrame, rng: RandomNumberGenerator) -> void:
 		_build_explore_route()
 
 
+## A hop-only chassis (MechController.thrust_ceiling > 0, the Bulwark): only the roofs it can hop onto (roof_h <= h)
+## stay jumpable; a roof it cannot reach is never chosen as a vantage or perch.
+func drop_roofs_above(h: float) -> void:
+	for i in range(_roofs.size() - 1, -1, -1):
+		if float(_roofs[i]["roof_h"]) > h:
+			_roofs.remove_at(i)
+
+
 ## Register jumpable rooftops for flat arenas (where CityPlan is null).
 ## Each entry: {"center": Vector3 (on top surface), "size": Vector2 (x, z), "roof_h": float}.
 func set_arena_roofs(roofs: Array[Dictionary]) -> void:

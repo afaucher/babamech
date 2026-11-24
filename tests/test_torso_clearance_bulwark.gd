@@ -3,22 +3,26 @@ extends TestCase
 ## Strider). Pure geometry, no clock. In every pose below, no vertex (or face centre) of a thigh, knee drum or shin (the
 ## knee pad included) gets inside the barrel skin, the side pads, the back plinths or the pelvis, keeping SKIN_MARGIN off
 ## (thigh points inside the hip ball excepted: nested by design), and no shin point within SKIN_MARGIN of the hip ball;
+## (the body: the slung hull's primary masses, BulwarkMeshes.hull_shell(): upper hull, keel, the two hip pods);
 ## no shin point gets within SKIN_MARGIN of its knee pad (on the upright knee cap);
 ## and no thigh vertex outside the hip ball gets into its own socket cup (CUP_MARGIN), including across the thigh's whole
 ## fore-aft swing. Poses (legs solved with LegIK as MechRig does, forward knees):
 ##   standing; a walk cycle (12 phases, stride WALK_STRIDE, foot lift WALK_LIFT); the same cycle with the hip twist at
-##   +-90 deg (strafing) and +-45 deg; step-up (one foot on a ledge at the rig's max step, ahead); a landing dip; the heat
+##   the chassis' twist_max and half of it, either way (ChassisParts "twist_max": 0 for the Bulwark, whose hips hang under
+##   pods fixed to the hull, so it strafes by stepping sideways instead: a sideways walk cycle each way at twist 0);
+##   step-up (one foot on a ledge at the rig's max step, ahead); a landing dip; the heat
 ##   shutdown slump, settled and at its deepest overshoot (MechRig's sag shape scaled to the Bulwark's hip height: SAG).
 ## Prints the deepest value per pose (negative = clear by that much).
 
 const SKIN_MARGIN := 0.02     ## torso units (x1.2 in model units)
 const CUP_MARGIN := 0.01      ## socket units
-const WALK_STRIDE := 0.6      ## model units, front foot to back foot
-const WALK_LIFT := 0.2        ## model units, the swing foot's top
-## MechRig's shutdown slump for the Bulwark: its depth scaled by hip height from the Strider's 0.42 at 2.2 (MechRig's
-## sag_depth is one number for every chassis today; per-chassis rig tuning is phase 2), pitch and roll as MechRig.
-const SAG := {"depth": 0.19, "pitch": 0.17, "roll": 0.035}
-const LAND_DIP := 0.16        ## MechRig.absorb 0.35 scaled the same way
+const WALK_STRIDE := 1.2      ## model units, front foot to back foot (2.4 m: the long legs take long strides)
+const WALK_LIFT := 0.35       ## model units, the swing foot's top
+## MechRig's shutdown slump for the Bulwark: MechRig's own numbers (sag_depth 0.42 is one number for every chassis today;
+## per-chassis rig tuning is phase 2). The Bulwark's hip (2.40) is now near the Strider's (2.2), so the rig's 0.42 is what
+## it gets (the short-legged build scaled it down to 0.19). Pitch and roll as MechRig.
+const SAG := {"depth": 0.42, "pitch": 0.17, "roll": 0.035}
+const LAND_DIP := 0.38        ## MechRig.absorb 0.35, scaled up by the hip height (2.40 / 2.2): a deeper dip than the rig's
 
 const HC := preload("res://tests/test_hardpoint_contact.gd")
 
@@ -29,13 +33,12 @@ var _barrel_box := AABB()
 var _pads_box := AABB()
 var _pelvis_box := AABB()
 var _worst := {}
+var verbose := true            ## print every pose's numbers (test_rig_bulwark turns it off: it checks hundreds of frames)
 
 
 func setup() -> void:
 	timeout_sec = 240.0
-	var k := MeshKit.new()
-	BulwarkMeshes._skin(k, BulwarkMeshes._rings(), MechMeshes.WHITE)
-	_barrel = HC.tris(k.commit(MechMeshes.materials()), Transform3D.IDENTITY)
+	_barrel = HC.tris(BulwarkMeshes.hull_shell(), Transform3D.IDENTITY)
 	_pads = HC.tris(BulwarkMeshes.hardpoint_pads(), Transform3D.IDENTITY)
 	_pelvis = HC.tris(BulwarkMeshes.build("bulwark_pelvis"), Transform3D.IDENTITY)   # in the Pelvis node's own frame
 	_barrel_box = HC._bounds(_barrel).grow(SKIN_MARGIN + 0.01)
@@ -50,11 +53,20 @@ func setup() -> void:
 	var lift := m.max_foot_lift()
 	print("  hip %.3f  max foot lift %.3f  max step %.3f (model units)" % [m.hip_height(), lift, lift * 0.9])
 	check(lift >= WALK_LIFT, "the legs can lift a foot %.2f (max foot lift %.3f)" % [WALK_LIFT, lift])
-	for yaw: float in [0.0, PI * 0.25, -PI * 0.25, PI * 0.5, -PI * 0.5]:
+	var tmax := float(m.parts().get("twist_max", PI * 0.5))
+	var yaws: Array = [0.0]
+	if tmax > 0.0:
+		yaws.append_array([tmax * 0.5, -tmax * 0.5, tmax, -tmax])
+	for yaw: float in yaws:
 		for i in 12:
 			var ph := float(i) / 12.0
 			m.set_external_pose(_walk(m, ph, yaw), Vector3(0, -0.03 * absf(sin(ph * TAU)), 0), Vector3(-0.05, 0, 0.03 * sin(ph * TAU)), yaw)
 			_check(m, "walk twist %+.0f ph %.2f" % [rad_to_deg(yaw), ph], true)
+	for dir: float in [-1.0, 1.0]:   # sideways walk (no twist): the feet step along X
+		for i in 12:
+			var ph := float(i) / 12.0
+			m.set_external_pose(_walk(m, ph, 0.0, Vector3(dir, 0, 0)), Vector3(0, -0.03 * absf(sin(ph * TAU)), 0), Vector3(0, 0, 0.03 * sin(ph * TAU)), 0.0)
+			_check(m, "sidestep %+.0f ph %.2f" % [dir, ph], true)
 	# Step-up: the right foot on a ledge at the max step, ahead; the left on the ground behind.
 	var h := lift * 0.9
 	m.set_external_pose([_leg(m, -1.0, Vector3(m.hip_local(-1.0).x, 0.0, 0.15), Vector3.ZERO, Vector3.ZERO, 0.0),
@@ -89,7 +101,7 @@ func setup() -> void:
 
 ## The walk cycle at phase `ph` (0..1) with the legs twisted by `yaw`: each foot plants for half the cycle (moving back
 ## under the body) and swings forward for the other half, lifted WALK_LIFT at its top; the right foot half a cycle on.
-static func _walk(m: MechModel, ph: float, yaw: float) -> Array:
+static func _walk(m: MechModel, ph: float, yaw: float, along: Vector3 = Vector3.BACK) -> Array:
 	var legs: Array = []
 	var tw := MechModel.twist_basis(yaw)
 	var off := Vector3(0, -0.03 * absf(sin(ph * TAU)), 0)
@@ -104,7 +116,7 @@ static func _walk(m: MechModel, ph: float, yaw: float) -> Array:
 			var q := (p - 0.5) / 0.5
 			z = lerpf(WALK_STRIDE * 0.5, -WALK_STRIDE * 0.5, q)
 			y = WALK_LIFT * sin(PI * q)
-		var foot := tw * Vector3(m.hip_local(side).x, 0.0, z) + Vector3(0, y, 0)
+		var foot := tw * (Vector3(m.hip_local(side).x, 0.0, 0.0) + along * z) + Vector3(0, y, 0)
 		legs.append(_leg(m, side, foot, off, rot, yaw))
 	return legs
 
@@ -157,7 +169,8 @@ func _check(m: MechModel, tag: String, body: bool) -> void:
 			_worst[key] = maxf(float(_worst.get(key, -INF)), d)
 			if not check(d < -SKIN_MARGIN, "%s: thighs, knees and shins clear the %s (deepest %+.3f)" % [tag, key, d]):
 				print("    deepest in %s: %s" % [key, where.get(key, "")])
-		print("  %-26s barrel %+.3f  pads %+.3f  pelvis %+.3f  hip ball %+.3f" % [tag, worst["barrel"], worst["pads"], worst["pelvis"],
+		if verbose:
+			print("  %-26s barrel %+.3f  pads %+.3f  pelvis %+.3f  hip ball %+.3f" % [tag, worst["barrel"], worst["pads"], worst["pelvis"],
 			worst["hip ball"]])
 	for side: String in ["l", "r"]:   # the shin against the knee pad on its knee cap (the cap stays upright)
 		var kn := m.find_child("knee_" + side, true, false) as Node3D

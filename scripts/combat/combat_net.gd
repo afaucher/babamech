@@ -41,6 +41,12 @@ extends Node
 ## every puppet) on the shared clock; a launch older than the drone's life is dropped, a late one fast-forwards. Nothing
 ## else crosses: each machine heals only its own mech (RepairDrone), so no heal message exists.
 ##
+## HOST BOTS (docs/design/hangar-bots.md): a bot's rack runs on the host (shooter "player<bot id>", bot id < 0, peer 1).
+## add_bot(id) makes this node send its records as "combat.fire" {"r": [...], "b": id} and its drone launches as
+## "combat.drone" {t, hp, b} from the host. A receiver accepts "b" only from the host and only for a bot in
+## Session.bots, and rebuilds shooter "player<b>" with peer 1 (the machine), so CombatWorld.decides works as for any
+## host shot: a bot's hit on a mech is decided by its victim, on a host-owned target by the host.
+##
 ## ENEMY FIRE (W4) is NOT carried here: the host's EnemySync (scripts/game/enemy_sync.gd) sends every enemy fire record in
 ## its ordered "enemy.ev" stream (host only, sender-checked there) and each client fires it through CombatWorld.fire with
 ## peer 1. This node guards it on clients through CombatWorld.fire_gate (_gate): a duplicate enemy record (same shot key)
@@ -77,7 +83,7 @@ var local_peer := 0
 var local_shooter := ""
 ## Counters for tests and diagnostics.
 var stats := {"sent_events": 0, "sent_records": 0, "recv_records": 0, "dup": 0, "refused": 0, "relayed": 0,
-	"hits_sent": 0, "hits_applied": 0, "hits_dup": 0, "hits_missing": 0, "charges_sent": 0,
+	"hits_sent": 0, "hits_applied": 0, "hits_dup": 0, "hits_missing": 0, "charges_sent": 0, "charges_recv": 0,
 	"drones_sent": 0, "drones_recv": 0, "drones_dup": 0, "drones_expired": 0,
 	"enemy_dup": 0, "enemy_local_refused": 0}
 
@@ -93,6 +99,9 @@ var _fired_slots: Dictionary = {} ## slot index -> true: fired during this step
 var _muzzled: Dictionary = {}     ## puppet peer -> true once its muzzles are registered
 var _hp_nodes: Dictionary = {}    ## "shooter/hardpoint" -> Node3D
 var _anchored: Dictionary = {}    ## puppet peer -> true once its CombatWorld anchor is registered
+var _bots: Dictionary = {}        ## host: "player<bot id>" -> bot id (add_bot): this machine's bots' records go out too
+var _bot_queues: Dictionary = {}  ## host: bot id -> encoded records waiting for the next flush
+var _bot_charges: Dictionary = {} ## host: bot id -> {rack, prev: Array[float], fired: {slot index: true}} (charge events)
 
 
 func net_fields() -> Dictionary:
@@ -100,7 +109,8 @@ func net_fields() -> Dictionary:
 		"stats": Net.LOCAL, "_queue": Net.PRIVATE, "_next_flush": Net.PRIVATE, "_seen": Net.LOCAL, "_seen_order": Net.LOCAL,
 		"_hits_seen": Net.LOCAL, "_hits_order": Net.LOCAL, "_charges": Net.LOCAL, "_prev_charge": Net.PRIVATE,
 		"_fired_slots": Net.PRIVATE, "_muzzled": Net.LOCAL, "_hp_nodes": Net.LOCAL,
-		"_anchored": Net.LOCAL}
+		"_anchored": Net.LOCAL, "_bots": Net.LOCAL, "_bot_queues": Net.PRIVATE,
+		"_bot_charges": Net.PRIVATE}
 
 
 ## The shared clock for CombatWorld.set_clock: Session.host_time() in a session, -1 when there is none.
@@ -137,6 +147,18 @@ func _exit_tree() -> void:
 func _online() -> bool:
 	var s := Net.session()
 	return s != null and s.online()
+
+
+## Host: bot `id` (pilot id < 0) fires on this machine: send its fire records and drone launches to the crew, and (with
+## its rack `r`) its charge starts / cancels as "combat.charge" {hp, t, on, b}, like the local rack's.
+func add_bot(id: int, r: WeaponRack = null) -> void:
+	if id >= 0:
+		return
+	_bots["player%d" % id] = id
+	if r != null:
+		var fired := {}
+		_bot_charges[id] = {"rack": r, "prev": [] as Array[float], "fired": fired}
+		r.fired.connect(func(slot: int) -> void: fired[slot - 1] = true)
 
 
 # --- Records on the wire ---------------------------------------------------------------------------------
@@ -197,21 +219,35 @@ static func decode_hit(d: Dictionary) -> Hit:
 # --- Out ---------------------------------------------------------------------------------------------------
 
 func _on_fired(rec: Dictionary) -> void:
-	if int(rec.get("peer", 0)) != local_peer or str(rec.get("shooter", "")) != local_shooter or not _online():
+	if int(rec.get("peer", 0)) != local_peer or not _online():
+		return
+	var sh := str(rec.get("shooter", ""))
+	if sh != local_shooter and not _bots.has(sh):
 		return
 	if not MechCatalog.WEAPONS.has(str(rec.get("weapon", ""))):
 		return
 	_mark_seen(Combat.shot_key(rec))
-	_queue.append(encode(rec))
+	if sh == local_shooter:
+		_queue.append(encode(rec))
+	else:
+		var b := int(_bots[sh])
+		if not _bot_queues.has(b):
+			_bot_queues[b] = []
+		(_bot_queues[b] as Array).append(encode(rec))
 
 
 ## This machine's own drone launch: one reliable event (records already queued go first).
 func _on_drone_launched(rec: Dictionary, _d: RepairDrone) -> void:
-	if int(rec.get("peer", 0)) != local_peer or str(rec.get("shooter", "")) != local_shooter or not _online():
+	var sh := str(rec.get("shooter", ""))
+	if int(rec.get("peer", 0)) != local_peer or (sh != local_shooter and not _bots.has(sh)) or not _online():
 		return
-	_mark_seen(_drone_key(local_peer, float(rec.get("t", 0.0))))
+	var who := local_peer if sh == local_shooter else int(_bots[sh])
+	_mark_seen(_drone_key(who, float(rec.get("t", 0.0))))
 	flush(true)
-	Net.session().send_event(0, DRONE, {"t": float(rec.get("t", world.now)), "hp": str(rec.get("hardpoint", "back"))})
+	var d := {"t": float(rec.get("t", world.now)), "hp": str(rec.get("hardpoint", "back"))}
+	if who != local_peer:
+		d["b"] = who
+	Net.session().send_event(0, DRONE, d)
 	stats["drones_sent"] = int(stats["drones_sent"]) + 1
 
 
@@ -250,19 +286,27 @@ func _on_remote_hit(target_id: String, h: Hit) -> void:
 
 ## Send what is queued now (at most every FLUSH_INTERVAL unless `force`).
 func flush(force: bool = false) -> void:
-	if _queue.is_empty():
+	if _queue.is_empty() and _bot_queues.is_empty():
 		return
 	var s := Net.session()
 	if s == null or not s.online():
 		_queue.clear()
+		_bot_queues.clear()
 		return
 	var now := world.now
 	if not force and now < _next_flush:
 		return
-	s.send_event(0, FIRE, {"r": _queue})
-	stats["sent_events"] = int(stats["sent_events"]) + 1
-	stats["sent_records"] = int(stats["sent_records"]) + _queue.size()
+	if not _queue.is_empty():
+		s.send_event(0, FIRE, {"r": _queue})
+		stats["sent_events"] = int(stats["sent_events"]) + 1
+		stats["sent_records"] = int(stats["sent_records"]) + _queue.size()
+	for b: int in _bot_queues:
+		var q: Array = _bot_queues[b]
+		s.send_event(0, FIRE, {"r": q, "b": b})
+		stats["sent_events"] = int(stats["sent_events"]) + 1
+		stats["sent_records"] = int(stats["sent_records"]) + q.size()
 	_queue = []
+	_bot_queues.clear()
 	_next_flush = now + FLUSH_INTERVAL
 
 
@@ -335,27 +379,41 @@ func _puppet_muzzle(model: MechModel, key: String, hp: String, ahead: float) -> 
 
 ## After the world advanced: announce charges, send the queued records, draw remote charge glows.
 func post_step(dt: float) -> void:
-	_watch_charges()
+	_watch_charges(rack, _prev_charge, _fired_slots, 0)
+	for b: int in _bot_charges:
+		var c: Dictionary = _bot_charges[b]
+		var br: Variant = c["rack"]
+		if br != null and is_instance_valid(br):
+			_watch_charges(br as WeaponRack, c["prev"], c["fired"], b)
+		(c["fired"] as Dictionary).clear()
 	flush()
 	_fired_slots.clear()
 	_draw_charges(dt)
 
 
-func _watch_charges() -> void:
-	if rack == null:
+## A rack's charges this step: a start or a cancel (released without firing) of a long charge goes out. `bot` != 0:
+## a host bot's rack (the event carries "b").
+func _watch_charges(r: WeaponRack, prev_charge: Array[float], fired: Dictionary, bot: int) -> void:
+	if r == null:
 		return
-	_prev_charge.resize(rack.slot_count())
-	for i in rack.slot_count():
-		var m: WeaponMount = rack.mounts[i]
+	prev_charge.resize(r.slot_count())
+	for i in r.slot_count():
+		var m: WeaponMount = r.mounts[i]
 		var cur := m.charge if m != null else 0.0
-		var prev := _prev_charge[i]
-		_prev_charge[i] = cur
+		var prev := prev_charge[i]
+		prev_charge[i] = cur
 		if m == null or float(m.stats.get("charge", 0.0)) < CHARGE_EVENT_MIN:
 			continue
+		var d := {}
 		if prev <= 0.0 and cur > 0.0:
-			_send_charge({"hp": rack.hardpoints[i], "t": world.now - cur, "on": true})
-		elif prev > 0.0 and cur <= 0.0 and not _fired_slots.has(i):
-			_send_charge({"hp": rack.hardpoints[i], "on": false})
+			d = {"hp": r.hardpoints[i], "t": world.now - cur, "on": true}
+		elif prev > 0.0 and cur <= 0.0 and not fired.has(i):
+			d = {"hp": r.hardpoints[i], "on": false}
+		if d.is_empty():
+			continue
+		if bot != 0:
+			d["b"] = bot
+		_send_charge(d)
 
 
 func _send_charge(d: Dictionary) -> void:
@@ -416,6 +474,14 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 		origin = int(data.get("o", 1))
 	if origin <= 0 or origin == local_peer or not s.roster.has(origin):
 		return
+	# A host bot's records / drone ("b"): only from the host, only for a seated bot (never relayed: the host sent them
+	# to everyone).
+	var bot := 0
+	if data.has("b"):
+		bot = int(data.get("b", 0))
+		if origin != 1 or s.hosting or not s.is_bot(bot):
+			stats["refused"] = int(stats["refused"]) + 1
+			return
 	if s.hosting and from != 1:
 		var fwd := data.duplicate()
 		fwd["o"] = from
@@ -432,11 +498,14 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 			n += 1
 			if n > MAX_RECORDS:
 				break
-			_apply_record(decode(a, origin))
+			var rec := decode(a, origin)
+			if bot != 0 and not rec.is_empty():
+				rec["shooter"] = "player%d" % bot
+			_apply_record(rec)
 	elif kind == DRONE:
-		_remote_drone(origin, data)
+		_remote_drone(bot if bot != 0 else origin, data)
 	else:
-		_remote_charge(origin, data)
+		_remote_charge(bot if bot != 0 else origin, data)
 
 
 func _apply_record(rec: Dictionary) -> void:
@@ -456,6 +525,7 @@ func _apply_record(rec: Dictionary) -> void:
 
 ## Another crew member's drone launch: validated, duplicates dropped, expired ones ignored, then launched here from
 ## that member's puppet on the shared clock (CombatWorld.launch_drone fast-forwards a late one).
+## `origin`: the launcher's pilot id (a bot's is negative; its record's peer is the host's, 1).
 func _remote_drone(origin: int, data: Dictionary) -> void:
 	var tv: Variant = data.get("t")
 	if not (tv is float or tv is int) or not is_finite(float(tv)) or float(tv) > world.now + DRONE_AHEAD:
@@ -472,13 +542,14 @@ func _remote_drone(origin: int, data: Dictionary) -> void:
 		return
 	if not _anchored.has(origin):
 		_register_anchor(origin)
-	var rec := {"shooter": "player%d" % origin, "peer": origin, "hardpoint": str(data.get("hp", "back")).left(24),
+	var rec := {"shooter": "player%d" % origin, "peer": maxi(origin, 1), "hardpoint": str(data.get("hp", "back")).left(24),
 		"weapon": "repair_drone", "t": t}
 	var d := world.launch_drone(rec)
 	stats["drones_recv"] = int(stats["drones_recv"]) + 1
 	remote_drone.emit(rec, d)
 
 
+## `origin`: the charging pilot's id (a host bot's is negative).
 func _remote_charge(origin: int, data: Dictionary) -> void:
 	var hp := str(data.get("hp", "")).left(24)
 	var k := "player%d/%s" % [origin, hp]
@@ -495,6 +566,7 @@ func _remote_charge(origin: int, data: Dictionary) -> void:
 	var need := float(st.get("charge", 0.0))
 	if need <= 0.0:
 		return
+	stats["charges_recv"] = int(stats["charges_recv"]) + 1
 	var g := ChargeGlow.new()
 	add_child(g)
 	_charges[k] = {"t": float(data.get("t", world.now)), "need": need, "steps": int(st.get("charge_steps", 0)), "glow": g}

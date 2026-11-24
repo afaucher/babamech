@@ -1,7 +1,7 @@
 # Chassis rules: body, joints, intersection, detail
 
 Draft for review (2026-11-23). The rules every chassis is built to: the Strider as it stands, and the two planned
-variants, **Bulwark** (squat heavy biped, barrel torso, forward knees, 2 side guns + 2 back mounts) and **Wasp** (four ducted
+variants, **Bulwark** (heavy biped on long forward-kneed legs, slung tank hull between two hip pods, forward knees, 2 side guns + 2 back mounts) and **Wasp** (four ducted
 fans, pod hull, 3 light mounts). Rules marked **(have)** are already enforced by a test on the Strider; **(new)** are
 proposed here and need a test before the first new chassis mesh is accepted. Concepts: `docs/design/chassis-concepts/`.
 
@@ -45,7 +45,7 @@ and checked by tests, then compared with the concept by eye.
 2. **The pivot stays on the parent** under every pose: worst error under 0.001 while leaning, swaying and twisting
    **(have, `test_ring_step`)**.
 3. **Joint size is proportional to load**: ball radius at least 0.55 x the thicker of the two segments it joins
-   **(new)**. The Bulwark's hips and knees are visibly bigger than the Strider's; a thin pin under a heavy barrel reads
+   **(new)**. The Bulwark's hips and knees are visibly bigger than the Strider's; a thin pin under a heavy hull reads
    as broken.
 4. **Range of motion is declared and the geometry clears it**: every joint lists its min / max angle, and the child
    clears the parent and the socket across the whole range, including the worst gameplay poses (full stride, crouch,
@@ -74,12 +74,18 @@ and checked by tests, then compared with the concept by eye.
    attach face across, with a bolt ring. A gun never meets the hull edge-on or through a strut thinner than its barrel.
 5. **One mount kind accepts one family of attach faces** (`side`, `shoulder`, `back`; new: `stub` and `chin` for the
    Wasp). A new kind lists which existing weapons it takes and each of those is tested on it.
-   - **Bulwark side guns** (user, 2026-11-23: "shoulder/arm guns, like the existing mech"): no articulated arms. Two
-     mounts built like the Strider's side mounts (flat hull pad, round mount, weapon pivots on it), set at shoulder
-     height on the barrel's widest point. They take every side and shoulder weapon, including the railgun, so the mount
-     kind is `side` with the shoulder weapons' attach faces tested on it too.
-   - **Bulwark `back` x2**: two saddles side by side, each the Strider's back saddle; items may not overlap each other
-     or rise into the pilot's head (check every pair).
+   - **Bulwark side guns** (user, 2026-11-23: "shoulder/arm guns, like the existing mech"): no articulated arms. Since
+     the slung hull (B1, polish pass): a flat pad on each hip pod's front face, a bolted flange on it and a short wide yoke
+     straight forward to the block the weapon pivots on, so the gun sits beside the wedge nose with its pivot just under
+     the deck line, on the pod's upper front (the yoke is long enough that every weapon pitched fully up or down keeps its
+     tail off the pad; any lower and, since the long legs of 2026-11-24, a gun aimed fully down and in meets its own knee
+     pad in the heat shutdown slump). They take every side and
+     shoulder weapon, including the railgun, so the mount kind is `side` with the shoulder weapons' attach faces tested on
+     it too. Every weapon keeps its full catalog arc (30 deg either way, -50 / +45 pitch; the swivel -40 / +60) except
+     the swivel's inward yaw, cut to `yaw_in_max` 55 deg: past it its boom meets the nose.
+   - **Bulwark `back` x2**: two saddles on plinths on the rear wings behind the pods, each the Strider's back saddle; items may
+     not overlap each other or rise into the pilot's head (check every pair). Outboard, so the mortar does not stand
+     right behind the head in the chase view.
    - **Wasp `stub`**: a short wing root from a hull pad, between the front and rear fan arms, ending in a side-kind
      face. **Wasp `chin`**: a turntable under the nose, weapon hangs below; it must clear the ground when landed.
 6. **Pivot clearance** **(have)**: a weapon swept through its full aim range keeps at least 0.005 off pads and hull, and
@@ -99,8 +105,9 @@ and checked by tests, then compared with the concept by eye.
    past it by no more than 0.5 m in the game so barrels do not pass through walls **(new)**.
 5. **Pilot head**: the hatch ring clears every catalog head (the neck-seal test), and no weapon, back item or fan
    passes through the head's bounding sphere in any aim pose **(have for the seal; new for the sweep)**.
-6. **Chassis-specific risks to test first**: Bulwark: side guns against the barrel's widest point and against the
-   thighs when aiming down; the two back boxes against each other. Wasp: stub guns against the fan ducts; the chin gun
+6. **Chassis-specific risks to test first**: Bulwark: side guns against the nose and the legs (standing and slumped) when
+   aiming in, up and down, the thighs against the hip pods' undersides when stepping up, every pilot head against the
+   coaming; the two back boxes against each other. Wasp: stub guns against the fan ducts; the chin gun
    against the ground and the front fans' downwash cone; tilting ducts against the hull.
 
 ## 6. Detail
@@ -160,16 +167,62 @@ and checked by tests, then compared with the concept by eye.
 6. `test_net_contract`, and a two-machine run with one of each chassis.
 
 ## Picked so far (user, 2026-11-23)
-- Bulwark: barrel torso (`pick_bulwark_torso_barrel.png`) on **sumo legs** (`pick_bulwark_legs_sumo.png`): very thick short
-  thighs set wide, knees bent deeply forward with large square orange knee pads, short thick shins, heavy boot feet with
-  a split toe clamp in front and a heel spur behind.
-- Bulwark weapons: two shoulder-height side guns mounted like the Strider's, two back mounts (`pick_bulwark_concept.png`).
+- Bulwark: **slung hull, layout B1** (`pick_bulwark_layout_slung_hull.png`; supersedes the barrel torso,
+  `pick_bulwark_torso_barrel.png`, which squashed the Strider's layout into a short egg): a low, deep armoured hull slung
+  between the legs (narrow chamfered wedge nose, sloped glacis with a grille, flat top deck, wings behind the pods, engine
+  block at the rear, a keel between the thighs hanging below the hip line with skids, ribs and a belly hatch), and over
+  each hip a big round armoured pod standing out of the flank like a pauldron (white drum, orange cap, dark hub), so the
+  legs hang from the flanks. The pilot sits in a well behind the glacis inside a raised armoured coaming: only the head
+  above the eyes' line shows (every head clears it, eyes at least 0.23 over it; the shared heads are not rescaled). The
+  detail is on the deck and pods where the chase camera looks (coaming, hatch lid, radiator grille, deck caps, ammo boxes
+  on the pods feeding belts to the side guns, a rear handrail, amber running lights, orange hazard plates). On
+  **sumo legs** (`pick_bulwark_legs_sumo.png`): very thick thighs set wide, knees bent deeply forward with large
+  square orange knee pads, thick shins, heavy boot feet with a split toe clamp in front and a heel spur behind.
+  **Taller on longer legs** (user, 2026-11-24: "increase it about 50%; the head should be about at the chest of the
+  other mech. We need longer legs"): the legs grew (thigh 0.78 -> 1.34, shin 0.72 -> 1.23, ankle 0.24 -> 0.34 model
+  units; sections, hip ball, knee and ankle drums, cup and knee pads 1.25x thicker; boot 1.2x), the hull did not. The
+  chest landmark wins over "50 %": the pilot's eye line is at the Strider's chest (two thirds up its torso), tested
+  within 0.5 m; that is +27 % to the comb (7.17 -> 9.08 m), not +50 % (10.8 m would put the head up by the Strider's
+  head). The stance widened with the legs (2.9 -> 3.4, the hull between the pods 0.86 -> 0.98, wings 1.18 -> 1.3) so
+  it stays wider than tall to the comb; the keel hangs deeper between the thighs (-0.28 -> -0.38), the hip pods are
+  bigger (radius 0.48 -> 0.54) and sit lower over the hips.
+  Measured (scale 2, test_mech_parts): comb 9.08 m (Strider 11.74, 77 %), pilot's eye line 7.71 m (Strider chest
+  7.69 m), deck 6.45 m, body 9.27 m wide across the pods (Strider 4.79; the guns stay inside that width), 7.52 m deep,
+  3.52 m tall, hip 4.80 m, stance 3.4 (the hips 1.7 model units either side of the centre line), step-up 1.63 m (the
+  Strider's 1.25), deck 2.7x the chicken head's footprint (the well and the pods cut into it), heaviest loadout 9824
+  faces (Strider 11522). Joints at 0.56x the thickest section (rule 3.3).
+  **No hip twist** (ChassisParts `twist_max` 0): the hips hang under pods fixed to the hull, so the legs cannot turn
+  about the body's centre the way the Strider's do (MechRig's 90 deg would swing a hip out from under its pod and the
+  thighs into the nose); it strafes by stepping sideways (tested). MechRig does not read `twist_max` yet: phase 2.
+  Clearance tests now walk it with 2.4 m strides and a 0.7 m foot lift, slump it by MechRig's own 0.42 (no longer scaled
+  down for short legs) and dip it 0.38 on landing.
+- Bulwark weapons: two side guns on short yokes bolted to the hip pods' fronts, two back mounts on the rear wings
+  (`pick_bulwark_concept.png` for the loadout, B1 for the placement).
 - Wasp: four ducted fans, pod hull (`pick_wasp_four_fans_pod.png`).
 - Wasp mini legs: **two tiny mechanical chicken legs** (reverse knee, three toes and a spur, like the Strider's in
   miniature), folded under the belly in flight (`pick_wasp_landed_chicken_legs.png`). Two legs under a wide hull: the
   landed pose must balance (feet under the centre of mass, wide enough apart) and lift the chin gun clear of the ground,
   so the real legs are longer and set wider than drawn. **Stand only** (user): no walking on them, so they need a
   fold / unfold motion and a landing bounce, no gait.
+
+## Bulwark world fit (2026-11-24, Mech session)
+The city, the missions and the bots were built around the Strider's 2.2 m capsule that can thrust onto roofs. Measured
+with the Bulwark's real capsule (3.6 m, 8 m tall) against the built stack (`scripts/game/bot_fit.gd`,
+`tests/test_bulwark_world_fit.gd`, seeds 1-7 and 9, every deck):
+- **Fits**: every road line the bot graph walks (streets, lanes, pedestrian streets, open courts, all spine lanes, with
+  the avenue carriageways at 5.25 m off the median), every ramp (9 m between the parapets, the capsule passes along the
+  whole slope), shaft drops (48 m, 96 m with the landing burn), the four crew spawn slots (10.5 m columns, 8 m rows),
+  hold zones, defend relays, sweeps. Alleys (7 m) and roofs above the hop are out **by design**.
+- **Bugs (handed to Environment, side-session note `bulwark-world-fit.md`)**: 3 of 8 seeds have a REQUIRED objective a
+  Bulwark cannot reach: seed 4 d1_p and seed 6 d0_p (flag masts snapped deep inside blocks whose way in is 7.6 / 7.0 m),
+  seed 9 deck 1 (reached from deck 0 only by an atrium glide; measured: a Bulwark falls through to deck 2 every time).
+  `test_bulwark_world_fit` lists them as KNOWN and fails on any new one.
+- **Rules built (mission bot)**: the route planner takes the body's capsule (`BotRoutePlanner.body_r`, `fit_body`: every
+  walk edge and ramp leg probed at attach, glides left out for a hop-only body; a wide body standing on a ramp first
+  follows the lane to an end); a hop-only body never climbs a roof above its hop (`BotNavigator.drop_roofs_above`);
+  the grid plan's side rays, stand room and floor-cut veto grow by the extra radius; a wide body keeps out of lift wells
+  and keeps to a ramp it is halfway down when the goal changes; the stuck window stretches with the slower turn. The
+  Strider's values are the old constants (its bot tests unchanged).
 
 ## Open questions
 - `decisions.md` says one chassis for all four pilots: adding chassis is a decision for the user to record.

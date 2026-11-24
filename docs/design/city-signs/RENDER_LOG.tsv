@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-23T20:50:07	sign_word_white_s71.png	flux3_klein_t2i	71	1024x576			15.82	sign_word_white_prompt.txt
+2026-11-23T20:50:15	sign_word_hazard_s71.png	flux3_klein_t2i	71	1024x576			6.22	sign_word_hazard_prompt.txt
+2026-11-23T20:50:22	sign_word_dark_s71.png	flux3_klein_t2i	71	1024x576			6.11	sign_word_dark_prompt.txt
+2026-11-23T20:50:29	sign_numeral_white_s71.png	flux3_klein_t2i	71	1024x576			5.78	sign_numeral_white_prompt.txt
+2026-11-23T20:50:36	sign_numeral_hazard_s71.png	flux3_klein_t2i	71	1024x576			6.44	sign_numeral_hazard_prompt.txt
+2026-11-23T20:50:42	sign_numeral_dark_s71.png	flux3_klein_t2i	71	1024x576			5.37	sign_numeral_dark_prompt.txt
+2026-11-23T20:50:49	sign_arrow_white_s71.png	flux3_klein_t2i	71	1024x576			6	sign_arrow_white_prompt.txt
+2026-11-23T20:50:55	sign_arrow_hazard_s71.png	flux3_klein_t2i	71	1024x576			5.38	sign_arrow_hazard_prompt.txt
+2026-11-23T20:51:01	sign_arrow_dark_s71.png	flux3_klein_t2i	71	1024x576			5.23	sign_arrow_dark_prompt.txt

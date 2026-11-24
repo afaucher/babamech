@@ -33,12 +33,19 @@ extends Node
 ##            sends each change as a reliable mission.state {state} to the crew (host_state); clients keep the latest
 ##            (`state`) and get mission_state_changed(state). mission.go carries the latest state too, so a member that
 ##            (re)joins the barrier late starts from it. An outcome (won / lost) is followed, END_HOLD later, by the
-##            host's mission.end with the outcome's reason. Plan mode: the state also carries "dir" (WaveDirector.state())
-##            and "assets" ({defend id: hp}).
-##   WAVES    Plan mode: each reinforcement order of the host's WaveDirector goes out as a reliable mission.wave
-##            {order: {wave, deck, source, open_at, max_units}} (host_wave); every machine keeps them in `waves` and a
+##            host's mission.end with the outcome's reason. Plan mode: the state also carries "dir" (PacingDirector.state():
+##            waves, next, left, pace {"<deck>": [state, s in state, quiet s, reason]}, intensity {"<pilot id>": I 0..100},
+##            pilot ids as strings, negative for hangar bots) and "assets" ({defend id: hp}).
+##   WAVES    Plan mode: each reinforcement order of the host's PacingDirector goes out as a reliable mission.wave
+##            {order: {wave, deck, source, open_at, max_units, reason: build | cap | objective | scout | patrol}} (host_wave); every machine keeps them in `waves` and a
 ##            client gets mission_wave(order). mission.go carries "waves": the orders whose open_at is still ahead, so a
 ##            member that reaches the barrier late opens the same doors at the same shared-clock time.
+##   DEPOTS   Plan mode, military supply depots (docs/design/pacing-director.md §2, host-arbitrated): a pilot's machine
+##            asks depot.claim {depot, n} (client_depot_claim; n = that pilot's claim counter, the same n on a re-send);
+##            the host answers depot.grant {depot, peer, seq, cores_left} to the whole crew (host_depot_grant; a repeat
+##            answer to a re-sent claim goes to the asker only, same seq) or depot.deny {depot, reason, n} to the asker
+##            (host_depot_deny). Session.depot_claimed(from, data) fires on the host, depot_granted(grant) /
+##            depot_denied(data) on clients. Nothing is kept here: the cores left ride in mission.state ("depots").
 ##   END      The host leaving the mission (Esc in the test drive) sends mission.end {reason}: every client gets
 ##            mission_ended(reason) and goes back to the hangar; the crew is back in "lobby". A client leaving the
 ##            mission only leaves it on its own machine (the host's mission goes on without its mech moving).
@@ -248,8 +255,54 @@ func host_wave(order: Dictionary) -> void:
 	var o := order.duplicate(true)
 	waves.append(o)
 	s.send_event(0, "mission.wave", {"order": o})
-	_note("mission wave %s: deck %d, %s opens at %.2f, %d units" % [str(o.get("wave", "")), int(o.get("deck", 0)),
-		str(o.get("source", "")), float(o.get("open_at", 0.0)), int(o.get("max_units", 0))])
+	_note("mission wave %s: deck %d, %s opens at %.2f, %d units, %s" % [str(o.get("wave", "")), int(o.get("deck", 0)),
+		str(o.get("source", "")), float(o.get("open_at", 0.0)), int(o.get("max_units", 0)), str(o.get("reason", ""))])
+
+
+## Client: ask the host for a power core of depot `depot` (reliable depot.claim). The host answers it as itself (MissionDepots).
+func client_depot_claim(depot: String, n: int) -> void:
+	var s := _s()
+	if s == null or not s.online() or s.hosting or phase == IDLE:
+		return
+	s.send_event(1, "depot.claim", {"depot": depot, "n": n})
+
+
+## Host: a core was granted: depot.grant {depot, peer, seq, cores_left} to the crew (`to` 0) or to one member (a repeat
+## answer to a re-sent claim).
+func host_depot_grant(grant: Dictionary, to: int = 0) -> void:
+	var s := _s()
+	if s == null or not s.online() or not s.hosting or phase == IDLE:
+		return
+	s.send_event(to, "depot.grant", {"depot": str(grant.get("depot", "")), "peer": int(grant.get("peer", 0)),
+		"seq": int(grant.get("seq", 0)), "cores_left": int(grant.get("cores_left", 0))})
+
+
+## Host: a claim was refused: depot.deny {depot, reason, n} to the asker.
+func host_depot_deny(peer: int, data: Dictionary) -> void:
+	var s := _s()
+	if s == null or not s.online() or not s.hosting or phase == IDLE or peer <= 1:
+		return
+	s.send_event(peer, "depot.deny", {"depot": str(data.get("depot", "")), "reason": str(data.get("reason", "")),
+		"n": int(data.get("n", 0))})
+
+
+func _on_depot_event(from: int, kind: String, data: Dictionary) -> void:
+	var s := _s()
+	if phase == IDLE:
+		return
+	if s.hosting:
+		if kind == "depot.claim" and members().has(from):
+			s.depot_claimed.emit(from, {"depot": str(data.get("depot", "")).left(48), "n": int(data.get("n", 0))})
+		return
+	if from != 1:
+		return
+	match kind:
+		"depot.grant":
+			s.depot_granted.emit({"depot": str(data.get("depot", "")), "peer": int(data.get("peer", 0)),
+				"seq": int(data.get("seq", 0)), "cores_left": int(data.get("cores_left", 0))})
+		"depot.deny":
+			s.depot_denied.emit({"depot": str(data.get("depot", "")), "reason": str(data.get("reason", "")),
+				"n": int(data.get("n", 0))})
 
 
 ## A known mission mode (anything else builds the stack).
@@ -271,6 +324,9 @@ func members() -> Array[int]:
 # --- Events ------------------------------------------------------------------------------------------
 
 func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void:
+	if kind.begins_with("depot."):
+		_on_depot_event(from, kind, data)
+		return
 	if not kind.begins_with("mission."):
 		return
 	var s := _s()

@@ -5,9 +5,15 @@ extends Node3D
 ## leg/yaw servos, thruster ignition + heat-tracked jet loop, emergency auto-burn alert, soft/hard landings,
 ## rising thermal turbine hum (>55%), accelerating overheat ticks (>80%), shutdown/reboot sequence, and subtle
 ## deadpan radio-filtered pilot cues on major events.
-## Zero edits to gait.gd or mech_rig.gd; strictly cosmetic (Net LOCAL).
+## Zero edits to gait.gd or mech_rig.gd; strictly cosmetic (Net LOCAL). Footfalls play at the planted foot (Gait.stepped
+## pos); footfalls and landings scale with the chassis' weight (heft: the Bulwark lower and louder). Heat cues use the
+## heat fraction of the chassis' own cap.
 
-var is_local := true                 ## true = local player's mech (SFX_Player + cockpit heat cues); false = remote puppet
+## Force this mech to count as the local pilot's (SFX_Player + cockpit cues). Default false: a mech counts as local only
+## when it is the `mech` of its parent (TestDrive.mech, ThrusterLab.mech: the one this machine pilots) and not a puppet;
+## every other mech (teammate puppets, host-run hangar / mission bots, lab bots) is REMOTE: positional on SFX_World,
+## no cockpit cues, no pilot voice, no heat duck. (_local())
+var is_local := false
 var city: CityDistrict               ## optional: resolves concrete / grass / rooftop footsteps (auto-discovered if null)
 
 var _body: MechController
@@ -113,7 +119,7 @@ func _step_gait(a: AudioDirector) -> void:
 		var was_step := _prev_stepping[i]
 		_prev_stepping[i] = now_step
 		if not was_step and now_step and grounded and str(feet[i].get("kind", "")) != "land":
-			a.play_3d("mech.servo.step", feet[i]["pos"], 0.0, lerpf(0.95, 1.15, speed_k), prof, bus)
+			a.play_3d("mech.servo.step", feet[i]["pos"], 0.0, lerpf(0.95, 1.15, speed_k) * heft_pitch(), prof, bus)
 
 
 ## One landed step (Gait.stepped info {kind, length, weight, pos}): stride = speed level scaled by weight; correction /
@@ -135,7 +141,7 @@ func _play_footfall(a: AudioDirector, info: Dictionary, speed_k: float, prof: St
 				return
 			db = MINOR_DB + lerpf(-6.0, 0.0, w)
 			pt = lerpf(1.02, 1.10, speed_k)
-	a.play_3d("mech.step." + surface_at(fpos), fpos, db, pt, prof, bus)
+	a.play_3d("mech.step." + surface_at(fpos), fpos, db + heft_db(), pt * heft_pitch(), prof, bus)
 
 
 func _on_stepped(foot: int, info: Dictionary) -> void:
@@ -162,9 +168,15 @@ func _unbind_gait() -> void:
 	_step_queue.clear()
 
 
-## The local player's own mech: is_local, and never a teammate's puppet (MechPuppet sets MechController.puppet).
+## The mech the person at this machine pilots: never a puppet (MechPuppet sets MechController.puppet); then either forced
+## by is_local, or the parent's `mech` (TestDrive.mech = the local pilot's; a CrewBot's / offline crew's mech is not it).
 func _local() -> bool:
-	return is_local and not (_body != null and _body.puppet)
+	if _body == null or _body.puppet:
+		return false
+	if is_local:
+		return true
+	var p := _body.get_parent()
+	return p != null and p.get("mech") == _body
 
 
 func _step_turn_servo(a: AudioDirector, delta: float) -> void:
@@ -183,11 +195,10 @@ func _step_thrusters(a: AudioDirector) -> void:
 	var prof := "local_mech" if _local() else "foley"
 	if thrusting and not _was_thrusting:
 		a.play_3d("mech.thrust.ignite", _body.global_position, 1.5 if emerg else 0.0, 1.15 if emerg else 1.0, prof, bus)
-	if emerg and not _was_emergency:
-		if _local():
-			a.play_2d("mech.thrust.emergency", 0.0, 1.0, AudioDirector.BUS_SFX_TELEGRAPH)
-		else:
-			a.play_3d("mech.thrust.emergency", _body.global_position, -3.0, 1.0, "telegraph", AudioDirector.BUS_SFX_TELEGRAPH)
+	# The emergency-burn alert is a cockpit alarm (and on SFX_Telegraph it ducks the world): owner only. Others hear the
+	# louder, higher ignition above.
+	if emerg and not _was_emergency and _local():
+		a.play_2d("mech.thrust.emergency", 0.0, 1.0, AudioDirector.BUS_SFX_TELEGRAPH)
 	_was_thrusting = thrusting
 	_was_emergency = emerg
 	var lvl := _fx.level if _fx != null else (1.0 if thrusting else 0.0)
@@ -206,7 +217,7 @@ func _step_landing(a: AudioDirector) -> void:
 	if g and not _was_grounded and not _hard_landed_step and _body.last_impact > 2.0:
 		var bus := AudioDirector.BUS_SFX_PLAYER if _local() else AudioDirector.BUS_SFX_WORLD
 		var prof := "local_mech" if _local() else "foley"
-		a.play_3d("mech.land.soft", _body.global_position, 0.0, 1.0, prof, bus)
+		a.play_3d("mech.land.soft", _body.global_position, heft_db(), heft_pitch(), prof, bus)
 	_was_grounded = g
 
 
@@ -246,7 +257,7 @@ func _on_hard_landing(_speed: float, severity: float) -> void:
 	var prof := "local_mech" if _local() else "foley"
 	var db := lerpf(-3.0, 2.5, clampf(severity, 0.0, 1.0))
 	var pt := lerpf(1.08, 0.86, clampf(severity, 0.0, 1.0))
-	a.play_3d("mech.land.hard", _body.global_position, db, pt, prof, bus)
+	a.play_3d("mech.land.hard", _body.global_position, db + heft_db(), pt * heft_pitch(), prof, bus)
 	if _local() and severity >= 0.55:
 		a.play_pilot_cue(_head_id())
 
@@ -273,8 +284,24 @@ func _on_rebooted() -> void:
 	if _local():
 		a.play_2d("mech.heat.reboot_ok", 0.0, 1.0, AudioDirector.BUS_SFX_PLAYER)
 		a.set_heat_duck(false)
-	else:
-		a.play_3d("mech.heat.reboot_ok", _body.global_position, -4.0, 1.0, "weapon", AudioDirector.BUS_SFX_WORLD)
+	# Not for others: the ready chime is a cockpit cue (the power-down in _on_overheated is the external part).
+
+
+## The chassis' weight against the Strider's (MechCatalog base_weight: Strider 38 t = 1.0, Bulwark 55 t = 1.45): footfalls
+## and landings of a heavier mech play lower and a little louder from the same sounds (no new assets).
+func heft() -> float:
+	var id := _body.chassis_id if _body != null else "strider"
+	return float(MechCatalog.chassis(id)["base_weight"]) / float(MechCatalog.CHASSIS["strider"]["base_weight"])
+
+
+## Pitch factor for footfalls / landings: 1 / sqrt(heft) (the Strider 1.0, the Bulwark 0.83).
+func heft_pitch() -> float:
+	return clampf(1.0 / sqrt(heft()), 0.7, 1.2)
+
+
+## dB offset for footfalls / landings: +2.5 dB per doubling of weight (the Strider 0, the Bulwark +1.3).
+func heft_db() -> float:
+	return clampf(2.5 * log(heft()) / log(2.0), -3.0, 3.0)
 
 
 ## Surface classification under `world_pos`: "rooftop" | "grass" | "concrete".

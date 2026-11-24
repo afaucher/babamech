@@ -25,6 +25,8 @@ All numbers are first-pass and tunable in the lab (`weapon_range` subject). The 
 | Movement heat (§3, after the weapon table): walking 2.5 /s at walk speed, running 9.0 /s at run speed, from the actual ground speed, on the ground with move input only (`MechController.walk_heat` / `run_heat` / `move_heat_rate()`) | built (`tests/test_move_heat.gd`) |
 | Shots ignore mech capsules (CombatWorld `shot_ray`: registered targets' bodies excluded from shot / impact rays) | built (`tests/test_combat_capsule.gd`) |
 | Friendly fire (§4.6): `CombatWorld.friendly_fire`, **on by default**, one rule in `CombatWorld.spares`; full damage / knockback / heat to teammates through the normal verbs, decided on the victim's machine; no new message | built (`tests/test_friendly_fire.gd`, `tests/test_net_friendly_fire.gd` (2)); the mission option itself is Engine's (`td.friendly_fire`) |
+| Railgun ammo (§3.8, user 2026-11-23: "needs something to limit its sniping ability, maybe limited rounds? Not 4 but maybe 15-20"): **18 rounds** (27 with the ammo bin), one per slug, none on a cancelled charge; dry = the unusable-slot rule; a supply depot core refills it (`WeaponRack.refill_ammo`) | built (`tests/test_weapon_railgun.gd` `_ammo` / `_rack_ammo`) |
+| Armour (§3.10, user 2026-11-23: "Flak should do less damage against armor"): `CombatTarget.armored` (`Net.SPAWN`), weapon stat `armor_mult` (absent = 1; flak **0.35**), one rule `CombatWorld.armor_scaled` in `resolve_hit` and `splash` (where the hit is decided, before it travels). Armoured: player mechs, the relay (`AssetTarget`), enemy classes with `"armored": true` (turrets, striders, the tank); not drones, the gunship, the dropship, troopers | built (`tests/test_weapon_flak.gd` `_armour` / `_armour_who`, `tests/test_net_weapon_flak.gd` (2)) |
 | Mission assets (§5.1 "Mission assets"): `AssetTarget` (the Defend relay), `TestDriveCombat.add_asset` / `remove_asset` / `asset`; hits on the host -> `MissionFlow.damage_asset`; HP mirrored by `set_hp`; no new message | built (`tests/test_asset_target.gd`, `tests/test_net_asset_target.gd` (2), `tests/test_asset_mission.gd`) |
 
 ## 1. Direction
@@ -90,9 +92,9 @@ range over the same cycle; for explosive weapons it counts direct + splash damag
 | `rockets` | Rocket Pod | shoulder | dumb-fire salvo | 26 | 6 rockets 0.1 s apart, 4 s reload (4.6 s cycle) | 45 m/s | 250 m (no falloff) | 3.5° + wobble | 0.4 | 18 dmg / 4 m | **36** (6 salvos) | 6 | 0.2 | 10 / salvo | 2.2 | 57 | 2.5 m |
 | `missiles` | Guided Missiles | shoulder | crosshair-guided | 30 | 3 missiles 0.3 s apart, 5 s reload (5.9 s cycle) | 35 → 55 m/s | 350 m (9 s life) | none | 0.6 | 12 dmg / 5 m | **18** (6 salvos) | 7 | 0.4 | 8 / salvo | 1.4 | 21 | 3.0 m |
 | `mortar` | Back Mortar | back | arcing shell | 80 | 1 per 3.5 s | ballistic (2.0–4.5 s flight) | 30–250 m (min range!) | 0–3 m scatter with range | 4.0 radial + 3.0 lift | 50 dmg / 8 m | 3 | 9 | 0.4 | 18 / shell | 5.1 | 37 | 6.0 m |
-| `railgun` | Coil Railgun | shoulder (one per mech) | charged slug | 200 | 1.0 s charge, 4 s cycle | 200 m/s | 400 m (no falloff) | none | **14.0** | – (pierces 3 targets, −25% each) | ∞ | 14 | 1.0 | 30 / shot (10 on an early release) | 7.5 | 50 | 3.5 m |
+| `railgun` | Coil Railgun | shoulder (one per mech) | charged slug | 200 | 1.0 s charge, 4 s cycle | 200 m/s | 400 m (no falloff) | none | **14.0** | – (pierces 3 targets, −25% each) | **18** (27 with the bin) | 14 | 1.0 | 30 / shot (10 on an early release) | 7.5 | 50 (18 rounds: 3600 damage, 72 s held) | 3.5 m |
 | `flamer` | Flamer | side, shoulder | focused flame jet | 1.5 / chunk | 10 chunks /s | 32 m/s | **45 m** (no falloff) | 5° cone | 0 | **+2.2 target heat / chunk** | ∞ | 3 | 1.0 | 0.6 / chunk | 6.0 | 15 (+22 heat/s) | – |
-| `flak` | Flak Cannon | side, shoulder | proximity-fused shell | 6 (strike only) | 1.5 /s | 140 m/s | 220 m (no falloff; air burst at range) | 0.4° fixed | 0.4 (splash 0.4) | 16 dmg / 8 m; **fuse 6 m**, arms at 12 m | **160** | 7 | 0.5 | 2.2 / shell | 3.3 | 32 direct (59 % of the autocannon); 6–24 on a near miss | 2.5 m |
+| `flak` | Flak Cannon | side, shoulder | proximity-fused shell | 6 (strike only) | 1.5 /s | 140 m/s | 220 m (no falloff; air burst at range) | 0.4° fixed | 0.4 (splash 0.4) | 16 dmg / 8 m; **fuse 6 m**, arms at 12 m | **160** | 7 | 0.5 | 2.2 / shell | 3.3 | 32 direct (59 % of the autocannon); 6–24 on a near miss; **vs armour × 0.35**: 11.3 direct (7.56 a shell) | 2.5 m |
 
 Heat check: any one weapon held down sits near the 6 /s cooling line, so a single gun is nearly sustainable; a full
 loadout firing everything (laser + gatling + autocannon + rockets + mortar ≈ 24 /s + ~2 passive) goes from cold to
@@ -236,6 +238,13 @@ slowly on its own and is sustainable with the radiator; running while firing is 
   per frame.
 - **Limits:** 30 heat a shot (three shots in a row from cold is a shutdown with anything else firing); the charge is a
   1 s telegraph; passive heat 1.0; weight 14.
+- **Ammo (user, 2026-11-23: "needs something to limit its sniping ability, maybe limited rounds? Not 4 but maybe
+  15-20"):** **18 rounds** (27 with the ammo bin, salvo 1). One round is spent when the slug leaves (the charge
+  completing), never on a cancelled charge. At 0 no charge starts (`railgun.gd` tick: no glow, no cancel heat), and the
+  rack's unusable-slot rule deselects the slot (`hold` "EMPTY", no passive heat) until a supply depot's power core
+  refills it (`WeaponRack.refill_ammo`, called by `MissionDepots`); refilled, it stays deselected until its key. The HUD
+  row shows `ammo` / `ammo_max` from `slots()` like every limited weapon. 18 rounds = 3600 damage at most, 72 s of
+  held fire at the 4 s cycle.
 
 ### 3.9 Flamer (`flamer`)
 - **Role:** close-range heat weapon. Little damage; it **overheats the target**. A mech or turret pushed over its
@@ -287,6 +296,17 @@ slowly on its own and is sustainable with the radiator; running while firing is 
   prop's threshold (tree 3.0, bin 1.0): **flak never fells a tree**. Drawn burst: the explosive `ImpactFx` at **R 2.5**
   (the rocket's size; the gameplay splash stays 8 m: an R 5 flash hid the target and at 1.5 bursts a second would fill
   the sky), so air bursts lay no decal and ground bursts crater as usual.
+- **Armour (user, 2026-11-23: "Flak should do less damage against armor"):** weak against armoured targets, still
+  good against drones, gunships and light units. `"armor_mult": 0.35`: on a target with `CombatTarget.armored` (spawn
+  data, `Net.SPAWN`) both the strike and the splash do × 0.35: a direct shell 21.6 → **7.56**, **32.4 → 11.3 DPS**; a
+  5 m near miss 6.0 → 2.1. Applied once where the hit is decided, before it travels (`CombatWorld.armor_scaled`, called
+  by `resolve_hit`, which carries the shell's combined direct + splash Hit, and by `splash`), so a client's hit on a
+  host-owned target arrives already reduced (`tests/test_net_weapon_flak.gd`: an armoured dummy, 2.815 = 0.35 × 8.042).
+  Knockback, heat and prop blast are unchanged. Armoured: player mechs (`PlayerTarget`), the relay (`AssetTarget`), and
+  enemy classes with `"armored": true` in `EnemyCatalog` (read by `EnemyBase._apply_catalog_components`): `turret`,
+  `turret_sniper`, `turret_missile`, `strider`, `strider_breacher`, `tank`. Not armoured: `drone`, `gunship`,
+  `dropship`, `trooper_rifle`, `trooper_at`. Every other weapon has no `armor_mult` (× 1): unchanged on armour. There is
+  no per-component armour.
 - **Balance** (coordinator retune 2026-11-22: rapid fire, same DPS band and heat/s): a direct hit on a ground target is
   21.6 a shell = **32.4 DPS**, 59 % of the autocannon's 55. A near miss on an aircraft (distance from the hull): 24.0 DPS
   grazing, 18.0 at 2 m, 15.0 at 3 m, 12.0 at 4 m, 9.0 at 5 m, 6.0 at 6 m (the autocannon: 0 on any miss). With shells

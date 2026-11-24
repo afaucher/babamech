@@ -11,6 +11,8 @@ Co-op (up to 4) third-person mech combat in Godot 4.7 / GDScript: chicken-legged
 .\run.ps1                      # the game (menu)
 .\run.ps1 -Crew 2              # a host + a joiner over ENet on this PC (each its own window and settings file)
 .\run.ps1 -Crew 4 -Link coast  # four windows, simulated coast-to-coast link
+.\run.ps1 --no-objectives      # the old clear-and-extract mission (objectives + pacing director + depots are the
+                               # default; the hangar's Objectives box remembers it; in a crew the host's mode rules)
 .\lab.ps1                      # the lab: every scene with tunable params
 .\test_runner.ps1 -TestAll     # all tests, headless
 .\build.ps1                    # tests + Windows export (build\windows\babamech.exe)

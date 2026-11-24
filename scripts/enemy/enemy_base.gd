@@ -5,6 +5,7 @@ extends CombatTarget
 ## >= 0.3 s telegraphs, attack-slot arbitration via EnemySquad, diegetic hit flash / status bar, and unified Audio signals.
 
 const STATE_IDLE := "idle"
+const EXIT_SPEED_MIN := 5.0        ## m/s: a gate-bay roll-out moves at least this fast (move_speed when higher)
 const STATE_PATROL := "patrol"
 const STATE_ALERT := "alert"
 const STATE_ENGAGE := "engage"
@@ -42,6 +43,29 @@ const AI_LOD_DIST_SQ := 150.0 * 150.0   ## > 150 m from every crew mech -> 15 Hz
 const TRANSIT_ENTRY_R := 4.0            ## m from the ramp entry at which a transiting wave unit steps onto the ramp
 const TRANSIT_EXIT_R := 5.0             ## m from the ramp exit (on the new deck) at which the transit ends
 const TRANSIT_RAMP_MAX := 60.0          ## s on a ramp before giving up (stuck): back to normal pathing (seed 1's ~100 m ramps take ~20 s)
+## Perception (docs/design/pacing-director.md "Perception"): an un-alerted unit notices a crew mech with a clear line to
+## it (torso, else head / legs over low cover) inside its catalog `notice_range` when the mech is in its forward cone
+## (`fov_deg`, around its sensor: turret / torso / helmet yaw), or in ANY direction inside NEAR_AWARE_R (x
+## MOVING_AWARE_MULT while the mech walks; the whole notice range for LOUD_TIME after it fires: an 8 m mech is loud).
+## Noticing takes NOTICE_MIN..NOTICE_MAX s scaled by distance (instant in the cone inside INSTANT_NOTICE_R, as before),
+## then the usual ALERT_DELAY and telegraph. Idle units glance round (SCAN_HEADINGS), so a cone sweeps the block.
+## Quiet comes from cover and range: no line, no notice. Every number is clamped by `sight_range` (tests / lab blind a unit).
+const NEAR_AWARE_R := 60.0              ## m: a mech this close is noticed in any direction (heard / felt), with a clear line
+const MOVING_AWARE_MULT := 1.5          ## a walking mech: the any-direction radius x this (90 m)
+const MOVING_SPEED := 2.0               ## m/s above which a target counts as walking
+const LOUD_TIME := 2.5                  ## s after a player shot during which its shooter is noticed in any direction
+const INSTANT_NOTICE_R := 55.0          ## m: in the forward cone and this close, noticed at once (the old behaviour)
+const NOTICE_MIN := 0.5                 ## s to notice a mech at 0 m (outside the instant case)
+const NOTICE_MAX := 1.5                 ## s to notice a mech at the notice range
+const IDLE_PERCEPTION_INTERVAL := 0.2   ## s between un-alerted sight checks (5 Hz, staggered; alerted units keep their rate)
+const SCAN_DWELL := 1.6                 ## s an idle unit spends on each glance heading (swivel included; sees while swivelling)
+const SCAN_HEADINGS := [0.0, 2.1, -2.1] ## rad from its home facing while standing: with a 150 deg cone, full circle
+const SCAN_WALK_HEADINGS := [0.0, 1.0, -1.0]  ## rad from its body facing while walking a patrol
+const LOS_LOW_COVER_R := 15.0           ## m: a torso ray blocked this close to either end tries head / legs (low cover)
+const LOS_HEAD_UP := 2.6                ## m above a mech's torso centre (head, ~7 m off the floor)
+const LOS_LEGS_DOWN := 2.3              ## m below it (legs, ~2 m)
+
+static var los_rays := 0                ## perception sight rays cast (all enemies; tests read it to bound the cost)
 
 signal alerted(enemy: EnemyBase, target_id: String)
 signal comms_relayed(enemy: EnemyBase)
@@ -70,7 +94,7 @@ var auto_remove_wreck := false   ## true in Test Drive to clean wrecks after WRE
 ## AI: CombatWorld never ticks it there; EnemySync shows it from the host's stream through the PUPPET API at the end).
 var net_id := 0
 var spawn_deck := 0
-var wave := ""                     ## wave id from MissionPlan / WaveDirector ("" = deck garrison; Net.SPAWN)
+var wave := ""                     ## wave id from MissionPlan / PacingDirector ("" = deck garrison; Net.SPAWN)
 var defend_target_id := ""         ## host-only defend objective id this wave may attack ("" = never target AssetTarget)
 var puppet := false
 
@@ -111,6 +135,12 @@ var _cover_path_timer := 0.0
 var _zigzag_t := 0.0
 var _peek_count := 0               ## telemetry / tests: completed or started cover peeks
 var revealed := false              ## sticky straggler reveal marker (synced via EnemySync "alert" state "revealed")
+## Gate-bay staging (docs/design/pacing-director.md, "Staging in gate bays"; host only): a unit created inside a closed gate
+## bay is `staged` (dormant: no AI, no fire, not hittable, not awake) until MissionFlow opens it with roll_out(); then it
+## follows `_exit_path` (arc x, arc s, height above the floor), kinematically, after `_exit_wait` s, before its AI resumes.
+var staged := false
+var _exit_path: Array[Vector3] = []
+var _exit_wait := 0.0
 var _hunting := false              ## host-only Step 1 hunt-out active
 var _hunt_t := 0.0                 ## s hunting without LOS/combat (triggers Step 2 reveal at reveal_hunt_delay_s)
 var _revealed_idle_t := 0.0        ## s revealed with 0 damage dealt/taken (triggers Step 3 cull at cull_idle_s)
@@ -136,6 +166,16 @@ var _lod_tick := 0
 var _lod_phase := 0
 var _lod_dt := 0.0
 var _cut_far_t := 0.0              ## s the floor-cut guard may skip (unit was > FLOOR_CUT_FAR from every cut)
+# Perception: noticing (un-alerted), glance scan, what part of the target is seen (host-private)
+var _notice_t := 0.0               ## s of sight accumulated on _notice_tid (alerts at the distance-scaled notice time)
+var _notice_tid := ""              ## target being noticed ("" = none)
+var _notice_pos := Vector3.ZERO    ## where it was seen (the sensor turns to look at it while noticing)
+var _perc_last := -1.0             ## combat clock at the last sight check (-1 = none yet)
+var _scan_i := 0                   ## glance heading index (SCAN_HEADINGS)
+var _scan_t := 0.0                 ## s left on the current glance
+var _vis_off := Vector3.ZERO       ## offset from the target's aim centre to the point seen (head / legs over low cover)
+var _los_hit_d := -1.0             ## m from the eye to what blocked the last sight ray (-1 = clear)
+var _seen_pos: Dictionary = {}     ## target_id -> [pos, clock]: walking speed of targets (works for crew puppets too)
 # Wave cross-deck transit (host-only; set by EnemySquad._step_wave_transit when no crew stands on this unit's deck):
 # walk to a ramp's entry on this deck (_transit_entry), then along the ramp to its exit on deck _transit_deck.
 var _transit_deck := -1            ## deck the ramp leads to (-1 = no transit)
@@ -181,6 +221,13 @@ var _wreck_vel := Vector3.ZERO
 var _wreck_spin := Vector3.ZERO
 var _wreck_bounces := 0
 var _ray_query := PhysicsRayQueryParameters3D.new()  ## reused ray query (zero per-frame alloc)
+# Stagger animation + the unit's seen motion (presentation only, every machine: docs in EnemyStaggerAnim / EnemyGait)
+var _stagger_anim := EnemyStaggerAnim.new()
+var _vis_prev := Vector3.ZERO       ## world position at the last visual update
+var _vis_vel := Vector3.ZERO        ## world velocity seen by the visuals (host and puppet alike)
+var _vis_has_prev := false
+var _last_hit_age := 99.0           ## s since apply_hit last set _last_hit_dir on this machine
+var anim_stagger_amp := 1.0         ## lab: scales the stagger animation's recoil / rock (presentation only)
 
 
 func _init() -> void:
@@ -210,7 +257,8 @@ func net_fields() -> Dictionary:
 		"_grounded_now": Net.PRIVATE, "_cover_mode": Net.PRIVATE, "_cover_peek_cd": Net.PRIVATE,
 		"_cover_peek_left": Net.PRIVATE, "_cover_peek_goal": Net.PRIVATE, "_cover_path_timer": Net.PRIVATE,
 		"_zigzag_t": Net.PRIVATE, "_peek_count": Net.PRIVATE,
-		"revealed": Net.OWNER, "_hunting": Net.PRIVATE, "_hunt_t": Net.PRIVATE,
+		"revealed": Net.OWNER, "staged": Net.PRIVATE, "_exit_path": Net.PRIVATE, "_exit_wait": Net.PRIVATE,
+		"_hunting": Net.PRIVATE, "_hunt_t": Net.PRIVATE,
 		"_revealed_idle_t": Net.PRIVATE, "_reveal_flare_cd": Net.LOCAL,
 		"_avoid_timer": Net.PRIVATE, "_stuck_anchor": Net.PRIVATE, "_stuck_t": Net.PRIVATE,
 		"_stuck_travel": Net.PRIVATE, "_unstick_goal": Net.PRIVATE, "_unstick_t": Net.PRIVATE,
@@ -218,7 +266,9 @@ func net_fields() -> Dictionary:
 		"_steer_ray_t": Net.PRIVATE, "_cached_avoid_dir": Net.PRIVATE, "_cached_block_n": Net.PRIVATE,
 		"_cached_slide_blocked": Net.PRIVATE, "_ground_probe_t": Net.PRIVATE, "_ground_h_off": Net.PRIVATE,
 		"_has_ground_h": Net.PRIVATE, "_lod_tick": Net.PRIVATE, "_lod_phase": Net.PRIVATE, "_lod_dt": Net.PRIVATE,
-		"_cut_far_t": Net.PRIVATE, "_transit_deck": Net.PRIVATE, "_transit_entry": Net.PRIVATE,
+		"_cut_far_t": Net.PRIVATE, "_notice_t": Net.PRIVATE, "_notice_tid": Net.PRIVATE, "_notice_pos": Net.PRIVATE,
+		"_perc_last": Net.PRIVATE, "_scan_i": Net.PRIVATE, "_scan_t": Net.PRIVATE, "_vis_off": Net.PRIVATE,
+		"_los_hit_d": Net.PRIVATE, "_seen_pos": Net.PRIVATE, "_transit_deck": Net.PRIVATE, "_transit_entry": Net.PRIVATE,
 		"_transit_exit": Net.PRIVATE, "_transit_ramp": Net.PRIVATE, "_transit_t": Net.PRIVATE,
 		"_transit_from": Net.PRIVATE, "move_speed_ratio": Net.LOCAL, "turret_slew_speed": Net.LOCAL, "heat_ratio": Net.LOCAL,
 		"_cfg": Net.LOCAL, "_comp_meta": Net.LOCAL, "_comp_nodes": Net.LOCAL, "_flash_timers": Net.LOCAL,
@@ -230,7 +280,8 @@ func net_fields() -> Dictionary:
 		"_core_glow_mi": Net.LOCAL, "_core_glow_mat": Net.LOCAL, "_core_cool_age": Net.LOCAL,
 		"_core_cooling": Net.LOCAL, "_smoke_puffs": Net.LOCAL, "_wreck_cooled": Net.LOCAL,
 		"_wreck_falling": Net.LOCAL, "_wreck_vel": Net.LOCAL, "_wreck_spin": Net.LOCAL, "_wreck_bounces": Net.LOCAL,
-		"_ray_query": Net.LOCAL,
+		"_ray_query": Net.LOCAL, "_stagger_anim": Net.LOCAL, "_vis_prev": Net.LOCAL, "_vis_vel": Net.LOCAL,
+		"_vis_has_prev": Net.LOCAL, "_last_hit_age": Net.LOCAL, "anim_stagger_amp": Net.LOCAL,
 	})
 	return f
 
@@ -271,6 +322,7 @@ func configure(type_id: String, id: String, w: CombatWorld, sq: Node = null, r: 
 func _apply_catalog_components() -> void:
 	_comp_meta.clear()
 	hit_shapes.clear()
+	armored = bool(_cfg.get("armored", false))     # weapons.md §3.10: flak's armor_mult applies (spawn data)
 	var caps := {}
 	for c: Dictionary in _cfg.get("components", []):
 		var cid := str(c["id"])
@@ -327,7 +379,57 @@ func destroyed() -> bool:
 
 
 func is_hittable() -> bool:
-	return not _dead
+	return not _dead and not staged
+
+
+## Gate-bay roll-out (host): wake a staged unit and walk / fly it out along `path` (arc x, arc s, height) after `wait` s;
+## its AI resumes after the last point (hunting what begin_hunt_pursuit gave it).
+func roll_out(path: Array[Vector3], wait: float = 0.0) -> void:
+	staged = false
+	_exit_path = path.duplicate()
+	_exit_wait = maxf(wait, 0.0)
+
+
+func rolling_out() -> bool:
+	return not _exit_path.is_empty()
+
+
+## One step of the roll-out (true while it runs: the AI waits). Kinematic: the path is clear by construction (the bay's
+## formation lanes through the door opening), so no steering or physics.
+func _step_exit(dt: float) -> bool:
+	if _exit_path.is_empty():
+		return false
+	move_speed_ratio = 0.0
+	if _exit_wait > 0.0:
+		_exit_wait -= dt
+		return true
+	var pos := _world_pos()
+	var cur := _world_to_arc2(pos)
+	var h := ring.height(pos) if ring != null else pos.y
+	var at := Vector3(cur.x, cur.y, h)
+	var goal: Vector3 = _exit_path[0]
+	var spd := maxf(float(_cfg.get("move_speed", 0.0)) * speed_scale, EXIT_SPEED_MIN)
+	var to := goal - at
+	var d := to.length()
+	var nxt := goal
+	if d <= spd * dt:
+		_exit_path.pop_front()
+	else:
+		nxt = at + to / d * spd * dt
+	var w := ring.arc_to_world(nxt.x, nxt.y, nxt.z) if ring != null else Vector3(nxt.x, nxt.z, nxt.y)
+	if ring != null:
+		up = ring.up_at(w)
+	var f := w - pos
+	f -= up * f.dot(up)
+	if not is_inside_tree():
+		position = w
+	elif f.length_squared() > 1e-6:
+		f = f.normalized()
+		global_transform = Transform3D(Basis(f.cross(up).normalized(), up, -f), w)
+	else:
+		global_position = w
+	move_speed_ratio = 1.0
+	return true
 
 
 func core_hp_ratio() -> float:
@@ -414,6 +516,8 @@ func rehome_deck(new_deck: int, new_ring: RingFrame = null) -> void:
 	_has_los = false
 	_perc_valid = false
 	_perc_t = 0.0
+	_notice_tid = ""
+	_notice_t = 0.0
 	_cached_target = null
 	_last_target_ref = null
 	_target_id = ""
@@ -596,8 +700,10 @@ func apply_hit(h: Hit) -> void:
 		return
 	if h.impulse.length_squared() > 1e-6:
 		_last_hit_dir = h.impulse.normalized()
+		_last_hit_age = 0.0
 	elif h.normal.length_squared() > 1e-6:
 		_last_hit_dir = (-h.normal).normalized()
+		_last_hit_age = 0.0
 	var meta: Dictionary = _comp_meta.get(h.component, {})
 	var heat_mult := float(meta.get("heat_mult", 1.0))
 	apply_damage(h.damage, h.component, h.shooter)
@@ -1146,6 +1252,49 @@ func _perc_stagger_offset() -> float:
 	return iv * (0.25 + 0.125 * float(posmod(hash(target_id), 8)))
 
 
+## Sight-check interval now: alerted (or telegraph_loop) units keep their own fast rate; un-alerted ones look at 5 Hz.
+func _perc_interval_now() -> float:
+	if is_alerted() or ai_mode != "live":
+		return _perception_interval()
+	return maxf(IDLE_PERCEPTION_INTERVAL, _perception_interval())
+
+
+## Yaw of the sensor relative to the body (turret / torso / helmet): the forward cone points this way. Override.
+func _sensor_yaw() -> float:
+	return 0.0
+
+
+## World direction of the sensor's forward cone.
+func _sensor_fwd() -> Vector3:
+	var y := _sensor_yaw()
+	var local := Vector3(-sin(y), 0.0, -cos(y))
+	if not is_inside_tree():
+		return local
+	return (global_basis * local).normalized()
+
+
+## Idle glance (no target, not alerted): look toward what is being noticed, else swivel through SCAN_HEADINGS (from the
+## home facing while standing, the body facing while walking) so a forward cone sweeps the block. Diegetic: the turret
+## / torso / helmet visibly turns. Uses each class's own _track_aim (its slew rate).
+func _idle_scan(dt: float) -> void:
+	if ai_mode != "live" or not is_inside_tree() or is_alerted():
+		return
+	var look := _notice_pos
+	if _notice_tid == "":
+		var walking := move_speed_ratio > 0.1
+		_scan_t -= dt
+		if _scan_t <= 0.0:
+			_scan_t = SCAN_DWELL
+			_scan_i = (_scan_i + 1) % SCAN_HEADINGS.size()
+		var hd: float = float((SCAN_WALK_HEADINGS if walking else SCAN_HEADINGS)[_scan_i % SCAN_HEADINGS.size()])
+		var ref := (-global_basis.z) if walking else (-_home_xf.basis.z)
+		ref -= up * ref.dot(up)
+		if ref.length_squared() < 1e-6:
+			return
+		look = eye_world() + ref.normalized().rotated(up, hd) * 40.0
+	_track_aim(look, dt)
+
+
 func _on_alert_perception_hint(target: CombatTarget) -> void:
 	if target != null and is_instance_valid(target) and _cached_target == null:
 		_cached_target = target
@@ -1156,6 +1305,8 @@ func _on_alert_perception_hint(target: CombatTarget) -> void:
 ## True when this enemy should tick: its deck has a standing crew mech (deck_awake), or it is a wave unit (waves never
 ## sleep), or (garrison) it belongs to an active defend whose target relay is live.
 func _is_awake() -> bool:
+	if staged:
+		return false   # waiting in a closed gate bay (dormant until the door is passable)
 	if squad == null or not squad.has_method("deck_awake"):
 		return true
 	if squad.deck_awake(spawn_deck):
@@ -1268,7 +1419,8 @@ func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
 
 	# Step AI only when alive.
 	if not _dead:
-		_step_ai(eff_dt, space)
+		if not _step_exit(eff_dt):
+			_step_ai(eff_dt, space)
 		if CombatWorld.profiling:
 			var tv := Time.get_ticks_usec()
 			_update_visuals(eff_dt)
@@ -1367,13 +1519,14 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 				_emit_squad("alerted", {"id": target_id, "state": "lost", "pos": _world_pos()})
 			if not _step_transit(dt, space):
 				_step_patrol(dt, space)
+			_idle_scan(dt)
 		return
 
 	_target_id = target.target_id
 	_last_target_ref = target
 	var target_pos := Vector3.ZERO
 	if _has_los:
-		target_pos = _target_aim_center(target)
+		target_pos = _target_aim_center(target) + _vis_off   # the part seen (head / legs over low cover)
 		_last_seen_pos = target_pos
 		_update_target_velocity(target, target_pos, dt)
 		_no_los_time = 0.0
@@ -1683,19 +1836,25 @@ func _acquire_target(space: PhysicsDirectSpaceState3D) -> CombatTarget:
 	var t0 := Time.get_ticks_usec() if CombatWorld.profiling else 0
 	var was_valid := _perc_valid
 	_perc_valid = true
-	_perc_t = _perception_interval() if was_valid else _perc_stagger_offset()
+	_perc_t = _perc_interval_now() if was_valid else _perc_stagger_offset()
+	var now := world.now
+	var elapsed := clampf(now - _perc_last, 0.0, 0.5) if _perc_last >= 0.0 else 0.0
+	_perc_last = now
 	var eye := eye_world()
 	var best: CombatTarget = null
-	var eff_range := sight_range
-	if not is_alerted() and ai_mode != "telegraph_loop":
-		eff_range = minf(sight_range, float(_cfg.get("patrol_sight_range", 65.0)))
+	var alerted_now := is_alerted() or ai_mode == "telegraph_loop"
+	# Alerted: tracks anything with a line inside sight_range, any direction. Un-alerted: the notice rules (header).
+	var notice_r := minf(sight_range, float(_cfg.get("notice_range", _cfg.get("patrol_sight_range", 65.0))))
+	var eff_range := sight_range if alerted_now else notice_r
 	var eff_range_sq := eff_range * eff_range
 	var best_d2 := eff_range_sq
-	var best_los := false
-	var fov_cos := cos(deg_to_rad(float(_cfg.get("fov_deg", 110.0)) * 0.5))
-	var fwd := -global_basis.z if is_inside_tree() else Vector3.FORWARD
+	var best_need := 0.0
+	var best_off := Vector3.ZERO
+	var best_pos := Vector3.ZERO
+	var fov_cos := cos(deg_to_rad(float(_cfg.get("fov_deg", 150.0)) * 0.5))
+	var fwd := _sensor_fwd()
+	var near_r := minf(NEAR_AWARE_R, notice_r)
 	var has_deck := squad != null and squad.has_method("on_deck")
-	var alerted_now := is_alerted() or ai_mode == "telegraph_loop"
 	for t: CombatTarget in world.targets:
 		if not is_instance_valid(t) or t == self or not t.is_hittable():
 			continue
@@ -1707,15 +1866,50 @@ func _acquire_target(space: PhysicsDirectSpaceState3D) -> CombatTarget:
 			continue   # stack (W4): only targets on this enemy's own deck
 		var tp := _target_aim_center(t)
 		var d2 := eye.distance_squared_to(tp)
-		if d2 > eff_range_sq:
+		if d2 > eff_range_sq or d2 > best_d2:
 			continue
-		var in_fov := alerted_now or fwd.dot((tp - eye).normalized()) >= fov_cos
-		var los := in_fov and _check_los(eye, tp, space, t)
-		if los and (not best_los or d2 < best_d2):
-			best = t
-			best_d2 = d2
-			best_los = true
+		var need := 0.0
+		if not alerted_now:
+			var d := sqrt(d2)
+			var in_cone := fwd.dot((tp - eye) / maxf(d, 0.01)) >= fov_cos
+			if not in_cone:
+				var omni_r := near_r
+				if _loud(t):
+					omni_r = notice_r
+				elif _target_speed(t) > MOVING_SPEED:
+					omni_r = minf(near_r * MOVING_AWARE_MULT, notice_r)
+				if d > omni_r:
+					continue
+			if not in_cone or d > INSTANT_NOTICE_R:
+				need = lerpf(NOTICE_MIN, NOTICE_MAX, clampf(d / maxf(notice_r, 1.0), 0.0, 1.0))
+		var off := _sight_offset(eye, t, tp, space)
+		if is_nan(off.x):
+			continue
+		best = t
+		best_d2 = d2
+		best_need = need
+		best_off = off
+		best_pos = tp + off
+	if best != null and best_need > 0.0:
+		# Noticing (un-alerted): keep a clear line for the distance-scaled notice time before alerting. The sensor turns to
+		# look meanwhile (_idle_scan); losing the line bleeds it off.
+		if _notice_tid == best.target_id:
+			_notice_t += elapsed
+		else:
+			_notice_tid = best.target_id
+			_notice_t = 0.0
+		_notice_pos = best_pos
+		if _notice_t + 1e-4 < best_need:
+			_perc_t = minf(_perc_t, maxf(best_need - _notice_t, 0.05))
+			best = null
+	elif best == null and _notice_tid != "":
+		_notice_t = maxf(_notice_t - elapsed, 0.0)
+		if _notice_t <= 0.0:
+			_notice_tid = ""
 	if best != null:
+		_notice_tid = ""
+		_notice_t = 0.0
+		_vis_off = best_off
 		_has_los = true
 		_cached_target = best
 		if CombatWorld.profiling:
@@ -1762,11 +1956,13 @@ func _target_aim_center(t: CombatTarget) -> Vector3:
 
 
 func _check_los(from: Vector3, to: Vector3, space: PhysicsDirectSpaceState3D, target: CombatTarget = null) -> bool:
+	_los_hit_d = -1.0
 	if space == null or not world.use_physics:
 		return true
 	var d := from.distance_to(to)
 	if d < 2.0:
 		return true
+	los_rays += 1
 	_ray_query.from = from
 	_ray_query.to = to
 	var excl := false
@@ -1778,7 +1974,58 @@ func _check_los(from: Vector3, to: Vector3, space: PhysicsDirectSpaceState3D, ta
 		_ray_query.exclude = []
 	if h.is_empty():
 		return true
-	return from.distance_to(h["position"] as Vector3) >= d - 2.6
+	var hd := from.distance_to(h["position"] as Vector3)
+	# the ray reached the target's own body (a mech's capsule: 2.2 m Strider -> 2.6, the Bulwark's 3.6 -> 4.0) or close
+	var reach := (target as PlayerTarget).body_radius + 0.4 if target is PlayerTarget else 2.6
+	if hd >= d - reach:
+		return true
+	_los_hit_d = hd
+	return false
+
+
+## Clear line from `eye` to target `t` (aim centre `tp`): Vector3.ZERO when its torso is seen, the offset to its head or
+## legs when only those are (low cover: a 2 m wall hides a trooper's view of a torso but not of an 8 m mech's head), NAN
+## when blocked. The extra rays are cast only for a mech whose torso ray was blocked near either end (low cover), not
+## behind a building in mid-street, which keeps the cost at one ray per target per check in the usual cases.
+func _sight_offset(eye: Vector3, t: CombatTarget, tp: Vector3, space: PhysicsDirectSpaceState3D) -> Vector3:
+	if _check_los(eye, tp, space, t):
+		return Vector3.ZERO
+	var no := Vector3(NAN, NAN, NAN)
+	if t.mass_class != "mech" or _los_hit_d < 0.0:
+		return no
+	var d := eye.distance_to(tp)
+	if _los_hit_d > LOS_LOW_COVER_R and _los_hit_d < d - LOS_LOW_COVER_R:
+		return no
+	var u := t.up
+	# a player mech's own head / legs offsets (its chassis: PlayerTarget.CHASSIS_SIGHT; the Strider's are these constants)
+	var offs: Array = (t as PlayerTarget).sight_offsets() if t is PlayerTarget else [u * LOS_HEAD_UP, -u * LOS_LEGS_DOWN]
+	for off: Vector3 in offs:
+		if _check_los(eye, tp + off, space, t):
+			return off
+	return no
+
+
+## True for LOUD_TIME s after target `t` fired (EnemySquad hearing records every player shot's shooter).
+func _loud(t: CombatTarget) -> bool:
+	return squad != null and squad.has_method("fired_recently") and bool(squad.fired_recently(t.target_id, LOUD_TIME))
+
+
+## Target speed over the floor from its positions between sight checks (m/s; 0 until it was seen twice).
+func _target_speed(t: CombatTarget) -> float:
+	var p := t.global_position if t.is_inside_tree() else t.position
+	var now := world.now if world != null else 0.0
+	var prev: Variant = _seen_pos.get(t.target_id)
+	var spd := 0.0
+	if prev is Array and now - float(prev[1]) > 1.0:
+		_seen_pos[t.target_id] = [p, now]   # stale baseline: start again (the next check, 0.2 s on, measures)
+	elif prev is Array and now - float(prev[1]) > 0.04:
+		var dp: Vector3 = p - (prev[0] as Vector3)
+		dp -= t.up * dp.dot(t.up)
+		spd = dp.length() / (now - float(prev[1]))
+		_seen_pos[t.target_id] = [p, now]
+	elif not (prev is Array):
+		_seen_pos[t.target_id] = [p, now]
+	return spd
 
 
 func _step_patrol(dt: float, space: PhysicsDirectSpaceState3D) -> void:
@@ -2292,6 +2539,7 @@ func _update_reveal_fx(dt: float) -> void:
 
 
 func _update_visuals(dt: float) -> void:
+	_step_stagger_anim(dt)
 	if _telegraph_fx != null:
 		if ai_state == STATE_TELEGRAPH and _telegraph_dur > 0.0:
 			var frac := clampf(_telegraph_t / _telegraph_dur, 0.0, 1.0)
@@ -2307,6 +2555,45 @@ func _update_visuals(dt: float) -> void:
 	if _status_bar != null:
 		var tag := "OVERHEAT" if heat.shutdown else ("STAGGER" if knock.staggered() else "")
 		_status_bar.refresh(core_hp_ratio(), heat_ratio, is_alerted(), ai_state == STATE_TELEGRAPH, tag, _dead, dt, revealed)
+
+
+## The stagger animation's step (base _update_visuals calls it; units that don't call super call it themselves): the
+## unit's seen velocity, then the timeline over the mechanical window (exact here on the host, guessed on a puppet). The
+## push direction: the last hit's impulse on this machine if fresh, else the knockback velocity (host) or the slide the
+## puppet sees, else straight back.
+func _step_stagger_anim(dt: float) -> void:
+	var p := _world_pos()
+	if _vis_has_prev and dt > 1e-5:
+		var v := (p - _vis_prev) / dt
+		_vis_vel = v if v.length_squared() < 2500.0 else _vis_vel   # a teleport (spawn, rehome) is not motion
+	_vis_prev = p
+	_vis_has_prev = true
+	_last_hit_age += dt
+	var flagged := knock.staggered() and not _dead
+	if not flagged and not _stagger_anim.active:
+		return
+	var push_w := Vector3.ZERO
+	if _last_hit_age < 0.35 and _last_hit_dir.length_squared() > 1e-4:
+		push_w = _last_hit_dir
+	elif not puppet and knock.velocity.length_squared() > 0.25:
+		push_w = knock.velocity
+	elif _vis_vel.length_squared() > 1.0:
+		push_w = _vis_vel
+	push_w -= up * push_w.dot(up)
+	var push_l := global_basis.inverse() * push_w if is_inside_tree() and push_w.length_squared() > 1e-6 else Vector3.ZERO
+	_stagger_anim.step(dt, flagged, -1.0 if puppet else knock.stagger_left, push_l, puppet)
+
+
+## The stagger rock for units without legs: a tilt about the axis across the push (the top leans with the hit),
+## `amp` rad at full rock. Identity at rest.
+func stagger_rock_basis(amp: float) -> Basis:
+	var a := _stagger_anim
+	if not a.active:
+		return Basis.IDENTITY
+	var axis := Vector3.UP.cross(a.push)
+	if axis.length_squared() < 1e-6:
+		return Basis.IDENTITY
+	return Basis(axis.normalized(), amp * a.rock)
 
 
 func _world_pos() -> Vector3:
@@ -2389,6 +2676,10 @@ func reset_enemy() -> void:
 	_has_prev_pos = false
 	_last_seen_pos = Vector3.ZERO
 	_last_hit_dir = Vector3.ZERO
+	_last_hit_age = 99.0
+	_stagger_anim.reset()
+	_vis_has_prev = false
+	_vis_vel = Vector3.ZERO
 	_clear_destruction_fx()
 	_cancel_telegraph("reset")
 	_release_slot()

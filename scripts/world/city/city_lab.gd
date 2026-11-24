@@ -27,7 +27,7 @@ extends Node3D
 ## the first gate in it. With no farm wall they use a window wall (the hull's, `walls=1` on its own), else the avenue.
 ##   --city site=section,seed=1,deck=0,camera=farm_far
 ## Mission world (MissionLab, site "stack" only): option "mission" puts MissionWorld's doors, flag, relay and portal in the
-## stack and loops them; "mission_phase" pins one look; cameras mission_gate / _lift / _flag / _asset / _portal.
+## stack and loops them; "mission_phase" pins one look; cameras mission_gate / _bay / _lift / _flag / _asset / _portal.
 ##   --city site=stack,seed=1,mission=all,mission_phase=warn,camera=mission_gate
 ## Downtown (docs/design/city-downtown.md): param "downtown" is the zone's share of the blocks on its own; on a section
 ## or stack 0 leaves the zone to the seed (CityPlan.for_deck), more forces that share. Cameras (the first deck with a
@@ -35,6 +35,9 @@ extends Node3D
 ## eye, across the block), downtown_plaza (ground, mech eye, at a plaza or corner cut), downtown_arcade (along an arcade's
 ## gallery), downtown_top (from above over the zone, the ceiling and the decks above hidden).
 ##   --city downtown=0.5,camera=downtown_avenue       --city site=stack,seed=4,camera=downtown_top
+## Deck lettering (docs/design/city-signs.md): option "deck_signs" (white / dark / off) sets CitySigns.style and rebuilds
+## the lettering of every deck (default dark, the user's pick); cameras sign_gate / sign_lift / sign_ramp, and sign_road (on
+## the road that ends at a gate, 80 m back at 10 m, at the over-gate sign); the deck on show first: `deck=1` shows "02".
 
 const PARAMS := [
 	{"id": "seed", "label": "Seed", "min": 1.0, "max": 200.0},
@@ -64,9 +67,10 @@ const PARAMS := [
 ## road forms are live since 2026-11-23 (the game's look); off plans it with the forms explicitly off (FORMS_OFF).
 const FORMS_OFF := {"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0}
 const CAMERAS := ["lab", "avenue", "street", "rooftop", "plaza", "pillar", "park", "gate", "props", "ramp", "shaft", "ramp_foot",
-		"ramp_under", "ramp_head", "ramp_cut", "farm_far", "farm_near", "farm_gate", "mission_gate", "mission_lift", "mission_flag", "mission_flag_far",
+		"ramp_under", "ramp_head", "ramp_cut", "farm_far", "farm_near", "farm_gate", "mission_gate", "mission_bay", "mission_air", "mission_air_farm", "mission_lift", "mission_flag", "mission_flag_far",
 		"mission_asset", "mission_portal", "downtown_avenue", "downtown_perch", "downtown_plaza", "downtown_arcade", "downtown_top", "downtown_street",
-		"tint_street", "variety_top", "alley", "alley_top", "alley_pillar", "lane", "pedestrian", "court"]
+		"tint_street", "variety_top", "alley", "alley_top", "alley_pillar", "lane", "pedestrian", "court",
+		"sign_gate", "sign_lift", "sign_ramp", "sign_road"]
 const SETTLE_FRAMES := 8         ## rebuild once the sliders have been still this long
 const DOZER_SPEED := 12.0        ## m/s: a mech's walk
 const DOZER_RADIUS := 1.6
@@ -75,7 +79,7 @@ const DOZER_RUN_OUT := 8.0       ## the lap starts and ends this far past the bl
 var time_scale := 1.0
 var params: Dictionary = {}
 var options := {"lighting": "day", "camera": "lab", "ceiling": "auto", "backdrop": "auto", "props": "idle", "site": "alone",
-		"quality": "high", "mission": "off", "mission_phase": "loop", "road_forms": "on"}
+		"quality": "high", "mission": "off", "mission_phase": "loop", "road_forms": "on", "deck_signs": CitySigns.style}
 var district: CityDistrict      ## the district on show: on its own, or the stack's deck the cameras stand on
 var stack: CityStack
 var mission_lab := MissionLab.new()     ## options mission / mission_phase and the mission cameras (MissionLab)
@@ -104,6 +108,7 @@ func _init() -> void:
 			_nudge = float(kv[1])
 		elif options.has(kv[0]):
 			options[kv[0]] = kv[1]
+	CitySigns.style = str(options["deck_signs"])      # deck lettering look (docs/design/city-signs.md), before any build
 
 
 func _ready() -> void:
@@ -252,6 +257,7 @@ func lab_options() -> Array:
 		{"id": "mission", "label": "Mission world (site: stack)", "choices": MissionLab.MODES, "value": options["mission"]},
 		{"id": "mission_phase", "label": "Mission look", "choices": MissionLab.PHASES, "value": options["mission_phase"]},
 		{"id": "road_forms", "label": "Section road forms (section / stack)", "choices": ["off", "on"], "value": options["road_forms"]},
+		{"id": "deck_signs", "label": "Deck lettering (CitySigns)", "choices": ["white", "dark", "off"], "value": options["deck_signs"]},
 	]
 
 
@@ -259,9 +265,14 @@ func set_lab_option(id: String, value: String) -> void:
 	if not options.has(id):
 		return
 	options[id] = value
+	if id == "deck_signs":
+		CitySigns.style = value
 	if district == null or district.plan == null:
 		return
-	if id == "lighting":
+	if id == "deck_signs":      # the lettering alone is rebuilt, on every deck
+		for d in _districts():
+			d.rebuild_signs()
+	elif id == "lighting":
 		_rig().apply(value)      # lights only: no mesh is rebuilt
 	elif id == "site" or id == "road_forms":
 		_dirty = SETTLE_FRAMES
@@ -444,7 +455,7 @@ func _apply_view() -> void:
 				on = dv["district"]
 				eye = dv["eye"]
 				target = dv["target"]
-		"mission_gate", "mission_lift", "mission_flag", "mission_flag_far", "mission_asset", "mission_portal":     # MissionLab
+		"mission_gate", "mission_bay", "mission_air", "mission_air_farm", "mission_lift", "mission_flag", "mission_flag_far", "mission_asset", "mission_portal":     # MissionLab
 			var mv := mission_lab.view(str(options["camera"]))
 			if not mv.is_empty():
 				on = mv["district"]
@@ -472,6 +483,14 @@ func _apply_view() -> void:
 				var o: Rect2 = found["rect"]
 				eye = Vector3(o.get_center().x, o.position.y - 2.0, 5.0)
 				target = Vector3(o.get_center().x, o.get_center().y, -30.0)
+		"sign_gate", "sign_lift", "sign_ramp", "sign_road":     # deck lettering (CitySigns.lab_view): the deck on show first
+			var sl: Array = [district]
+			sl.append_array(_districts())
+			var sv := CitySigns.lab_view(sl, str(options["camera"]))
+			if not sv.is_empty():
+				on = sv["district"]
+				eye = sv["eye"]
+				target = sv["target"]
 	if stack != null:
 		stack.set_active_deck(stack.decks.find(on))
 	eye += Vector3(_nudge, _nudge, 0.0)

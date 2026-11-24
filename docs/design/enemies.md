@@ -13,6 +13,8 @@ Hijacked civil-defense robots, emplacements, and armored vehicles repainted in i
 | **Hound Skirmisher** | `strider` | Light mobile bipedal patrol walker | `light` (×1.0 knockback) | Street/park patrol, flanker, spotter, and **knockback / roof-shove / wall-slam showcase**. Relays sightings to the squad after 0.45 s. |
 | **Bastion Siege Tank** | `tank` | Heavy armored tracked assault vehicle | `heavy` (×0.25 knockback) | Avenue anchor & verticality puzzle. Slow, heavy, dodgeable siege cannon + cover-flushing arc mortar. Exposes glowing rear/top radiator **`vents`** weak point to reward rooftop jumping and flanking. |
 
+**Armour** (`EnemyCatalog` `"armored": true`, weapons.md §3.10: flak does × 0.35): `turret`, `turret_sniper`, `turret_missile`, `strider`, `strider_breacher`, `tank`; not `drone`, `gunship`, `dropship`, `trooper_rifle`, `trooper_at`.
+
 ## 2. Scale, Silhouettes & Contrast
 
 Measured against the **8.0 m** player mech, **5.6 m** street trees, **12 m** streets, **20 m** avenues, and **40 m** ceiling:

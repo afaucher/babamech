@@ -69,7 +69,7 @@ static func playable_loadout(chassis_id: String, loadout: Dictionary) -> Diction
 			continue
 		var name := str(MechCatalog.weapon(w).get("name", w))
 		var fallback := str(defaults.get(id, ""))
-		var fits := fallback != "" and built(fallback) and str(hp["mount"]) in (MechCatalog.weapon(fallback).get("mounts", []) as Array)
+		var fits := fallback != "" and built(fallback) and MechCatalog.fits(hp, fallback)   # every mount kind it takes
 		var label := str(hp.get("label", id)).to_upper()
 		if fits:
 			out[id] = fallback

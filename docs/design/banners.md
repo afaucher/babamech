@@ -62,6 +62,21 @@ Always: at least 9 m apart, at most 2 on one building (a new building first), at
 be shot by another). LOW turns the cloth's shadows off; each deck's banners follow that deck's visibility (CityStack hides
 far decks at LOW / MEDIUM). This replaces the brief's "fewer banners at LOW".
 
+**Clear of the facade** (2026-11-23, user playtest: a banner hung through an apartment's balconies). A facade spot is
+kept only where the banner's envelope (cloth, the cross-bar with its end caps, the brackets, + `MARGIN` 0.3 m; out to
+the bar + 0.3 m) meets none of its face's relief boxes and no other box. `CityBuildings.relief(plan, building, tier)`
+lists, per side, everything standing out at least `RELIEF_MIN` 0.4 m (deeper than the cloth's back at 0.48 m):
+balconies (every bay of a balconied face: which bays get them is a cosmetic roll), door canopies, shop awnings (every
+shape), recessed entrances, corner blade signs, downtown awnings and lobby canopies, alley hoods and pipes, lane wall
+lamps and hanging signs (anywhere the roll can put them). The meshers draw with the same constants, so the two agree
+(geometry digests unchanged). Other boxes: every other tier of every building (setbacks, neighbours at a corner), plan
+solids (portico columns, steps), park columns, pillar cores. A blocked step slides along its face up to `SLIDE` 3.5 m
+(0.5 m steps) and tries the shortest cloth (4.8 m) before it is dropped. Shallow relief (bands, sills, piers,
+cornices, up to 0.35 m) passes behind the cloth. Street props (lamps, trees) are not checked: they stand at the curb,
+beyond the banner's 0.8 m reach. Seeds 1, 4, 7, 403112 (all decks): 113 banners before and after; 20 of them clipped
+before (15 balconies, 5 lane lamps / signs), none after (`tests/test_banner_placement.gd`). Placement 5-33 ms a deck. Shot: `city-variety/banner_clear_1.png`
+(test_visual_banners `banners_apartment`).
+
 ## 3. Destruction (host-arbitrated world object, AGENTS rule 6 shape 3)
 
 `BannerTarget` (a `CombatTarget`, pattern `AssetTarget`): `target_id "banner_<deck>_<id>"`, `owner_peer 0`,

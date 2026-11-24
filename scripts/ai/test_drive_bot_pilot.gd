@@ -15,12 +15,15 @@ var active := false
 var drive: Node                  ## TestDrive instance (typed loosely so Engine's co-op edits never clash)
 var bot: PlayerBot
 var _bound_seed := -1
+## Engine (hangar bots, docs/design/hangar-bots.md): drive ANOTHER mech than drive.mech: {mech, rack, pt, id}. Empty =
+## the local mech (the default). With a body, drive_override and the camera are left alone.
+var body: Dictionary = {}
 
 
 func net_fields() -> Dictionary:
 	return {
 		"profile_id": Net.SPAWN, "active": Net.PRIVATE, "drive": Net.LOCAL,
-		"bot": Net.LOCAL, "_bound_seed": Net.PRIVATE,
+		"bot": Net.LOCAL, "_bound_seed": Net.PRIVATE, "body": Net.LOCAL,
 	}
 
 
@@ -76,23 +79,30 @@ func _bind_bot() -> void:
 	var combat: Node = drive.get("combat") as Node
 	var city: CityDistrict = drive.get("city") as CityDistrict
 	var cam: ChaseCamera = drive.get("cam") as ChaseCamera
+	if not body.is_empty():
+		mech = body.get("mech") as MechController
+		cam = null
 	if mech == null or combat == null:
 		return
 	var rack: WeaponRack = combat.get("rack") as WeaponRack
 	var pt: PlayerTarget = combat.get("player_target") as PlayerTarget
+	if not body.is_empty():
+		rack = body.get("rack") as WeaponRack
+		pt = body.get("pt") as PlayerTarget
 	var world: CombatWorld = combat.get("world") as CombatWorld
 	var squad: EnemySquad = combat.get("squad") as EnemySquad
 	var plan: CityPlan = city.plan if city != null else null
 	var ring: RingFrame = city.ring if city != null else null
 	var seed_val := int(drive.get("seed_value"))
 
-	drive.set("drive_override", true)
+	if body.is_empty():
+		drive.set("drive_override", true)
 	if bot == null or not is_instance_valid(bot):
 		bot = PlayerBot.new()
 		bot.name = "SpectatorPlayerBot"
 		bot.auto_step = false
 		add_child(bot)
-	bot.configure(profile_id, seed_val, "spectator_bot")
+	bot.configure(profile_id, seed_val, "spectator_bot" if body.is_empty() else "crew_bot%d" % int(body.get("id", 0)))
 	bot.bind(mech, rack, pt, world, squad, plan, ring, cam)
 	_bound_seed = seed_val
 	# Run before MechController and TestDriveCombat step each physics frame.
@@ -105,6 +115,17 @@ func _release_controls() -> void:
 		bot = null
 	_bound_seed = -1
 	if drive == null or not is_instance_valid(drive):
+		return
+	if not body.is_empty():
+		var bm := body.get("mech") as MechController
+		if bm != null and is_instance_valid(bm):
+			bm.move_input = Vector2.ZERO
+			bm.turn_input = 0.0
+			bm.running = false
+			bm.thrust_input = false
+		var br := body.get("rack") as WeaponRack
+		if br != null and is_instance_valid(br):
+			br.set_trigger(false)
 		return
 	drive.set("drive_override", false)
 	var mech: MechController = drive.get("mech") as MechController
@@ -134,7 +155,7 @@ func _physics_process(delta: float) -> void:
 
 
 func _unhandled_input(e: InputEvent) -> void:
-	if not (e is InputEventKey):
+	if not body.is_empty() or not (e is InputEventKey):
 		return
 	var k := e as InputEventKey
 	if not k.pressed or k.echo:

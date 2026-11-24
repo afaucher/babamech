@@ -68,6 +68,10 @@ func _track_aim(target_pos: Vector3, dt: float) -> float:
 	return absf(wrapf(want_yaw - _turret_yaw, -PI, PI))
 
 
+func _sensor_yaw() -> float:   # perception: the forward cone follows the turret, which glances round while idle
+	return _turret_yaw
+
+
 func puppet_aim() -> Vector2:   # co-op puppet (W4)
 	return Vector2(_turret_yaw, 0.0)
 
@@ -78,9 +82,22 @@ func set_puppet_aim(a: Vector2) -> void:
 
 func _update_visuals(dt: float) -> void:
 	super._update_visuals(dt)
+	if _dead:
+		return
+	# Stagger (EnemyStaggerAnim): the hull rocks on its suspension away from the hit and settles; the turret is thrown
+	# off aim (swung and nosed up), then swings back onto it.
+	var sa := _stagger_anim
+	var rock := stagger_rock_basis(0.07 * anim_stagger_amp)
+	if _hull_mi != null:
+		_hull_mi.transform = Transform3D(rock, Vector3.ZERO)
+	if _vents_mi != null:
+		_vents_mi.transform = Transform3D(rock, rock * Vector3(0.0, 2.75, 3.1))
 	if _turret_pivot != null:
-		_turret_pivot.rotation.y = _turret_yaw
-		_turret_pivot.rotation.x = deg_to_rad(-10.0) if heat.shutdown else 0.0
+		var off_y := (0.35 * sa.aim_off * sa.side + 0.1 * sa.shake) * anim_stagger_amp
+		var off_p := 0.12 * sa.aim_off * anim_stagger_amp
+		var pitch := deg_to_rad(-10.0) if heat.shutdown else 0.0
+		_turret_pivot.transform = Transform3D(rock * Basis.from_euler(Vector3(pitch + off_p, _turret_yaw + off_y, 0.0)),
+			rock * Vector3(0.0, 2.7, -0.3))
 
 
 func _spawn_component_debris(comp_id: String) -> void:

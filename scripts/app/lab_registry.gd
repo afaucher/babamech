@@ -35,6 +35,7 @@ const SUBJECTS := [
 	{"id": "audio", "label": "Audio (soundboard, mix, 3D distance, heat, telegraphs)", "path": "res://scripts/audio/audio_lab.gd"},
 	{"id": "pilot", "label": "Pilot expressions (moods, reactions, motion)", "path": "res://scripts/pilot/pilot_lab.gd"},
 	{"id": "banners", "label": "Invader banners (wall + pole, tear)", "path": "res://scripts/world/occupation/banner_lab.gd"},
+	{"id": "depot", "label": "Supply depot (bunker kiosk, 2x2 socket wall)", "path": "res://scripts/world/depot/depot_lab.gd"},
 ]
 
 

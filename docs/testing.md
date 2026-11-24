@@ -60,6 +60,69 @@ the measured numbers and why).
   MechPuppet, no input or physics) with fake owner peers `TestDrive.OFFLINE_PEER + seat`, placed in the crew slots
   (`TestDrive.entry_spawn` / `spawn_point`); their rigs, gait, FX and audio run. `test_stack_drive` checks it.
 
+## Combat log (damage in playtest logs)
+Every mission run (stack mode, solo or crew) prints `[Flow]` damage lines for THIS machine's player
+(`scripts/game/combat_log.gd`, `CombatLog`; attached by `TestDrive` once `MissionFlow` exists, starts when the mission is
+released). Off: `--no-combat-log`. Never in the lab or a district drive. Logging only (all LOCAL, no messages). Format:
+`[Flow] t=<FlowLog clock> <tag> mt=<mission s> peer=<id> key=value ...`, fixed field order, values without spaces
+(`-` = empty), so `grep "\[Flow\]"` gives the whole run's flow and damage together.
+- `dmg_in src=<id>/<kind> wpn= comp= amt= n= dur= hp=<comp>:<cur>/<max>,... tot=<% total> core=<% weakest of torso / head
+  / legs> heat=<0..1> shut=0|1 heat_in=`: damage to the local mech, coalesced per source + weapon + component over 0.5 s
+  (mt = first hit; hp = when the line prints, at most 0.5 s later). Exact (the victim decides). Falls: `src=fall/env`,
+  wall slams `src=wall/env`.
+- `dmg_out tgt=<id>/<kind> wpn= amt= n= dur= thp=<% target HP, -1 unknown> kill=0|1 est=0|1`: the player's hits per
+  target + weapon over 1 s (a kill prints at once). `est=0` (solo, host, anything applied on this machine): the amount the
+  target applied, after its weak-point multipliers. `est=1` (a client's hit on a host-owned enemy, applied on the host):
+  the raw hit damage, thp from the local replica, kill unknown (0). `wpn=dot`: non-hit damage credited to the player.
+- `down cause= src= wpn=`, `respawn tot=`.
+- `summary hp= core= comp=<comp>:<%>,... heat= shut= in= out= near= nearest= combat=0|1 deck= obj= down=`: every 10 s of
+  mission time; in / out = this window's damage, near = live enemies within 150 m, combat = shot / hit / took non-env
+  damage within the last 6 s.
+- `end outcome= reason= in= out= kills= est= taken_by=<kind>:<amt>,... dealt_by=<wpn>:<amt>,... hp_min= hp_min_mt=
+  core_min= core_min_mt= deaths= death_mt=a;b respawns= respawn_mt= combat_s= quiet_s= longest_combat= longest_combat_mt=
+  longest_quiet= longest_quiet_mt=` then the mission's pacing numbers `eng_s= eng_pct= quiet_max= quiet_max_mt= quiet30=
+  peaks= peak_mt= kint_med= kint_p90= kint_max= in_pm= out_pm= core_min_c= est_eng=`: once, at won / lost, or `quit`
+  when the scene goes first.
+`amt` includes overkill.
+
+Threat and pacing records (`docs/design/pacing-director.md` section 3; summaries per `pacing-research.md` 8.6):
+- `shot src=<id>/<kind> tgt=<id>/<kind>|- wpn= n= hits= hit=0|1 dist= est=0|1`: shots coalesced per shooter + weapon +
+  target over 1 s (mt = first shot). Every machine logs its own pilot's shots, exact: tgt = what the shot hit (paired by
+  shot key from `hit_landed` / `remote_hit`), `-` = missed (no hit within range / speed + 0.5 s); dist = muzzle to hit
+  point (misses: to the aim point). The host also logs enemy shots at pilots (tgt = the enemy's `_target_id` when it
+  fired, dist = muzzle to pilot): hits exact on pilots it owns; on a client's pilot (the victim decides there)
+  `hits=-1 hit=-1 est=1`.
+- `threat i= src=host|local eng= engaging= near= sees= seen_by= nearest= est= crew_i= crew_eng= deck= alive= tot= core=
+  heat= rays= pilot= bot=0|1` at 1 Hz for the local pilot (pilot = the line's peer) and, on the host, for each hangar bot
+  (host-owned pilots with negative ids: `bot=1 pilot=<id>`, own intensity and ray budget). `i` = intensity (`PilotIntensity`, `scripts/game/pilot_intensity.gd`, the
+  1.2 table): the host director's value from mission state `intensity` when present (`src=host`), else computed here.
+  Engaged = an enemy fired at the pilot, or was awake within 60 m with it as target, in the last 4 s. `near` = live
+  enemies within 200 m; `sees` = awake ones among the 12 nearest in line of sight (p>e rays); `seen_by` = enemies with
+  the pilot as target and line of sight (host: read from the AI's `_target_id` / `_has_los`; client: replicated
+  `ai_state` + range + the pilot's ray, `est=1`); `crew_eng` = any pilot engaged (host: all pilots); `alive` = live
+  enemies of the deck; `rays` = p>e rays in the last second.
+- `los list=<id>:<p>e 1|0|->:<e>p 1|0>,... pilot= bot=` (1 Hz per pilot, the 12 nearest awake enemies within 200 m).
+- `quiet from= dur= deck=`: a stretch over 30 s with nobody engaged just ended.
+- `deck_sum deck= from= dur= eng_s= eng_pct= quiet_max= quiet_max_mt= quiet30=<start>+<dur>;... peaks= peak_mt= kills=
+  kint_med= kint_p90= kint_max= in_pm= out_pm= hp_min= hp_min_mt= core_min= core_min_c= core_min_mt= deaths= est=`:
+  when the local pilot has been 3 s on another deck, and at the end. Peaks = crew intensity crossing 70 (re-armed under
+  35); kill intervals over every enemy destroyed (anyone's kill); `est=1` = engagement from replicated state.
+- `pace deck= from= to= i= reason=`, `release wave= deck= src= size= kinds=<kind>:<n>,... reason=`, `scout ev= drone=
+  deck=`, `depot ev= depot= left=`: printed by `CombatLog.note_pace / note_release / note_scout / note_depot` (static,
+  no-ops when no log runs); `pace` also from mission state key `pace` changes until `note_pace` is used.
+Cost: one scan of `world.targets` every 0.25 s, the threat record at 1 Hz, at most 12 p>e rays a second (3 per physics
+step, `CombatWorld.shot_ray`), strings only when a line prints. `tests/test_combat_log.gd` checks the records (a staged
+physics scene with real turrets and a wall for the threat counts and the ray budget), `PilotIntensity` against the
+table, `PacingStats`, that every line parses, and runs the report tool on its own lines.
+
+**Pacing timeline** (`tools/pacing_report/`, Python 3 standard library): one self-contained HTML file per run log.
+`python tools\pacing_report\pacing_report.py -Latest -o pacing.html` takes the newest mission log in
+`%APPDATA%\Godot\app_userdata\babamech\logs` (`godot.log` and its dated copies: run.ps1 games and playtests; Godot
+keeps only the last few and headless test runs without `--log-file` rotate them, so copy a playtest worth keeping to
+`test_logs\playtest\`) or in `test_logs\playtest\` (test runs skipped); or pass log path(s), one per machine (bots get
+their own section).
+`python tools\pacing_report\selftest.py` checks it.
+
 ## Why scene tests
 
 `.\run.ps1` once opened to an empty grey screen while every headless test passed. `front_end.gd` called

@@ -5,7 +5,10 @@ extends TestCase
 ## direct hits = one Hit of direct + splash; bursts on a wall, the ground, a prop (a tree stays standing) and at range;
 ## the friendly-fire rule (never the shooter, teammates only with friendly fire on, enemies always); a machine that does
 ## not decide the shot applies nothing; an air burst lays no decal, a ground burst does; balance vs the autocannon; the
-## hangar / rack list it; the weapon_range lab fires it at its airborne dummy.
+## hangar / rack list it; the weapon_range lab fires it at its airborne dummy. ARMOUR: on an armoured target
+## (CombatTarget.armored) both the direct strike and the splash do armor_mult (0.35) of their damage, an unarmoured one is
+## unchanged, a weapon without armor_mult (the autocannon) does the same damage to both; who is armoured (player mechs,
+## the relay, the catalog's armoured enemy classes; never drones / aircraft / troopers).
 
 const ID := "flak"
 const HIGH := 20.0                   ## altitude of the "airborne" scenes (m)
@@ -43,6 +46,8 @@ func setup() -> void:
 	_swept_fuse()
 	_who_fuses()
 	_non_deciding()
+	_armour()
+	_armour_who()
 	await _physics_bursts()
 	await _prop()
 	await _lab()
@@ -374,6 +379,101 @@ func _non_deciding() -> void:
 	near(float(out[1][2]), 0.0, 1e-6, "the non-deciding machine applies no damage")
 	eq(int(out[1][3]), 0, "and sends no remote hit")
 	check(int(out[1][4]) >= 1, "but draws the burst")
+
+
+# --- Armour ------------------------------------------------------------------------------------------------
+
+## Fly one shot of `weapon` from `o` to `to` (generic: any projectile) until it ends or 3 s pass.
+func _fly_any(w: CombatWorld, weapon: String, o: Vector3, to: Vector3, idx: int) -> void:
+	var r := Combat.fire_record("me", 1, "side_r", weapon, o, to, w.now, idx, 0.0)
+	r["team"] = "player"
+	var e := w.fire(r)
+	var guard := 0
+	while e != null and is_instance_valid(e) and not e.finished() and guard < 180:
+		w.advance(1.0 / 60.0)
+		guard += 1
+
+
+func _armour() -> void:
+	var st := MechCatalog.weapon(ID)
+	var am := float(st.get("armor_mult", 1.0))
+	near(am, 0.35, 1e-6, "flak armor_mult 0.35")
+	check(not MechCatalog.weapon("autocannon").has("armor_mult"), "the autocannon has no armor_mult (x1)")
+	var plain := float(st["damage"]) + float(st["splash_damage"]) * (1.0 - Combat.PROJECTILE_RADIUS / float(st["splash_radius"]))
+	print("flak vs armour: %.2f -> %.2f a direct shell, %.1f -> %.1f DPS" % [plain, plain * am, plain * float(st["rate"]), plain * am * float(st["rate"])])
+	# A direct strike on an armoured target, an armoured and an unarmoured neighbour in the splash.
+	var w := _world()
+	var o := Vector3(0, 2, 0)
+	var t := _target(w, "tankish", Vector3(0, 2, -60))
+	t.armored = true
+	var side_a := _target(w, "side_a", Vector3(4.0, 2, -60))
+	side_a.armored = true
+	var side_u := _target(w, "side_u", Vector3(-4.0, 2, -60))
+	var hits := {}
+	w.hit_landed.connect(func(tg: CombatTarget, _h: Hit) -> void: hits[tg.target_id] = int(hits.get(tg.target_id, 0)) + 1)
+	var s := _fly(w, _rec(o, Vector3(0, 2, -60)))
+	eq(s.burst, FlakShell.BURST_DIRECT, "a shell on the armoured target strikes it")
+	near(_lost(t), plain * am, 1e-3, "armoured: (direct + splash) x 0.35 = %.3f" % (plain * am))
+	eq(int(hits.get("tankish", 0)), 1, "still one Hit on the struck armoured target")
+	var da := (s.burst_point - side_a.global_position).length() - R
+	var du := (s.burst_point - side_u.global_position).length() - R
+	var spl_a := float(st["splash_damage"]) * (1.0 - da / float(st["splash_radius"]))
+	var spl_u := float(st["splash_damage"]) * (1.0 - du / float(st["splash_radius"]))
+	near(_lost(side_a), spl_a * am, 1e-3, "an armoured neighbour takes splash x 0.35 (%.3f)" % (spl_a * am))
+	near(_lost(side_u), spl_u, 1e-3, "an unarmoured neighbour takes the full splash (%.3f)" % spl_u)
+	_clear(w)
+	w.free()
+	# A fused near miss on an armoured aircraft-sized target: splash x 0.35.
+	var w2 := _world()
+	var air := _target(w2, "air_arm", Vector3(R + 5.0, HIGH, -80))
+	air.armored = true
+	var s2 := _fly(w2, _rec(Vector3(0, HIGH, 0), Vector3(0, HIGH, -200)))
+	eq(s2.burst, FlakShell.BURST_FUSE, "the armoured target fuses it")
+	near(_lost(air), float(st["splash_damage"]) * (1.0 - 5.0 / float(st["splash_radius"])) * am, 1e-3, "fused splash x 0.35 on armour")
+	_clear(w2)
+	w2.free()
+	# The shared rule: x armor_mult on armour only, x1 for weapons without it.
+	var ac_st := MechCatalog.weapon("autocannon")
+	var dummy := CombatTarget.new()
+	near(CombatWorld.armor_scaled(st, dummy, 10.0), 10.0, 1e-9, "armor_scaled: unarmoured unchanged")
+	dummy.armored = true
+	near(CombatWorld.armor_scaled(st, dummy, 10.0), 3.5, 1e-9, "armor_scaled: flak on armour x 0.35")
+	near(CombatWorld.armor_scaled(ac_st, dummy, 10.0), 10.0, 1e-9, "armor_scaled: autocannon on armour unchanged")
+	dummy.free()
+	# A non-flak weapon: the autocannon does the same damage to an armoured and an unarmoured target.
+	var lost := []
+	for arm: bool in [false, true]:
+		var wa := _world()
+		var ta := _target(wa, "ac_t", Vector3(0, 2, -40))
+		ta.armored = arm
+		_fly_any(wa, "autocannon", Vector3(0, 2, 0), Vector3(0, 2, -40), 9)
+		lost.append(_lost(ta))
+		_clear(wa)
+		wa.free()
+	check(float(lost[0]) > 0.0, "the autocannon round hits (%.3f)" % float(lost[0]))
+	near(float(lost[1]), float(lost[0]), 1e-6, "autocannon: the same damage on armour (%.3f vs %.3f)" % [float(lost[1]), float(lost[0])])
+	near(float(lost[0]), float(ac_st["damage"]), 1e-3, "= its catalog damage, as before")
+
+
+## Who is armoured: player mechs, the relay, the catalog's armoured enemy classes (turrets, striders, the tank); never
+## drones, aircraft or troopers. Read off real configured enemies (EnemyBase reads the catalog's "armored").
+func _armour_who() -> void:
+	var pt := PlayerTarget.new()
+	check(pt.armored, "a player mech is armoured")
+	pt.free()
+	var at := AssetTarget.new("relay")
+	check(at.armored, "the relay (AssetTarget) is armoured")
+	at.free()
+	var w := _world()
+	var expect := {"turret": true, "turret_sniper": true, "turret_missile": true, "strider": true, "strider_breacher": true,
+		"tank": true, "drone": false, "trooper_rifle": false, "trooper_at": false, "gunship": false, "dropship": false}
+	for id: String in EnemyCatalog.CLASS_ORDER:
+		check(expect.has(id), "armour split covers enemy class %s" % id)
+		var e := EnemySpawner.make_enemy(id)
+		e.configure(id, "arm_" + id, w, null, null, 1)
+		eq(e.armored, bool(expect.get(id, false)), "%s armoured: %s" % [id, str(expect.get(id, false))])
+		e.free()
+	w.free()
 
 
 # --- World geometry, props, decals ------------------------------------------------------------------------

@@ -33,6 +33,15 @@ const RESTART := 15.0                   ## s after the last threat in range
 const REACT := 0.3                      ## s from the threat to the brakes
 const STATION_MERGE := 30.0             ## m: stations closer than this are one stop
 const MASS := 25000.0                   ## kg (nothing in the game can shove it)
+## m: a car is solid (collision on) only while ALL of it is at least this far inside both end walls (car_solid). A mech's
+## capsule is 4.4 m across, so a solid car can shove a mech toward an end wall only until the mech's far side is 0.6 m
+## short of the wall plane: never into a portal's recess (back plate 5.9 m behind the plane), never against a solid end
+## wall (the train turns 3 m from it, WALL_CLEAR). Every car that gets there later passes through it the same way, so no
+## sequence of cars ratchets it further. Local presentation of the shared pose (LifeTramCars), timing untouched.
+const END_CLEAR := 5.0
+## HP to EACH leg of a mech a car pins (LifeTramCars: once per mech per train pass, then the car passes through it), like
+## a hard fall at 40 m/s (PlayerTarget.fall_damage(40): 60 per leg, 30 % of a leg's 200 HP; a fall caps at 180).
+const CRUSH_DAMAGE := 60.0
 const RUN := 0
 const STOP := 1
 const SNAP_VERSION := 1
@@ -313,6 +322,12 @@ static func car_s(s: float, i: int) -> float:
 ## Whether car i (at centre cs) is drawn: not wholly beyond an end wall.
 func car_inside(cs: float) -> bool:
 	return cs + CAR_L * 0.5 > wall_lo and cs - CAR_L * 0.5 < wall_hi
+
+
+## Whether car i (at centre cs) is solid: wholly inside the map and at least END_CLEAR m from both end walls (a car in a
+## portal's recess, beyond it, or within END_CLEAR of any end wall is drawn but has no collision).
+func car_solid(cs: float) -> bool:
+	return cs - CAR_L * 0.5 >= wall_lo + END_CLEAR and cs + CAR_L * 0.5 <= wall_hi - END_CLEAR
 
 
 ## Distance from arc point c to the nearest car of a train whose middle car is at s.

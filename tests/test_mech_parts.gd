@@ -149,16 +149,16 @@ func _bulwark() -> void:
 		check(n <= cap, "%s: within its face budget (%d <= %d)" % [part, n, cap])
 		var thin := _thinnest(built)
 		check(thin >= 0.0195, "%s: nothing thinner than 0.02 (thinnest shell %.4f; 0.0005 vertex quantisation allowed)" % [part, thin])
-	for part: String in ["bulwark_torso", "bulwark_knee_cap", "bulwark_side_mount"]:
-		check(_accent_surface(BulwarkMeshes.mesh(part)) >= 0, "%s has an accent surface (the knee pads on the knee cap)" % part)
+	for part: String in ["bulwark_torso", "bulwark_pod", "bulwark_knee_cap", "bulwark_side_mount"]:
+		check(_accent_surface(BulwarkMeshes.mesh(part)) >= 0, "%s has an accent surface (the pod's cap, the knee pads on the knee cap)" % part)
 	# Pivots: segments hang from the proximal joint to their rest length.
 	for seg: String in BulwarkMeshes.REST_LENGTH:
 		var part: String = {"thigh": "bulwark_thigh", "shin": "bulwark_shin", "tarsus": "bulwark_ankle"}[seg]
 		var bb := BulwarkMeshes.mesh(part).get_aabb()
 		near(bb.position.y, -float(BulwarkMeshes.REST_LENGTH[seg]), 0.06, "%s reaches its distal joint" % part)
 		check(bb.end.y < 0.3 and bb.end.y >= 0.0, "%s starts at its proximal joint" % part)
-	near(BulwarkMeshes.mesh("bulwark_side_mount").get_aabb().end.x, BulwarkMeshes.SIDE_REACH.x + 0.07, 0.02,
-		"bulwark_side_mount: the block's outer face at SIDE_REACH")
+	near(BulwarkMeshes.mesh("bulwark_side_mount").get_aabb().position.z, BulwarkMeshes.SIDE_REACH.z - 0.14, 0.02,
+		"bulwark_side_mount: the pivot block's front face just ahead of SIDE_REACH")
 	# Joints sized to the load (rule 3.3, read at the necks: the end section each segment enters its joint with), and the
 	# two drums / the ball and drum on one segment never meeting (radii sum under the segment's length).
 	var rest: Dictionary = BulwarkMeshes.REST_LENGTH
@@ -167,11 +167,21 @@ func _bulwark() -> void:
 	var shin_bot := 2.0 * _neck(BulwarkMeshes.SHIN, -1)
 	check(BulwarkMeshes.HIP_BALL >= 0.55 * thigh_neck, "hip ball %.2f >= 0.55 x the thigh's neck %.2f" % [BulwarkMeshes.HIP_BALL, thigh_neck])
 	check(BulwarkMeshes.KNEE_DRUM.x >= 0.55 * maxf(thigh_neck, shin_top), "knee drum %.2f >= 0.55 x the thicker neck %.2f" % [BulwarkMeshes.KNEE_DRUM.x, maxf(thigh_neck, shin_top)])
-	check(BulwarkMeshes.ANKLE_DRUM.x >= 0.55 * maxf(shin_bot, 0.32), "ankle drum %.2f >= 0.55 x the thicker neck %.2f" % [BulwarkMeshes.ANKLE_DRUM.x, maxf(shin_bot, 0.32)])
+	check(BulwarkMeshes.ANKLE_DRUM.x >= 0.55 * maxf(shin_bot, 0.4), "ankle drum %.2f >= 0.55 x the thicker neck %.2f" % [BulwarkMeshes.ANKLE_DRUM.x, maxf(shin_bot, 0.4)])
 	check(BulwarkMeshes.HIP_BALL + BulwarkMeshes.KNEE_DRUM.x < float(rest["thigh"]), "hip ball and knee drum stay apart on the thigh")
 	check(BulwarkMeshes.KNEE_DRUM.x + BulwarkMeshes.ANKLE_DRUM.x < float(rest["shin"]), "knee and ankle drums stay apart on the shin")
-	print("  bulwark joints vs the segments' biggest sections: hip %.2f, knee %.2f (rule 3.3 read at the necks)" % [
-		BulwarkMeshes.HIP_BALL / (2.0 * 0.36), BulwarkMeshes.KNEE_DRUM.x / (2.0 * 0.36)])
+	# Rule 3.3 read at the segments' biggest sections too (the thigh block's full thickness): ball and knee drum >= 0.55x.
+	var thigh_big := 0.0
+	for s: Array in BulwarkMeshes.THIGH:
+		thigh_big = maxf(thigh_big, 2.0 * maxf(absf(float(s[1])) + float(s[3]), absf(float(s[2])) + float(s[4])))
+	var shin_big := 0.0
+	for s: Array in BulwarkMeshes.SHIN:
+		shin_big = maxf(shin_big, 2.0 * maxf(absf(float(s[1])) + float(s[3]), float(s[4])))
+	check(BulwarkMeshes.HIP_BALL >= 0.55 * thigh_big, "hip ball %.2f >= 0.55 x the thigh's thickness %.2f" % [BulwarkMeshes.HIP_BALL, thigh_big])
+	check(BulwarkMeshes.KNEE_DRUM.x >= 0.55 * maxf(thigh_big, shin_big), "knee drum %.2f >= 0.55 x the thicker segment %.2f" % [
+		BulwarkMeshes.KNEE_DRUM.x, maxf(thigh_big, shin_big)])
+	print("  bulwark joints vs the segments' biggest sections: hip %.2f, knee %.2f (rule 3.3: >= 0.55)" % [
+		BulwarkMeshes.HIP_BALL / thigh_big, BulwarkMeshes.KNEE_DRUM.x / maxf(thigh_big, shin_big)])
 
 	# The assembled Bulwark.
 	var m := MechModel.new()
@@ -179,36 +189,106 @@ func _bulwark() -> void:
 	add_child(m)
 	await frames(1)
 	eq(m.leg_bend, 1.0, "the Bulwark's knees bend forward")
-	# Size at game scale (MechRig's mech_scale 2): overall height (the pilot's comb), body and overall width, against the
-	# Strider (printed; the Bulwark is wider than it is tall with its guns, its barrel ~1.3x the Strider's body).
+	# Size at game scale (MechRig's mech_scale 2): overall height (the pilot's comb), the body (torso, pelvis and any body
+	# pods: the Bulwark's hip pods are its hull's flanks) and overall width, against the Strider (printed).
 	var sizes := {}
 	for chassis: String in ["bulwark", "strider"]:
 		m.configure("chicken", chassis, {})
 		await frames(1)
 		var all := AABB()
-		var torso := AABB()
+		var body := AABB()
 		var comb := 0.0
+		var head := AABB()
 		for c in m.find_children("*", "MeshInstance3D", true, false):
 			var mi := c as MeshInstance3D
 			if mi.mesh == null or not mi.is_visible_in_tree():
 				continue
 			var b := mi.global_transform * mi.mesh.get_aabb()
 			all = b if all.size == Vector3.ZERO else all.merge(b)
-			if mi.name == "Torso":
-				torso = b
+			if str(mi.name) in ["Torso", "Pelvis"] or str(mi.name).begins_with("Pod_"):
+				body = b if body.size == Vector3.ZERO else body.merge(b)
 			if m.find_child("Head_chicken", true, false).is_ancestor_of(mi):
 				comb = maxf(comb, b.end.y)
-		sizes[chassis] = [all, torso]
-		print("  %s at scale 2: comb %.2f m, overall height %.2f m, width %.2f m (body %.2f m), hip %.2f m, max step %.2f m" % [chassis,
-			comb * 2.0, all.end.y * 2.0, all.size.x * 2.0, torso.size.x * 2.0, m.hip_height() * 2.0, m.max_foot_lift() * 0.9 * 2.0])
+				head = b if head.size == Vector3.ZERO else head.merge(b)
+		var eye := 0.0   # the pilot's eye line (the pupils' height): the head's centre for the height target
+		for pn in m.find_child("Head_chicken", true, false).find_children("Pupil*", "MeshInstance3D", true, false):
+			var pm := pn as MeshInstance3D
+			eye = (pm.global_transform * pm.mesh.get_aabb().get_center()).y
+		var torso_box := AABB()
+		var tn := m.find_child("Torso", true, false) as MeshInstance3D
+		torso_box = tn.global_transform * tn.mesh.get_aabb()
+		sizes[chassis] = [all, body, head]
+		sizes[chassis + "_comb"] = comb
+		sizes[chassis + "_eye"] = eye
+		sizes[chassis + "_torso"] = torso_box
+		print("  %s at scale 2: comb %.2f m, overall height %.2f m, width %.2f m (body %.2f m wide, %.2f m deep, %.2f m tall), hip %.2f m, max step %.2f m" % [
+			chassis, comb * 2.0, all.end.y * 2.0, all.size.x * 2.0, body.size.x * 2.0, body.size.z * 2.0, body.size.y * 2.0, m.hip_height() * 2.0,
+			m.max_foot_lift() * 0.9 * 2.0])
+	# The height (user, 2026-11-24: "the head should be about at the chest of the other mech"): the pilot's eye line within
+	# 0.25 model units (0.5 m) of the Strider's chest, two thirds up its torso (the egg hull); shorter than the Strider.
+	# Rule 2.4 and the slung hull (layout B1): still wider than tall to the pilot's comb with the long legs (the stance
+	# widened with them; the back boxes stand above the hull line, so not to the mortar's muzzle), and much wider than the
+	# Strider. The body at least 1.3x the Strider's width, wider and deeper than it is tall, and wider than its deck is high.
 	var bw: Array = sizes["bulwark"]
-	check((bw[0] as AABB).size.x > (bw[0] as AABB).end.y, "the Bulwark is wider than it is tall")
+	var sw: Array = sizes["strider"]
+	var bb: AABB = bw[1]
+	var st: AABB = sizes["strider_torso"]
+	var chest := st.position.y + st.size.y * 2.0 / 3.0
+	var eye_b := float(sizes["bulwark_eye"])
+	print("  bulwark pilot's eye line %.2f m, Strider chest (2/3 up its torso %.2f..%.2f m) %.2f m; comb %.2f m = %.0f%% of the Strider's" % [
+		eye_b * 2.0, st.position.y * 2.0, st.end.y * 2.0, chest * 2.0, float(sizes["bulwark_comb"]) * 2.0,
+		100.0 * float(sizes["bulwark_comb"]) / float(sizes["strider_comb"])])
+	check(absf(eye_b - chest) <= 0.25, "the Bulwark pilot's eyes (%.2f m) are at the Strider's chest (%.2f m, within 0.5 m)" % [eye_b * 2.0, chest * 2.0])
+	check((bw[0] as AABB).size.x > float(sizes["bulwark_comb"]), "the Bulwark is wider (%.2f m) than it is tall to the pilot's comb (%.2f m)" % [
+		(bw[0] as AABB).size.x * 2.0, float(sizes["bulwark_comb"]) * 2.0])
+	check((bw[0] as AABB).size.x >= 1.25 * (sw[0] as AABB).size.x, "the Bulwark is at least 1.25x the Strider's overall width (%.2f vs %.2f m)" % [
+		(bw[0] as AABB).size.x * 2.0, (sw[0] as AABB).size.x * 2.0])
+	check((bw[0] as AABB).end.y < (sw[0] as AABB).end.y, "the Bulwark is shorter than the Strider")
+	check(float(sizes["bulwark_comb"]) <= 0.85 * float(sizes["strider_comb"]), "the Bulwark's comb is at most 0.85x the Strider's")
+	check(bb.size.x >= 1.3 * (sw[1] as AABB).size.x, "the Bulwark's body is at least 1.3x the Strider's width (%.2f vs %.2f m)" % [
+		bb.size.x * 2.0, (sw[1] as AABB).size.x * 2.0])
+	check(bb.size.x > 2.0 * bb.size.y and bb.size.z > 2.0 * bb.size.y, "the hull is over twice as wide and as deep as it is tall (%.2f x %.2f x %.2f m)" % [
+		bb.size.x * 2.0, bb.size.z * 2.0, bb.size.y * 2.0])
+	m.configure("chicken", "bulwark", {})
+	await frames(1)
+	var torso_n := m.find_child("Torso", true, false) as MeshInstance3D
+	var deck_h := (torso_n.global_transform * Vector3(0, BulwarkMeshes.DECK, 0)).y
+	print("  bulwark deck %.2f m off the ground at scale 2" % (deck_h * 2.0))
+	check(bb.size.x > deck_h, "the body is wider (%.2f m) than its deck is high (%.2f m)" % [bb.size.x * 2.0, deck_h * 2.0])
+	# The deck: the flat top faces at DECK (the pilot's well and the pods cut into it), against the chicken head's footprint
+	# (both in body space).
+	var deck_area := 0.0
+	var tm := BulwarkMeshes.build("bulwark_torso")
+	for s in tm.get_surface_count():
+		var v: PackedVector3Array = tm.surface_get_arrays(s)[Mesh.ARRAY_VERTEX]
+		for i in range(0, v.size() - 2, 3):
+			var cr := (v[i + 1] - v[i]).cross(v[i + 2] - v[i])
+			if absf(cr.normalized().y) > 0.99 and absf(v[i].y - BulwarkMeshes.DECK) < 0.002 and absf(v[i + 1].y - BulwarkMeshes.DECK) < 0.002:
+				deck_area += cr.length() * 0.5
+	var hb: AABB = bw[2]
+	var cs := torso_n.global_transform.basis.get_scale().x
+	var head_area := (hb.size.x / cs) * (hb.size.z / cs)
+	print("  bulwark deck area %.2f vs the chicken head's footprint %.2f (body units): %.1fx" % [deck_area, head_area, deck_area / head_area])
+	check(deck_area >= 2.0 * head_area, "the deck is at least 2x the pilot head's footprint (%.1fx)" % (deck_area / head_area))
+	# The legs hang from the flanks: the hip outside the hull's width between the pods, each thigh (half width 0.31, its
+	# plates to 0.375) clear outside the keel, the hip pod standing out of the hull's flank over the hip and wider than the
+	# thigh and its plates either side.
+	var hip_x := m.hip_local(1.0).x / cs
+	check(hip_x > BulwarkMeshes.HULL_HW, "the hips are outboard of the hull (hip %.3f, hull %.3f)" % [hip_x, BulwarkMeshes.HULL_HW])
+	check(hip_x - BulwarkMeshes.THIGH_HW / cs > BulwarkMeshes.KEEL_HW, "the thighs hang outside the keel (hip %.3f, keel %.3f)" % [hip_x, BulwarkMeshes.KEEL_HW])
+	check(BulwarkMeshes.POD_OUT > BulwarkMeshes.HULL_HW and BulwarkMeshes.POD_IN < BulwarkMeshes.HULL_HW, "the hip pods stand out of the hull's flanks")
+	check(BulwarkMeshes.POD_IN < hip_x - BulwarkMeshes.THIGH_PLATES_HW / cs and BulwarkMeshes.POD_OUT > hip_x + BulwarkMeshes.THIGH_PLATES_HW / cs,
+		"the pod covers the thigh's width over the hip")
+	near(hip_x, BulwarkMeshes.HIP_X, 1e-4, "the default stance puts the hips at BulwarkMeshes.HIP_X")
+	# The long legs (user, 2026-11-24): hip about 4.8 m, step-up at least 1.2 m (the Strider's is 1.25 m).
+	check(m.hip_height() * 2.0 >= 4.5, "hip height %.2f m >= 4.5 m" % (m.hip_height() * 2.0))
+	check(m.max_foot_lift() * 0.9 * 2.0 >= 1.2, "max step-up %.2f m >= 1.2 m" % (m.max_foot_lift() * 0.9 * 2.0))
 	m.configure("chicken", "bulwark", {})
 	await frames(1)
 	near(float(m.params["thigh"]), float(rest["thigh"]), 1e-6, "the Bulwark's default thigh is its rest length")
 	for n: String in ["Torso", "Pelvis", "Nose", "Hatch", "Cockpit", "Head_chicken", "thigh_l", "thigh_r", "shin_l", "shin_r", "tarsus_l",
 			"tarsus_r", "socket_l", "socket_r", "hip_l", "knee_l", "ankle_l", "hip_r", "knee_r", "ankle_r", "foot_l", "foot_r",
-			"HP_side_l", "HP_side_r", "HP_back_l", "HP_back_r"]:
+			"HP_side_l", "HP_side_r", "HP_back_l", "HP_back_r", "Pod_l", "Pod_r"]:
 		check(m.find_child(n, true, false) != null, "bulwark mech has %s" % n)
 	check(m.find_child("BackPlate", true, false) == null and m.find_child("ShoulderPod_l", true, false) == null, "no Strider back plate or pods")
 	for hp: String in ["HP_side_l", "HP_side_r"]:

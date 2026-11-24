@@ -36,7 +36,9 @@ func setup() -> void:
 		if m.grounded() and i > 30:
 			break
 	check(burned, "the emergency burn fired")
-	check(m.last_impact <= m.safe_land_speed + 4.0, "landing softened (%.1f m/s)" % m.last_impact)
+	# A late burn down to auto_land_speed: a heavy landing (above safe_land_speed), never a damaging one.
+	check(m.last_impact <= m.auto_land_speed + 2.0, "landing softened to about auto_land_speed (%.1f m/s)" % m.last_impact)
+	check(m.last_impact < PlayerTarget.FALL_DAMAGE_SPEED, "no fall damage speed (%.1f m/s)" % m.last_impact)
 	# Without it, the same drop is a hard landing.
 	m.heat = 0.0
 	m.auto_burn = false

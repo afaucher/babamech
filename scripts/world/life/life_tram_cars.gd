@@ -6,7 +6,24 @@ extends Node3D
 ## dark, hazards bright), flat palette colour per face on CityPalette.surface_material(), no emission.
 ## Collision: one AnimatableBody3D per car (kinematic, moved to the tram's pose every frame, no physics simulation), on
 ## collision layer 1 like the district's own StaticBody3D, so a mech cannot walk through a tram. The one node-per-agent
-## exception in ambient life. A car wholly beyond an end wall (through a portal) is hidden and its shape disabled.
+## exception in ambient life. A car wholly beyond an end wall (through a portal) is hidden.
+##
+## When a car's shape is on (settle(), every _tram_step, after place() for every car; docs/design/ambient-life.md "Tram
+## collision and crushing"):
+##   * the position rule (LifeTram.car_solid, passed to place()): solid only while wholly at least END_CLEAR m inside both
+##     end walls, so it can never wedge a mech against an end wall or a portal's back plate, nor push it into the recess;
+##   * a car switching ON stays off while any character body overlaps it (it passes through, never launches one);
+##   * pinch: a moving solid car pressing a character body ahead of it that does not make way (advances < MAKE_WAY of the
+##     car's advance over CRUSH_HOLD s: pinned against a wall, a building, a prop) switches off and passes through it;
+##     so does a car reaching the END_CLEAR zone (the position rule) while pressing one. Either is a crush: the body takes
+##     LifeTram.CRUSH_DAMAGE on each leg ONCE (per body, CRUSH_REPEAT s: one train pass; every car touching it in that
+##     time passes through it), through the apply_damage verb of the PlayerTarget (group "player_target") whose `mech`
+##     it is, on THIS machine only when that mech is not a puppet (the victim's machine decides about its own mech). An
+##     enemy (host-owned) or a puppet is never damaged here. `crushed` is emitted for every crush of a non-puppet body.
+## Collision is local presentation: every machine runs these rules on the same car poses; the overlap / pinch parts use
+## its own bodies.
+
+signal crushed(body: CharacterBody3D, amount: float, applied: bool)
 
 const PLAIN := 0
 const HAZARD_DARK := 1
@@ -14,15 +31,35 @@ const HAZARD_BRIGHT := 2
 const RING_PTS := 20
 const ROUND := 8.0             ## superellipse exponent of the cross-sections: a boxy rounded brick
 const LAYER := 1               ## collision layer (the district's StaticBody3D is on layer 1)
+const TOUCH := 0.3             ## m: the query box reaches this far past the car's ends ("pressing")
+const CRUSH_HOLD := 0.2        ## s a moving car may press a body that does not make way before it is pinned
+const MAKE_WAY := 0.3          ## a pressed body advancing less than this share of the car's advance is not making way
+const CRUSH_REPEAT := 8.0      ## s: one crush per body per train pass
+const PIN_GAP := 0.5           ## m: a pressed body with something solid this close ahead of it is pinned
+const STEP_CLEAR := 1.0        ## m: obstacles lower than this ahead of a pressed body (curbs, steps) do not pin it
+const PIN_HIGH := 4.5          ## m of the body above STEP_CLEAR checked for that obstacle
+const JUMP := 0.5            ## s: a longer clock step is a jump (advance_to / restore), not motion
 
 var bodies: Array[AnimatableBody3D] = []
 var _mms: Array = []                       ## [plain, hazard dark, hazard bright] MultiMesh, LifeTram.CARS instances each
 var _shown := PackedInt32Array()           ## car -> -1 hidden, else the lights state shown
 var _shapes: Array[CollisionShape3D] = []
+var _want := PackedByteArray()             ## car -> 1 when the position rule makes it solid (place())
+var _prev := PackedVector3Array()          ## car -> its world origin at the last settle()
+var _settled := false                      ## _prev / _last_t hold a previous settle()
+var _last_t := 0.0                         ## life clock at the last settle()
+var _press := {}                           ## body instance id -> [car, s pressed, car advance, body advance, body pos]
+var _crushed_at := {}                      ## body instance id -> life clock of its last crush
+var _query: PhysicsShapeQueryParameters3D
+var _rids: Array[RID] = []
 
 
 func net_fields() -> Dictionary:
-	return {"bodies": Net.LOCAL, "_mms": Net.LOCAL, "_shown": Net.LOCAL, "_shapes": Net.LOCAL}
+	return {"bodies": Net.LOCAL, "_mms": Net.LOCAL, "_shown": Net.LOCAL, "_shapes": Net.LOCAL,
+		# collision bookkeeping: local presentation of the shared pose, from this machine's own bodies
+		"_want": Net.LOCAL, "_prev": Net.LOCAL, "_settled": Net.LOCAL, "_last_t": Net.LOCAL, "_press": Net.LOCAL,
+		"_query": Net.LOCAL, "_rids": Net.LOCAL,
+		"_crushed_at": Net.PRIVATE}           # decides crush damage on this machine's own mech only
 
 
 func _init() -> void:
@@ -36,9 +73,22 @@ func build(bounds: AABB, render_layer: int) -> void:
 	bodies.clear()
 	_shapes.clear()
 	_mms.clear()
+	_rids.clear()
 	_shown = PackedInt32Array()
 	_shown.resize(LifeTram.CARS)
 	_shown.fill(-1)
+	_want = PackedByteArray()
+	_want.resize(LifeTram.CARS)
+	_prev = PackedVector3Array()
+	_prev.resize(LifeTram.CARS)
+	_settled = false
+	_press.clear()
+	_crushed_at.clear()
+	var qbox := BoxShape3D.new()
+	qbox.size = Vector3(LifeTram.CAR_W + 0.2, LifeTram.CAR_H - 0.6, LifeTram.CAR_L + 2.0 * TOUCH)
+	_query = PhysicsShapeQueryParameters3D.new()
+	_query.shape = qbox
+	_query.collide_with_areas = false
 	for lit in 3:
 		var geo := CityGeo.new()
 		car(geo, lit)
@@ -72,24 +122,175 @@ func build(bounds: AABB, render_layer: int) -> void:
 		add_child(body)
 		bodies.append(body)
 		_shapes.append(cs)
+		_rids.append(body.get_rid())
+	_query.exclude = _rids
 
 
-## Car i at `local` (deck-local, for the drawing) / `world` (for its body), in lights state `want` (-1: hidden, its
-## collision off: beyond an end wall; -2: not drawn (out of every viewer's range), collision on).
-func place(i: int, want: int, local: Transform3D, world: Transform3D) -> void:
+## Car i at `local` (deck-local, for the drawing) / `world` (for its body), in lights state `want` (-1: hidden: beyond an
+## end wall; -2: not drawn (out of every viewer's range)). `solid`: the position rule (LifeTram.car_solid); settle() then
+## decides its collision.
+func place(i: int, want: int, local: Transform3D, world: Transform3D, solid: bool = true) -> void:
 	var prev := _shown[i]
 	if prev >= 0 and prev != want:
 		(_mms[prev] as MultiMesh).set_instance_transform(i, LifeFigures.HIDDEN)
 	_shown[i] = want
 	if want >= 0:
 		(_mms[want] as MultiMesh).set_instance_transform(i, local)
-	var off := want == -1
-	if _shapes[i].disabled != off:
-		_shapes[i].disabled = off
+	_want[i] = 1 if solid and want != -1 else 0
 	if bodies[i].is_inside_tree():
 		bodies[i].global_transform = world
 	else:
 		bodies[i].transform = world
+
+
+## After place() for every car, at life clock `now`: switch each car's collision (see the header).
+func settle(now: float) -> void:
+	var dt := now - _last_t
+	var moving_clock := _settled and dt > 0.0 and dt <= JUMP
+	_last_t = now
+	var space: PhysicsDirectSpaceState3D = null
+	if is_inside_tree() and get_world_3d() != null:
+		space = get_world_3d().direct_space_state
+	for i in LifeTram.CARS:
+		var xf := bodies[i].global_transform if bodies[i].is_inside_tree() else bodies[i].transform
+		var adv := xf.origin - _prev[i] if moving_clock else Vector3.ZERO
+		_prev[i] = xf.origin
+		var want := _want[i] == 1
+		var shape := _shapes[i]
+		if space == null:
+			shape.disabled = not want
+			continue
+		var on := not shape.disabled
+		var moving := adv.length() > 1e-4
+		if not on:
+			if want and _touching(i, xf, space).is_empty():
+				shape.disabled = false          # nothing in it: on (never switched on around a body: no launch)
+			continue
+		if not moving:
+			_drop_presses(i)
+			if not want:
+				shape.disabled = true
+			continue
+		var dir := adv.normalized()
+		var ahead: Array[CharacterBody3D] = []
+		for b: CharacterBody3D in _touching(i, xf, space):
+			if (b.global_position - xf.origin).dot(dir) > LifeTram.CAR_L * 0.5:
+				ahead.append(b)
+		if not want:
+			# Into the END_CLEAR zone (or beyond a wall) while shoving a body toward the wall: it would be squeezed there.
+			shape.disabled = true
+			for b in ahead:
+				_crush(b, now)
+			_drop_presses(i)
+			continue
+		var off := false
+		var seen := {}
+		for b in ahead:
+			var id := b.get_instance_id()
+			seen[id] = true
+			if now - float(_crushed_at.get(id, -INF)) < CRUSH_REPEAT:
+				off = true                       # crushed this pass: every car passes through it
+				continue
+			if _blocked(b, dir, space):
+				_crush(b, now)                   # pressed against something solid right ahead of it: pinned
+				off = true
+				_press.erase(id)
+				continue
+			var e: Array = _press.get(id, [])
+			if e.is_empty() or int(e[0]) != i:
+				_press[id] = [i, 0.0, 0.0, 0.0, b.global_position]
+				continue
+			e[1] = float(e[1]) + dt
+			e[2] = float(e[2]) + adv.length()
+			e[3] = float(e[3]) + (b.global_position - (e[4] as Vector3)).dot(dir)
+			e[4] = b.global_position
+			if float(e[1]) >= CRUSH_HOLD:
+				if float(e[3]) < MAKE_WAY * float(e[2]):
+					_crush(b, now)
+					off = true
+					_press.erase(id)
+				else:
+					_press[id] = [i, 0.0, 0.0, 0.0, b.global_position]
+		for id: int in _press.keys():
+			if int(_press[id][0]) == i and not seen.has(id):
+				_press.erase(id)
+		if off:
+			shape.disabled = true
+	_settled = true
+
+
+## Character bodies overlapping car i's box (reaching TOUCH past its ends; from 0.4 m above its floor, clear of curbs).
+func _touching(i: int, xf: Transform3D, space: PhysicsDirectSpaceState3D) -> Array[CharacterBody3D]:
+	var out: Array[CharacterBody3D] = []
+	_query.transform = xf * Transform3D(Basis.IDENTITY, Vector3(0.0, 0.4 + (LifeTram.CAR_H - 0.6) * 0.5, 0.0))
+	for hit: Dictionary in space.intersect_shape(_query, 32):
+		var b := hit.get("collider") as CharacterBody3D
+		if b != null and not out.has(b):
+			out.append(b)
+	return out
+
+
+## Whether body b cannot move PIN_GAP m along `dir`: its own collision shape, lifted STEP_CLEAR m (curbs and steps it
+## would climb do not count), cast against everything it collides with but the cars. Physics would otherwise squeeze a
+## pinned capsule through the obstacle or out of the gap.
+func _blocked(b: CharacterBody3D, dir: Vector3, space: PhysicsDirectSpaceState3D) -> bool:
+	var cs: CollisionShape3D = null
+	for c in b.get_children():
+		if c is CollisionShape3D and not (c as CollisionShape3D).disabled and (c as CollisionShape3D).shape != null:
+			cs = c
+			break
+	if cs == null:
+		return false
+	var q := PhysicsShapeQueryParameters3D.new()
+	var lift := STEP_CLEAR
+	var gap := PIN_GAP
+	q.shape = cs.shape
+	if cs.shape is CapsuleShape3D:
+		# Slimmer (a wall it only brushes along the track does not pin it) and at most PIN_HIGH m tall above the lift (an
+		# overhang above that does not either). The trimmed radius is added back to the distance cast.
+		var src := cs.shape as CapsuleShape3D
+		var cap := CapsuleShape3D.new()
+		cap.radius = src.radius * 0.9
+		cap.height = clampf(src.height - STEP_CLEAR, cap.radius * 2.0, PIN_HIGH)
+		q.shape = cap
+		lift = STEP_CLEAR + cap.height * 0.5 - src.height * 0.5
+		gap += src.radius * 0.1
+	q.collision_mask = b.collision_mask
+	var ex: Array[RID] = _rids.duplicate()
+	ex.append(b.get_rid())
+	q.exclude = ex
+	q.transform = Transform3D(Basis.IDENTITY, b.up_direction * lift) * cs.global_transform
+	q.motion = dir * gap
+	var r := space.cast_motion(q)
+	return r.size() >= 1 and float(r[0]) < 1.0
+
+
+func _drop_presses(i: int) -> void:
+	for id: int in _press.keys():
+		if int(_press[id][0]) == i:
+			_press.erase(id)
+
+
+## A car pinned body b: crush damage once per train pass, on this machine only for its own (non-puppet) mech.
+func _crush(b: CharacterBody3D, now: float) -> void:
+	var id := b.get_instance_id()
+	if now - float(_crushed_at.get(id, -INF)) < CRUSH_REPEAT:
+		return
+	if _crushed_at.size() > 32:
+		for k: int in _crushed_at.keys():
+			if now - float(_crushed_at[k]) >= CRUSH_REPEAT:
+				_crushed_at.erase(k)
+	_crushed_at[id] = now
+	if b.get("puppet") == true:
+		return                                   # another machine's mech: its owner decides
+	var applied := false
+	for n: Node in get_tree().get_nodes_in_group("player_target"):
+		if n.get("mech") == b and n.has_method("apply_damage"):
+			n.call("apply_damage", LifeTram.CRUSH_DAMAGE, "leg_l", "crush")
+			n.call("apply_damage", LifeTram.CRUSH_DAMAGE, "leg_r", "crush")
+			applied = true
+			break
+	crushed.emit(b, LifeTram.CRUSH_DAMAGE, applied)
 
 
 ## Only the drawing (the bodies keep following the tram).

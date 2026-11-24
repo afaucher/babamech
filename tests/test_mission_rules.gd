@@ -22,6 +22,13 @@ func setup() -> void:
 	_plan_hud()
 	_plan_set_site()
 	_plan_state()
+	_plan_labels()
+	_plan_flag_percent()
+	_plan_next_floor()
+	_panel_structure()
+	_panel_prefixes()
+	_panel_routes()
+	_panel_states()
 	finish()
 
 
@@ -542,8 +549,8 @@ func _plan_hud() -> void:
 	var wv := [[0, 3], [1, 3], [0, 0]]
 	m.evaluate({"t": 0.0, "enemies": [3, 5, 0], "crew": [_crew(false, 0, 0.0, 150.0)], "waves": wv})
 	m.evaluate({"t": 1.0, "enemies": [3, 5, 0], "crew": [_crew(false, 0, 0.0, 150.0)], "waves": wv})
-	eq(m.text(), "Raise the flag: 1 / 20 s", "text: the flag")
-	eq(m.lines(0), ["Raise the flag: 1 / 20 s"] as Array[String], "lines: only known objectives (bonus still hidden)")
+	eq(m.text(), "Raise the flag: 5%", "text: the flag (1 of 20 s = 5 %)")
+	eq(m.lines(0), ["Raise the flag: 5%"] as Array[String], "lines: only known objectives (bonus still hidden)")
 	eq(m.lines(1), ["Clear deck 2: 5 hostiles, waves 1 / 3"] as Array[String], "lines: the sweep with its waves")
 	eq(m.lines(2), ["Defend the position: wave 1 / 2"] as Array[String], "lines: deck 2 (hold hidden)")
 	var mk := m.markers(0)
@@ -554,16 +561,20 @@ func _plan_hud() -> void:
 	var lines := m.lines(0)
 	eq(lines.size(), 2, "a found bonus gets a line")
 	if lines.size() == 2:
-		eq(lines[1], "Bonus: Raise the flag: 0 / 20 s", "bonus line, after the primary")
+		eq(lines[1], "Bonus: Raise the flag: 0%", "bonus line, after the primary")
 	eq(m.markers(0).size(), 2, "and a marker")
 	var t := 2.0
 	for i in 22:
 		t += 1.0
 		m.evaluate({"t": t, "crew": [_crew(false, 0, 0.0, 150.0)], "enemies": [1, 1, 0]})
-	eq(m.lines(0)[0], "Raise the flag: 20 / 20 s (done)", "done line")
+	eq(m.lines(0)[0], MissionRules.NEXT_FLOOR, "primary done: the deck's first line points to the next floor")
+	eq(m.lines(0)[1], "Raise the flag: 100% (done)", "done line")
 	for o: Dictionary in m.markers(0):
 		check(o["id"] != "d0_p", "no marker for a done objective")
-	eq(m.text(), "Clear deck 2: 1 hostile, waves 1 / 3", "text moves to the next primary")
+	eq(m.text(), MissionRules.NEXT_FLOOR, "text: proceed while the crew is still on deck 1")
+	t += 1.0
+	m.evaluate({"t": t, "crew": [_crew(false, 1, 0.0, 0.0)], "enemies": [1, 1, 0], "waves": wv})
+	eq(m.text(), "Clear deck 2: 1 hostile, waves 1 / 3", "on deck 2: text moves to the next primary")
 
 
 func _plan_set_site() -> void:
@@ -608,6 +619,8 @@ func _plan_state() -> void:
 	var c2 := _prules()
 	c2.apply_state(bytes_to_var(var_to_bytes(st)))
 	eq(c2.state(), st, "plan state: var_to_bytes round trip")
+	check(st.has("reached"), "state() carries reached")
+
 	# Size: real 5-deck plans with every objective mid-way.
 	for seed_ in [1, 2, 3, 21]:
 		var sec := SectionPlan.make({"seed": float(seed_), "decks": 5.0})
@@ -620,3 +633,425 @@ func _plan_state() -> void:
 		var size := JSON.stringify(r.state()).length()
 		print("plan state JSON, 5 decks seed %d: %d objectives, %d bytes" % [seed_, mp.objectives.size(), size])
 		check(size < 1024, "plan state() under 1 KB for 5 decks (%d)" % size)
+
+
+## Every objective line reads as a sentence in every state, for every type and role: no "?", no empty name, no raw id,
+## no placeholder; an undiscovered bonus is not listed; the HUD font has every glyph (lines are drawn upper-cased).
+func _plan_labels() -> void:
+	var font := ThemeDB.fallback_font
+	var missing := {}
+	for st: String in ["hidden", "known", "active", "done", "failed"]:
+		for prog: float in [0.0, 7.0, 20.0]:
+			var m := _prules()
+			var objs := {}
+			for o: Dictionary in m.objectives:
+				var tot := 60.0 if o["type"] == "hold" else (20.0 if o["type"] == "flag" else 2.0)
+				objs[o["id"]] = [st, minf(prog, tot), tot]
+			m.apply_state({"objs": objs, "left": [3, 1, 0], "reached": 0})
+			var tag := "labels %s prog %.0f" % [st, prog]
+			for k in 3:
+				var ls := m.lines(k)
+				if st == "hidden":
+					for l in ls:
+						check(not l.begins_with("Bonus"), tag + ": a hidden bonus is not listed (%s)" % l)
+				var all: Array[String] = ls.duplicate()
+				all.append(m.text())
+				for l in ls:
+					check(l.strip_edges() != "", tag + ": deck %d: no empty line" % k)
+				check(m.text() != "" or m.current() == "", tag + ": a text while an objective is current")
+				for l in all:
+					if l == "":
+						continue
+					check(not l.contains("?"), tag + ": no '?' in %s" % l)
+					check(not l.contains("%s") and not l.contains("%d") and not l.contains("  "), tag + ": no placeholder in %s" % l)
+					check(not l.contains("d0_") and not l.contains("d1_") and not l.contains("d2_") and l != "hold",
+						tag + ": no raw id in %s" % l)
+					check(not l.contains(": :") and not l.ends_with(":") and not l.begins_with(":"), tag + ": no empty name in %s" % l)
+					for ch in (l + l.to_upper()):
+						if not font.has_char(ch.unicode_at(0)):
+							missing[ch] = true
+	eq(missing.keys(), [], "the HUD font has every glyph the objective lines use")
+	# The world markers' labels (MissionFlow): plain words, no "?".
+	for ty: String in MissionFlow.MARK_LABEL:
+		var lab := str(MissionFlow.MARK_LABEL[ty])
+		check(not lab.contains("?") and lab != "", "marker label %s" % lab)
+
+
+## The flag line shows its capture as a whole percent, never seconds; 100 % only once done.
+func _plan_flag_percent() -> void:
+	var re := RegEx.create_from_string("\\d+\\s*s\\b|/")
+	for c: Array in [["known", 0.0, "0%"], ["active", 0.0, "0%"], ["active", 7.0, "35%"], ["active", 19.9, "99%"],
+			["active", 20.0, "99%"], ["done", 20.0, "100%"], ["failed", 3.0, "15%"]]:
+		var m := _prules()
+		m.apply_state({"objs": {"d0_p": [c[0], c[1], 20.0], "d0_b1": [c[0], c[1], 20.0]}, "reached": 0})
+		var ls := m.lines(0)
+		var line := ""
+		var b := ""
+		for l in ls:
+			if l.begins_with("Raise the flag"):
+				line = l
+			elif l.begins_with("Bonus: Raise the flag"):
+				b = l
+		var tag := "flag %s %.1f s" % [c[0], c[1]]
+		check(line.begins_with("Raise the flag: " + str(c[2])), tag + ": '%s' shows %s" % [line, c[2]])
+		check(line.contains("%"), tag + ": a percent")
+		check(re.search(line) == null, tag + ": no seconds figure (%s)" % line)
+		check(b.begins_with("Bonus: Raise the flag: " + str(c[2])) and re.search(b) == null, tag + ": the bonus flag too (%s)" % b)
+	eq(MissionRules.flag_percent(20.0, 20.0, false), 99, "full but not done: 99 %")
+	eq(MissionRules.flag_percent(10.0, 20.0, false), 50, "half: 50 %")
+	eq(MissionRules.flag_percent(0.0, 0.0, false), 0, "no total: 0 %")
+	# Time limits keep seconds: the hold counts down.
+	var h := _prules()
+	h.apply_state({"objs": {"hold": ["active", 18.0, 60.0]}})
+	var hl := ""
+	for l in h.lines(2):
+		if l.begins_with("Hold"):
+			hl = l
+	eq(hl, "Hold the extraction portal: 42 s", "the hold stays a countdown in seconds")
+
+
+## "Proceed to the next floor" from a deck's primary done until a standing crew mech reaches the next deck; host and
+## client read the same from the replicated state; the extraction deck points to the hold instead.
+func _plan_next_floor() -> void:
+	var m := _prules()
+	var on := [_crew(false, 0, 0.0, 150.0)]
+	var t := 0.0
+	m.evaluate({"t": t, "crew": on, "enemies": [0, 4, 0]})
+	check(m.text().begins_with("Raise the flag"), "before: the flag")
+	check(not m.lines(0).has(MissionRules.NEXT_FLOOR), "before: no next-floor line")
+	for i in 22:
+		t += 1.0
+		m.evaluate({"t": t, "crew": on, "enemies": [0, 4, 0]})
+	eq(m.obj_state("d0_p"), "done", "flag done")
+	eq(m.text(), MissionRules.NEXT_FLOOR, "primary done, crew on deck 1: proceed")
+	eq(m.lines(0)[0], MissionRules.NEXT_FLOOR, "deck 1's list says it first")
+	var c := _prules()
+	c.apply_state(JSON.parse_string(JSON.stringify(m.state())))
+	eq(c.text(), MissionRules.NEXT_FLOOR, "the client reads the same from the state")
+	eq(c.lines(0), m.lines(0), "same lines on the client")
+	t += 1.0
+	m.evaluate({"t": t, "crew": [_crew(true, 1, 0.0, 0.0)], "enemies": [0, 4, 0]})
+	eq(m.text(), MissionRules.NEXT_FLOOR, "a downed mech on deck 2 has not reached it")
+	t += 1.0
+	m.evaluate({"t": t, "crew": [_crew(false, 1, 0.0, 0.0)], "enemies": [0, 4, 0]})
+	check(m.text().begins_with("Clear deck 2"), "crew on deck 2: its objective (%s)" % m.text())
+	c.apply_state(JSON.parse_string(JSON.stringify(m.state())))
+	eq(c.text(), m.text(), "the client follows")
+	t += 1.0
+	m.evaluate({"t": t, "crew": [_crew(false, 0, 0.0, 0.0)], "enemies": [0, 4, 0]})
+	check(m.text().begins_with("Clear deck 2"), "reached latches: back on deck 1, still deck 2's objective")
+	# Extraction deck: its primary done while deck 2's sweep is not: return to it; all done: the hold, no next floor.
+	t += 1.0
+	m.evaluate({"t": t, "crew": [_crew(false, 2, 0.0, 100.0)], "enemies": [0, 4, 0],
+		"defend_waves": {"d2_p": {"released": 0, "total": 0, "alive": 0}}})
+	eq(m.obj_state("d2_p"), "done", "deck 3's defend done")
+	eq(m.lines(2)[0], "Return to deck 2: objective unfinished", "extraction deck, hold waiting: return line")
+	check(not m.lines(2).has(MissionRules.NEXT_FLOOR), "no next floor on the extraction deck")
+	t += 1.0
+	m.evaluate({"t": t, "crew": [_crew(false, 1, 0.0, 0.0)], "enemies": [0, 0, 0], "waves_left": [0, 0, 0]})
+	eq(m.obj_state("d1_p"), "done", "sweep done")
+	eq(m.lines(1)[0], MissionRules.NEXT_FLOOR, "deck 2 done: proceed")
+	eq(m.obj_state("hold"), "known", "the hold appears")
+	check(m.lines(2)[0].begins_with("Hold the extraction portal"), "extraction deck: the hold's line first (%s)" % m.lines(2)[0])
+	check(m.text().begins_with("Hold the extraction portal"), "text: the hold (the crew has been on deck 3)")
+
+
+# --- The objective panel (MissionRules.panel: docs/design/mission-objectives.md §9 "Objective panel") ------------
+
+## All the text a panel shows (header, sub-headers, summaries, lines, route lines).
+func _panel_texts(pn: Dictionary) -> Array[String]:
+	var out: Array[String] = [str(pn["header"])]
+	for g: Dictionary in pn["groups"]:
+		out.append(str(g["title"]))
+		out.append(str(g["summary"]))
+		for l: Dictionary in g["lines"]:
+			out.append(str(l["text"]))
+		if not (g["route"] as Dictionary).is_empty():
+			out.append(str(g["route"]["text"]))
+	return out
+
+
+func _decks_of(pn: Dictionary) -> Array:
+	return (pn["groups"] as Array).map(func(g: Dictionary) -> int: return int(g["deck"]))
+
+
+## Header, group order (this deck, the decks below nearest first, then the decks above nearest first), primary vs
+## optional, finished decks collapsing, the next-floor line first, the flag percent, plain mode.
+func _panel_structure() -> void:
+	var m := _prules()
+	var at := Vector2(0.0, 0.0)
+	eq(str(m.panel(0, at)["header"]), "DECK 1 of 3", "panel header on deck 1")
+	eq(str(m.panel(1, at)["header"]), "DECK 2 of 3", "panel header on deck 2")
+	eq(str(m.panel(2, at)["header"]), "DECK 3 of 3", "panel header on deck 3")
+	eq(_decks_of(m.panel(0, at)), [0, 1, 2], "groups from deck 1: here, then down")
+	eq(_decks_of(m.panel(1, at)), [1, 2, 0], "groups from deck 2: here, the deck below, then the deck above")
+	eq(_decks_of(m.panel(2, at)), [2, 1, 0], "groups from deck 3: here, then up nearest first")
+	var sec5 := SectionPlan.make({"seed": 21.0, "decks": 5.0})
+	var big := MissionRules.make(sec5, {"plan": MissionPlan.make(sec5)})
+	eq(_decks_of(big.panel(2, at)), [2, 3, 4, 1, 0], "5 decks from deck 3: here, 4, 5, then 2, 1")
+	eq(str(big.panel(2, at)["header"]), "DECK 3 of 5", "5 decks: header")
+	check(MissionRules.make(SectionPlan.make({"seed": 5.0, "decks": 3.0})).panel(0, at).is_empty(), "no plan: no panel")
+	# Primary vs optional: the found bonus reads "(optional)" with role bonus; the primary has no tag; hidden: unlisted.
+	var here: Array = m.panel(0, at)["groups"][0]["lines"]
+	eq(here.size(), 1, "deck 1 at the start: the flag only (both bonuses hidden)")
+	eq(here[0]["text"], "Raise the flag: 0%", "the primary line has no tag")
+	eq(here[0]["role"], "primary", "the primary's role")
+	m.evaluate({"t": 0.0, "crew": [_crew(false, 0, 100.0, -100.0)], "enemies": [1, 5, 0]})
+	here = m.panel(0, at)["groups"][0]["lines"]
+	if eq(here.size(), 2, "the found bonus is listed"):
+		eq(here[1]["text"], "Raise the flag: 0% (optional)", "a bonus reads (optional)")
+		eq(here[1]["role"], "bonus", "the bonus's role")
+	# Deck 2's sweep is a primary on the next level, its defend bonus still hidden: "required, next level".
+	var g1: Dictionary = m.panel(0, at)["groups"][1]
+	eq(g1["title"], "DECK 2", "the next deck's sub-header")
+	eq((g1["lines"] as Array).map(func(l: Dictionary) -> String: return l["role"]), ["primary"], "deck 2: its primary, no hidden bonus")
+	eq(g1["summary"], "DECK 2: 1 objective", "deck 2's one-line summary")
+	check(not bool(g1["done"]), "deck 2 is not done")
+	# The flag at 35 %, then done: the next-floor line leads deck 1's group (prefix ▼1).
+	var f := _prules()
+	f.apply_state({"objs": {"d0_p": ["active", 7.0, 20.0]}, "reached": 0})
+	eq(f.panel(0, at)["groups"][0]["lines"][0]["text"], "Raise the flag: 35%", "the flag percent in the panel")
+	var on := [_crew(false, 0, 0.0, 150.0)]
+	var t := 0.0
+	for i in 22:
+		t += 1.0
+		m.evaluate({"t": t, "crew": on, "enemies": [0, 5, 0]})
+	var pd := m.panel(0, at)
+	var first: Dictionary = pd["groups"][0]["lines"][0]
+	eq(first["text"], MissionRules.NEXT_FLOOR, "primary done: Proceed to the next floor first")
+	eq(first["role"], "next", "the next-floor line's role")
+	eq(first["prefix"], MissionRules.arrow(1), "the next-floor line points down one deck")
+	eq(pd["groups"][0]["lines"][1]["text"], "Raise the flag: 100% (done)", "this deck keeps its done line")
+	eq(m.text(), MissionRules.NEXT_FLOOR, "text() unchanged")
+	eq(m.lines(0)[0], MissionRules.NEXT_FLOOR, "lines() unchanged")
+	eq(pd["route_at"], m.route(0, at, 1), "route_at: the way down while the next-floor line shows")
+	check(m.panel(0, at)["groups"][0]["lines"].size() > 0 and (m.panel(1, at)["route_at"] as Dictionary).is_empty(),
+		"no route_at on a deck without a next line")
+	# From deck 2: deck 1 still has its found bonus to do (optional, above); with it done the deck collapses.
+	var up: Dictionary = m.panel(1, at)["groups"][2]
+	eq(up["deck"], 0, "deck 1 is the last group seen from deck 2")
+	eq((up["lines"] as Array).map(func(l: Dictionary) -> String: return l["text"]),
+		["Defend the position: wave 1 / 2 (optional)", "Raise the flag: 0% (optional)"],
+		"another deck lists only what is left to do: the two bonuses (the defend opened by the flag), not the done flag")
+	eq(up["summary"], "DECK 1: 2 optional", "summary of an optional-only deck")
+	var c := _prules()
+	c.apply_state({"objs": {"d0_p": ["done", 20.0, 20.0], "d0_b1": ["done", 20.0, 20.0]}, "reached": 1})
+	var col: Dictionary = c.panel(1, at)["groups"][2]
+	check(bool(col["done"]) and (col["lines"] as Array).is_empty(), "a finished deck collapses (no lines)")
+	eq(col["summary"], "DECK 1: done", "a finished deck's one line")
+	# Extraction deck with its primary done while deck 2's is not: the return line points up.
+	var r := _prules()
+	r.apply_state({"objs": {"d0_p": ["done", 20.0, 20.0], "d2_p": ["done", 2.0, 2.0]}, "reached": 2})
+	var rl: Dictionary = r.panel(2, at)["groups"][0]["lines"][0]
+	eq(rl["text"], "Return to deck 2: objective unfinished", "the return line")
+	eq(rl["prefix"], MissionRules.arrow(-1), "the return line points up one deck")
+
+
+## Prefixes for 3- and 5-deck sections from every viewer deck: an en dash here, "▲n" n above, "▼n" n below, on the
+## sub-headers and every line; the ASCII fallback "-", "^n", "Vn"; the HUD font check picks one of the two.
+func _panel_prefixes() -> void:
+	eq(MissionRules.arrow(0), "–", "here: en dash")
+	eq(MissionRules.arrow(-2), "▲2", "two decks above")
+	eq(MissionRules.arrow(3), "▼3", "three decks below")
+	eq(MissionRules.arrow(0, true), "-", "ascii here")
+	eq(MissionRules.arrow(-1, true), "^1", "ascii up")
+	eq(MissionRules.arrow(2, true), "V2", "ascii down")
+	for n: int in [3, 5]:
+		var sec := SectionPlan.make({"seed": 21.0, "decks": float(n)})
+		var m := MissionRules.make(sec, {"plan": MissionPlan.make(sec)})
+		var objs := {}
+		for o: Dictionary in m.objectives:
+			objs[o["id"]] = ["known", 0.0, 20.0]
+		m.apply_state({"objs": objs, "reached": 0})
+		for v in n:
+			for ascii: bool in [false, true]:
+				var pn := m.panel(v, Vector2.ZERO, ascii)
+				var tag := "%d decks, viewer deck %d%s" % [n, v + 1, " ascii" if ascii else ""]
+				eq((pn["groups"] as Array).size(), n, tag + ": one group per deck")
+				for g: Dictionary in pn["groups"]:
+					var rel := int(g["deck"]) - v
+					eq(int(g["rel"]), rel, tag + ": rel of deck %d" % (int(g["deck"]) + 1))
+					var want := ""
+					if rel == 0:
+						want = "-" if ascii else "–"
+					elif rel > 0:
+						want = ("V" if ascii else "▼") + str(rel)
+					else:
+						want = ("^" if ascii else "▲") + str(-rel)
+					eq(g["prefix"], want, tag + ": deck %d's prefix" % (int(g["deck"]) + 1))
+					for l: Dictionary in g["lines"]:
+						if l["role"] != "next":
+							eq(l["prefix"], want, tag + ": line prefix (%s)" % l["text"])
+					if ascii:
+						for s in _panel_texts(pn) + [str(g["prefix"])]:
+							for ch in s:
+								if ch.unicode_at(0) >= 128:
+									check(false, tag + ": ascii only (%s)" % s)
+									break
+	var font := ThemeDB.fallback_font
+	var has := true
+	for ch: String in MissionRules.ARROWS.values():
+		has = has and font.has_char(ch.unicode_at(0))
+	eq(MissionRules.font_has_arrows(font), has, "font_has_arrows matches the font")
+	eq(MissionHud.ascii_arrows(), not has, "the HUD picks ascii exactly when the font lacks an arrow")
+	print("HUD font has the arrow glyphs: %s (ascii prefixes: %s)" % [has, MissionHud.ascii_arrows()])
+	for ch: String in MissionRules.ARROWS_ASCII.values():
+		check(font.has_char(ch.unicode_at(0)), "the HUD font has the ascii fallback %s" % ch)
+
+
+## The route line: on the first unfinished group in each direction, the nearest way off the viewer's deck in that
+## direction (down: a ramp mouth or a shaft; up: a ramp foot only; never a locked or a lift connector while lifts don't
+## ride), the distance along the deck rounded to 5 m.
+func _panel_routes() -> void:
+	var seen := {}
+	for n: int in [3, 5]:
+		for seed_: int in [1, 2, 3, 5, 8, 21]:
+			var sec := SectionPlan.make({"seed": float(seed_), "decks": float(n)})
+			var m := MissionRules.make(sec, {"plan": MissionPlan.make(sec)})
+			for v in n:
+				for at: Vector2 in [Vector2.ZERO, Vector2(60.0, -150.0), Vector2(-80.0, 220.0)]:
+					var pn := m.panel(v, at)
+					var tag := "seed %d, %d decks, deck %d at %s" % [seed_, n, v + 1, at]
+					var dirs := {}
+					for g: Dictionary in pn["groups"]:
+						var rt: Dictionary = g["route"]
+						var dir := signi(int(g["rel"]))
+						if dir == 0 or bool(g["done"]):
+							check(rt.is_empty(), tag + ": no route on this deck's / a done group")
+							continue
+						if dirs.has(dir):
+							check(rt.is_empty(), tag + ": the route only on the first group in a direction")
+							continue
+						dirs[dir] = true
+						var has := _way_exists(sec, v, dir)
+						eq(not rt.is_empty(), has, tag + ": a route line exactly when a way %s exists" % ("down" if dir > 0 else "up"))
+						if rt.is_empty():
+							continue
+						seen[rt["kind"]] = true
+						check(rt["kind"] == "ramp" or (dir > 0 and rt["kind"] == "shaft"),
+							tag + ": %s %s" % ["down" if dir > 0 else "up", rt["kind"]])
+						var dist := int(rt["dist"])
+						var real := at.distance_to(Vector2(float(rt["x"]), float(rt["s"])))
+						check(dist >= 5 and dist % 5 == 0, tag + ": distance rounded to 5 (%d)" % dist)
+						check(absf(real - float(dist)) <= 2.51 or (dist == 5 and real < 5.0), tag + ": the way's distance (%d, %.1f)" % [dist, real])
+						eq(rt["text"], "%s %s %d m" % [MissionRules.arrow(dir).left(1), rt["kind"], dist], tag + ": route text")
+						eq(int(rt["deck"]), v, tag + ": measured on the viewer's deck")
+						check(_nearest_ok(sec, v, at, dir, real), tag + ": the nearest way")
+	check(seen.has("ramp"), "some route is a ramp (%s)" % [seen.keys()])
+	print("panel route kinds seen: %s" % [seen.keys()])
+	# Seed 9 (3 decks): shaft 0 -> 1 is stacked over shaft 1 -> 2 (an atrium dropping to deck 3); the hop-only repair
+	# added a ramp 0 -> 1. From anywhere on deck 1 the way down is that ramp, never the stacked shaft, even standing on
+	# the shaft's rim.
+	var s9 := SectionPlan.make({"seed": 9.0, "decks": 3.0})
+	var m9 := MissionRules.make(s9, {"plan": MissionPlan.make(s9)})
+	var ramp9 := s9.walkable_down_connector(0)
+	var atrium := -1
+	for ci in s9.connectors.size():
+		if s9.connectors[ci]["kind"] == "shaft" and int(s9.connectors[ci]["from"]) == 0 and not _lands(s9, ci):
+			atrium = ci
+	check(atrium >= 0, "seed 9: deck 1 has a stacked atrium shaft")
+	check(ramp9 >= 0 and s9.connectors[ramp9]["kind"] == "ramp", "seed 9: the walkable way down from deck 1 is a ramp")
+	var rc: Dictionary = s9.connectors[ramp9]
+	var mouth := Vector2((float(rc["x0"]) + float(rc["x1"])) * 0.5, s9.line_s(0, int(rc["top_line"])))
+	var rim := s9.connector_rect(atrium, 0).get_center() if atrium >= 0 else Vector2.ZERO
+	for at: Vector2 in [Vector2.ZERO, rim, Vector2(60.0, -150.0), Vector2(-80.0, 220.0)]:
+		var rt := m9.route(0, at, 1)
+		eq(str(rt.get("kind", "")), "ramp", "seed 9 deck 1 at %s: the route line names the ramp" % at)
+		check(Vector2(float(rt.get("x", INF)), float(rt.get("s", INF))).is_equal_approx(mouth), "seed 9 deck 1 at %s: at the new ramp's mouth" % at)
+
+
+## A way off deck k in direction dir a mech can take now: down a ramp from k or a shaft from k whose drop lands on deck
+## k+1 (not a stacked atrium: _lands); up a ramp to k.
+func _way_exists(sec: SectionPlan, k: int, dir: int) -> bool:
+	for ci in sec.connectors.size():
+		var c: Dictionary = sec.connectors[ci]
+		if bool(c["locked"]):
+			continue
+		if c["kind"] == "ramp" and ((dir > 0 and int(c["from"]) == k) or (dir < 0 and int(c["to"]) == k)):
+			return true
+		if c["kind"] == "shaft" and dir > 0 and int(c["from"]) == k and _lands(sec, ci):
+			return true
+	return false
+
+
+## Shaft ci's drop lands on the deck below: its landing overlaps no floor hole (a ramp or shaft cut from that deck).
+## Independent of SectionPlan.shaft_lands.
+func _lands(sec: SectionPlan, ci: int) -> bool:
+	var k := int(sec.connectors[ci]["to"])
+	var land := sec.connector_rect(ci, k)
+	for h in sec.connectors.size():
+		var o: Dictionary = sec.connectors[h]
+		if h != ci and o["kind"] != "lift" and int(o["from"]) == k and sec.connector_rect(h, k).intersects(land):
+			return false
+	return true
+
+
+## No eligible way is closer than `d` (independent of route(): every ramp end / landing shaft centre on deck k).
+func _nearest_ok(sec: SectionPlan, k: int, at: Vector2, dir: int, d: float) -> bool:
+	for ci in sec.connectors.size():
+		var c: Dictionary = sec.connectors[ci]
+		if bool(c["locked"]):
+			continue
+		var p := Vector2(INF, INF)
+		var lane := (float(c["x0"]) + float(c["x1"])) * 0.5
+		if c["kind"] == "ramp" and dir > 0 and int(c["from"]) == k:
+			p = Vector2(lane, sec.line_s(k, int(c["top_line"])))
+		elif c["kind"] == "ramp" and dir < 0 and int(c["to"]) == k:
+			p = Vector2(lane, sec.line_s(k, int(c["foot_line"])))
+		elif c["kind"] == "shaft" and dir > 0 and int(c["from"]) == k and _lands(sec, ci):
+			p = sec.connector_rect(ci, k).get_center()
+		if p.is_finite() and at.distance_to(p) < d - 0.01:
+			return false
+	return true
+
+
+## Every panel text reads as a sentence in every state (no "?", empty name, raw id, placeholder), the HUD font has
+## every glyph of the prefix set the HUD picks, and a client fed the host's state() shows the same panel from every deck.
+func _panel_states() -> void:
+	var font := ThemeDB.fallback_font
+	var ascii := MissionHud.ascii_arrows()
+	var missing := {}
+	for st: String in ["hidden", "known", "active", "done", "failed"]:
+		var m := _prules()
+		var objs := {}
+		for o: Dictionary in m.objectives:
+			var tot := 60.0 if o["type"] == "hold" else (20.0 if o["type"] == "flag" else 2.0)
+			objs[o["id"]] = [st, 7.0, tot]
+		m.apply_state({"objs": objs, "left": [3, 1, 0], "reached": 0})
+		for v in 3:
+			var pn := m.panel(v, Vector2(10.0, 20.0), ascii)
+			var tag := "panel %s deck %d" % [st, v + 1]
+			for s in _panel_texts(pn):
+				check(s.strip_edges() != "", tag + ": no empty text")
+				check(not s.contains("?"), tag + ": no '?' in %s" % s)
+				check(not s.contains("%s") and not s.contains("%d") and not s.contains("  "), tag + ": no placeholder in %s" % s)
+				check(not s.contains("d0_") and not s.contains("d1_") and not s.contains("d2_") and s != "hold",
+					tag + ": no raw id in %s" % s)
+				check(not s.ends_with(":") and not s.begins_with(":"), tag + ": no empty name in %s" % s)
+				for ch in (s + s.to_upper()):
+					if not font.has_char(ch.unicode_at(0)):
+						missing[ch] = true
+			for g: Dictionary in pn["groups"]:
+				for ch in str(g["prefix"]):
+					if not font.has_char(ch.unicode_at(0)):
+						missing[ch] = true
+				for l: Dictionary in g["lines"]:
+					if st == "hidden":
+						check(l["role"] != "bonus", tag + ": no hidden bonus listed (%s)" % l["text"])
+	eq(missing.keys(), [], "the HUD font has every glyph the panel uses (prefixes as the HUD picks them)")
+	# State round trip: the client's panel equals the host's from every deck, both prefix sets (a hangar bot's negative
+	# id in the crew changes nothing).
+	var h := _prules()
+	var t := 0.0
+	for i in 12:
+		t += 1.0
+		h.evaluate({"t": t, "crew": [_crew(false, 0, 0.0, 150.0), _crew(false, 0, 100.0, -100.0, -3)], "enemies": [2, 4, 1],
+			"waves": [[1, 3], [0, 2], [0, 0]]})
+	var cl := _prules()
+	cl.apply_state(JSON.parse_string(JSON.stringify(h.state())))
+	for v in 3:
+		for a: bool in [false, true]:
+			eq(cl.panel(v, Vector2(5.0, -40.0), a), h.panel(v, Vector2(5.0, -40.0), a), "client panel = host panel, deck %d" % (v + 1))
+	var cb := _prules()
+	cb.apply_state(bytes_to_var(var_to_bytes(h.state())))
+	eq(cb.panel(1, Vector2.ZERO), h.panel(1, Vector2.ZERO), "client panel after var_to_bytes")

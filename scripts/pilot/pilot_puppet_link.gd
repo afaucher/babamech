@@ -216,12 +216,13 @@ func _dedupe_window() -> float:
 
 ## Toward a component's side in the mech frame (x right, z back): *_l left, *_r right, back behind, torso / head front.
 static func _component_side(component: String) -> Vector3:
+	if component.begins_with("back"):   # the Strider's back, the Bulwark's back_l / back_r (behind, to that side)
+		var s := -1.0 if component.ends_with("_l") else (1.0 if component.ends_with("_r") else 0.0)
+		return (Vector3.BACK + Vector3.RIGHT * s).normalized()
 	if component.ends_with("_l"):
 		return Vector3.LEFT
 	if component.ends_with("_r"):
 		return Vector3.RIGHT
-	if component == "back":
-		return Vector3.BACK
 	return Vector3.FORWARD
 
 

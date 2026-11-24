@@ -18,6 +18,8 @@ extends Projectile
 ## Every machine runs the fuse against its own view of the targets; only the deciding machine's splash counts (the same
 ## accepted gap as a missile's detonation: the burst point may differ slightly between machines). No new message.
 ## The proximity scan reads world.targets (hit spheres via world_spheres) and never damages anything itself.
+## ARMOUR (§3.10): stats.armor_mult (0.35) on an armoured target is applied by CombatWorld (armor_scaled, in resolve_hit
+## and splash), so the struck target's combined Hit and every splash share are scaled once there, not here.
 
 const BURST_NONE := ""
 const BURST_DIRECT := "direct"       ## struck a target

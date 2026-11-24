@@ -1,6 +1,7 @@
 extends TestCase
 ## VISUAL: the mission HUD in plan mode (mission objectives phase 1). Shots in test_logs/shots/:
-## `objectives_hud_demo` (MechHud demo + MissionHud.demo_plan over a plain backdrop: the objective list top right, the
+## `objectives_hud_demo` (MechHud demo + MissionHud.demo_plan over a plain backdrop: the structured objective panel top
+## right, DEMO_PLAN.panel: "DECK 1 OF 3", deck 1's flag and two bonuses, deck 2 below with its route line, deck 3; the
 ## reinforcement line and zone bar under the objective line, a "? DEFEND" marker, the projected defend ring, the INBOUND
 ## arrow on the left edge) and `objectives_drive_flag` (a live solo stack drive in plan mode, seed 7, the mech standing
 ## in deck 1's flag ring with every enemy killed: the world's mast and ring, the list, the zone bar).
@@ -29,6 +30,7 @@ func setup() -> void:
 	await frames(8)
 	var img := await sc.grab("objectives_hud_demo")
 	var vs := Vector2(img.get_width(), img.get_height())
+	check(not hud.mission_hud.panel().is_empty(), "the demo draws the structured panel")
 	sc.not_blank(img, _frac(hud.mission_hud.list_panel.get_global_rect(), vs), "objective list")
 	sc.not_blank(img, _frac(hud.mission_hud.alert_panel.get_global_rect(), vs), "reinforcement line")
 	sc.not_blank(img, _frac(hud.mission_hud.zone_panel.get_global_rect(), vs), "zone bar")
@@ -59,6 +61,8 @@ func setup() -> void:
 		var h2 := td.get_node_or_null("MechHud") as MechHud
 		if h2 != null:
 			check(h2.mission_hud.list_panel.visible, "the drive shows the objective list")
+			check(str(h2.mission_hud.panel().get("header", "")).begins_with("DECK 1 of "), "the drive's panel: DECK 1 of n")
+			print("drive panel rows: %s" % [h2.mission_hud.shown_lines()])
 			sc.not_blank(img2, _frac(h2.mission_hud.list_panel.get_global_rect(), Vector2(img2.get_width(), img2.get_height())),
 				"drive objective list")
 	td.queue_free()

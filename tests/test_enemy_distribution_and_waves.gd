@@ -6,10 +6,10 @@ extends TestCase
 ##        * 0 enemies overlapping buildings, pillars, floor cuts, or ramps.
 ##        * Spread across full deck (high median & max distance from arrival, spanning encounter sites).
 ##        * garrison_share = 0.5 spawns ~half the units of garrison_share = 1.0.
-##   2. Mission Waves Phase 1 end-to-end with real MissionPlan + WaveDirector + EnemySquad + EnemySpawner:
+##   2. Mission Waves Phase 1 end-to-end with real MissionPlan + PacingDirector + EnemySquad + EnemySpawner:
 ##        * EnemyBase.wave == "" for garrison, wave_id for wave units.
 ##        * open_at scheduling + 25 m player proximity delay hold + safety timeout release.
-##        * Partial release (source.load / max_units cap) -> pending_wave_counts() -> WaveDirector follow-up order.
+##        * Partial release (source.load / max_units cap) -> pending_wave_counts() -> PacingDirector follow-up order.
 ##        * Wave units spawn immediately hunting nearest deck mech; lift/shaft sources never spawn tanks.
 
 const DT := 1.0 / 60.0
@@ -20,6 +20,7 @@ func setup() -> void:
 	_rooftop_units_seen_from_street()
 	await _mission_waves_end_to_end()
 	await _defend_relay_targeting_and_pool_sizing()
+	_wave_pool_scale()
 	finish()
 
 
@@ -183,7 +184,7 @@ func _multi_seed_full_deck_distribution() -> void:
 func _mission_waves_end_to_end() -> void:
 	var sec := SectionPlan.make({"seed": 4.0})
 	var mplan := MissionPlan.make(sec)
-	var dir := WaveDirector.make(mplan)
+	var dir := PacingDirector.make(mplan)
 	var dp := CityPlan.for_deck(sec, 0)
 	var dr := RingFrame.new(sec.radius_of(0))
 
@@ -210,17 +211,18 @@ func _mission_waves_end_to_end() -> void:
 	eq(sq.alive_garrison_per_deck(sec.deck_count)[0], gar.size(), "alive_garrison_per_deck matches standing garrison")
 
 	# 2. Pick the largest real wave & source from MissionPlan, verify pool scaling (1 - pool.garrison) & partial release!
-	var waves0: Array = pool0.get("waves", [])
+	var waves0: Array = pool0.get("reserve", [])
 	check(not waves0.is_empty(), "deck 0 MissionPlan pool has waves")
 	var wdef: Dictionary = waves0[waves0.size() - 1]
 	var sdef: Dictionary = mplan.source(str(wdef["source"]))
 	var wid := str(wdef["id"])
-	var expected_total := clampi(roundi(float(budget0) * w_pool_share * float(wdef["share"])), 2, WaveDirector.WAVE_MAX)
+	var expected_total := clampi(roundi(float(budget0) * w_pool_share * float(wdef["share"]) * EnemySpawner.WAVE_POOL_SCALE), 2,
+		PacingDirector.WAVE_MAX)
 	var order1 := {"wave": wid, "deck": 0, "source": str(sdef["id"]), "open_at": w.now + 2.0, "max_units": 2}
 	var src_w := dr.arc_to_world(float(sdef["x"]), float(sdef["s"]), CityPlan.CURB_H)
 	p.global_position = src_w + Vector3(8.0, 0.0, 0.0)
 	var res1 := sq.queue_wave(order1, wdef, sdef, budget0, dp, dr, 4, true, w_pool_share)
-	eq(int(res1["total_units"]), expected_total, "wave sizes scale by budget * (1 - pool.garrison) * share (%d)" % expected_total)
+	eq(int(res1["total_units"]), expected_total, "wave sizes scale by budget * (1 - pool.garrison) * share * WAVE_POOL_SCALE (%d)" % expected_total)
 	eq((res1["spawned"] as Array).size(), 0, "wave does not spawn before open_at")
 	eq(int(res1["queued"]), 2, "2 units queued for first partial load")
 	check(int(sq.pending_wave_counts().get(wid, 0)) >= 1,
@@ -276,6 +278,13 @@ func _mission_waves_end_to_end() -> void:
 	var ctx := {"stack": null, "world": w, "squad": sq, "seed": 4, "crew": 2, "pool": pool0,
 		"plan": dp, "ring": dr, "budget": budget0, "skip_meshes": true}
 	var left_after := EnemySpawner.spawn_wave(order2, wdef, src_with_recess, ctx)
+	# A wave bigger than the source's load comes out in follow-up loads (MissionFlow re-orders the pending rest).
+	var loads := 1
+	while left_after > 0 and loads < 10:
+		order2["max_units"] = left_after
+		left_after = EnemySpawner.spawn_wave(order2, wdef, src_with_recess, ctx)
+		loads += 1
+	print("recess wave %s: %d units after the first 2 in %d load(s) of at most %d" % [wid, rem_before, loads, int(sdef.get("load", 6))])
 	eq(left_after, 0, "Engine 4-arg EnemySpawner.spawn_wave returns 0 remaining when wave completes")
 	check(not sq.pending_wave_counts().has(wid), "pending_wave_counts clears once wave fully released")
 	var wc2 := sq.wave_counts()
@@ -315,7 +324,7 @@ func _mission_waves_end_to_end() -> void:
 		for sp: Dictionary in pl["specs"]:
 			check(str(sp["type"]) != "tank", "%s wave never spawns a tank (got %s)" % [src_d["kind"], sp["type"]])
 
-	# Quick smoke check that WaveDirector accepts our exact helper shapes cleanly.
+	# Quick smoke check that PacingDirector accepts our exact helper shapes cleanly.
 	var facts := {
 		"alive": EnemySync.alive_per_deck(sq.enemies, sec.deck_count),
 		"garrison_alive": sq.alive_garrison_per_deck(sec.deck_count),
@@ -324,7 +333,7 @@ func _mission_waves_end_to_end() -> void:
 		"crew_deck": [0],
 	}
 	var dir_orders := dir.tick(w.now, facts)
-	check(dir_orders is Array, "WaveDirector.tick accepts EnemySquad host count helpers cleanly")
+	check(dir_orders is Array, "PacingDirector.tick accepts EnemySquad host count helpers cleanly")
 
 	p.queue_free()
 	sq.queue_free()
@@ -333,7 +342,8 @@ func _mission_waves_end_to_end() -> void:
 
 
 func _defend_relay_targeting_and_pool_sizing() -> void:
-	# 1. Verify wave pool sizing stays in proportion to deck budget: units = clamp(round(budget * (1 - garrison) * share), 2, WAVE_MAX).
+	# 1. Verify wave pool sizing stays in proportion to deck budget: units = clamp(round(budget * (1 - garrison) * share *
+	#    WAVE_POOL_SCALE), 2, WAVE_MAX).
 	var sec := SectionPlan.make({"seed": 1.0})
 	var mplan := MissionPlan.make(sec)
 	for k in sec.deck_count:
@@ -341,14 +351,17 @@ func _defend_relay_targeting_and_pool_sizing() -> void:
 		var g_share := float(pool.get("garrison", 0.5))
 		var b := EnemySpawner.deck_budget(1, k)
 		var sum_wave_u := 0
-		for wv: Dictionary in pool.get("waves", []):
+		for wv: Dictionary in pool.get("reserve", []):
 			var sdef := mplan.source(str(wv["source"]))
 			var pl := EnemySpawner.plan_wave(null, null, {"wave": wv["id"], "deck": k, "source": sdef["id"], "open_at": 0.0, "max_units": 20},
 				wv, sdef, b, 1, 0, 1.0 - g_share)
-			var exp_u := clampi(roundi(float(b) * (1.0 - g_share) * float(wv["share"])), 2, WaveDirector.WAVE_MAX)
-			eq(int(pl["total_units"]), exp_u, "deck %d wave %s sized by budget*(1-garrison)*share (%d)" % [k, str(wv["id"]), exp_u])
+			var exp_u := clampi(roundi(float(b) * (1.0 - g_share) * float(wv["share"]) * EnemySpawner.WAVE_POOL_SCALE), 2,
+				PacingDirector.WAVE_MAX)
+			eq(int(pl["total_units"]), exp_u, "deck %d wave %s sized by budget*(1-garrison)*share*scale (%d)" % [k, str(wv["id"]), exp_u])
 			sum_wave_u += int(pl["total_units"])
-		check(sum_wave_u <= b, "deck %d total wave units (%d) stay within deck budget (%d)" % [k, sum_wave_u, b])
+		# Waves grow by WAVE_POOL_SCALE, the garrison does not: the waves stay within the scaled pool (+ rounding / min 2).
+		var lim := ceili(float(b) * (1.0 - g_share) * EnemySpawner.WAVE_POOL_SCALE) + (pool.get("reserve", []) as Array).size()
+		check(sum_wave_u <= lim, "deck %d total wave units (%d) stay within the scaled wave pool (%d)" % [k, sum_wave_u, lim])
 
 	# 2. Defend relay targeting rule: garrisons & unrelated waves ignore AssetTarget; only the matching defend wave targets it (plus crew).
 	var w := _world(null)
@@ -426,3 +439,103 @@ func _defend_relay_targeting_and_pool_sizing() -> void:
 	sq.queue_free()
 	w.queue_free()
 	await frames(1)
+
+
+## Wave sizing (playtest 2026-11-23: inbound waves were too small): every pool wave is EnemySpawner.WAVE_POOL_SCALE
+## (1.75) times budget x (1 - garrison) x share. Over seeds 1-8: solo waves 1.5x-2x the unscaled size on average, sizes
+## never shrink and grow on average with the crew (the budget takes the crew size), the garrison is untouched, and a
+## wave larger than its source's load is delivered whole in follow-up loads ordered by the director.
+func _wave_pool_scale() -> void:
+	near(EnemySpawner.WAVE_POOL_SCALE, 1.75, 0.0001, "the wave pool factor is 1.75")
+	var means: Array[float] = []
+	for crew in [1, 2, 3, 4]:
+		var sum_new := 0.0
+		var sum_old := 0.0
+		var n := 0
+		for seed_ in range(1, 9):
+			var sec := SectionPlan.make({"seed": float(seed_)})
+			var mp := MissionPlan.make(sec)
+			for k in sec.deck_count:
+				var pl := mp.pool(k)
+				var ps := 1.0 - float(pl["garrison"])
+				var b := EnemySpawner.deck_budget(crew, k)
+				for wv: Dictionary in pl["reserve"]:
+					var raw := float(b) * ps * float(wv["share"])
+					var got := int(EnemySpawner.plan_wave(null, null, {"wave": wv["id"], "max_units": 0}, wv, {}, b, seed_, 0, ps)["total_units"])
+					var old := clampi(roundi(raw), 2, 8)
+					eq(got, clampi(roundi(raw * EnemySpawner.WAVE_POOL_SCALE), 2, PacingDirector.WAVE_MAX), "crew %d seed %d %s: scaled size" % [crew, seed_, wv["id"]])
+					check(got >= old, "crew %d seed %d %s: never smaller than unscaled (%d vs %d)" % [crew, seed_, wv["id"], got, old])
+					check(got < PacingDirector.WAVE_MAX or crew == 4, "crew %d %s: under WAVE_MAX (%d)" % [crew, wv["id"], got])
+					if crew > 1:
+						var prev := int(EnemySpawner.plan_wave(null, null, {"wave": wv["id"], "max_units": 0}, wv, {},
+							EnemySpawner.deck_budget(crew - 1, k), seed_, 0, ps)["total_units"])
+						check(got >= prev, "seed %d %s: crew %d wave (%d) >= crew %d wave (%d)" % [seed_, wv["id"], crew, got, crew - 1, prev])
+					sum_new += float(got)
+					sum_old += float(old)
+					n += 1
+		means.append(sum_new / float(n))
+		print("wave sizes crew %d: mean %.2f (unscaled %.2f, x%.2f) over %d waves" % [crew, sum_new / float(n), sum_old / float(n),
+			sum_new / sum_old, n])
+		if crew == 1:
+			var r := sum_new / sum_old
+			check(r >= 1.5 and r <= 2.0, "solo waves are 1.5x-2x the unscaled size on average (x%.2f)" % r)
+			check(sum_new / float(n) >= 3.0, "solo waves average 3+ units (%.2f)" % (sum_new / float(n)))
+	for i in range(1, means.size()):
+		check(means[i] > means[i - 1], "mean wave size grows with the crew (%s)" % str(means))
+	# Whole wave through a small door: the biggest 4-crew wave from a lift (load 4) comes out in loads of <= 4 whose
+	# sum is the wave; the director orders each follow-up until nothing is pending.
+	var sec1 := SectionPlan.make({"seed": 1.0})
+	var mp1 := MissionPlan.make(sec1)
+	var big: Dictionary = {}
+	var bk := 0
+	for k in sec1.deck_count:
+		for wv: Dictionary in mp1.pool(k)["reserve"]:
+			if big.is_empty() or float(wv["share"]) * (1.0 - float(mp1.pool(k)["garrison"])) > float(big["share"]) * (1.0 - float(mp1.pool(bk)["garrison"])):
+				big = wv
+				bk = k
+	var ps1 := 1.0 - float(mp1.pool(bk)["garrison"])
+	var b4 := EnemySpawner.deck_budget(4, bk)
+	for kind: String in ["lift", "gate"]:
+		var src := {"id": "probe_" + kind, "deck": bk, "kind": kind, "x": 0.0, "s": 0.0, "toward": {"x": 0.0, "s": 20.0},
+			"load": MissionPlan.LOAD[kind]}
+		var total := int(EnemySpawner.plan_wave(null, null, {"wave": big["id"], "max_units": 0}, big, src, b4, 1, 0, ps1)["total_units"])
+		var done := 0
+		var calls := 0
+		while calls < 12:
+			var r := EnemySpawner.plan_wave(null, null, {"wave": big["id"], "max_units": 99}, big, src, b4, 1, done, ps1)
+			check(int(r["spawn_count"]) <= int(src["load"]), "%s load %d: a batch of %d" % [kind, int(src["load"]), int(r["spawn_count"])])
+			done += int(r["spawn_count"])
+			calls += 1
+			if int(r["pending"]) == 0:
+				break
+		eq(done, total, "%s: the whole %d-unit wave comes out (%d loads)" % [kind, total, calls])
+		# The director's side: follow-ups of the rest, each its own telegraph, FOLLOW_GAP after the previous door.
+		var dp := MissionPlan.new()
+		dp.deck_count = 1
+		dp.sources = [src.duplicate()]
+		dp.sources[0]["deck"] = 0
+		dp.objectives = [{"id": "d0_p", "type": "sweep", "deck": 0, "role": "primary", "site": {"x": 0.0, "s": 0.0},
+			"radius": 0.0, "needs": [], "params": {}}]
+		dp.pools = [{"deck": 0, "garrison": 0.5, "reserve": [{"id": "w", "share": 1.0, "theme": "light", "source": src["id"],
+			"for": ""}]}]
+		var dir := PacingDirector.make(dp)
+		var t := 0.0
+		var out := 0
+		var first_open := -1.0
+		var last_open := -1.0
+		var orders := 0
+		while t < 120.0 and out < total:
+			var pend := {"w": total - out} if out > 0 else {}
+			var o := dir.tick(t, {"alive": [out], "garrison_alive": [0], "crew_deck": [0], "wave_pending": pend,
+				"crew": [{"peer": 1, "downed": false, "deck": 0, "x": 0.0, "s": 150.0}],
+				"wave_size": {"w": total}, "wave_alive": {"w": {"alive": out, "total": out}} if out > 0 else {}})
+			for od: Dictionary in o:
+				orders += 1
+				if first_open < 0.0:
+					first_open = float(od["open_at"])
+				last_open = float(od["open_at"])
+				out += mini(int(od["max_units"]), mini(int(src["load"]), total - out))
+			t += 0.25
+		eq(out, total, "%s: the director delivers the whole %d-unit wave" % [kind, total])
+		print("delivery: %d-unit wave via %s (load %d): %d door openings, first %.2f s, last %.2f s after the order (%.2f s spread)" % [
+			total, kind, int(src["load"]), orders, first_open, last_open, last_open - first_open])

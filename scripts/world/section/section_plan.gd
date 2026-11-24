@@ -24,7 +24,10 @@ extends RefCounted
 ##                  top: {deck, i, j}, bottom: {deck, i, j}, lane, top_line, foot_line}]
 ##                  footprint on a deck = connector_rect(); a lift's is its platform, centred on its pillar, the same
 ##                  size on every stop (its stored x0..theta1 are the platform on its top stop only)
-##   roads        [{axis: "s" | "x", line, kind: spine | arterial | cross | perimeter, width}]
+##                  HOP-ONLY RULE (validate()): every deck k+1 is reachable from deck k without a lift or a glide, by an
+##                  unlocked ramp or a shaft whose drop lands on k+1's floor: walkable_down(k) / walkable_down_connector(k)
+##                  (walkable_up(k): a ramp; not enforced). Plans that break it are repaired (walk_repairs), no others.
+##   roads       [{axis: "s" | "x", line, kind: spine | arterial | cross | perimeter, width}]
 ##   forms        per deck: {segment key: street | lane | pedestrian | none}: what stands in each road SEGMENT's strip
 ##                  (one stretch of a line between neighbouring crossings = one road-graph edge; key = seg_key(axis,
 ##                  line, index)). Geometry never moves with a form. Read through segment_form / line_segments /
@@ -120,6 +123,7 @@ var hooks: Array = []
 var boundaries: Array = []
 var forms: Array = []              ## per deck: segment key (seg_key) -> form, for every road segment of the deck
 var repair_stats := {}             ## {rolled, repaired, stubs}: how many minor segments forms() rolled / gave back to street
+var walk_repairs: Array = []       ## [{deck, how: ramp | restack | shaft, connector}]: what _ensure_walkable_down changed
 
 var _rng := RandomNumberGenerator.new()
 var _minor: Array = []             ## per deck: segment key -> true where the form was rolled (not a forced street)
@@ -139,7 +143,7 @@ func net_fields() -> Dictionary:
 		"roads": Net.LOCAL, "entry": Net.LOCAL, "extraction": Net.LOCAL, "route": Net.LOCAL, "hooks": Net.LOCAL,
 		"boundaries": Net.LOCAL, "forms": Net.LOCAL,
 		# all of the above are recomputed from params on every machine and verified by checksum()
-		"repair_stats": Net.LOCAL,
+		"repair_stats": Net.LOCAL, "walk_repairs": Net.LOCAL,
 		"_rng": Net.LOCAL, "_pillar_of": Net.LOCAL, "_omit": Net.LOCAL, "_lift_cells": Net.LOCAL, "_reserved": Net.LOCAL,
 		"_minor": Net.LOCAL, "_cut": Net.LOCAL,
 	}
@@ -316,6 +320,7 @@ func generate(overrides: Dictionary = {}) -> void:
 	_minor.clear()
 	_cut.clear()
 	repair_stats = {}
+	walk_repairs = []
 	decks.clear()
 	pillars.clear()
 	connectors.clear()
@@ -347,6 +352,7 @@ func generate(overrides: Dictionary = {}) -> void:
 	_place_express()
 	_place_ends()
 	_place_shafts()
+	_ensure_walkable_down()   # adds nothing (and rolls nothing) where every deck is already walkable from the one above
 	_make_pillars(jitter)
 	for k in deck_count:
 		_fill_zones(k)
@@ -391,32 +397,53 @@ func _place_critical() -> void:
 	for k in deck_count - 1:
 		var d := _dir(k)
 		var far_row := rows - 1 if d > 0 else 0
-		var top_line := rows - 1 if d > 0 else 1
-		var row_len := span / float(rows) * radius_of(k)
-		var need := int(ceil(p("pitch") / p("ramp_grade") / row_len))
-		var fits := need <= rows - 2
+		var spec := _ramp_at(k, _ramp_lane(k))
+		var fits := not spec.is_empty()
 		var chance := 0.5 if prev == "" else (0.3 if prev == "ramp" else 0.75)
 		var roll := _rng.randf()
 		var side := _rng.randi_range(0, 1)
 		if fits and roll < chance:
-			var lane := "ramp_a" if k % 2 == 0 else "ramp_b"
-			var foot_line := top_line - d * need
-			var lx := lane_x(lane)
-			var col := spine_line - 1 if lane == "ramp_a" else spine_line
-			var foot_row := foot_line - 1 if d > 0 else foot_line
-			connectors.append(_connector("ramp", "critical", k, k + 1, {
-				"lane": lane, "top_line": top_line, "foot_line": foot_line, "x0": lx.x, "x1": lx.y,
-				"theta0": minf(row_theta[top_line], row_theta[foot_line]),
-				"theta1": maxf(row_theta[top_line], row_theta[foot_line]),
-				"col": col, "row": far_row, "foot_row": foot_row,
-				"top": {"deck": k, "i": spine_line, "j": top_line},
-				"bottom": {"deck": k + 1, "i": spine_line, "j": foot_line}}))
-			_reserved[k][_key(col, far_row)] = true
-			_reserved[k + 1][_key(col, foot_row)] = true
+			_add_ramp(k, spec, "critical")
 			prev = "ramp"
 		else:
 			_add_lift(spine_line - 1 + side, far_row, [k, k + 1], "critical", false)
 			prev = "lift"
+
+
+## The spine lane the ramp from deck k dives out of: they alternate, so a ramp's foot and the next ramp's head never
+## share a lane on the deck between them.
+func _ramp_lane(k: int) -> String:
+	return "ramp_a" if k % 2 == 0 else "ramp_b"
+
+
+## The ramp from deck k down to k+1 in spine lane `lane`, at the far end of deck k's crossing (where a critical ramp
+## goes), no steeper than ramp_grade: the connector fields, or {} when the grid has no room for its run.
+func _ramp_at(k: int, lane: String) -> Dictionary:
+	var d := _dir(k)
+	var far_row := rows - 1 if d > 0 else 0
+	var top_line := rows - 1 if d > 0 else 1
+	var row_len := span / float(rows) * radius_of(k)
+	var need := int(ceil(p("pitch") / p("ramp_grade") / row_len))
+	if need > rows - 2:
+		return {}
+	var foot_line := top_line - d * need
+	var lx := lane_x(lane)
+	var col := spine_line - 1 if lane == "ramp_a" else spine_line
+	var foot_row := foot_line - 1 if d > 0 else foot_line
+	return {"lane": lane, "top_line": top_line, "foot_line": foot_line, "x0": lx.x, "x1": lx.y,
+			"theta0": minf(row_theta[top_line], row_theta[foot_line]),
+			"theta1": maxf(row_theta[top_line], row_theta[foot_line]),
+			"col": col, "row": far_row, "foot_row": foot_row,
+			"top": {"deck": k, "i": spine_line, "j": top_line},
+			"bottom": {"deck": k + 1, "i": spine_line, "j": foot_line}}
+
+
+## Append the ramp `spec` (_ramp_at) from deck k; its head and foot cells become transit (stations).
+func _add_ramp(k: int, spec: Dictionary, role: String) -> int:
+	connectors.append(_connector("ramp", role, k, k + 1, spec))
+	_reserved[k][_key(int(spec["col"]), int(spec["row"]))] = true
+	_reserved[k + 1][_key(int(spec["col"]), int(spec["foot_row"]))] = true
+	return connectors.size() - 1
 
 
 ## A lift in the pillar of cell (c, r) serving `stops`. A second lift asked for in the same pillar extends the first.
@@ -507,18 +534,211 @@ func _place_shafts() -> void:
 			var r := key / 64
 			if _beside_long_span(c, r):
 				continue
-			var rect := cell_rect(k, c, r)
-			var size := minf(SHAFT_MAX, minf(rect.size.x, rect.size.y) - SHAFT_MARGIN * 2.0)
-			if size < 16.0:
+			var more := _shaft_at(k, c, r)
+			if more.is_empty():
 				continue
-			var mid_pt := rect.get_center()
-			var half_t := size * 0.5 / radius_of(k)
-			var th := mid_pt.y / radius_of(k)
-			connectors.append(_connector("shaft", "shortcut", k, k + 1, {
-				"col": c, "row": r, "x0": mid_pt.x - size * 0.5, "x1": mid_pt.x + size * 0.5,
-				"theta0": th - half_t, "theta1": th + half_t}))
+			connectors.append(_connector("shaft", "shortcut", k, k + 1, more))
 			_omit[key] = true
 			placed += 1
+
+
+## The shaft fields for cell (c, r) of deck k (the hole centred in the cell, SHAFT_MARGIN off its roads, at most
+## SHAFT_MAX), or {} when the cell is too small for one.
+func _shaft_at(k: int, c: int, r: int) -> Dictionary:
+	var rect := cell_rect(k, c, r)
+	var size := minf(SHAFT_MAX, minf(rect.size.x, rect.size.y) - SHAFT_MARGIN * 2.0)
+	if size < 16.0:
+		return {}
+	var mid_pt := rect.get_center()
+	var half_t := size * 0.5 / radius_of(k)
+	var th := mid_pt.y / radius_of(k)
+	return {"col": c, "row": r, "x0": mid_pt.x - size * 0.5, "x1": mid_pt.x + size * 0.5,
+			"theta0": th - half_t, "theta1": th + half_t}
+
+
+# --- The hop-only rule -------------------------------------------------------------------------------------
+# Every deck k+1 is reachable from deck k by a mech that walks, hops at most 6 m and cannot glide (the Bulwark), with no
+# lift (they do not carry mechs yet): down an unlocked ramp, or off the edge of a shaft from deck k whose drop lands on
+# deck k+1's floor (one deck, `pitch` m: the automatic landing burn makes it a heavy landing, below fall damage). A shaft
+# whose landing is itself a hole in deck k+1 (a stacked atrium: the next shaft down in the same cell) drops on to k+2:
+# only a glide over the lower hole reaches deck k+1 that way. Walking UP needs a ramp (shafts are one way): see
+# walkable_up(); not enforced (about half the deck pairs have none: docs/design/mission-section.md).
+
+## The connector a hop-only mech takes from deck k down to k+1, or -1: an unlocked ramp k -> k+1 first (the lowest id),
+## else the lowest-id shaft from deck k whose drop lands on deck k+1's floor.
+func walkable_down_connector(k: int) -> int:
+	var shaft := -1
+	for ci in connectors.size():
+		var c: Dictionary = connectors[ci]
+		if c["locked"] or int(c["from"]) != k or int(c["to"]) != k + 1:
+			continue
+		if c["kind"] == "ramp":
+			return ci
+		if c["kind"] == "shaft" and shaft < 0 and shaft_lands(ci):
+			shaft = ci
+	return shaft
+
+
+## True when a hop-only mech can get from deck k down to deck k+1 without a lift or a glide (walkable_down_connector).
+func walkable_down(k: int) -> bool:
+	return walkable_down_connector(k) >= 0
+
+
+## The connector a walking mech takes from deck k+1 back UP to deck k, or -1: an unlocked ramp k -> k+1 (shafts are one
+## way, lifts do not carry mechs yet).
+func walkable_up_connector(k: int) -> int:
+	for ci in connectors.size():
+		var c: Dictionary = connectors[ci]
+		if c["kind"] == "ramp" and not c["locked"] and int(c["from"]) == k and int(c["to"]) == k + 1:
+			return ci
+	return -1
+
+
+func walkable_up(k: int) -> bool:
+	return walkable_up_connector(k) >= 0
+
+
+## What breaks the plan's hard rules, as readable lines ([] = valid): today the hop-only rule (walkable_down on every
+## pair of adjacent decks). For the city and mission sides to assert.
+func validate() -> Array[String]:
+	var out: Array[String] = []
+	for k in deck_count - 1:
+		if not walkable_down(k):
+			out.append("deck %d is not walkable from deck %d (no ramp, no shaft landing on its floor)" % [k + 1, k])
+	return out
+
+
+## True when shaft ci's drop lands on the floor of the deck below: its landing overlaps no hole in that deck.
+func shaft_lands(ci: int) -> bool:
+	var k := int(connectors[ci]["to"])
+	var land := connector_rect(ci, k)
+	for h in connectors.size():
+		if h != ci and is_hole(h, k) and connector_rect(h, k).intersects(land):
+			return false
+	return true
+
+
+## Guarantee the hop-only rule by construction, touching only the deck pairs that break it (every other plan stays
+## byte-identical; nothing here rolls the generator). Per broken pair k, in order: a ramp k -> k+1 where a critical ramp
+## goes (its spine lane, else the other one) that becomes the pair's critical connector (the lift it replaces turns
+## branch); else the shaft under the stacked atrium moves to another cell, so the drop lands on deck k+1; else a shaft
+## from deck k is cut where one fits.
+func _ensure_walkable_down() -> void:
+	for k in deck_count - 1:
+		if walkable_down(k):
+			continue
+		var ci := _repair_ramp(k)
+		if ci >= 0:
+			walk_repairs.append({"deck": k, "how": "ramp", "connector": ci})
+			continue
+		ci = _restack_shaft(k)
+		if ci >= 0:
+			walk_repairs.append({"deck": k, "how": "restack", "connector": ci})
+			continue
+		ci = _repair_shaft(k)
+		if ci >= 0:
+			walk_repairs.append({"deck": k, "how": "shaft", "connector": ci})
+
+
+func _repair_ramp(k: int) -> int:
+	var lanes := [_ramp_lane(k), "ramp_b" if _ramp_lane(k) == "ramp_a" else "ramp_a"]
+	for lane: String in lanes:
+		var spec := _ramp_at(k, lane)
+		if spec.is_empty() or not _ramp_room(k, spec):
+			continue
+		# The lift it replaces as the way down becomes a branch (when it serves only this pair: a lift merged into one
+		# pillar with another critical lift stays critical, and _critical_between prefers the ramp).
+		for c: Dictionary in connectors:
+			if c["kind"] == "lift" and c["role"] == "critical" and int(c["from"]) == k and int(c["to"]) == k + 1:
+				c["role"] = "branch"
+		return _add_ramp(k, spec, "critical")
+	return -1
+
+
+## A ramp `spec` from deck k has room: no other ramp's footprint on either of its decks, and its head / foot cell (a
+## station) is not cut by a shaft on that deck.
+func _ramp_room(k: int, spec: Dictionary) -> bool:
+	for ci in connectors.size():
+		var c: Dictionary = connectors[ci]
+		if c["kind"] == "ramp":
+			for dk in [k, k + 1]:
+				if (c["stops"] as Array).has(dk) and _ramp_rect(spec, dk).intersects(connector_rect(ci, dk)):
+					return false
+		elif c["kind"] == "shaft":
+			if int(c["from"]) == k and int(c["col"]) == int(spec["col"]) and int(c["row"]) == int(spec["row"]):
+				return false
+			if int(c["from"]) == k + 1 and int(c["col"]) == int(spec["col"]) and int(c["row"]) == int(spec["foot_row"]):
+				return false
+	return true
+
+
+func _ramp_rect(spec: Dictionary, k: int) -> Rect2:
+	var r := radius_of(k)
+	return Rect2(float(spec["x0"]), float(spec["theta0"]) * r, float(spec["x1"]) - float(spec["x0"]),
+			(float(spec["theta1"]) - float(spec["theta0"])) * r)
+
+
+## Move the shaft of deck k+1 that a shaft from deck k drops into to another free cell (first free cell in the middle
+## half of the crossing, then the rest, grid order): its id. -1 when there is no such shaft or no free cell.
+func _restack_shaft(k: int) -> int:
+	for ci in connectors.size():
+		var top: Dictionary = connectors[ci]
+		if top["kind"] != "shaft" or int(top["from"]) != k:
+			continue
+		var land := connector_rect(ci, k + 1)
+		for h in connectors.size():
+			var low: Dictionary = connectors[h]
+			if low["kind"] != "shaft" or int(low["from"]) != k + 1 or not connector_rect(h, k + 1).intersects(land):
+				continue
+			var cell := _free_shaft_cell(k + 1)
+			if cell.x < 0:
+				continue
+			var old_key := _key(int(low["col"]), int(low["row"]))
+			var more := _shaft_at(k + 1, cell.x, cell.y)
+			for id: String in more:
+				low[id] = more[id]
+			_omit[_key(cell.x, cell.y)] = true
+			# The old cell keeps its long-span bay only while another shaft is still cut there (the one above, usually).
+			var still := false
+			for c: Dictionary in connectors:
+				still = still or (c["kind"] == "shaft" and _key(int(c["col"]), int(c["row"])) == old_key)
+			if not still:
+				_omit.erase(old_key)
+			return h
+	return -1
+
+
+## Cut a new shaft from deck k in a free cell: its id, or -1.
+func _repair_shaft(k: int) -> int:
+	var cell := _free_shaft_cell(k)
+	if cell.x < 0:
+		return -1
+	connectors.append(_connector("shaft", "shortcut", k, k + 1, _shaft_at(k, cell.x, cell.y)))
+	_omit[_key(cell.x, cell.y)] = true
+	return connectors.size() - 1
+
+
+## A cell for a shaft from deck k under _place_shafts' rules (no lift, not a station on k or k+1, no long-span bay
+## beside it, big enough) that also stacks with no shaft above or below it, so its drop lands and nothing drops into it:
+## the first in grid order in the middle half of the crossing, then the rest. Vector2i(-1, -1) if none.
+func _free_shaft_cell(k: int) -> Vector2i:
+	var stacked := {}
+	for c: Dictionary in connectors:
+		if c["kind"] == "shaft":
+			stacked[_key(int(c["col"]), int(c["row"]))] = true
+	for pass_ in 2:
+		for r in rows:
+			var t := (float(r) + 0.5) / float(rows)
+			if (t >= 0.25 and t <= 0.75) != (pass_ == 0):
+				continue
+			for c in cols:
+				var key := _key(c, r)
+				if _lift_cells.has(key) or _reserved[k].has(key) or _reserved[k + 1].has(key) or stacked.has(key):
+					continue
+				if _beside_long_span(c, r) or _shaft_at(k, c, r).is_empty():
+					continue
+				return Vector2i(c, r)
+	return Vector2i(-1, -1)
 
 
 func _beside_long_span(c: int, r: int) -> bool:
@@ -1689,18 +1909,24 @@ func encounter_sites(k: int) -> Array[Dictionary]:
 	return kept
 
 
-## The critical (route) connector that takes the crew from deck k down to deck k+1, or -1.
+## The critical (route) connector that takes the crew from deck k down to deck k+1, or -1: one that starts on deck k
+## (a ramp first: a ramp added by the hop-only repair can share its pair with a lift merged into another's pillar), else
+## one passing deck k.
 func _critical_between(k: int) -> int:
 	var any := -1
+	var here := -1
 	for ci in connectors.size():
 		var c: Dictionary = connectors[ci]
 		if c["role"] != "critical" or c["kind"] == "shaft" or int(c["from"]) > k or int(c["to"]) < k + 1:
 			continue
 		if int(c["from"]) == k:
-			return ci
+			if c["kind"] == "ramp":
+				return ci
+			if here < 0:
+				here = ci
 		if any < 0:
 			any = ci
-	return any
+	return here if here >= 0 else any
 
 
 func _avenue_mid() -> float:

@@ -32,6 +32,12 @@ static var _scanner_mat: StandardMaterial3D
 static func mesh(part: String) -> ArrayMesh:
 	if _cache.has(part):
 		return _cache[part]
+	var rid := trooper_rig_id(part)
+	if not rid.is_empty():
+		var rk := MeshKit.new()
+		_trooper(rk, rid[0], rid[1], rid[2])
+		_cache[part] = rk.commit(MechMeshes.materials())
+		return _cache[part]
 	var tid := trooper_id(part)
 	if not tid.is_empty() and part != trooper_part(tid[0], tid[1]):   # "trooper_rifle" / "trooper_at" = variant 0
 		_cache[part] = mesh(trooper_part(tid[0], tid[1]))
@@ -47,6 +53,9 @@ static func mesh(part: String) -> ArrayMesh:
 		"strider_breacher_chassis": _strider_breacher_chassis(k)
 		"strider_sensor": _strider_sensor(k)
 		"strider_leg": _strider_leg(k)
+		"strider_thigh": _strider_thigh(k)
+		"strider_shin": _strider_shin(k)
+		"strider_foot": _strider_foot(k)
 		"tank_hull": _tank_hull(k)
 		"tank_turret": _tank_turret(k)
 		"tank_turret_wreck": _tank_turret_wreck(k)
@@ -488,6 +497,45 @@ static func _strider_leg(k: MeshKit) -> void:
 	_panel(k, Vector3(0.18, -2.34, -0.12), Vector3.UP, 0.46, 0.46, ARMOR_PLATE, Vector3.FORWARD)
 
 
+## The same leg in three articulated parts for EnemyStrider's foot IK (EnemyGait + LegIK), each authored in the leg's
+## rest frame (hip at the origin, the coordinates of strider_leg) so a part's transform is the rotation about its joint:
+## thigh (hip ball .. knee drum, STRIDER_KNEE), shin (knee .. ankle hub, STRIDER_ANKLE), foot (kept flat on the floor).
+## strider_leg stays the whole leg (debris). The inner knee piston is split at the knee into a barrel and a rod.
+const STRIDER_KNEE := Vector3(0.18, -1.05, 0.55)
+const STRIDER_ANKLE := Vector3(0.18, -2.32, -0.22)
+const STRIDER_SOLE := -2.6   ## y of the sole under the hip
+
+
+static func _strider_thigh(k: MeshKit) -> void:
+	k.ico(Vector3(0.0, 0.0, 0.0), Vector3(0.32, 0.32, 0.32), STEEL)
+	k.seg(Vector3(0.0, 0.0, 0.0), STRIDER_KNEE, Vector2(0.36, 0.42), Vector2(0.28, 0.34), 6, ARMOR_DARK)
+	k.box(Vector3(0.16, 0.55, 0.48), TRIM_RED, Vector3(0.36, -0.52, 0.26))
+	k.tube(Vector3(-0.08, -1.05, 0.55), Vector3(0.45, -1.05, 0.55), 0.26, 8, STEEL)
+	k.seg(Vector3(-0.08, -0.5, 0.48), Vector3(-0.05, -1.11, 0.35), Vector2(0.06, 0.06), Vector2(0.05, 0.05), 4, STEEL,
+		MeshKit.SQUARE)
+	k.tube(Vector3(0.45, -1.05, 0.55), Vector3(0.5, -1.05, 0.55), 0.19, 6, SLATE)
+	k.tube(Vector3(-0.08, -1.05, 0.55), Vector3(-0.13, -1.05, 0.55), 0.19, 6, SLATE)
+
+
+static func _strider_shin(k: MeshKit) -> void:
+	k.seg(STRIDER_KNEE, STRIDER_ANKLE, Vector2(0.22, 0.26), Vector2(0.16, 0.2), 4, ARMOR_PLATE, MeshKit.SQUARE)
+	k.seg(Vector3(-0.05, -1.11, 0.35), Vector3(-0.02, -1.72, 0.22), Vector2(0.05, 0.05), Vector2(0.05, 0.05), 4, STEEL,
+		MeshKit.SQUARE)
+	var fwd := Vector3.RIGHT.cross((STRIDER_ANKLE - STRIDER_KNEE).normalized())
+	_piston(k, STRIDER_KNEE.lerp(STRIDER_ANKLE, 0.12) + fwd * 0.3, STRIDER_KNEE.lerp(STRIDER_ANKLE, 0.86) + fwd * 0.24, 0.075)
+	k.tube(Vector3(0.02, -2.32, -0.22), Vector3(0.34, -2.32, -0.22), 0.13, 6, STEEL)
+
+
+static func _strider_foot(k: MeshKit) -> void:
+	k.box(Vector3(0.68, 0.26, 0.85), ARMOR_DARK, Vector3(0.18, -2.47, -0.25))
+	for dx: float in [-0.24, 0.0, 0.24]:
+		k.seg(Vector3(0.18 + dx, -2.48, -0.58), Vector3(0.18 + dx * 1.15, -2.56, -1.12), Vector2(0.11, 0.11),
+			Vector2(0.03, 0.04), 4, STEEL)
+	k.seg(Vector3(0.18, -2.46, 0.12), Vector3(0.18, -2.35, 0.62), Vector2(0.12, 0.12), Vector2(0.04, 0.04), 4, STEEL)
+	_hazard(k, Vector3(0.18, -2.47, -0.675), Vector3.FORWARD, 0.6, 0.2, 2)
+	_panel(k, Vector3(0.18, -2.34, -0.12), Vector3.UP, 0.46, 0.46, ARMOR_PLATE, Vector3.FORWARD)
+
+
 # --- Bastion Siege Tank (6.8 W x 9.6 L x 5.4 H) ------------------------------------------------------------
 
 static func _tank_hull(k: MeshKit) -> void:
@@ -887,6 +935,59 @@ static func trooper_parts() -> Array[String]:
 	return out
 
 
+## Articulated trooper (EnemyTrooper's near rig): the same variant split into the pieces in TROOPER_PIECES, each a
+## closed shell authored in the standing model frame (feet at the origin, facing -Z), so the variant's look, colours and
+## sizes are exactly the whole-body part's (the whole body = every piece together). EnemyTrooper poses a piece by a
+## rotation about its joint (trooper_joints). The whole-body ids stay for the far LOD, the wreck and everything else.
+## Left = -X (the trooper faces -Z). The knee pad rides the shin.
+const TROOPER_PIECES := ["torso", "head", "arms", "thigh_l", "thigh_r", "shin_l", "shin_r", "boot_l", "boot_r"]
+const TROOPER_HIP_Y := 0.97      ## hip joint (top of the thigh), before the variant height scale
+const TROOPER_KNEE_Y := 0.62
+const TROOPER_ANKLE_Y := 0.2     ## ankle (top of the boot)
+const TROOPER_SHOULDER_Y := 1.62
+const TROOPER_NECK_Y := 1.8
+
+
+## Part id of piece `piece` of trooper variant `look_seed` (wrapped like trooper_part).
+static func trooper_rig_part(kit: String, look_seed: int, piece: String) -> String:
+	return "trooperrig_%s_%d_%s" % [kit, posmod(look_seed, TROOPER_VARIANTS), piece]
+
+
+## [kit, n, piece] for a trooper rig piece id, or [].
+static func trooper_rig_id(part: String) -> Array:
+	if not part.begins_with("trooperrig_"):
+		return []
+	var bits := part.trim_prefix("trooperrig_").split("_", false, 2)
+	if bits.size() != 3 or not bits[0] in TROOPER_KITS or not bits[1].is_valid_int() or not bits[2] in TROOPER_PIECES:
+		return []
+	var n := int(bits[1])
+	if n < 0 or n >= TROOPER_VARIANTS:
+		return []
+	return [bits[0], n, bits[2]]
+
+
+## Every rig piece id of every variant (checks).
+static func trooper_rig_parts() -> Array[String]:
+	var out: Array[String] = []
+	for kit: String in TROOPER_KITS:
+		for n in TROOPER_VARIANTS:
+			for pc: String in TROOPER_PIECES:
+				out.append(trooper_rig_part(kit, n, pc))
+	return out
+
+
+## The joints of variant n in its standing model frame: hip_y / knee_y / ankle_y / shoulder_y / neck_y (height-scaled),
+## leg_x (each leg's centre, + for the right leg), thigh / shin lengths.
+static func trooper_joints(n: int) -> Dictionary:
+	var lk := trooper_look(n)
+	var bp: Array = _TROOPER_BUILD[int(lk["build"])]
+	var hs := float(lk["height"])
+	var w := float(bp[0])
+	return {"hip_y": TROOPER_HIP_Y * hs, "knee_y": TROOPER_KNEE_Y * hs, "ankle_y": TROOPER_ANKLE_Y * hs,
+		"shoulder_y": TROOPER_SHOULDER_Y * hs, "neck_y": TROOPER_NECK_Y * hs, "leg_x": 0.24 * (0.9 + 0.1 * w),
+		"thigh": (TROOPER_HIP_Y - TROOPER_KNEE_Y) * hs, "shin": (TROOPER_KNEE_Y - TROOPER_ANKLE_Y) * hs}
+
+
 ## [kit, n] for a trooper part id ("trooper_rifle" / "trooper_at" -> variant 0), or [] for any other part.
 static func trooper_id(part: String) -> Array:
 	if not part.begins_with("trooper_"):
@@ -942,7 +1043,12 @@ static func _limb(k: MeshKit, a: Vector3, b: Vector3, r: float, col: Color) -> v
 	k.seg(a, b, Vector2(r, r), Vector2(r * 0.92, r * 0.92), 4, col, MeshKit.SQUARE)
 
 
-static func _trooper(k: MeshKit, kit: String, n: int) -> void:
+## Whether piece `want` is built when building `piece` ("" = the whole body).
+static func _pc(piece: String, want: String) -> bool:
+	return piece == "" or piece == want
+
+
+static func _trooper(k: MeshKit, kit: String, n: int, piece: String = "") -> void:
 	var lk := trooper_look(n)
 	var bp: Array = _TROOPER_BUILD[int(lk["build"])]
 	var hs := float(lk["height"])
@@ -950,8 +1056,10 @@ static func _trooper(k: MeshKit, kit: String, n: int) -> void:
 	var body: Color = cols[0]
 	var plate: Color = cols[1]
 	k.push(MeshKit.xf(Vector3.ZERO, Vector3.ZERO, Vector3(1.0, hs, 1.0)))
-	_trooper_body(k, lk, bp, body, plate, kit == "at")
+	_trooper_body(k, lk, bp, body, plate, kit == "at", piece)
 	k.pop()
+	if not _pc(piece, "arms"):
+		return
 	# Arms: shoulder (inside the pauldron, moves with the build and height) -> elbow -> hand (the kit's, fixed).
 	var sx := float(bp[2])
 	var lt := float(bp[1])
@@ -972,7 +1080,8 @@ static func _trooper(k: MeshKit, kit: String, n: int) -> void:
 
 
 ## Legs, belt, cuirass with its brick mark, pauldrons, helmet, back gear (in the height-scaled frame).
-static func _trooper_body(k: MeshKit, lk: Dictionary, bp: Array, body: Color, plate: Color, spare_tube: bool) -> void:
+static func _trooper_body(k: MeshKit, lk: Dictionary, bp: Array, body: Color, plate: Color, spare_tube: bool,
+		piece: String = "") -> void:
 	var w := float(bp[0])
 	var lt := float(bp[1])
 	var sx := float(bp[2])
@@ -982,11 +1091,21 @@ static func _trooper_body(k: MeshKit, lk: Dictionary, bp: Array, body: Color, pl
 	# Boots, greaves, thighs, cream civic shin bands, knee pads (y = 0..0.97).
 	for side: float in [-1.0, 1.0]:
 		var lx := side * 0.24 * (0.9 + 0.1 * w)
-		k.box(Vector3(0.28 * lt, 0.24, 0.44), body, Vector3(lx, 0.12, -0.05))
-		k.box(Vector3(0.26 * lt, 0.44, 0.3 * lt), plate, Vector3(lx, 0.44, 0.0))
-		k.box(Vector3(0.28 * lt, 0.34, 0.32 * lt), body, Vector3(lx, 0.8, 0.02))
-		k.box(Vector3(0.26 * lt + 0.02, 0.07, 0.3 * lt + 0.02), CIVIC_CREAM, Vector3(lx, 0.5, 0.0))
-		k.box(Vector3(0.2 * lt, 0.16, 0.08), plate, Vector3(lx, 0.66, -0.15 * lt - 0.02))
+		var sd := "_l" if side < 0.0 else "_r"
+		if _pc(piece, "boot" + sd):
+			k.box(Vector3(0.28 * lt, 0.24, 0.44), body, Vector3(lx, 0.12, -0.05))
+		if _pc(piece, "shin" + sd):
+			k.box(Vector3(0.26 * lt, 0.44, 0.3 * lt), plate, Vector3(lx, 0.44, 0.0))
+		if _pc(piece, "thigh" + sd):
+			k.box(Vector3(0.28 * lt, 0.34, 0.32 * lt), body, Vector3(lx, 0.8, 0.02))
+		if _pc(piece, "shin" + sd):
+			k.box(Vector3(0.26 * lt + 0.02, 0.07, 0.3 * lt + 0.02), CIVIC_CREAM, Vector3(lx, 0.5, 0.0))
+			k.box(Vector3(0.2 * lt, 0.16, 0.08), plate, Vector3(lx, 0.66, -0.15 * lt - 0.02))
+	if piece == "head":
+		_trooper_helmet(k, int(lk["helmet"]), body, plate, leader)
+		return
+	if not _pc(piece, "torso"):
+		return
 	# Hip belt with two front pouches, cuirass (y = 0.91..1.82).
 	var tw := 0.84 * w
 	var td := 0.52 * dz
@@ -1016,7 +1135,8 @@ static func _trooper_body(k: MeshKit, lk: Dictionary, bp: Array, body: Color, pl
 			Vector3(side * sx, 1.64 + ps * 0.5, 0.0))
 	if leader:   # and a cream plate on its outer face
 		k.box(Vector3(0.05, ps * 0.66, ps * 0.92), CIVIC_CREAM, Vector3(-(sx + ps * 0.5 + 0.015), 1.62, 0.0))
-	_trooper_helmet(k, int(lk["helmet"]), body, plate, leader)
+	if piece == "":
+		_trooper_helmet(k, int(lk["helmet"]), body, plate, leader)
 	var back := _trooper_gear(k, int(lk["gear"]), w, td * 0.5, body, plate)
 	if spare_tube:   # the AT trooper's spare rocket tube strapped behind the pack
 		k.tube(Vector3(-0.24, 1.25, back + 0.06), Vector3(-0.24, 2.06, back + 0.06), 0.11, 6, TRIM_RED)

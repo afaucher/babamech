@@ -15,10 +15,13 @@ extends RefCounted
 ##                 snap: how far the world may move the site to clear ground: SNAP (45) on flag and defend, 0 otherwise.
 ##                 Bonuses sit BONUS_GAP (2 x MERGE_DIST + SNAP = 125 m) from the primary and each other (except a
 ##                 chain defend, at its flag's site), so two snapped sites never merge.
-##                 A deck whose primary is a sweep has no linger wave (all its free waves are garrison_low), and its
-##                 pool's first slot is always a free garrison_low wave (a sweep ends on a fight); the extraction
-##                 deck's hold wave keeps its slot too, and bonus flag alarms take what is left (a bonus flag with no
-##                 slot left has no alarm wave).
+##                 A deck whose primary is a sweep keeps its pool's first slot for a free group (a sweep ends on a
+##                 fight); the extraction
+##                 deck's hold wave keeps its slot too, and flags take what is left; a flag with no slot left gets an
+##                 extra wave taken from the garrison share (pool garrison < 0.5, never below GARRISON_MIN), so every
+##                 flag on a deck with sources has its start wave.
+##                 Flag sites (primary and bonus) sit >= FLAG_SOURCE_GAP (60 m) from every source on the deck where the
+##                 deck has such a site; else the candidate farthest from its nearest source.
 ##   sources     [{id, deck, kind: gate | lift | ramp | shaft, x, s, toward: {x, s}, load, connector, edge}]
 ##                 (x, s): the point just in front of the door where units appear (gate: on its road line, 8 m inside
 ##                 the wall; lift: platform centre moved toward the spine by the lift pillar's radius + 4 m; ramp: the
@@ -27,14 +30,29 @@ extends RefCounted
 ##                 connector: SectionPlan connector id (-1 for gates); edge: the gate's wall ("" otherwise).
 ##                 Never within SectionPlan.SAFE_RADIUS of the deck's arrival. ids "d<k>_gate_<edge>_<line>",
 ##                 "d<k>_lift_<connector>", "d<k>_ramp_<connector>", "d<k>_shaft_<connector>".
-##   pools       [{deck, garrison: 0.5 | 1.0, waves: [{id: "d<k>_w<n>", share, theme: light | mixed | heavy, source,
-##                 trigger: {kind: objective, id, step: start | done} | {kind: garrison_low} | {kind: linger, after}}]}]
-##                 A flag's one alarm wave triggers on step "done" (the flag raised); a defend's params.waves waves and
-##                 the hold's wave (the extraction deck's last) on step "start". A deck without sources has no waves and
-##                 garrison 1.0.
+##   pools       [{deck, garrison: 0.5 | 1.0, reserve: [{id: "d<k>_w<n>", share, theme: light | mixed | heavy, source,
+##                 for: "" | objective id}]}]   (docs/design/pacing-director.md 1.1)
+##                 The deck's garrison share and its RESERVE: ordered groups, light first, with no trigger: the
+##                 PacingDirector decides when each goes. Free groups (for "") first, then the objective groups in plan
+##                 order (a flag's one group, a defend's params.waves groups), the extraction deck's hold group last.
+##                 source: the planned source (a flag's group: flag_source(), 80-200 m from the site preferred, >= 60 m;
+##                 others: nearest to the deck's primary / the objective); the director picks the real one at release.
+##                 A deck without sources has no reserve and garrison 1.0. Size: wave_count(k) + the deck's extra flag
+##                 groups.
+##   depots      [{id: "d<k>_depot<n>", deck, site: {x, s}, cores, snap}] military supply depots (pacing-director.md §2):
+##                 1 or 2 per deck (2 on a deck with a defend objective or the extraction hold; else rolled), each at a
+##                 non-safe encounter site, >= DEPOT_SOURCE_GAP from every source and >= DEPOT_OBJECTIVE_GAP from the deck's
+##                 objective sites where the deck allows it (else the site farthest from its nearest source), two on a deck
+##                 >= DEPOT_GAP apart where possible. A second depot needs a site clear of the sources (else the deck has
+##                 one); a deck with no non-safe encounter site has none. Depot n of a deck with anchors (depot_anchors:
+##                 its defend sites, then the hold zone) prefers a site DEPOT_NEAR_MIN..DEPOT_NEAR_MAX (60-150 m) from
+##                 anchor n, the one nearest DEPOT_NEAR_BEST (after the source, depot-gap and objective-gap rules). cores: per
+##                 pilot in the crew at mission start, at least DEPOT_CORES_MIN per depot (MissionDepots resolves it).
+##                 Drawn LAST from a generator of their own, so objectives / sources / pools are byte-identical to a plan
+##                 without depots (checksum(false) is that plan's checksum). snap: how far the world may move it (DEPOT_SNAP).
 ##
 ## Options (make's overrides): types (step-1 types allowed for placement), bonus_max, hold (extraction hold seconds),
-## waves_per_deck, linger (seconds before the lingering wave), primary ("" = rolled; "sweep" | "flag" | "defend":
+## waves_per_deck (reserve groups per deck before depth), primary ("" = rolled; "sweep" | "flag" | "defend":
 ## every deck's primary is that type wherever the deck allows it (flag: a primary site; defend: a site, a source within
 ## DEFEND_REACH and room for 2 waves; sweep: the departure outside the arrival's SAFE_RADIUS), ignoring `types` and the first deck's flag / sweep preference; a
 ## deck that cannot have it keeps the rolled type. The roll still happens, so the generator advances as without it.
@@ -43,7 +61,7 @@ extends RefCounted
 ## unforced primary of that type (for bots and tests).
 
 const DEFAULTS := {"types": ["sweep", "flag", "defend"], "bonus_max": 2, "hold": 60.0, "waves_per_deck": 2,
-		"linger": 360.0, "primary": ""}
+		"primary": ""}
 const PRIMARY_TYPES: Array[String] = ["sweep", "flag", "defend"]
 const RADIUS := {"flag": 14.0, "defend": 30.0, "sweep": 0.0, "hold": 0.0}
 const FLAG_HOLD := 20.0
@@ -58,6 +76,25 @@ const TOWARD := 20.0             ## `toward` lies this much further along the wa
 const OFF_ROUTE_KINDS: Array[String] = ["departure", "extraction", "first_contact"]
 const SNAP := 45.0               ## how far the world may move a flag mast / defend asset to clear ground (record "snap")
 const BONUS_GAP := SectionPlan.MERGE_DIST * 2.0 + SNAP   ## bonuses this far from the primary and each other (125 m)
+const FLAG_SOURCE_GAP := 60.0    ## a flag site at least this far from every source on its deck, where the deck allows
+const FLAG_WAVE_NEAR := 80.0     ## a flag's start wave comes preferably from a source FLAG_WAVE_NEAR..FLAG_WAVE_FAR m away
+const FLAG_WAVE_FAR := 200.0
+const GARRISON_MIN := 0.25       ## a flag wave beyond the deck's pool room is taken from the garrison, down to this
+const DEPOT_SOURCE_GAP := 60.0   ## a depot at least this far from every source on its deck, where the deck allows
+const DEPOT_OBJECTIVE_GAP := 60.0   ## ... and this far from the deck's objective sites, where possible
+const DEPOT_GAP := 80.0          ## two depots of one deck at least this far apart, where possible
+const DEPOT_CORES := 1           ## power cores per pilot in the crew at mission start ...
+const DEPOT_CORES_MIN := 2       ## ... but never fewer than this per depot (defend balance 2026-11-24: solo got 1)
+const DEPOT_NEAR_MIN := 60.0     ## a deck's depot n sits this far ...
+const DEPOT_NEAR_MAX := 150.0    ## ... to this far from its anchor n (the defend sites, then the hold zone) where it can
+const DEPOT_NEAR_BEST := 100.0   ## ... the candidate nearest this distance wins (a short walk back to the objective)
+const DEPOT_SNAP := 25.0         ## how far the world may move a depot to clear ground
+## Off the roads (2026-11-24, a depot on a road line wedged the bot): a planned site is moved into the nearest cell's
+## buildable inside (SectionPlan.cell_rect: the cell minus every road line round it), at least this far in from its edge
+## (the turned 6 x 4 m footprint's half-diagonal 3.6 + the 4 m clear margin): never on a carriageway, lane, pedestrian
+## street or crossing. MissionDepots then snaps it to clear ground with the same keep-out.
+const DEPOT_LOT_INSET := 7.6
+const DEPOT_SAME := 10.0         ## two depots of a deck never closer than this (two sites may move into one lot corner)
 
 var options: Dictionary = {}
 var deck_count := 0
@@ -65,6 +102,7 @@ var section_checksum := ""
 var objectives: Array[Dictionary] = []
 var sources: Array[Dictionary] = []
 var pools: Array[Dictionary] = []
+var depots: Array[Dictionary] = []
 var _rng := RandomNumberGenerator.new()
 
 
@@ -73,7 +111,7 @@ func net_fields() -> Dictionary:
 		"options": Net.SPAWN,        # the mission settings, fixed at creation, same everywhere
 		# all of the below are recomputed from the section plan + options on every machine and verified by checksum()
 		"deck_count": Net.LOCAL, "section_checksum": Net.LOCAL, "objectives": Net.LOCAL, "sources": Net.LOCAL,
-		"pools": Net.LOCAL, "_rng": Net.LOCAL,
+		"pools": Net.LOCAL, "depots": Net.LOCAL, "_rng": Net.LOCAL,
 	}
 
 
@@ -91,7 +129,6 @@ static func make(sec: SectionPlan, overrides: Dictionary = {}) -> MissionPlan:
 	m.options["bonus_max"] = maxi(int(m.options["bonus_max"]), 0)
 	m.options["hold"] = maxf(float(m.options["hold"]), 0.0)
 	m.options["waves_per_deck"] = maxi(int(m.options["waves_per_deck"]), 0)
-	m.options["linger"] = maxf(float(m.options["linger"]), 0.0)
 	m.options["primary"] = str(m.options["primary"]) if PRIMARY_TYPES.has(str(m.options["primary"])) else ""
 	m.deck_count = sec.deck_count
 	m.section_checksum = sec.checksum()
@@ -99,6 +136,7 @@ static func make(sec: SectionPlan, overrides: Dictionary = {}) -> MissionPlan:
 	m._make_sources(sec)
 	m._make_objectives(sec)
 	m._make_pools(sec)
+	m._make_depots(sec)    # last, own generator: nothing above shifts
 	return m
 
 
@@ -173,6 +211,21 @@ static func find_seed(type: String, opts: Dictionary = {}, from: int = 1, tries:
 		if MissionPlan.make(SectionPlan.make(so), mis_opts).primary_types().has(type):
 			return s
 	return -1
+
+
+func depot(id: String) -> Dictionary:
+	for d: Dictionary in depots:
+		if d["id"] == id:
+			return d
+	return {}
+
+
+func deck_depots(k: int) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	for d: Dictionary in depots:
+		if int(d["deck"]) == k:
+			out.append(d)
+	return out
 
 
 ## Id of the source on deck k nearest to `at`, leaving out the ids in `skip`; "" if none.
@@ -325,6 +378,8 @@ func _make_objectives(sec: SectionPlan) -> void:
 			ptype = forced
 		var pid := "d%d_p" % k
 		var p: Dictionary
+		if ptype == "flag":
+			site = _flag_site(sites, k)    # clear of the deck's sources (after the roll: the generator is unchanged)
 		if ptype == "sweep":
 			p = _record(pid, "sweep", k, "primary", Vector2(float(dep["x"]), float(dep["s"])), [])
 			room -= mini(room, 1)    # a sweep ends on a fight: its pool's first slot is a free wave
@@ -348,7 +403,7 @@ func _make_objectives(sec: SectionPlan) -> void:
 		if not types.has("flag"):
 			continue
 		var used: Array[Vector2] = [p_at]
-		for st: Dictionary in _off_route(sites, sec, k):
+		for st: Dictionary in _clear_first(k, _off_route(sites, sec, k)):
 			if n >= want:
 				break
 			var at := Vector2(float(st["x"]), float(st["s"]))
@@ -398,6 +453,79 @@ func _source_near(k: int, site: Dictionary) -> bool:
 		if at.distance_to(Vector2(float(s["x"]), float(s["s"]))) <= DEFEND_REACH:
 			return true
 	return false
+
+
+## Distance from `at` to the nearest source on deck k (INF without sources).
+func source_clearance(k: int, at: Vector2) -> float:
+	var best := INF
+	for s: Dictionary in deck_sources(k):
+		best = minf(best, at.distance_to(Vector2(float(s["x"]), float(s["s"]))))
+	return best
+
+
+## A primary flag's site: _primary_site over the sites at least FLAG_SOURCE_GAP from every source on the deck; when
+## none is, the candidate farthest from its nearest source.
+func _flag_site(sites: Array[Dictionary], k: int) -> Dictionary:
+	var clear: Array[Dictionary] = []
+	for st: Dictionary in sites:
+		if source_clearance(k, Vector2(float(st["x"]), float(st["s"]))) >= FLAG_SOURCE_GAP:
+			clear.append(st)
+	var best := _primary_site(clear)
+	if not best.is_empty():
+		return best
+	var far := -1.0
+	for st: Dictionary in sites:
+		if st["safe"] or OFF_ROUTE_KINDS.slice(0, 2).has(str(st["kind"])):
+			continue
+		var c := source_clearance(k, Vector2(float(st["x"]), float(st["s"])))
+		if best.is_empty() or c > far:
+			best = st
+			far = c
+	return best if not best.is_empty() else _primary_site(sites)
+
+
+## Bonus flag candidates: those clear of every source (FLAG_SOURCE_GAP) first, in their order; then the rest, farthest
+## from their nearest source first.
+func _clear_first(k: int, cands: Array[Dictionary]) -> Array[Dictionary]:
+	var clear: Array[Dictionary] = []
+	var rest: Array[Dictionary] = []
+	for st: Dictionary in cands:
+		var c := source_clearance(k, Vector2(float(st["x"]), float(st["s"])))
+		st["clear"] = c
+		if c >= FLAG_SOURCE_GAP:
+			clear.append(st)
+		else:
+			rest.append(st)
+	rest.sort_custom(func(p: Dictionary, q: Dictionary) -> bool: return float(p["clear"]) > float(q["clear"]))
+	clear.append_array(rest)
+	return clear
+
+
+## The planned source of a flag's start wave: one FLAG_WAVE_NEAR..FLAG_WAVE_FAR m from the site (nearest), else
+## FLAG_SOURCE_GAP..300 m (nearest), else farther (nearest), else the farthest of the rest; "" without sources.
+## `closed`: source ids left out. PacingDirector uses the same ranking at release time (from the snapped site).
+func flag_source(k: int, at: Vector2, closed: Dictionary = {}) -> String:
+	var best := ""
+	var best_key := Vector2(INF, INF)
+	for s: Dictionary in deck_sources(k):
+		if closed.has(s["id"]):
+			continue
+		var key := flag_source_rank(at.distance_to(Vector2(float(s["x"]), float(s["s"]))))
+		if key.x < best_key.x or (key.x == best_key.x and key.y < best_key.y):
+			best_key = key
+			best = s["id"]
+	return best
+
+
+## (rank, tie-break) of a source `d` m from a flag site; lower is better (see flag_source).
+static func flag_source_rank(d: float) -> Vector2:
+	if d >= FLAG_WAVE_NEAR and d <= FLAG_WAVE_FAR:
+		return Vector2(0, d)
+	if d >= FLAG_SOURCE_GAP and d <= PacingDirector.MAX_SOURCE_DIST:
+		return Vector2(1, d)
+	if d > PacingDirector.MAX_SOURCE_DIST:
+		return Vector2(2, d)
+	return Vector2(3, -d)
 
 
 ## The primary's site: the heaviest non-departure, non-safe site in the far half (progress >= 0.5); else the farthest
@@ -457,65 +585,202 @@ func _make_pools(sec: SectionPlan) -> void:
 	for k in deck_count:
 		var n := wave_count(k)
 		if n == 0:
-			pools.append({"deck": k, "garrison": 1.0, "waves": []})
+			pools.append({"deck": k, "garrison": 1.0, "reserve": []})
 			continue
-		# Triggers: [trigger, objective site] in wave order: free waves first, then objective waves in plan order, then
-		# the hold's (the extraction deck's last wave).
+		# Slots: [objective id ("" free), objective site, flag?] in reserve order: free groups first, then objective groups
+		# in plan order, then the hold's (the extraction deck's last group).
 		# Same room accounting as _make_objectives (plan order: primary, then bonuses), so every flag that got its alarm
 		# wave there gets it here.
 		var room := n - (1 if k == ex_deck else 0)
 		if primary(k)["type"] == "sweep":
 			room -= mini(room, 1)    # the sweep's free wave (same accounting as _make_objectives)
 		var tied: Array = []
+		var extra := 0      # flag waves beyond the pool's room (taken from the garrison share)
 		for o: Dictionary in deck_objectives(k):
 			var at := Vector2(float(o["site"]["x"]), float(o["site"]["s"]))
 			var take := 0
 			match str(o["type"]):
 				"flag":
-					take = 1 if room >= 1 else 0
+					# Every flag has one wave, ordered when its capture starts (step start: the crew holds the flag
+					# under attack). Beyond the room it is an extra wave taken from the garrison share.
+					take = 1
+					if room >= 1:
+						room -= 1
+					else:
+						extra += 1
 				"defend":
-					take = int(o["params"]["waves"])
-			# A flag's wave answers the raised flag (step done: "raising the flag raises the alarm"); a defend's waves
-			# are its schedule (step start).
-			var step := "done" if o["type"] == "flag" else "start"
+					take = int(o["params"]["waves"])    # its schedule (step start)
+					room -= take
 			for i in take:
-				tied.append([{"kind": "objective", "id": o["id"], "step": step}, at])
-			room -= take
+				tied.append([str(o["id"]), at, o["type"] == "flag"])
 		var hold_wave: Array = []
 		if k == ex_deck:
 			var h := objective("hold")
-			hold_wave = [{"kind": "objective", "id": "hold", "step": "start"},
-					Vector2(float(h["site"]["x"]), float(h["site"]["s"]))]
-		var free := n - tied.size() - (1 if not hold_wave.is_empty() else 0)
+			hold_wave = ["hold", Vector2(float(h["site"]["x"]), float(h["site"]["s"]))]
+		var free := n - (tied.size() - extra) - (1 if not hold_wave.is_empty() else 0)
 		var p := primary(k)
 		var p_at := Vector2(float(p["site"]["x"]), float(p["site"]["s"]))
 		var trig: Array = []
-		# A sweep deck delivers its whole free pool as the crew kills it: no linger wave there.
-		var linger: bool = free >= 2 and p["type"] != "sweep"
 		for i in maxi(free, 0):
-			if i == free - 1 and linger:
-				trig.append([{"kind": "linger", "after": float(options["linger"])}, p_at])
-			else:
-				trig.append([{"kind": "garrison_low"}, p_at])
+			trig.append(["", p_at])
 		trig.append_array(tied)
 		if not hold_wave.is_empty():
 			trig.append(hold_wave)
 		var total := 0.0
 		for i in trig.size():
 			total += pow(SHARE_GROWTH, float(i))
-		var waves: Array = []
+		# Extra flag waves come out of the garrison: the wave share grows so the first n waves keep their size (at most
+		# down to GARRISON_MIN garrison).
+		var garrison := 0.5
+		if extra > 0:
+			var base := 0.0
+			for i in n:
+				base += pow(SHARE_GROWTH, float(i))
+			garrison = maxf(1.0 - (1.0 - garrison) * total / base, GARRISON_MIN)
+		var reserve: Array = []
 		for i in trig.size():
 			var themes := ["light", "mixed", "heavy"]
-			waves.append({"id": "d%d_w%d" % [k, i], "share": pow(SHARE_GROWTH, float(i)) / total,
-					"theme": themes[mini(i * 3 / trig.size(), 2)], "source": nearest_source(k, trig[i][1]),
-					"trigger": trig[i][0]})
-		pools.append({"deck": k, "garrison": 0.5, "waves": waves})
+			var at: Vector2 = trig[i][1]
+			var src := flag_source(k, at) if trig[i].size() > 2 and bool(trig[i][2]) else nearest_source(k, at)
+			reserve.append({"id": "d%d_w%d" % [k, i], "share": pow(SHARE_GROWTH, float(i)) / total,
+					"theme": themes[mini(i * 3 / trig.size(), 2)], "source": src, "for": str(trig[i][0])})
+		pools.append({"deck": k, "garrison": garrison, "reserve": reserve})
+
+
+# --- Depots ----------------------------------------------------------------------------------------------
+
+## The deck's objective points a depot keeps clear of (flag / defend sites, the hold zone's centre; not a sweep's).
+func _objective_points(k: int) -> Array[Vector2]:
+	var out: Array[Vector2] = []
+	for o: Dictionary in deck_objectives(k):
+		if str(o["type"]) != "sweep":
+			out.append(Vector2(float(o["site"]["x"]), float(o["site"]["s"])))
+	return out
+
+
+func _make_depots(sec: SectionPlan) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = int(sec.p("seed")) * 2246822519 + 3266489917
+	var ex_deck := int(sec.extraction["deck"])
+	for k in deck_count:
+		var two := k == ex_deck
+		for o: Dictionary in deck_objectives(k):
+			if str(o["type"]) == "defend":
+				two = true
+		var roll := rng.randi_range(1, 2)    # drawn on every deck, so one deck's rule never shifts the next's
+		var want := 2 if two else roll
+		var cands: Array[Dictionary] = []
+		var arr := sec.arrival(k)
+		var arr_at := Vector2(float(arr["x"]), float(arr["s"]))
+		for st: Dictionary in sec.encounter_sites(k):
+			if bool(st["safe"]):
+				continue
+			var lot := depot_site_for(sec, k, Vector2(float(st["x"]), float(st["s"])))
+			if lot.distance_to(arr_at) < SectionPlan.SAFE_RADIUS:
+				continue
+			var c := st.duplicate()
+			c["x"] = lot.x
+			c["s"] = lot.y
+			cands.append(c)
+		var objs := _objective_points(k)
+		var anchors := depot_anchors(k)
+		var chosen: Array[Vector2] = []
+		for n in want:
+			var anchor: Variant = anchors[n] if n < anchors.size() else null
+			var best_tier := 99
+			var group: Array[Dictionary] = []
+			for st: Dictionary in cands:
+				var at := Vector2(float(st["x"]), float(st["s"]))
+				var dup := false
+				for c in chosen:
+					dup = dup or at.distance_to(c) < DEPOT_SAME
+				if dup:
+					continue
+				var tier := 0
+				if source_clearance(k, at) < DEPOT_SOURCE_GAP:
+					tier += 8
+				for c in chosen:
+					if at.distance_to(c) < DEPOT_GAP:
+						tier += 4
+						break
+				for p in objs:
+					if at.distance_to(p) < DEPOT_OBJECTIVE_GAP:
+						tier += 2
+						break
+				if anchor != null:
+					var da := at.distance_to(anchor as Vector2)
+					if da < DEPOT_NEAR_MIN or da > DEPOT_NEAR_MAX:
+						tier += 1
+				if tier < best_tier:
+					best_tier = tier
+					group = []
+				if tier == best_tier:
+					group.append(st)
+			var pick := rng.randi_range(0, maxi(group.size() - 1, 0))
+			if anchor != null and not group.is_empty():
+				# Near an objective: the candidate nearest DEPOT_NEAR_BEST from it (the draw above still happens).
+				var bd := INF
+				for i in group.size():
+					var dd := absf(Vector2(float(group[i]["x"]), float(group[i]["s"])).distance_to(anchor as Vector2) - DEPOT_NEAR_BEST)
+					if dd < bd:
+						bd = dd
+						pick = i
+			if group.is_empty() or (n > 0 and best_tier >= 8):
+				break    # a second depot only on a site clear of the sources
+
+			if best_tier >= 8:
+				# No site clear of the sources: the one farthest from its nearest source.
+				var far := -1.0
+				for i in group.size():
+					var c := source_clearance(k, Vector2(float(group[i]["x"]), float(group[i]["s"])))
+					if c > far:
+						far = c
+						pick = i
+			var at := Vector2(float(group[pick]["x"]), float(group[pick]["s"]))
+			chosen.append(at)
+			depots.append({"id": "d%d_depot%d" % [k, n], "deck": k, "site": {"x": at.x, "s": at.y}, "cores": DEPOT_CORES,
+					"snap": DEPOT_SNAP})
+
+
+## Where a depot planned at encounter site `at` on deck k goes: the nearest point of any cell's buildable inside
+## (SectionPlan.cell_rect) inset by DEPOT_LOT_INSET, so off every road line and crossing. `at` itself when no cell is
+## big enough (never in the section plans tested).
+static func depot_site_for(sec: SectionPlan, k: int, at: Vector2) -> Vector2:
+	var best := at
+	var best_d := INF
+	for c in sec.cols:
+		for r in sec.rows:
+			var cr := sec.cell_rect(k, c, r).grow(-DEPOT_LOT_INSET)
+			if cr.size.x < 0.0 or cr.size.y < 0.0:
+				continue
+			var p := Vector2(clampf(at.x, cr.position.x, cr.end.x), clampf(at.y, cr.position.y, cr.end.y))
+			var d := p.distance_to(at)
+			if d < best_d - 1e-6:
+				best_d = d
+				best = p
+	return best
+
+
+## The points deck k's depots are placed near (defend balance, 2026-11-24): its defend sites (primary first), then the
+## hold zone's centre; depot n prefers DEPOT_NEAR_MIN..DEPOT_NEAR_MAX m from anchor n (straight line: a pure plan has no
+## walk routes; a road walk is a little longer).
+func depot_anchors(k: int) -> Array[Vector2]:
+	var out: Array[Vector2] = []
+	for role: String in ["primary", "bonus"]:
+		for o: Dictionary in deck_objectives(k):
+			if str(o["type"]) == "defend" and str(o["role"]) == role:
+				out.append(Vector2(float(o["site"]["x"]), float(o["site"]["s"])))
+	for o: Dictionary in deck_objectives(k):
+		if str(o["type"]) == "hold":
+			out.append(Vector2(float(o["site"]["x"]), float(o["site"]["s"])))
+	return out
 
 
 # --- Checksum --------------------------------------------------------------------------------------------
 
 ## Hex digest of the whole mission (includes the section's checksum). Equal on two machines = the same mission.
-func checksum() -> String:
+## `with_depots` false: the digest of the same plan without its depots (what it was before depots existed).
+func checksum(with_depots: bool = true) -> String:
 	var buf := StreamPeerBuffer.new()
 	buf.put_utf8_string(section_checksum)
 	buf.put_32(deck_count)
@@ -540,11 +805,15 @@ func checksum() -> String:
 	for p: Dictionary in pools:
 		buf.put_32(int(p["deck"]))
 		_put(buf, [p["garrison"]])
-		for wv: Dictionary in p["waves"]:
-			var tr: Dictionary = wv["trigger"]
-			buf.put_utf8_string("%s:%s:%s:%s:%s:%s" % [wv["id"], wv["theme"], wv["source"], tr["kind"], tr.get("id", ""),
-					tr.get("step", "")])
-			_put(buf, [wv["share"], tr.get("after", 0.0)])
+		for g: Dictionary in p["reserve"]:
+			buf.put_utf8_string("%s:%s:%s:%s" % [g["id"], g["theme"], g["source"], g["for"]])
+			_put(buf, [g["share"]])
+	if with_depots:
+		for dp: Dictionary in depots:
+			buf.put_utf8_string("depot:" + str(dp["id"]))
+			buf.put_32(int(dp["deck"]))
+			buf.put_32(int(dp["cores"]))
+			_put(buf, [dp["site"]["x"], dp["site"]["s"], dp["snap"]])
 	var ctx := HashingContext.new()
 	ctx.start(HashingContext.HASH_SHA256)
 	ctx.update(buf.data_array)

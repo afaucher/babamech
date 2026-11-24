@@ -10,7 +10,9 @@ extends Node
 ##   rack.read_input = true            # number keys / mouse (false in tests: drive it through the methods below)
 ##
 ## SLOTS: one per chassis hardpoint, in MechCatalog chassis order. Strider: 1 side_l, 2 side_r, 3 shoulder_l,
-## 4 shoulder_r, 5 back. An empty hardpoint is an empty slot (pressing its number does nothing). Weapons start enabled,
+## 4 shoulder_r, 5 back. Bulwark: 1 side_l, 2 side_r, 3 back_l, 4 back_r (the same scheme: side guns first, left before
+## right, the back last). Nothing here names a hardpoint: every per-slot array follows the chassis' list, so any count
+## works. An empty hardpoint is an empty slot (pressing its number does nothing). Weapons start enabled,
 ## active equipment (the repair drone) starts deselected, passive equipment is always on.
 ##   number key      toggle that slot          same number again within DOUBLE_TAP s: solo it (only it enabled)
 ##                   (passive equipment: nothing; active equipment toggles like a weapon, see EQUIPMENT)
@@ -67,7 +69,8 @@ extends Node
 ##   signal fired(slot: int)          one shot left that slot (once per fire record: a rocket salvo emits six)
 ## ----------------------------------------------------------------------------------------------------------------------
 ##
-## EQUIPMENT (back slot only; MechCatalog.is_equipment): ACTIVE equipment (the repair drone) is a selectable slot like a
+## EQUIPMENT (back slots only; MechCatalog.is_equipment; the Bulwark carries two, each its own slot, charges and key):
+## ACTIVE equipment (the repair drone) is a selectable slot like a
 ## weapon: its key toggles it, a double tap solos it, soloing another slot deselects it, set_enabled works, and the
 ## UNUSABLE rule applies (no charges left / hardpoint destroyed). It starts deselected. While it is selected, a FRESH
 ## trigger press (edge, not hold-repeat) launches the drone if it can (can_launch: a charge left, none of this rack's
@@ -211,6 +214,7 @@ func rebuild() -> void:
 		if w != "" and not equip:
 			mount = WeaponMount.new()
 			mount.setup(w, id, shooter, peer, _stats(w))
+			mount.set_hardpoint_range(WeaponMount.hardpoint_range(_chassis, id))   # e.g. the Bulwark's yaw_in_max
 			mount.ammo = bonus_ammo(mount.ammo, int(mount.stats.get("salvo", 1)), ammo_bonus)
 			ammo_max[ammo_max.size() - 1] = mount.ammo
 			if mount.behaviour != null:
@@ -346,6 +350,24 @@ func activate(n: int) -> bool:
 		return false
 	slot_changed.emit(n)
 	return drone != null
+
+
+## Resupply (the owner, a supply depot's power core): every limited-ammo weapon back to its full ammo (ammo_max, with
+## the ammo bin), and active equipment back to its catalog charges. A slot that was EMPTY becomes usable again but stays
+## deselected (UNUSABLE SLOTS). Returns the slots refilled.
+func refill_ammo() -> int:
+	var n := 0
+	for i in slot_count():
+		var m: WeaponMount = mounts[i]
+		if m != null and ammo_max[i] >= 0 and m.ammo != ammo_max[i]:
+			m.ammo = ammo_max[i]
+			n += 1
+		elif _is_equipment(i) and _active(weapons[i]):
+			var full := int(_stats(weapons[i]).get("charges", 0))
+			if charges[i] != full:
+				charges[i] = full
+				n += 1
+	return n
 
 
 ## Slot index `i`'s active equipment can launch now: a charge left, no drone of this rack out (rising, circling or flying
@@ -512,7 +534,7 @@ func _rest_muzzle(i: int) -> Vector3:
 	if node == null:
 		return mech.global_position if mech != null and mech.is_inside_tree() else Vector3.ZERO
 	var st: Dictionary = MechCatalog.weapon(weapons[i]) if weapons[i] != "" else {}
-	return node.global_transform * Vector3(0, 0, -float(st.get("muzzle", 0.0)))
+	return node.global_transform * WeaponPose.rest_offset(weapons[i], float(st.get("muzzle", 0.0)))
 
 
 func _hp_node(i: int) -> Node3D:

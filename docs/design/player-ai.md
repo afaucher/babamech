@@ -493,3 +493,41 @@ sets it in game seconds (limit + 120).
 
 The non-objective sweep missions keep their own tests (`test_net_bot_mission`, `test_bot_nav_*`; those use DEV fast clear).
 `test_mission_phase1` (teleport + lethal hits) stays the fast frame check of the rules and waves.
+
+### 9.7 Skill in missions (BotProfile mission keys)
+MissionBot reads five keys of its pilot's profile (`scripts/ai/bot_profile.gd`) once at start, in place of constants;
+veteran's equal the old constants, so veteran-pinned tests keep their timings.
+
+| Key | Replaces | rookie | average | veteran | brawler |
+|---|---|---|---|---|---|
+| `survival_hp` (weakest core share -> cover in the zone; defend: x 0.3/0.45) | LOW_HP 0.45 | 0.25 | 0.40 | 0.45 | 0.30 |
+| `hunt_patience` (s of a stalled hold before hunting) | HUNT_AFTER 12 | 20 | 15 | 12 | 6 |
+| `engage_radius` (m: travel -> fight; out at x 125/85) | ENGAGE 85 | 70 | 80 | 85 | 50 |
+| `travel_dodge` (share of PlayerBot's telegraph dodges honoured while travelling) | none (0) | 0 | 0.5 | 0 | 0.3 |
+| `revive_priority` (weight of going to revive a downed crewmate) | - | 0.2 | 0.5 | 0.8 | 0.4 |
+
+Hangar bots with the brawler skill pick a close-range kit (`BotLoadout.CLOSE_ORDER`: gatling / flamer / swivel /
+rockets / flak). A/B: env `BABAMECH_BOT_PROFILE` in `tests/bot_obj_case.gd`. Measured 2026-11-24 (2x sim, game s;
+limits flag 70, defend 360, sweep 270):
+
+| Profile | flag (seed 6) | defend (seed 7) | sweep (seed 4) |
+|---|---|---|---|
+| veteran | 42.3 | 174.9 (relay 56 %) | timeout (a wave gunship it can't bring down; same for every profile) |
+| average | 43.1 | lost at 264.5 (1 death) | timeout |
+| brawler | 43.1 | lost at 205.5 (1 death) | timeout |
+| rookie | timeout at 70 (1 death) | lost at 194.3 (1 death) | timeout (2 deaths) |
+
+**Supply depots** (MissionBot "SUPPLY DEPOTS"): when MissionDepots.needs_core_of holds and it is hurt past survival_hp
+(+0.05) / structure < 50 % / no usable gun (in an objective zone: under survival_hp or no gun), it walks to the nearest
+depot with cores on its deck (<= 160 m; last stretch grid-planned), stands within 5 m and takes the core (the host claims
+for hangar bots); gives up after 35 s, then leaves that depot alone 120 s. Test: `test_bot_depot`.
+
+**Revive** (MissionBot "REVIVE"; DownedCrew / DownedRules): it goes to a revivable downed crewmate on its deck within
+220 m when it can revive (repair drone with a charge) and score = revive_priority - 0.3 x distance share (- 0.3 while
+holding an objective zone, - 0.3 under survival_hp) > 0.25; leaves it to a crewmate who can revive and is 15 m nearer;
+declines a hot wreck (5+ live enemies within 45 m, or 2+ while it is under survival_hp); stands within 10 m (a covered
+spot if enemies see it), launches its drone once, keeps fighting; done when the wreck is no longer listed. Test:
+`test_net_bot_revive` (a revive in 4.4 s, and a decline: "3 enemies at the wreck, own core 38 %").
+
+Not done yet (from the measurement): MissionBot still overrides PlayerBot's cover while travelling, cancels a roof climb
+while holding, and applies the preferred range only near the zone centre.

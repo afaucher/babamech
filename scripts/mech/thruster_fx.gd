@@ -10,6 +10,9 @@ extends Node3D
 ## (the pelvis dips toward the feet, and in the air the feet reach for the ground far below), so a standing-pose anchor
 ## left the flames metres above the visible body.
 ##
+## A chassis whose ChassisParts entry names `thrusters` (the Bulwark: under its rear engine block) has its jets there, on
+## the posed body, instead.
+##
 ## Cosmetic (Net LOCAL): every machine shows it from the mech's synced thrust state.
 
 const TILT := 0.45                 ## radians the jets lean back from straight down
@@ -62,6 +65,12 @@ func nozzle(side: float) -> Vector3:
 	if rig == null or rig.model == null:
 		return global_position
 	var model := rig.model
+	var body_nozzle: Variant = model.parts().get("thrusters")
+	if body_nozzle is Vector3:   # a chassis with its own jets (the Bulwark's engine block): on the body, bob and lean included
+		var ch := model.find_child("Chassis", true, false) as Node3D
+		if ch != null:
+			var bn: Vector3 = body_nozzle
+			return ch.to_global(Vector3(side * bn.x, bn.y, bn.z))
 	var pts := model.leg_points(0 if side < 0.0 else 1)
 	var hip: Vector3 = pts["hip"] if pts.has("hip") else model.hip_local(side)
 	return model.to_global(hip + Vector3(side * NOZZLE.x, NOZZLE.y, NOZZLE.z))

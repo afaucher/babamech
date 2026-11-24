@@ -25,6 +25,11 @@ extends Node
 ## why ("Crew is full", "Different build") and dropped REFUSE_GRACE later; the transport admits a few more peers than
 ## MAX_CREW for that.
 ##
+## BOTS (docs/design/hangar-bots.md): the host may seat AI pilots (add_bot / remove_bot / set_bot_skill, crew "lobby"
+##   only). A bot's pilot id is NEGATIVE (-1..-3, its bot slot): never a peer id. Bots live in `bots` (pilot id -> entry
+##   with "bot": true, "skill"), NOT in `roster`, so every transport path (sends, silence, kicks, telemetry, the load
+##   barrier) only ever sees players; crew() lists both by seat, and sys.roster carries both (flagged). A bot runs on the
+##   host's machine (machine_of(id) = 1). players + bots <= MAX_CREW.
 ## ROSTER: peer id -> {peer, seat, name, head, chassis, accent, loadout, steam_id}. The host is seat 1; a joiner takes the
 ## lowest free seat. Same list on every machine (the host broadcasts it). `head` (chicken / pickle / corn / dog) and
 ## `chassis` are ids from MechCatalog, `accent` an id from MechAccent; this layer carries them as plain strings and never
@@ -38,6 +43,8 @@ extends Node
 ##   mission.go {start_at}: mission_go(elapsed) fires on every machine at start_at. See net_mission.gd.
 ##   Plan mode (DEV `objectives`, carried in mission.launch): the host's wave orders go out as reliable mission.wave
 ##   {order} (send_mission_wave; mission_wave(order) on every client; mission.go carries the ones still to open).
+##   Supply depots: depot.claim / depot.grant / depot.deny (claim_depot, send_depot_grant, send_depot_deny; signals
+##   depot_claimed / depot_granted / depot_denied), see net_mission.gd "DEPOTS".
 ##
 ## MECH SNAPSHOTS (co-op step 2, cast's M2): NetMechStream, child "Mechs" (`mechs`). Each machine streams its own mech
 ##   on NetWire.T_SNAP (unreliable, 30 Hz, client -> host; the host forwards the others' to each client) and shows the
@@ -102,6 +109,12 @@ signal mission_state_changed(state: Dictionary)
 ## A client: the host ordered a reinforcement wave (mission.wave {order}: {wave, deck, source, open_at, max_units}, plan
 ## mode). Also fired for each order mission.go carries whose open_at has not passed.
 signal mission_wave(order: Dictionary)
+## The host: a crew member asks for a supply depot's power core (depot.claim {depot, n}; NetMission "DEPOTS").
+signal depot_claimed(from: int, data: Dictionary)
+## A client: the host granted a core (depot.grant {depot, peer, seq, cores_left}; to everyone, or a repeat to the asker).
+signal depot_granted(grant: Dictionary)
+## A client: the host refused this machine's claim (depot.deny {depot, reason, n}).
+signal depot_denied(data: Dictionary)
 ## A non-system reliable event from a crew member (gameplay events, test probes).
 signal event_received(from: int, kind: String, data: Dictionary, stamp: float)
 ## A non-system unreliable packet that passed the sequence check.
@@ -160,12 +173,19 @@ const DESYNC := "Desync: different city"
 const LOAD_SLOW := "Didn't load the mission in time"
 const HOST_SILENT := "Lost the host (no answer)"
 const HOST_LOST_LOADING := "Lost the host while loading"
+const BOT_NAMES := ["Rook", "Vesper", "Kestrel"]
+const BOT_HEADS := ["dog", "duck", "corn"]
+const BOT_ACCENTS := ["", "", ""]   ## "" = the default accent
+const BOT_SKILLS := ["rookie", "average", "veteran", "brawler"]   ## BotProfile.PROFILE_ORDER (kept here: no AI in net code)
+const BOT_SKILL := "veteran"
 
 var state := State.OFFLINE
 var transport := Transport.NONE
 var hosting := false
 ## peer id -> {"peer", "seat", "name", "head", "chassis", "accent", "steam_id"}
 var roster: Dictionary = {}
+## Bots seated by the host (pilot id < 0 -> {peer: id, seat, name, head, chassis, accent, loadout, bot: true, skill}).
+var bots: Dictionary = {}
 ## This player's profile, carried in the hello. "" name = the Steam persona, else "Pilot <seat>".
 var player_name := ""
 var head_id := ""
@@ -192,6 +212,8 @@ var link_from_settings := false
 ## The crew's friendly fire option: the host decides (set_friendly_fire), the crew sees it (sys.crew_opts, sys.welcome) and
 ## mission.launch carries it. On a client this is the host's value while online.
 var friendly_fire := true
+## Host: the skill new bots get (the hangar's picker; set_bot_skill also sets every seated bot's).
+var bot_skill := BOT_SKILL
 ## DEV (docs/design/mission-objectives.md §7 phase 1): the host's next launches play the mission plan (objectives, waves,
 ## the extraction hold) instead of clear + extract. Set by FrontEnd from `--objectives` / GameSettings dev objectives;
 ## mission.launch carries it (params.objectives), so every machine agrees. Offline it is not used (solo_launch carries it).
@@ -335,10 +357,43 @@ func host_time() -> float:
 	return clock.host_time(Time.get_ticks_usec())
 
 
-## The roster sorted by seat.
+## The crew sorted by seat: the players (roster) and the host's bots (entries with "bot": true, negative peer ids).
 func crew() -> Array:
-	var out: Array = roster.values()
+	var out: Array = roster.values() + bots.values()
 	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a["seat"]) < int(b["seat"]))
+	return out
+
+
+## A bot's pilot id (negative; players' ids are peer ids, always positive).
+static func is_bot_id(id: int) -> bool:
+	return id < 0
+
+
+func is_bot(id: int) -> bool:
+	return bots.has(id)
+
+
+## A crew member (player or bot) right now: use it where a crew mech's pilot id is checked against the crew.
+func has_member(id: int) -> bool:
+	return roster.has(id) or bots.has(id)
+
+
+## The crew entry of a player or bot ({} when none).
+func member(id: int) -> Dictionary:
+	return roster.get(id, bots.get(id, {}))
+
+
+## The peer whose machine runs pilot `id`: the player itself, the host (1) for a bot.
+static func machine_of(id: int) -> int:
+	return 1 if id < 0 else id
+
+
+## The bots' pilot ids, by seat.
+func bot_ids() -> Array[int]:
+	var out: Array[int] = []
+	for e: Dictionary in crew():
+		if bool(e.get("bot", false)):
+			out.append(int(e["peer"]))
 	return out
 
 
@@ -587,10 +642,26 @@ func mission_ready_peers() -> Array[int]:
 	return mission.ready_peers()
 
 
-## Host: a reinforcement wave order (WaveDirector.tick, plan mode): sent to the crew as a reliable mission.wave and kept
+## Host: a reinforcement wave order (PacingDirector.tick, plan mode): sent to the crew as a reliable mission.wave and kept
 ## for mission.go (members reaching the barrier late get the orders whose door hasn't opened). Ignored on a client.
 func send_mission_wave(order: Dictionary) -> void:
 	mission.host_wave(order)
+
+
+## Client: ask the host for a power core of supply depot `depot` (reliable depot.claim {depot, n}; n = this pilot's claim
+## counter, re-sent unchanged while unanswered). Ignored on the host (it arbitrates its own claims) or offline.
+func claim_depot(depot: String, n: int) -> void:
+	mission.client_depot_claim(depot, n)
+
+
+## Host: a granted core (depot.grant {depot, peer, seq, cores_left}) to the crew (`to` 0) or one member.
+func send_depot_grant(grant: Dictionary, to: int = 0) -> void:
+	mission.host_depot_grant(grant, to)
+
+
+## Host: a refused claim (depot.deny {depot, reason, n}) to the asker.
+func send_depot_deny(peer: int, data: Dictionary) -> void:
+	mission.host_depot_deny(peer, data)
 
 
 ## Every wave order of the mission this machine has (host: sent; client: heard), in order.
@@ -714,7 +785,81 @@ func decline_invite() -> void:
 
 
 func seats_free() -> int:
-	return maxi(MAX_CREW - roster.size(), 0)
+	return maxi(MAX_CREW - roster.size() - bots.size(), 0)
+
+
+## Host, crew in the lobby: seat a bot (lowest free bot slot and seat). Its name, head and accent follow its slot; its
+## chassis and loadout are picked at launch from the mission seed (BotLoadout, on every machine). Returns its pilot id,
+## 0 when refused (a client, offline, full, on a mission).
+func add_bot(skill: String = BOT_SKILL) -> int:
+	if not hosting or state != State.ONLINE or crew_state != "lobby" or seats_free() <= 0:
+		return 0
+	var slot := 1
+	while bots.has(-slot):
+		slot += 1
+	var seat := 1
+	var taken: Array[int] = []
+	for e: Dictionary in crew():
+		taken.append(int(e["seat"]))
+	while taken.has(seat):
+		seat += 1
+	var id := -slot
+	bots[id] = {"peer": id, "seat": seat, "name": BOT_NAMES[(slot - 1) % BOT_NAMES.size()],
+		"head": BOT_HEADS[(slot - 1) % BOT_HEADS.size()], "chassis": DEFAULT_CHASSIS,
+		"accent": BOT_ACCENTS[(slot - 1) % BOT_ACCENTS.size()], "loadout": {}, "bot": true, "skill": _clean_skill(skill)}
+	_bots_changed("%s (bot) seated" % str(bots[id]["name"]))
+	return id
+
+
+## Host, lobby: take a bot out of the crew. False when there is no such bot or it is refused.
+func remove_bot(id: int) -> bool:
+	if not hosting or state != State.ONLINE or crew_state != "lobby" or not bots.has(id):
+		return false
+	var n := str(bots[id]["name"])
+	bots.erase(id)
+	_bots_changed("%s (bot) left" % n)
+	return true
+
+
+## Host, lobby: every bot's skill (a BotProfile id).
+func set_bot_skill(skill: String) -> bool:
+	if not hosting or state != State.ONLINE or crew_state != "lobby":
+		return false
+	bot_skill = _clean_skill(skill)
+	for id: int in bots:
+		(bots[id] as Dictionary)["skill"] = bot_skill
+	if not bots.is_empty():
+		_bots_changed("")
+	return true
+
+
+## Host: write fields of a bot's entry (e.g. the accent it derived at launch) and send the roster. Any crew state.
+func set_bot_fields(id: int, fields: Dictionary) -> void:
+	if not hosting or state != State.ONLINE or not bots.has(id):
+		return
+	var e: Dictionary = bots[id]
+	var changed := false
+	for k: Variant in fields:
+		if k == "peer" or k == "bot" or e.get(k) == fields[k]:
+			continue
+		e[k] = fields[k]
+		changed = true
+	if changed:
+		_bots_changed("")
+
+
+static func _clean_skill(skill: String) -> String:
+	return skill if skill in BOT_SKILLS else BOT_SKILL
+
+
+func _bots_changed(text: String) -> void:
+	_to_crew("sys.roster", {"entries": crew()})
+	_publish_lobby()
+	if text != "":
+		_log(text)
+		FlowLog.say("crew bot", "%s, crew %d" % [text, roster.size() + bots.size()])
+		status_changed.emit(text + ".")
+	roster_changed.emit()
 
 
 # --- Internals --------------------------------------------------------------------------------------
@@ -734,6 +879,7 @@ func _begin_host(peer: MultiplayerPeer, via: Transport) -> void:
 	hosting = true
 	crew_state = "lobby"
 	roster.clear()
+	bots.clear()
 	refusals.clear()
 	clock.start_host(Time.get_ticks_usec())
 	wire.reset()
@@ -795,6 +941,7 @@ func _end(reason: String, close_now: bool = false, linger: bool = false) -> void
 	transport = Transport.NONE
 	hosting = false
 	roster.clear()
+	bots.clear()
 	_pending.clear()
 	_refused.clear()
 	_last_heard.clear()
@@ -1023,7 +1170,7 @@ func _admit(from: int, data: Dictionary) -> void:
 	if int(data.get("protocol", -1)) != protocol or their_build != _build():
 		_refuse(from, name_, "%s (crew on %s, you on %s)" % [DIFFERENT_BUILD, _build(), their_build])
 		return
-	if roster.size() >= MAX_CREW:
+	if roster.size() + bots.size() >= MAX_CREW:
 		_refuse(from, name_, CREW_FULL)
 		return
 	if crew_state == "mission":
@@ -1031,7 +1178,7 @@ func _admit(from: int, data: Dictionary) -> void:
 		return
 	var seat := 1
 	var taken: Array[int] = []
-	for e: Dictionary in roster.values():
+	for e: Dictionary in crew():
 		taken.append(int(e["seat"]))
 	while taken.has(seat):
 		seat += 1
@@ -1147,9 +1294,14 @@ func _client_sys(from: int, kind: String, data: Dictionary) -> void:
 
 func _set_roster(entries: Array) -> void:
 	roster.clear()
+	bots.clear()
 	for e: Variant in entries:
 		var d := e as Dictionary
-		roster[int(d["peer"])] = d
+		var id := int(d["peer"])
+		if bool(d.get("bot", false)) and is_bot_id(id):
+			bots[id] = d
+		elif id > 0:
+			roster[id] = d
 
 
 # --- Packets -----------------------------------------------------------------------------------------

@@ -2,7 +2,7 @@ extends TestCase
 ## The mission's objective and end in a SOLO test drive (W6 win side; scripts/game/mission_flow.gd, MissionHud):
 ## 1. The stack drive builds MissionFlow with MissionRules from its section; while the enemies live, their deck's clear
 ##    objective is NOT done (evaluation gated until they spawned), the HUD's objective line shows rules.text().
-## 2. Downed in solo: auto-respawn as before and no "lost" (no crew-wipe loss for now).
+## 2. Downed in solo: no automatic respawn, no "lost" (wipe off); held SPACE respawns it (DownedRules).
 ## 3. Killing every enemy turns the objective to "Reach the extraction portal" with an extraction waypoint on the HUD.
 ## 4. The mech in the extraction zone: "won", the MISSION COMPLETE banner, and END_HOLD later the end flow finishes
 ##    (MissionFlow.finished; a test's drive isn't the current scene, so no scene change happens here).
@@ -39,17 +39,28 @@ func setup() -> void:
 	if check(hud != null and hud.mission_hud != null, "the HUD has the mission layer"):
 		await frames(2)
 		eq(str(hud.mission_hud.state()["objective"]), rules.text(), "the HUD's objective line is rules.text()")
-		check(hud.mission_hud.objective_panel.visible, "the objective line shows")
+		check(hud.mission_hud.list_panel.visible, "the objective panel (top right) shows")
+		eq(hud.mission_hud.shown_lines(), [rules.text()], "the objective panel shows rules.text()")
 		check(not hud.mission_hud.banner.visible, "no banner yet")
 
-	# 2. Downed: auto-respawn, no loss.
+	# 2. Downed (DownedRules, user decision 2026-11-24): no automatic respawn, no loss; holding the respawn key brings
+	# it back after the hold + the redeploy penalty.
 	var pt := td.combat.player_target
 	pt.apply_damage(5000.0, "head", "test")
 	check(pt.disabled, "the mech is downed")
-	check(pt.auto_respawn_delay >= 0.0, "solo keeps the auto-respawn")
-	await _seconds(pt.auto_respawn_delay + 1.0)
-	check(not pt.disabled, "it respawned")
+	check(pt.auto_respawn_delay < 0.0, "no automatic respawn")
+	await _seconds(2.0)
+	check(pt.disabled, "still downed 2 s later")
 	eq(rules.outcome, "", "being downed loses nothing")
+	var was_override := td.drive_override
+	td.drive_override = true
+	pt.respawn_held = true
+	await _seconds(DownedRules.RESPAWN_HOLD + 0.2)
+	pt.respawn_held = false
+	await _seconds(DownedRules.RESPAWN_PENALTY + 0.3)
+	td.drive_override = was_override
+	check(not pt.disabled, "it respawned after the hold and the penalty")
+	eq(rules.outcome, "", "still nothing lost")
 
 	# 3. Every enemy down.
 	for e in td.combat.squad.enemies.duplicate():   # killing past MAX_WRECKS frees old wrecks from the list

@@ -20,8 +20,12 @@ extends TestCase
 ## captured 2026-11-23: 4/1 has 2 form segments whose courts / planting bands add 45 sidewalk-height boxes (the live list
 ## is the forms-off list with exactly those boxes inserted, asserted in _deck: the walls are untouched); 1/0's
 ## 4 form segments raise no ground (CityPlan.raised empty), so its collision is the same.
-const GOLDEN_COLLISION := {"1/0": [1366, 1996002468], "4/1": [2030, 4209122442]}
-const GOLDEN_LIVE := {"1/0": [1366, 1996002468], "4/1": [2075, 2245239995]}
+## Recaptured 2026-11-23 (map sealed: a portal's recess gets a back plate, CityDistrict._col_walls): 1/0 has the entry
+## portal, so one shape more; with the portal plates taken out it is exactly the old capture (PRE_PLATE, asserted in
+## _deck). 4/1 has no portal and is unchanged. Was 1/0 [1366, 1996002468] (forms off and live).
+const GOLDEN_COLLISION := {"1/0": [1367, 4047391608], "4/1": [2030, 4209122442]}
+const GOLDEN_LIVE := {"1/0": [1367, 4047391608], "4/1": [2075, 2245239995]}
+const PRE_PLATE := {"1/0": [1366, 1996002468], "4/1": [2030, 4209122442]}      ## forms off, portal plates left out
 const FORMS_OFF := {"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0}
 const FARM_TRIS_PER_M := 32.0      ## budget: lit + light-bar triangles per metre of farm wall (target ~30)
 
@@ -59,14 +63,25 @@ func _kinds() -> void:
 	check(farms > 10, "the sections have farm walls (%d)" % farms)
 
 
-func _collision_hash(d: CityDistrict) -> Array:
+## [shape count, hash]; with `skip_plates`, [count, hash, plates] leaving out the portal back plates (a box
+## PORTAL_PLATE + 0.1 thick across the arc, more than GATE_RECESS - 0.5 m past an end of the extent).
+func _collision_hash(d: CityDistrict, skip_plates: bool = false) -> Array:
 	var h := 0
+	var n := 0
+	var plates := 0
+	var e := d.plan.extent
 	var col := d.get_node("Collision")
 	for c in col.get_children():
 		var cs := c as CollisionShape3D
 		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else (cs.shape as ConvexPolygonShape3D).points
+		if skip_plates and sz is Vector3 and absf((sz as Vector3).z - (CityDistrict.PORTAL_PLATE + 0.1)) < 0.001:
+			var s := d.ring.world_to_arc(cs.transform.origin).y
+			if s > e.end.y + CityStreets.GATE_RECESS - 0.5 or s < e.position.y - CityStreets.GATE_RECESS + 0.5:
+				plates += 1
+				continue
 		h = hash([h, cs.transform, sz])
-	return [col.get_child_count(), h]
+		n += 1
+	return [n, h, plates] if skip_plates else [n, h]
 
 
 func _shape_list(d: CityDistrict) -> Array:
@@ -94,6 +109,13 @@ func _deck(seed_: int, k: int) -> void:
 	add_child(o)
 	o.build_deck(SectionPlan.make(off_sp), k)
 	eq(_collision_hash(o), GOLDEN_COLLISION[key], tag + " (forms off): collision identical to the window walls' (count, hash)")
+	var portals := 0
+	for w: Dictionary in o.plan.boundary():
+		for g: Dictionary in w["gates"]:
+			portals += 1 if str(g["kind"]) == "portal" else 0
+	var pre := _collision_hash(o, true)
+	eq([pre[0], pre[1]], PRE_PLATE[key], tag + " (forms off): without the portal back plates, the collision before the map was sealed")
+	eq(pre[2], portals, tag + ": one back plate per portal (%d)" % portals)
 	eq(_collision_hash(d), GOLDEN_LIVE[key], tag + " (forms live): collision as captured (count, hash)")
 	# The road forms only add the ground they raise (CityPlan.raised: courts, planting bands), as one run of boxes after
 	# the sidewalks; every other shape (walls, gates, buildings, ramps) is the forms-off deck's, in the same order.

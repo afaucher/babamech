@@ -14,8 +14,9 @@ extends Node
 ## `aim_point` / `designator` are the owner's (hooks for combat across owners, co-op step 3); `shown` is the state applied
 ## last (its `t` is the render time on the shared clock), null before the first snapshot.
 ## DAMAGE (the owner's PlayerTarget, read-only here): `components` {name: 0..1} (NetMechCodec.COMPONENTS present on this
-## mech), `hull` (the torso's fraction), `downed` (PlayerTarget.disabled) and `disable_cause`. They are copied onto the
-## puppet's PlayerTarget every frame (hp, disabled, disable_cause), so this machine never decides them: only the owner's
+## mech), `hull` (the torso's fraction), `downed` (PlayerTarget.disabled), `disable_cause` and `redeploying`. They are
+## copied onto the puppet's PlayerTarget every frame (hp, disabled, disable_cause, redeploying, revive_progress,
+## aid_charges: DownedRules), so this machine never decides them: only the owner's
 ## snapshot does. MOUNTS: each hardpoint's weapon model is turned to the owner's WeaponMount aim_yaw / aim_pitch
 ## (WeaponPose.apply, cosmetic).
 
@@ -33,6 +34,7 @@ var components: Dictionary = {}     ## the owner's component HP, name -> 0..1 (o
 var hull := 1.0                     ## the owner's torso HP, 0..1
 var downed := false                 ## the owner's PlayerTarget.disabled (needs a revive)
 var disable_cause := ""             ## the owner's PlayerTarget.disable_cause
+var redeploying := false            ## the owner's PlayerTarget.redeploying (held to respawn: out of the fight)
 var _hp_nodes: Dictionary = {}      ## hardpoint -> HP_<id> node of the model (found once)
 
 
@@ -41,7 +43,7 @@ var _hp_nodes: Dictionary = {}      ## hardpoint -> HP_<id> node of the model (f
 func net_fields() -> Dictionary:
 	return {"peer": Net.SPAWN, "mech": Net.LOCAL, "rig": Net.LOCAL, "target": Net.LOCAL, "shown": Net.LOCAL,
 		"aim_point": Net.LOCAL, "designator": Net.LOCAL, "snaps": Net.LOCAL, "components": Net.LOCAL, "hull": Net.LOCAL,
-		"downed": Net.LOCAL, "disable_cause": Net.LOCAL, "_hp_nodes": Net.LOCAL}
+		"downed": Net.LOCAL, "disable_cause": Net.LOCAL, "redeploying": Net.LOCAL, "_hp_nodes": Net.LOCAL}
 
 
 func _ready() -> void:
@@ -108,12 +110,16 @@ func _apply_damage(st: NetMechState) -> void:
 	hull = float(components.get("torso", 1.0))
 	downed = st.disabled
 	disable_cause = st.disable_cause
+	redeploying = st.redeploying
 	if target != null and is_instance_valid(target):
 		for c: String in components:
 			if target.max_hp.has(c):
 				target.hp[c] = float(components[c]) * float(target.max_hp[c])
 		target.disabled = downed
 		target.disable_cause = disable_cause
+		target.redeploying = redeploying
+		target.revive_progress = st.revive * DownedRules.REVIVE_TIME
+		target.aid_charges = st.aid
 
 
 ## Turn each weapon model to its owner's barrel aim.

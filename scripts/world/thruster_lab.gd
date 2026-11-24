@@ -2,7 +2,8 @@ class_name ThrusterLab
 extends Node3D
 ## Lab subject "Thrusters" (S2): a ring-deck strip with a row of towers of rising height and gaps between them, and a
 ## mech that hops, climbs, hovers, overheats and is dropped from a height to test the emergency burn and hard landings.
-## A label over the mech shows heat, state and the last landing speed.
+## A label over the mech shows heat, state and the last landing speed. The "Chassis" option rebuilds the mech as another
+## chassis (MechCatalog.CHASSIS_ORDER) and loads its movement numbers into the params (the Bulwark's hop ceiling).
 ##   drive: W/S forward/back, A/D turn, Q/E strafe, Shift run, Space thrust
 
 const MODES := ["climb towers", "hop", "hover", "drop test", "overheat", "stand", "drive"]
@@ -25,15 +26,22 @@ const PARAMS := [
 	{"id": "safe_land", "label": "Safe landing (m/s)", "min": 4.0, "max": 20.0, "value": 10.0},
 	{"id": "hard_land", "label": "Worst landing (m/s)", "min": 10.0, "max": 40.0, "value": 18.0},
 	{"id": "auto_burn", "label": "Emergency burn (0/1)", "min": 0.0, "max": 1.0, "value": 1.0},
+	{"id": "auto_land", "label": "Auto-burn landing (m/s)", "min": 8.0, "max": 19.0, "value": 16.0},
 	{"id": "drop_height", "label": "Drop test height (m)", "min": 5.0, "max": 120.0, "value": 40.0},
 	{"id": "hover_height", "label": "Hover height (m)", "min": 3.0, "max": 30.0, "value": 10.0},
+	{"id": "thrust_ceiling", "label": "Hop ceiling (m, 0 off)", "min": 0.0, "max": 20.0, "value": 0.0},
 ]
+## Params loaded from the chassis' movement block when the chassis changes: param id -> MechController var.
+const CHASSIS_PARAMS := {"thrust_accel": "thrust_accel", "air_control": "air_control", "thrust_heat": "thrust_heat",
+	"cooling": "cooling", "safe_land": "safe_land_speed", "hard_land": "hard_land_speed", "auto_land": "auto_land_speed",
+	"thrust_ceiling": "thrust_ceiling"}
 
 var time_scale := 1.0:
 	set(v):
 		time_scale = v
 		Engine.time_scale = maxf(v, 0.0)
 var mode := "climb towers"
+var chassis := "strider"
 var bot_enabled := true
 var params: Dictionary = {}
 var ring: RingFrame
@@ -54,12 +62,7 @@ func _init() -> void:
 func _ready() -> void:
 	ring = RingFrame.new(220.0)
 	_build_floor()
-	mech = MechSpawn.make()
-	mech.ring = ring
-	add_child(mech)
-	mech.hard_landing.connect(func(speed: float, _sev: float) -> void:
-		hard_landings += 1
-		worst_landing = maxf(worst_landing, speed))
+	_make_mech()
 	_label = Label3D.new()
 	_label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	_label.font_size = 64
@@ -73,6 +76,30 @@ func _ready() -> void:
 	if want in MODES:
 		mode = want   # now, so the lab's Bot drop-down (built right after this) shows it
 		set_lab_option.call_deferred("mode", want)
+
+
+func _make_mech() -> void:
+	mech = MechSpawn.make("chicken", chassis)
+	mech.ring = ring
+	add_child(mech)
+	mech.hard_landing.connect(func(speed: float, _sev: float) -> void:
+		hard_landings += 1
+		worst_landing = maxf(worst_landing, speed))
+
+
+## Rebuild the mech as chassis `id`, its movement numbers in the params.
+func _set_chassis(id: String) -> void:
+	if not MechCatalog.CHASSIS.has(id):
+		return
+	chassis = id
+	var mv := MechCatalog.movement(id)
+	for p: String in CHASSIS_PARAMS:
+		params[p] = float(mv[CHASSIS_PARAMS[p]])
+	if mech != null:
+		remove_child(mech)
+		mech.queue_free()
+	_make_mech()
+	_apply_params()
 
 
 func _exit_tree() -> void:
@@ -100,6 +127,8 @@ func _apply_params() -> void:
 	mech.safe_land_speed = float(params["safe_land"])
 	mech.hard_land_speed = maxf(float(params["hard_land"]), float(params["safe_land"]) + 1.0)
 	mech.auto_burn = float(params["auto_burn"]) >= 0.5
+	mech.auto_land_speed = float(params["auto_land"])
+	mech.thrust_ceiling = float(params["thrust_ceiling"])
 
 
 # --- Floor ------------------------------------------------------------------------------------------
@@ -224,10 +253,15 @@ func set_lab_param(id: String, v: float) -> void:
 
 
 func lab_options() -> Array:
-	return [{"id": "mode", "label": "Bot", "choices": MODES, "value": mode}]
+	return [{"id": "mode", "label": "Bot", "choices": MODES, "value": mode},
+		{"id": "chassis", "label": "Chassis", "choices": MechCatalog.CHASSIS_ORDER, "value": chassis}]
 
 
 func set_lab_option(id: String, v: String) -> void:
+	if id == "chassis" and v != chassis:
+		_set_chassis(v)
+		set_lab_option("mode", mode)
+		return
 	if id == "mode" and v in MODES:
 		mode = v
 		_t = 0.0

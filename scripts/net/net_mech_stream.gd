@@ -15,6 +15,8 @@ extends Node
 ##                              local one is streamed, every other one is a puppet
 ##   feed(state, delta)         the local mech's state after this physics step (a NetMechState; t, peer and tp are
 ##                              filled in here). Call it every physics step; the newest one goes out at SEND_RATE
+##   feed_owned(id, state, dt)  the same for another mech this machine runs (the host's bots, docs/design/hangar-bots.md:
+##                              pilot id < 0); each is stamped with its own teleport counter and step clock
 ##   pose(peer)                 the puppet's state to show now (interpolated), null before its first sample
 ##   end()                      the mission's scene is going
 ## Plus newest(peer), buffer(peer), delay_of(peer), puppet_peers(), and `stats` for tests and telemetry.
@@ -41,6 +43,7 @@ var _last_fed_pos := Vector3.INF
 var _tp := 0
 var _next_send := 0.0
 var _step_t := -1.0                ## feed()'s step clock (host_time seconds)
+var _owned: Dictionary = {}        ## host: bot pilot id -> {"s": newest NetMechState, "pos", "tp", "t"} (feed_owned)
 var _forwarded: Dictionary = {}    ## host: (receiver << 32 | owner) -> t of the last sample of owner forwarded to receiver
 
 
@@ -59,8 +62,9 @@ func _reset_stats() -> void:
 		"in_refused": 0, "forwarded": 0}
 
 
-## The mission's mechs are built. `seats`: peer -> crew seat (1..7) for every mech in the mission, the local one too.
-func begin(local_peer_: int, seats: Dictionary) -> void:
+## The mission's mechs are built. `seats`: pilot id -> crew seat (1..7) for every mech in the mission, the local one
+## too. `owned`: the other pilot ids this machine streams (the host's bots); neither they nor the local mech get a buffer.
+func begin(local_peer_: int, seats: Dictionary, owned: Array = []) -> void:
 	end()
 	if _session == null or not _session.online():
 		return
@@ -68,7 +72,11 @@ func begin(local_peer_: int, seats: Dictionary) -> void:
 	for p: int in seats:
 		_seats[p] = int(seats[p])
 		_peers[int(seats[p])] = p
-		if p != local_peer:
+		if p == local_peer:
+			continue
+		if owned.has(p) and _session.hosting:
+			_owned[p] = {"s": null, "pos": Vector3.INF, "tp": 0, "t": -1.0}
+		else:
 			_buffers[p] = NetPuppetBuffer.new()
 	_reset_stats()
 	_next_send = _now()
@@ -81,6 +89,7 @@ func end() -> void:
 	_peers.clear()
 	_buffers.clear()
 	_forwarded.clear()
+	_owned.clear()
 	_local = null
 	_last_fed_pos = Vector3.INF
 	_step_t = -1.0
@@ -98,12 +107,7 @@ func feed(s: NetMechState, delta: float = 0.0) -> void:
 		return
 	s.peer = local_peer
 	var now := _now()
-	if delta <= 0.0 or _step_t < 0.0:
-		_step_t = now
-	else:
-		_step_t += delta
-		var err := now - _step_t
-		_step_t = now if absf(err) > CLOCK_SNAP else _step_t + err * CLOCK_EASE
+	_step_t = _step_clock(_step_t, delta, now)
 	s.t = minf(_step_t, now)
 	if _last_fed_pos != Vector3.INF and s.pos.distance_to(_last_fed_pos) > TELEPORT_DIST:
 		_tp = (_tp + 1) & 15
@@ -111,6 +115,48 @@ func feed(s: NetMechState, delta: float = 0.0) -> void:
 	_last_fed_pos = s.pos
 	s.tp = _tp
 	_local = s
+
+
+## Another mech this machine runs (a bot on the host, named in begin()'s `owned`): stamped like feed(), with its own
+## teleport counter and step clock. Ignored for an id that isn't owned here.
+func feed_owned(id: int, s: NetMechState, delta: float = 0.0) -> void:
+	if not active or not _owned.has(id):
+		return
+	var o: Dictionary = _owned[id]
+	s.peer = id
+	var now := _now()
+	o["t"] = _step_clock(float(o["t"]), delta, now)
+	s.t = minf(float(o["t"]), now)
+	var last: Vector3 = o["pos"]
+	if last != Vector3.INF and s.pos.distance_to(last) > TELEPORT_DIST:
+		o["tp"] = (int(o["tp"]) + 1) & 15
+		s.vel = Vector3.ZERO
+	o["pos"] = s.pos
+	s.tp = int(o["tp"])
+	o["s"] = s
+
+
+## The newest fed state of an owned mech (feed_owned), null before its first feed or when not owned here.
+func owned_state(id: int) -> NetMechState:
+	return (_owned[id] as Dictionary)["s"] as NetMechState if _owned.has(id) else null
+
+
+func owned_ids() -> Array[int]:
+	var out: Array[int] = []
+	for p: int in _owned:
+		out.append(p)
+	out.sort()
+	return out
+
+
+## feed()'s step clock: the last t plus `delta`, eased toward `now` (re-anchored past CLOCK_SNAP; delta <= 0 or no
+## clock yet: now).
+static func _step_clock(t: float, delta: float, now: float) -> float:
+	if delta <= 0.0 or t < 0.0:
+		return now
+	t += delta
+	var err := now - t
+	return now if absf(err) > CLOCK_SNAP else t + err * CLOCK_EASE
 
 
 ## The newest state fed for the local mech (what goes out next), null before the first feed.
@@ -180,6 +226,10 @@ func _send(now: float) -> void:
 		var states: Array[NetMechState] = []
 		if _local != null:
 			states.append(_local)
+		for p: int in _owned:
+			var os := (_owned[p] as Dictionary)["s"] as NetMechState
+			if os != null:
+				states.append(os)
 		for p: int in _buffers:
 			if p == peer:
 				continue

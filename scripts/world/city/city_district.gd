@@ -24,6 +24,7 @@ var strip_x := PackedFloat32Array()     ## x of every ceiling light strip, for a
 var stats: Dictionary = {}     ## triangles, shapes and build time of the last build()
 
 const SEAM := 0.06     ## facet slabs overlap by this much, so a ray down the crease between two still hits
+const PORTAL_PLATE := 1.0    ## m: the back plate sealing a portal's recess (_col_walls)
 
 var _digest := 0
 
@@ -178,6 +179,7 @@ func _c_plan() -> void:
 			wparts.append([int(w["side"]), p, FARM_PARTS if w["kind"] == "farm" else 1])
 	for i in wparts.size():
 		_queue.append(["walls %d/%d" % [i + 1, wparts.size()], _c_walls.bind(wparts[i][0], wparts[i][1], wparts[i][2], i == 0, i == wparts.size() - 1)])
+	_queue.append(["signs", _c_signs])      # deck lettering (CitySigns): cosmetic, not in the digest
 	# Ceiling: the girder bays (panels, strip, ribs: heavy) a few per chunk, then the girder lines and openings (light).
 	var steps := CityStreets.ceiling_steps(_area)
 	var bays := (steps - 2) / 2
@@ -313,6 +315,29 @@ func _c_walls(side: int, part: int, parts: int, first: bool, last: bool) -> void
 		_tris += lights.tri_count()
 
 
+## Deck lettering (CitySigns, docs/design/city-signs.md): node "DeckSigns" in the current CitySigns.style. Cosmetic: kept
+## out of geometry_digest() and stats.triangles (its own stats.sign_triangles), so switching the look moves nothing else.
+var sign_tris := 0
+func _c_signs() -> void:
+	sign_tris = 0
+	var mi := CitySigns.build_node(plan, ring, render_layer)      # layers set before it enters the tree
+	if mi != null:
+		add_child(mi)
+		sign_tris = int(mi.get_meta("tris", 0))
+
+
+## Rebuild the lettering alone (after CitySigns.style changed): the rest of the district is untouched.
+func rebuild_signs() -> void:
+	if plan == null or not build_done():
+		return
+	var old := get_node_or_null("DeckSigns")
+	if old != null:
+		remove_child(old)
+		old.queue_free()
+	_c_signs()
+	stats["sign_triangles"] = sign_tris
+
+
 ## Ceiling steps a..b-1 (CityStreets.ceiling_range) into the ceiling and strip geos; _c_ceiling_mesh instances them.
 func _c_ceiling(a: int, b: int) -> void:
 	if a == 0:
@@ -358,7 +383,8 @@ func _c_finish() -> void:
 			rig = CityLightRig.new()
 			add_child(rig)
 		rig.setup(ring, plan.extent, plan.p("ceiling"), strip_x)
-	stats = {"triangles": _tris, "shapes": _shapes, "buildings": plan.buildings.size(), "props": props.items.size(), "ms": float(_b_us) / 1000.0}
+	stats = {"triangles": _tris, "shapes": _shapes, "buildings": plan.buildings.size(), "props": props.items.size(), "ms": float(_b_us) / 1000.0,
+			"sign_triangles": sign_tris}
 	_per_block.clear()
 	_cgeo = null
 
@@ -462,7 +488,8 @@ func _col_walls() -> void:
 	var count := 0
 	var ceiling := plan.p("ceiling")
 	var holes := _holes
-	# Boundary walls: solid floor to ceiling except across a portal (the way in or out), which keeps only its lintel.
+	# Boundary walls: solid floor to ceiling except across a portal (the way in or out), which keeps its lintel and is
+	# closed behind by a plate at the back of its drawn recess (a mech steps into the recess, no further).
 	for w: Dictionary in plan.boundary():
 		var side: int = w["side"]
 		var across := side >= 2
@@ -479,6 +506,11 @@ func _col_walls() -> void:
 			count += _wall_box(body, geo, across, at, sp[0], sp[1], -1.0, ceiling + 1.0, thick)
 		for g: Dictionary in portals:
 			count += _wall_box(body, geo, across, at, g["a"], g["b"], g["h"], ceiling + 1.0, thick)
+			# The portal's recess is sealed where it is drawn (CityStreets._recess, GATE_RECESS deep): a back plate there,
+			# PORTAL_PLATE thick, reaching a little into the recess and past its sides and roof so no seam opens. The
+			# recess's sides and roof are the wall slab beside the gate and the lintel (the recess is no deeper than the wall).
+			var back := float(w["at"]) + out * (CityStreets.GATE_RECESS - 0.05 + PORTAL_PLATE * 0.5)
+			count += _wall_box(body, geo, across, back, float(g["a"]) - 1.0, float(g["b"]) + 1.0, -1.0, float(g["h"]) + 1.0, PORTAL_PLATE + 0.1)
 	# Sidewalk slabs (open over a floor hole), and the solid curb round each hole.
 	var th := CityPlan.CURB_H + 0.5
 	for b: Dictionary in plan.blocks:

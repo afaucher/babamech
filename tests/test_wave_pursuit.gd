@@ -49,7 +49,7 @@ func _probe_seed1_wave_closing() -> void:
 
 	for k in [0, 1, 2]:
 		var pool: Dictionary = mplan.pool(k)
-		var waves: Array = pool.get("waves", [])
+		var waves: Array = pool.get("reserve", [])
 		var srcs := mplan.deck_sources(k)
 		if waves.is_empty() or srcs.is_empty():
 			continue
@@ -90,6 +90,13 @@ func _probe_seed1_wave_closing() -> void:
 			var wid := "probe_d%d_%s_%d" % [k, str(sdef["kind"]), si]
 			wv["id"] = wid
 			var order := {"wave": wid, "deck": k, "source": str(sdef["id"]), "open_at": w.now, "max_units": 6}
+			# As in the game (MissionFlow orders the door, then spawns at open_at): the door is open when the wave comes.
+			# A gate's units appear in its recess behind the leaves; with the leaves shut (now solid) a unit that cannot
+			# squeeze past them never gets out (the 1.75x waves put a third trooper there).
+			if td.stack.mission != null:
+				td.stack.mission.open_source(str(sdef["id"]), td.mission.now())
+				td.stack.mission.advance_to(td.mission.now() + 0.5)
+				await frames(2)
 			var ctx := {"stack": td.stack, "world": w, "squad": sq, "seed": 1 + si, "crew": 1, "pool": pool, "skip_meshes": true}
 			EnemySpawner.spawn_wave(order, wv, sdef, ctx)
 			var units: Array[EnemyBase] = []
@@ -208,7 +215,7 @@ func _probe_seed1_cross_deck() -> void:
 	for pair: Array in [[0, 1], [1, 0]]:
 		var wave_deck := int(pair[0])
 		var crew_deck := int(pair[1])
-		var waves: Array = mplan.pool(wave_deck).get("waves", [])
+		var waves: Array = mplan.pool(wave_deck).get("reserve", [])
 		var src := {}
 		for s: Dictionary in mplan.deck_sources(wave_deck):
 			if str(s["kind"]) in ["gate", "lift"]:
@@ -321,7 +328,7 @@ func _probe_seed1_ramp_turnaround() -> void:
 			e.apply_damage(1.0e7, e.core_component(), "test")
 	var wave_deck := 0
 	var away_deck := 1
-	var waves: Array = mplan.pool(wave_deck).get("waves", [])
+	var waves: Array = mplan.pool(wave_deck).get("reserve", [])
 	var src := {}
 	for s: Dictionary in mplan.deck_sources(wave_deck):
 		if str(s["kind"]) in ["gate", "lift"]:
@@ -416,8 +423,8 @@ func _probe_seed1_ramp_turnaround() -> void:
 
 
 func _probe_seed7_abandoned_defend() -> void:
-	MissionFlow.test_plan = {"hold": 6.0, "linger": 600.0}
-	MissionFlow.test_director = {"lull": 1.5, "lull_min": 1.5, "grace": 1.5, "follow_gap": 0.5}
+	MissionFlow.test_plan = {"hold": 6.0}
+	MissionFlow.test_director = {"rest_first": 1.5, "rest_last": 1.5, "arrival_rest": 1.0, "grace": 1.5, "follow_gap": 0.5}
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = 7
@@ -462,9 +469,8 @@ func _probe_seed7_abandoned_defend() -> void:
 	# Spawn a defend wave for def_id while the crew is on another deck.
 	var pool: Dictionary = mf.plan.pool(def_deck)
 	var def_wave := {}
-	for wv: Dictionary in pool.get("waves", []):
-		var tr: Dictionary = wv.get("trigger", {})
-		if str(tr.get("id", "")) == def_id and str(tr.get("step", "")) == "start":
+	for wv: Dictionary in pool.get("reserve", []):
+		if str(wv.get("for", "")) == def_id:
 			def_wave = wv
 			break
 	check(not def_wave.is_empty(), "found a defend wave for %s" % def_id)

@@ -1,0 +1,19 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-23T17:44:21	R11_low_cages_s4242.png	flux3_klein_t2i	4242	1024x576			3.82	R11_low_cages_prompt.txt
+2026-11-23T17:44:24	R11_low_cages_s777.png	flux3_klein_t2i	777	1024x576			3.3	R11_low_cages_prompt.txt
+2026-11-23T17:44:28	R12_low_pads_s4242.png	flux3_klein_t2i	4242	1024x576			3.73	R12_low_pads_prompt.txt
+2026-11-23T17:44:31	R12_low_pads_s777.png	flux3_klein_t2i	777	1024x576			3.28	R12_low_pads_prompt.txt
+2026-11-23T17:44:35	R13_low_rails_s4242.png	flux3_klein_t2i	4242	1024x576			3.72	R13_low_rails_prompt.txt
+2026-11-23T17:44:39	R13_low_rails_s777.png	flux3_klein_t2i	777	1024x576			3.32	R13_low_rails_prompt.txt
+2026-11-23T17:44:43	R21_raised_cages_s4242.png	flux3_klein_t2i	4242	1024x576			3.72	R21_raised_cages_prompt.txt
+2026-11-23T17:44:46	R21_raised_cages_s777.png	flux3_klein_t2i	777	1024x576			3.33	R21_raised_cages_prompt.txt
+2026-11-23T17:44:50	R22_raised_pads_s4242.png	flux3_klein_t2i	4242	1024x576			3.73	R22_raised_pads_prompt.txt
+2026-11-23T17:44:53	R22_raised_pads_s777.png	flux3_klein_t2i	777	1024x576			3.3	R22_raised_pads_prompt.txt
+2026-11-23T17:44:57	R23_raised_rails_s4242.png	flux3_klein_t2i	4242	1024x576			3.71	R23_raised_rails_prompt.txt
+2026-11-23T17:45:01	R23_raised_rails_s777.png	flux3_klein_t2i	777	1024x576			3.3	R23_raised_rails_prompt.txt
+2026-11-23T17:45:05	R31_tiered_cages_s4242.png	flux3_klein_t2i	4242	1024x576			3.72	R31_tiered_cages_prompt.txt
+2026-11-23T17:45:08	R31_tiered_cages_s777.png	flux3_klein_t2i	777	1024x576			3.3	R31_tiered_cages_prompt.txt
+2026-11-23T17:45:12	R32_tiered_pads_s4242.png	flux3_klein_t2i	4242	1024x576			3.72	R32_tiered_pads_prompt.txt
+2026-11-23T17:45:15	R32_tiered_pads_s777.png	flux3_klein_t2i	777	1024x576			3.28	R32_tiered_pads_prompt.txt
+2026-11-23T17:45:19	R33_tiered_rails_s4242.png	flux3_klein_t2i	4242	1024x576			3.68	R33_tiered_rails_prompt.txt
+2026-11-23T17:45:22	R33_tiered_rails_s777.png	flux3_klein_t2i	777	1024x576			3.28	R33_tiered_rails_prompt.txt

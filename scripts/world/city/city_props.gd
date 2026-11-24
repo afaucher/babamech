@@ -73,6 +73,8 @@ var _reach_pad := 0.0           ## the largest prop radius: a pusher's query rea
 var brute_force := false        ## tests only: _push checks every prop, as before the grid (tests/test_city_props.gd)
 var _bxf: Array = []            ## building index -> its flat frame (Transform3D) in this node's space
 var _bxf_inv: Array = []        ## and its inverse
+var _tints: Dictionary = {}     ## id -> its instance tint (tree / planter: CityProps.tree_tint), what its MultiMesh carries
+var _rest_xs: Dictionary = {}   ## id -> [event, motion end, rest base Vector2(x, s)] of a moved deck prop (_settled_out_of_reach)
 
 
 func net_fields() -> Dictionary:
@@ -87,8 +89,10 @@ func net_fields() -> Dictionary:
 		"_cap_local": Net.LOCAL, "_grid": Net.LOCAL, "_prop_cell": Net.LOCAL,
 		"_arc_grid": Net.LOCAL, "_reach_pad": Net.LOCAL, "brute_force": Net.LOCAL,   # from the layout / a test switch
 		"_bxf": Net.LOCAL, "_bxf_inv": Net.LOCAL,      # from the plan and the ring, the same on every machine
+		"_tints": Net.LOCAL,         # looks: from the plan's cosmetic seed and the prop id, the same on every machine
 		"_pushers": Net.PRIVATE, "_found": Net.PRIVATE, "_scan_in": Net.PRIVATE, "_last_pos": Net.PRIVATE,
 		"_asked": Net.PRIVATE,
+		"_rest_xs": Net.LOCAL,       # perf cache derived from _ev (_settled_out_of_reach)
 	}
 
 
@@ -425,6 +429,7 @@ func setup(p: CityPlan, r: RingFrame) -> void:
 		c.queue_free()
 	_mms.clear()
 	_proto_tris.clear()
+	_tints.clear()
 	_grid.clear()
 	_arc_grid.clear()
 	_reach_pad = 0.0
@@ -455,8 +460,16 @@ func setup(p: CityPlan, r: RingFrame) -> void:
 		var geo := _proto(str(shapes[k][0]), int(shapes[k][1]))
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = geo.commit(CityPalette.surface_material())
+		var tinted := TINTED.has(str(shapes[k][0]))
+		mm.use_custom_data = tinted       # the tree's own leaf tint (CityPalette.tree_material), set once below
+		mm.mesh = geo.commit(CityPalette.tree_material() if tinted else CityPalette.surface_material())
 		mm.instance_count = (members[k] as Array).size()
+		if tinted:
+			var seed := plan.cosmetic_seed()
+			for j in mm.instance_count:
+				var tid := int(members[k][j])
+				_tints[tid] = tree_tint(seed, tid)
+				mm.set_instance_custom_data(j, _tints[tid])
 		var mi := MultiMeshInstance3D.new()
 		mi.name = "%s%d" % [shapes[k][0], shapes[k][1]]
 		mi.multimesh = mm
@@ -467,6 +480,31 @@ func setup(p: CityPlan, r: RingFrame) -> void:
 		_draw(int(it["id"]))
 	_online_clock = Net.online()
 	now = _clock()
+
+
+## Prop types drawn with their own leaf tint (CityPalette.tree_material): trees and planters.
+const TINTED := ["tree", "planter"]
+
+
+## Prop `id`'s jitter u in [-1, 1]^3 and the trunk's w (CityPalette.tree_tint / tree_multiplier), from its OWN generator
+## seeded from the plan's cosmetic seed and the id: no shared stream is drawn, so no other look or the layout moves, and
+## every machine (and every state of the prop: standing, falling, down, sliding) has the same shade.
+static func tree_jitter(cosmetic_seed: int, id: int) -> Vector4:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash([cosmetic_seed, 0x7EE5, id])
+	return Vector4(rng.randf_range(-1.0, 1.0), rng.randf_range(-1.0, 1.0), rng.randf_range(-1.0, 1.0), rng.randf_range(-1.0, 1.0))
+
+
+## Prop `id`'s instance tint (MultiMesh custom data): CityPalette.tree_multiplier of its jitter.
+static func tree_tint(cosmetic_seed: int, id: int) -> Color:
+	var j := tree_jitter(cosmetic_seed, id)
+	return CityPalette.tree_multiplier(Vector3(j.x, j.y, j.z), j.w)
+
+
+## The tint prop `id`'s instance is drawn with (Color(1, 1, 1, 1) for an untinted type). Kept beside the MultiMesh: a
+## headless (dummy) renderer does not read custom data back.
+func tint_of(id: int) -> Color:
+	return _tints.get(id, Color(1, 1, 1, 1))
 
 
 ## Triangles drawn by every instance together.
@@ -572,7 +610,10 @@ func _refresh() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	var pp0 := Time.get_ticks_usec() if PerfProbe.on else 0   # bench instrumentation (tests/bench_bot_perf.gd)
 	step(delta)
+	if PerfProbe.on:
+		PerfProbe.add("main.city_props", Time.get_ticks_usec() - pp0)
 
 
 ## One physics step: advance the clock, let this machine's pushers touch props, redraw what moves.
@@ -934,6 +975,29 @@ func push_candidates(here: Vector2, radius: float) -> Array[int]:
 	return out
 
 
+## Perf (bots topple many props; every pusher used to build the pose of every moved prop every frame): true when moved
+## deck prop `id` has come to rest and its base is farther from `here` than `reach` + its full length, so _push's
+## distance test (to the base standing, to the base..tip segment lying, tip within height * scale of the base) is sure to
+## skip it. Same pushes as without it. The rest base is cached per event ([event, motion end, base]): a new event, or a
+## clock before the end, falls back to the full test. Roof props (building frame) always take the full test.
+func _settled_out_of_reach(id: int, it: Dictionary, here: Vector2, reach: float) -> bool:
+	if CityPropSim.is_roof(it):
+		return false
+	var ev: Dictionary = _ev[id]
+	var c: Variant = _rest_xs.get(id)
+	if c == null or not is_same((c as Array)[0], ev):
+		var end := float(ev.get("t0", 0.0)) + CityPropSim.duration(ev, str(it["type"]))
+		if now < end:
+			return false
+		var p := pose_of(id)
+		c = [ev, end, Vector2(p["x"], p["s"])]
+		_rest_xs[id] = c
+	if now < float((c as Array)[1]):
+		return false
+	var span := reach + float(TYPES[it["type"]]["height"]) * float(it["scale"])
+	return here.distance_squared_to((c as Array)[2] as Vector2) > span * span
+
+
 ## Touch every prop within reach of one pusher (the candidates from push_candidates; brute_force: every prop).
 func _push(body: Node3D, radius: float, delta: float) -> void:
 	var local := to_local(body.global_position)
@@ -962,8 +1026,11 @@ func _push(body: Node3D, radius: float, delta: float) -> void:
 			continue
 		var it: Dictionary = items[id]
 		var reach := radius + float(TYPES[it["type"]]["radius"])
-		if not _ev.has(id) and here.distance_squared_to(Vector2(it["x"], it["s"])) > reach * reach:
-			continue        # the common case, a standing prop out of reach, without building its pose
+		if not _ev.has(id):
+			if here.distance_squared_to(Vector2(it["x"], it["s"])) > reach * reach:
+				continue        # the common case, a standing prop out of reach, without building its pose
+		elif not brute_force and _settled_out_of_reach(id, it, here, reach):
+			continue            # a moved prop at rest far away: the segment test below would skip it too (perf)
 		var state := state_of(id)
 		if state == FALLING or state == SLIDING:
 			continue

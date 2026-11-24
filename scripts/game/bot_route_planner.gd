@@ -63,13 +63,22 @@ var closed: Array = []         ## per deck: Array[Rect2] road segments a mech ca
 var last_error := ""
 var no_drops := false         ## tests: plan without shafts and glides (ramps only)
 var _key: Dictionary = {}      ## "k:x:s" -> node
+## WIDE CHASSIS (the Bulwark, docs/design/chassis-rules.md "Bulwark world fit"): set body_r BEFORE setup for a capsule
+## wider than the Strider's: the avenue's two carriageway lines then sit far enough off its 3 m planted median for that
+## capsule (lane_split: max(LANE_SPLIT, MEDIAN_HALF + body_r + LANE_CLEAR)); 2.2 (or 0) leaves the graph as it was.
+## fit_body() then probes every walk edge in the built world with the chassis' capsule and leaves out what it cannot pass.
+var body_r := 0.0
+var lane_split := LANE_SPLIT
+var unfit: Dictionary = {}    ## edge id -> true: left out by fit_body (too narrow / glide for a hop-only chassis)
+const MEDIAN_HALF := 1.5       ## m: half the avenue lane's planted median (CityStack.CARRIAGE's comment)
+const LANE_CLEAR := 0.15       ## m kept between a wide capsule and the median
 
 
 func net_fields() -> Dictionary:
 	return {"stack": Net.LOCAL, "sec": Net.LOCAL, "cuts": Net.PRIVATE, "unders": Net.PRIVATE, "cells": Net.PRIVATE,
 		"xlines": Net.PRIVATE, "slines": Net.PRIVATE, "pos": Net.PRIVATE, "deck_of": Net.PRIVATE, "adj": Net.PRIVATE,
 		"edges": Net.PRIVATE, "blocked": Net.PRIVATE, "by_deck": Net.PRIVATE, "closed": Net.PRIVATE, "last_error": Net.PRIVATE,
-		"_key": Net.PRIVATE, "no_drops": Net.PRIVATE}
+		"_key": Net.PRIVATE, "no_drops": Net.PRIVATE, "body_r": Net.PRIVATE, "lane_split": Net.PRIVATE, "unfit": Net.PRIVATE}
 
 
 func setup(st: CityStack) -> void:
@@ -83,6 +92,7 @@ func setup(st: CityStack) -> void:
 ## The same from plain data (tests, tools): the section and every deck's CityPlan.
 func setup_plans(section: SectionPlan, plans: Array[CityPlan]) -> void:
 	sec = section
+	lane_split = maxf(LANE_SPLIT, MEDIAN_HALF + body_r + LANE_CLEAR) if body_r > 2.2 + 0.01 else LANE_SPLIT
 	var n := sec.deck_count
 	var extras: Array = []      # per deck: [Vector2] points that sit on a line
 	var specials: Array = []    # [{fk, fa, tk, ta, kind, two_way, cost, pts}]
@@ -109,8 +119,8 @@ func setup_plans(section: SectionPlan, plans: Array[CityPlan]) -> void:
 				for l: Dictionary in road["lanes"]:
 					var mid := (float(l["a"]) + float(l["b"])) * 0.5
 					if str(l["lane"]) == "avenue":
-						xs.append(mid - LANE_SPLIT)
-						xs.append(mid + LANE_SPLIT)
+						xs.append(mid - lane_split)
+						xs.append(mid + lane_split)
 					else:
 						xs.append(mid)
 			else:
@@ -428,6 +438,10 @@ func _attach(k: int, p: Vector2, reverse: bool) -> Array:
 ## its lane; up on the ramp itself it does not).
 func plan(k0: int, p0: Vector2, k1: int, p1: Vector2, end_on_road: bool = false, h0: float = 0.0, _depth: int = 0) -> Array:
 	last_error = ""
+	if body_r > 2.2 + 0.01 and _depth < 2 and h0 >= 2.0:
+		var on_ramp := _ramp_start(k0, p0, k1, p1, end_on_road, _depth)
+		if not on_ramp.is_empty():
+			return on_ramp
 	var own0 := cell_at(k0, p0)
 	for u: Dictionary in unders[k0]:
 		var ur: Rect2 = u["rect"]
@@ -505,7 +519,7 @@ func plan(k0: int, p0: Vector2, k1: int, p1: Vector2, end_on_road: bool = false,
 				best_total = tot
 				best_end = cur
 		for eid: int in adj[cur]:
-			if blocked.has(eid) or (no_drops and edges[eid]["kind"] in ["shaft", "glide"]):
+			if blocked.has(eid) or unfit.has(eid) or (no_drops and edges[eid]["kind"] in ["shaft", "glide"]):
 				continue
 			var e: Dictionary = edges[eid]
 			var nb := int(e["b"])
@@ -559,6 +573,33 @@ func plan(k0: int, p0: Vector2, k1: int, p1: Vector2, end_on_road: bool = false,
 	return out
 
 
+## WIDE CHASSIS standing ON a ramp (h0 >= 2 m over deck k0, inside a ramp part standing on k0): it cannot step off over
+## a parapet the way a Strider hops, so the route first follows the ramp's lane to an end (up to its mouth on the upper
+## deck when the goal is on a deck above, else down to its exit past the foot), as a "ramp" leg, and plans on from
+## there. [] when p0 is on no ramp of deck k0 (or the rest has no way).
+func _ramp_start(k0: int, p0: Vector2, k1: int, p1: Vector2, end_on_road: bool, depth: int) -> Array:
+	for u: Dictionary in unders[k0]:
+		if not (u["rect"] as Rect2).has_point(p0):
+			continue
+		for eid in edges.size():
+			var e: Dictionary = edges[eid]
+			if e["kind"] != "ramp" or int(e["to"]) != k0 or int(e["from"]) >= k0:
+				continue
+			var x := ((e["pts"] as Array)[0] as Vector2).x
+			if not (u["rect"] as Rect2).grow(0.5).has_point(Vector2(x, p0.y)):
+				continue
+			var up := k1 < k0
+			var end_deck := int(e["from"]) if up else k0
+			var end_xt: Vector2 = (e["pts"] as Array)[0] if up else (e["pts"] as Array)[-1]
+			var rest := plan(end_deck, on_deck(end_deck, end_xt), k1, p1, end_on_road, 0.0, depth + 1)
+			if rest.is_empty() and not (end_deck == k1):
+				return []
+			rest.push_front({"kind": "ramp", "from": k0, "to": end_deck, "pts": [xt(k0, p0), Vector2(x, xt(k0, p0).y), end_xt],
+				"edges": [eid], "connector": int(e["connector"])})
+			return rest
+	return []
+
+
 func _dedup(pts: Array) -> Array:
 	var out: Array = []
 	for q: Vector2 in pts:
@@ -594,6 +635,59 @@ func block_near(leg: Dictionary, p: Vector2) -> bool:
 		if int(edges[eid]["b"]) == int(e2["a"]) and edges[eid]["kind"] == e2["kind"]:
 			blocked[eid] = true
 	return true
+
+
+## WIDE CHASSIS: probe every walk edge in the built world (BotFit.line_fit: the capsule of radius r, height h, every
+## BotFit.STEP m along the edge, against static collision) and leave out (`unfit`) each one the capsule does not pass
+## anywhere along it (FIT_BAD_MAX of its probes may be blocked: a lamp post at a corner the capsule steps round); with
+## `thrust_ceiling` > 0 (a hop-only chassis: its thrust stops lifting that far above the ground) every glide too (a glide
+## holds height over an atrium, far above any ground). Needs the stack built and its collision in the physics space
+## (the mission bot calls it at attach). Returns {blocked: walk edges left out, glides, probes}.
+const FIT_BAD_MAX := 0.0
+func fit_body(space: PhysicsDirectSpaceState3D, r: float, h: float, thrust_ceiling: float) -> Dictionary:
+	var out := {"blocked": 0, "glides": 0, "probes": 0}
+	var done := {}
+	for eid in edges.size():
+		var e: Dictionary = edges[eid]
+		if e["kind"] == "glide":
+			if thrust_ceiling > 0.0:
+				unfit[eid] = true
+				out["glides"] = int(out["glides"]) + 1
+			continue
+		if e["kind"] == "ramp" and stack != null:
+			# Down (or up) the ramp: the capsule on the ramp's surface, probed in the lower deck's frame.
+			var lo := maxi(int(e["from"]), int(e["to"]))
+			var hi := mini(int(e["from"]), int(e["to"]))
+			var pa: Vector2 = (e["pts"] as Array)[0]
+			var pb: Vector2 = (e["pts"] as Array)[-1]
+			var drop := absf(sec.radius_of(lo) - sec.radius_of(hi))
+			var rf := BotFit.slope_fit(space, stack.deck_ring(lo), on_deck(lo, pa), on_deck(lo, pb), r, h,
+				drop if int(e["from"]) == hi else 0.0, 0.0 if int(e["from"]) == hi else drop)
+			out["probes"] = int(out["probes"]) + int(rf["probes"])
+			if float(rf["bad"]) > FIT_BAD_MAX:
+				unfit[eid] = true
+				out["ramps"] = int(out.get("ramps", 0)) + 1
+				out["ramp_first"] = rf["first"]
+			continue
+		if e["kind"] != "walk" or stack == null:
+			continue
+		var key := Vector2i(mini(int(e["a"]), int(e["b"])), maxi(int(e["a"]), int(e["b"])))
+		if done.has(key):
+			if bool(done[key]):
+				unfit[eid] = true
+			continue
+		var k := int(e["from"])
+		var f := BotFit.line_fit(space, stack.deck_ring(k), on_deck(k, (e["pts"] as Array)[0]), on_deck(k, (e["pts"] as Array)[-1]), r, h)
+		out["probes"] = int(out["probes"]) + int(f["probes"])
+		var bad := float(f["bad"]) > FIT_BAD_MAX
+		done[key] = bad
+		if bad:
+			unfit[eid] = true
+			out["blocked"] = int(out["blocked"]) + 1
+			var where: Array = out.get_or_add("where", [])
+			if where.size() < 8:
+				where.append("d%d (%.0f, %.0f)" % [k, (f["first"] as Vector2).x, (f["first"] as Vector2).y])
+	return out
 
 
 ## Summary for logs and tests: {nodes, edges, ramps, shafts, glides}.

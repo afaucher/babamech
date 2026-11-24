@@ -72,6 +72,7 @@ func run_host() -> void:
 	await sleep(1.0)
 	check(d.beamed().has(tb), "on A, a beam goes to B's puppet while its mirrored HP is below full")
 	check(d.ring_shown(), "on A, the ring shows while it repairs")
+	eq(d.scans_shown(), d.beamed().size(), "on A, one scan look per repaired target")
 	Session.send_event(0, CombatNet.DRONE, {"t": float(rec["t"]), "hp": "back"})   # the same launch again: dropped
 	await until(func() -> bool: return samples.size() == SAMPLES.size(), 6.0)
 	await sleep(0.4)
@@ -123,6 +124,7 @@ func run_host() -> void:
 		check(not bool(vf["ring_full"]), "on B, no ring once nobody in range needs repair")
 	await sleep(0.5)
 	check(not d.beamed().has(tb), "on A, no beam to B's puppet once its mirrored HP is full")
+	eq(d.scans_shown(), d.beamed().size(), "on A, no scan look without a repaired target")
 	# 5b. Home: after LIFE + dock s, A's puppet on B shows the docked drone again.
 	await until(func() -> bool: return world.drone_of(net.local_shooter) == null, LIFE + 4.0)
 	check(world.drone_of(net.local_shooter) == null, "A's drone flew home and was removed on A")

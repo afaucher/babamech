@@ -23,12 +23,16 @@ const OLD_PROPS_1 := "7e78d4e1e3db1a61"
 ## 92a3d4bb372dd86f, 1/2 786ca59d1bee770a, 4/1 2925158a146c945d, 4/2 3c79a9e486258d7e.
 const OLD_SECTION := {"1/0": "b56cf7ca1dc507da", "1/1": "5623a329a48debcb", "1/2": "023feee926d72a33",
 		"4/0": "3cc51e61b1918548", "4/1": "935eb4ebb35a9945", "4/2": "6d43a4e862b20439"}
-const OLD_COLLISION := {"alone/1": [420, 3589553106], "4/0": [1431, 214513608]}
+## Recaptured 2026-11-23 (map sealed: a portal's recess gets a back plate, CityDistrict._col_walls): section 4 deck 0 has
+## a portal, so one shape more; with the plates left out it is exactly the old capture (PRE_PLATE_4_0, asserted in part A).
+## Was "4/0": [1431, 214513608]; LIVE_COLLISION_4_0 was [1439, 2766744305].
+const OLD_COLLISION := {"alone/1": [420, 3589553106], "4/0": [1432, 4221422576]}
+const PRE_PLATE_4_0 := [1431, 214513608]
 ## The same decks with the section's DEFAULT road forms (live), alleys off: captured 2026-11-23 (forms live).
 const LIVE_SECTION := {"1/0": "05a41d02d7e663dc", "1/1": "f94db9991bff3b73", "1/2": "66e58606d4bbe979",
 		"4/0": "93d0af293cbfd45c", "4/1": "531d6817a20610db", "4/2": "7122f53dca9b5d32"}
 ## Section 4 deck 0, alleys off, forms live: 8 more boxes than OLD_COLLISION["4/0"] (its courts' / bands' raised ground).
-const LIVE_COLLISION_4_0 := [1439, 2766744305]
+const LIVE_COLLISION_4_0 := [1440, 1007613211]
 
 
 ## Section seed s with its road forms explicitly off (every segment a street: the plan before part C).
@@ -96,6 +100,9 @@ func _part_a() -> void:
 	add_child(e)
 	e.build_deck(_sec_off(4), 0, {"alleys": 0.0})
 	eq(_col(e), OLD_COLLISION["4/0"], "A: section 4 deck 0 collision unchanged (forms off)")
+	var pre := _col(e, true)
+	eq([pre[0], pre[1]], PRE_PLATE_4_0, "A: section 4 deck 0 without its portal back plates: the collision before the map was sealed")
+	eq(pre[2], 1, "A: section 4 deck 0: one portal, one back plate")
 	e.queue_free()
 	var e2 := CityDistrict.new()
 	e2.with_rig = false
@@ -115,14 +122,25 @@ func _part_a() -> void:
 			check(minf(dh, 1.0 - dh) <= 0.0141 and absf(t.v / c.v - 1.0) <= 0.0701, "A: tint of %s stays close (%s)" % [id, t.to_html(false)])
 
 
-func _col(d: CityDistrict) -> Array:
+## [shape count, hash]; with `skip_plates`, [count, hash, plates] leaving out the portal back plates (a box
+## PORTAL_PLATE + 0.1 thick across the arc, more than GATE_RECESS - 0.5 m past an end of the extent).
+func _col(d: CityDistrict, skip_plates: bool = false) -> Array:
 	var h := 0
+	var n := 0
+	var plates := 0
+	var e := d.plan.extent
 	var col := d.get_node("Collision")
 	for c in col.get_children():
 		var cs := c as CollisionShape3D
 		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else (cs.shape as ConvexPolygonShape3D).points
+		if skip_plates and sz is Vector3 and absf((sz as Vector3).z - (CityDistrict.PORTAL_PLATE + 0.1)) < 0.001:
+			var s := d.ring.world_to_arc(cs.transform.origin).y
+			if s > e.end.y + CityStreets.GATE_RECESS - 0.5 or s < e.position.y - CityStreets.GATE_RECESS + 0.5:
+				plates += 1
+				continue
 		h = hash([h, cs.transform, sz])
-	return [col.get_child_count(), h]
+		n += 1
+	return [n, h, plates] if skip_plates else [n, h]
 
 
 # --- Part B: alleys --------------------------------------------------------------------------------------
@@ -373,8 +391,8 @@ func _forms_dormant() -> void:
 ## tools/city_downtown/foot_probe.gd: the 8 m capsule crosses the ramp lane +-3 m on 2-3 parallel lines on the toe side of
 ## the foot line): "seed/deck/line/index". All 20 foot segments are open, so the city graph keeps them all; Missions fixes
 ## the plan side. seed 1-20 lines: deck 1 cross line 2, deck 2 cross line 4.
-const FOOT_OPEN := ["1/1/2/0", "2/1/2/0", "3/2/4/2", "4/1/2/1", "4/2/4/2", "5/1/2/0", "6/2/4/2", "7/2/4/2", "8/1/2/0",
-		"10/2/4/1", "11/1/2/1", "13/2/4/1", "14/2/4/2", "15/1/2/0", "16/1/2/0", "17/2/4/1", "18/1/2/0", "18/2/4/1",
+const FOOT_OPEN := ["1/1/2/0", "2/1/2/0", "3/2/4/2", "4/1/2/1", "4/2/4/2", "5/1/2/0", "6/2/4/2", "7/2/4/2", "8/1/2/0", "9/1/2/0",
+		"10/2/4/1", "11/1/2/1", "12/1/2/1", "13/2/4/1", "14/2/4/2", "15/1/2/0", "16/1/2/0", "17/2/4/1", "18/1/2/0", "18/2/4/1", "19/1/2/0",
 		"20/1/2/1", "20/2/4/2"]
 
 

@@ -131,11 +131,33 @@ its lanes from `road_graph(false)`, `node_pos` and the spine lanes (`lane_x`).
 |---|---|---|---|
 | **Ramp** | Everyone, both ways | A straight descent in a spine ramp lane, from the far end of the deck back toward the middle, landing on the deck below already heading the new way | Length = pitch / grade, rounded up to whole rows so the foot meets a cross street (default 18 % → 3 rows, ~270 m). On the upper deck it is a long **cut** (a look-down ledge, bridged by the cross streets); on the lower deck a viaduct coming down from the ceiling, which blocks the cross street at its foot |
 | **Freight lift** | Everyone, both ways | A 22 m platform inside a **lift pillar** in the cell beside the spine | The pillar is a lift tower on the decks it serves; the lobby faces the spine |
-| **Shaft** | Mechs, down only | An opening up to 40 m square in the middle of an open-air cell | Mid-crossing; lands in a park; shafts may stack into an atrium through several decks |
+| **Shaft** | Mechs, down only | An opening up to 40 m square in the middle of an open-air cell | Mid-crossing; lands in a park; shafts may stack into an atrium through several decks, but never as the only walkable way to the deck it passes (hop-only rule below) |
 | **Express lift** | Everyone, **locked** | One lift pillar mid-section stopping on every deck | A branch: sealed by the occupiers, a light checkpoint on every deck. Opening it is an objective hook (a fast way back up for a loaded convoy) |
 
 Each deck change gets a ramp when one fits (rolled, and biased to alternate with lifts so a section shows both), otherwise a
 lift. The lift is the fallback that always fits.
+
+**Walkable connectors: the hop-only rule (2026-11-24).** Every deck k+1 must be reachable from deck k by a mech that walks,
+hops at most 6 m and cannot glide (the Bulwark chassis), without a lift (lifts do not carry mechs yet: `LIFTS_RIDE` in
+`MissionRules`). Allowed: walking the deck, a ramp (down or up), and dropping off the edge of a shaft from deck k whose
+drop **lands on deck k+1's floor** (one deck: `pitch`, 48 m floor to floor; the automatic landing burn brakes it to
+16 m/s, under fall damage's 20 m/s; uncushioned it would be ~46 m/s: 78 HP to each leg of 200, 9 to the torso, survivable).
+Not allowed as the only way to a deck: a lift, a glide, a climb over 6 m, or a shaft stacked over the next shaft down in the
+same cell (an atrium: the drop goes on through deck k+1's hole to k+2, and only a glide over that hole reaches k+1; seed 9
+had exactly that, its deck 1 unreachable for a Bulwark). `SectionPlan.walkable_down(k)` / `walkable_down_connector(k)`
+(a ramp first, else a shaft that lands: `shaft_lands(ci)`) and `validate()` state the rule; the planner guarantees it by
+construction in `_ensure_walkable_down`, which touches only the pairs that break it (every other plan is byte-identical):
+1. **A ramp** k -> k+1 where a critical ramp goes (far end of deck k, its alternating spine lane, else the other lane),
+   when the grade fits the grid, no other ramp shares its footprint and no shaft cuts its head / foot station. It becomes
+   the pair's **critical** connector (departure / arrival / checkpoint move to it); the lift it replaces turns **branch**.
+2. Else **the stacked shaft below moves**: the shaft of deck k+1 under the drop goes to the first free cell (middle half
+   of the crossing first, grid order, `_place_shafts`' rules, stacked with no other shaft), so the drop lands.
+3. Else **a new shaft** from deck k is cut in such a cell (only when the section has no shaft there: e.g. `shafts` 0 with
+   a grade no ramp fits).
+Measured over seeds 1-300 at the defaults: 0 / 15 / 80 plans repaired at 2 / 3 / 5 decks (every one a stacked atrium as
+the only drop, with a lift as the critical way down); 85 ramps, 12 restacks. **Walking back up** needs a ramp (shafts are
+one way): 150 of 300 / 282 of 600 / 517 of 1200 deck pairs have none (with the rule above), so it is NOT enforced
+(it would re-plan far more than a third of the sections; the user decides). `walkable_up(k)` reports it.
 
 **Routing.** Vehicles and civilians: the road grid + ramps + lifts (`road_graph`). Mechs: every cell + ramps + lifts +
 shafts as one-way drops (`mech_graph`). The planner computes the shortest route for each from entry to extraction and

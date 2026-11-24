@@ -76,8 +76,9 @@ arc it follows the facets (constant x). Gates:
 - `blast_door`: as built (door leaves, hazard portal, hatched box).
 - `portal`: the same portal frame with no leaves, a dark recess 6 m deep behind it (`glass_dark`), and **no collision**
   across the opening (the way in / out of the map).
-- `collapsed`: the portal frame, and the opening filled with a rubble pile of 8-12 tilted boxes in `concrete` /
-  `concrete_dark`, solid (one collision box).
+- `collapsed`: built exactly as a shut `blast_door` (leaves, hazard portal, hatched box, the wall's solid collision)
+  since the 2026-11-23 playtest ("the wide door with rocks in it isn't working, make it a normal door"); the rubble
+  pile is gone. The kind stays `collapsed` in the section plan.
 - `backdrop: true` (window walls): the low-detail backdrop is built beyond that edge only. No backdrop behind bulkheads.
 
 In section mode walls are always on (the `walls` param is ignored).

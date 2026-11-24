@@ -20,17 +20,33 @@ signal flag_event(id: Variant, raised: bool, world_pos: Vector3)
 signal asset_event(id: Variant, kind: String, world_pos: Vector3)       ## damaged | destroyed
 signal portal_event(kind: String, world_pos: Vector3)                   ## start | open
 
-const WARN := 5.0            ## s of telegraph before open_at (gate: beacon + klaxon 3 s, then the leaves 2 s; lift: countdown 5 s)
-const GATE_OPEN := 2.0       ## s a gate's leaves take to open, ending at open_at
-const LIFT_OPEN := 1.5       ## s the lift doors take, ending at open_at
+## TIMING (docs/design/city-ramps-and-stack.md "Staging bay"): open_at is the moment the leaves START to move. A gate's
+## siren, lamps and beacons run while its leaves open (open_at .. open_at + OPENING); it is passable (fully open) from
+## open_at + OPENING (passable_after) and stays open `hold` s, then closes over CLOSE s.
+const WARN := 5.0            ## s of the silent "warn" state before open_at (the "warn" signal; a lift counts it down on its lamps)
+const OPENING := 3.0         ## s a gate's leaves take to open, from open_at (the reveal; the siren runs exactly this long)
+const GATE_OPEN := OPENING   ## (old name)
+const LIFT_OPEN := 1.5       ## s the lift doors take, from open_at
 const CLOSE := 2.0           ## s either takes to close
-const HOLD := 12.0           ## default s open after open_at
+const ALARM_LEAD := 0.0      ## s of siren before the leaves start to move (0: the siren is the opening signal; an order given earlier starts it at most this long before open_at)
+const HOLD := 12.0           ## default s fully open (after the opening)
 const FLAG_SWAP := 2.0       ## s of the banner swap
 const EVENT_STALE := 1.5     ## s: a scheduled moment older than this when first seen fires no signal
 const BLINK := 1.2           ## s period of the relay's band (on 60 %)
 const SOURCE_IN := 8.0       ## m inside the wall Missions puts a gate source (docs: where a source point lies)
-const GATE_POINT := -3.0     ## m along the gate frame's +Z source_point() gives: 3 m BEHIND the wall plane, in the recess (hidden while shut)
-const LIFT_POINT := 4.0      ## m in front of the lift door source_point() gives
+const GATE_POINT := -16.0    ## m along the gate frame's +Z source_point() gives: the staging bay's floor centre (hidden while shut)
+const EXIT := 6.0            ## m in front of a gate's door source_bay().exit lies (on the street)
+const AIR_SILL := 21.0       ## m: an air door's opening bottom above the deck floor at its wall ...
+const AIR_HEAD := 27.0       ## ... and top
+const AIR_W := 12.0          ## m: its clear width (a dropship's hull 5.2 m + margins)
+const AIR_DEPTH := 14.0      ## m: its recess from the wall plane to the back wall
+const AIR_ROOM_H := 6.5      ## m: the recess's roof (6.25 m clear under its light bar)
+const AIR_CORRIDOR := 40.0   ## m of straight flight into the deck that must be clear (air_spot)
+const AIR_MARGIN := 1.6      ## m either side of the opening in that corridor
+const AIR_TIER_MAX := 20.0   ## m: a building taller than this blocks the corridor
+const AIR_HIDE := 7.0        ## m behind the wall plane air_door().hide lies
+const AIR_OUT := 8.0         ## m in front of the opening air_door().out lies
+const LIFT_POINT := 4.0     ## m in front of the lift door source_point() gives
 const FLAG_CLEAR := 2.5      ## m clear round a flag mast (snap)
 const ASSET_CLEAR := 3.5     ## m clear round the relay (snap)
 const DEFAULT_SNAP := 45.0   ## m a site may move to clear ground when neither the record nor MissionPlan says
@@ -40,16 +56,17 @@ var plan: Variant                ## the MissionPlan (or a Dictionary with its fi
 var now := 0.0                   ## the last advance_to time
 var quality := CityQuality.HIGH
 
-var _sources := {}               ## id -> {id, deck, kind, x, s, edge, connector}, as given
+var _sources := {}               ## id -> {id, deck, kind, x, s, edge, connector}, as given (and the air doors, kind "air")
+var _air := {}                   ## deck -> [air door source ids], derived from the stack (air_spot), in boundary order
 var _doors := {}                 ## id -> GateDoor / LiftDoor (gate / lift sources that found their door)
-var _sched := {}                 ## id -> [open_at, close_at, prev_close_at]
+var _sched := {}                 ## id -> [open_at, close_at, prev_close_at, alarm_from] (alarm_from: gates' alarm, see alarm_from())
 var _sealed := {}                ## id -> the clock time it is sealed at
 var _fired := {}                 ## id -> {warn, open, close, seal: bool}
 var _door_state := {}            ## id -> last state posed
 var _lights := {}                ## id -> OmniLight3D while warning
 var _flags := {}                 ## id -> FlagMast
 var _flag_state := {}            ## id -> [raised, from, t0]
-var _sites := {}                 ## objective id -> {deck, x, s, h, snapped, ok}
+var _sites := {}                 ## objective id -> {deck, x, s, h, snapped, ok, fit, moved_for_fit, clear}
 var _zones := {}                 ## objective id -> MeshInstance3D (flag zone ring)
 var _zone_state := {}            ## objective id -> "idle" | "contested" | "ours"
 var _assets := {}                ## objective id -> RelayAsset
@@ -77,6 +94,7 @@ func net_fields() -> Dictionary:
 	return {
 		"stack": Net.SPAWN, "plan": Net.SPAWN,          # from the section and mission seeds, the same on every machine
 		"_sources": Net.SPAWN, "_sites": Net.SPAWN,     # derived from the plan (snap rule: plan data only)
+		"_air": Net.SPAWN,                              # derived from the stack's plans (air_spot: plan data only)
 		# The host decides these; Engine carries them (wave orders, mission.state) and restores a late joiner with snapshot()
 		"_sched": Net.OWNER, "_sealed": Net.OWNER, "_flag_state": Net.OWNER, "_zone_state": Net.OWNER,
 		"_asset_hp": Net.OWNER, "portal_progress": Net.OWNER, "hold_state": Net.OWNER,
@@ -190,12 +208,49 @@ func _c_plan() -> void:
 					continue
 				used[[d, "lift", bi]] = true
 				_queue.append(["lift %s" % str(id), _c_lift.bind(id, d, bi)])
+	# Air doors: derived from the stack itself (not the plan), one per end wall where a spot passes air_spot().
+	var air_holes := {}       # district -> {side: [hole]}
+	for k in (stack.decks.size() if stack != null else 0):
+		var d := stack.decks[k]
+		var signs := CitySigns.layout(d.plan, d.ring)
+		var ids: Array = []
+		for w: Dictionary in d.plan.boundary():
+			if int(w["side"]) < 2:
+				continue
+			var c := air_spot(d, w, signs)
+			if is_nan(c):
+				continue
+			var id := "air_d%d_%d" % [k, ids.size()]
+			ids.append(id)
+			var side := int(w["side"])
+			var at := float(w["at"])
+			var inward := -1.0 if side % 2 == 0 else 1.0
+			_sources[id] = {"id": id, "deck": k, "kind": "air", "x": c, "s": at + inward * 8.0, "edge": CityPlan.SIDE_EDGE[side],
+					"u": c}
+			if not air_holes.has(d):
+				air_holes[d] = {}
+			if not per_deck.has(d):
+				per_deck[d] = {}
+				decks.append(d)
+			var holes: Array = air_holes[d].get(side, [])
+			holes.append(air_hole(c))
+			air_holes[d][side] = holes
+			_queue.append(["air %s" % id, _c_air.bind(id, d, w, c)])
+		_air[k] = ids
 	for d in decks:
 		var parts := _wall_parts(d)
 		for i in parts.size():
 			_queue.append(["walls d%d %d/%d" % [d.plan.deck, i + 1, parts.size()],
-					_c_walls.bind(d, per_deck[d], parts[i], i == 0, i == parts.size() - 1)])
+					_c_walls.bind(d, per_deck[d], parts[i], i == 0, i == parts.size() - 1, air_holes.get(d, {}))])
 	_queue.append(["pose doors", _c_pose_doors])
+	# The fit rule's reachability mask, one chunk per deck that has a flag / defend site (none elsewhere; cached on the plan).
+	var fit_decks := {}
+	for o: Variant in field(plan, "objectives", []):
+		if o is Dictionary and str((o as Dictionary).get("type", "")) in ["flag", "defend"]:
+			var fd := _deck((o as Dictionary).get("deck", 0))
+			if fd != null and not fit_decks.has(fd):
+				fit_decks[fd] = true
+				_queue.append(["fit d%d" % fd.plan.deck, _c_fit.bind(fd)])
 	# Flags first, then relays (a chained defend shares its flag's site: the relay snaps beside the mast), then the hold.
 	for kind: String in ["flag", "defend", "hold"]:
 		for o: Variant in field(plan, "objectives", []):
@@ -218,10 +273,138 @@ func _c_plan() -> void:
 func _c_gate(id: Variant, d: CityDistrict, hit: Dictionary) -> void:
 	var door := MissionProps.GateDoor.new()
 	door.name = "MissionGate_%s" % str(id)
-	door.build(d, hit["w"], hit["g"], _look(id))
+	door.build(d, hit["w"], hit["g"], _look(id), bay_half(d, hit["w"], hit["g"]))
 	d.add_child(door)
 	_doors[id] = door
 	_cut_wall(d, hit["w"], hit["g"], door.body)
+
+
+## An air door at `c` along end wall w of district d (GateDoor configured by air_config).
+func _c_air(id: Variant, d: CityDistrict, w: Dictionary, c: float) -> void:
+	var door := MissionProps.GateDoor.new()
+	door.name = "MissionAir_%s" % str(id)
+	air_config(door)
+	var half := AIR_W * 0.5 + 0.6
+	door.build(d, w, {"a": c - half, "b": c + half, "h": AIR_HEAD - AIR_SILL, "kind": "air"}, _look(id), AIR_W * 0.5 + 1.0)
+	d.add_child(door)
+	_doors[id] = door
+	_cut_wall(d, w, {"a": c - half, "b": c + half, "h": AIR_HEAD, "sill": AIR_SILL}, door.body)
+
+
+## The sizes that make a GateDoor an air door (before build()).
+static func air_config(door: MissionProps.GateDoor) -> void:
+	door.air = true
+	door.sill = AIR_SILL
+	door.bay_depth = AIR_DEPTH
+	door.room_h = AIR_ROOM_H
+	door.jamb = 1.4
+	door.butt = 0.8
+	door.frame_out = 1.8
+	door.lintel_h = 1.8
+
+
+## Half the width an air door takes on its wall (frame, recess and plates, + 0.5 m).
+static func air_half() -> float:
+	return maxf(AIR_W * 0.5 + 1.4 + 0.8 + 0.4, AIR_W * 0.5 + 1.0 + MissionProps.GateDoor.PLATE) + 0.5
+
+
+## The CityStreets "mission_air" hole of an air door at `c`: the opening (left out of the wall's face) and its frame's rect
+## (posts, fins, racks, light bars stop round it).
+static func air_hole(c: float) -> Dictionary:
+	var wo := AIR_W * 0.5 + 0.6
+	var f := AIR_W * 0.5 + 1.4 + 0.8 + 0.4
+	return {"a": c - wo, "b": c + wo, "y0": AIR_SILL, "y1": AIR_HEAD, "fa": c - f, "fb": c + f,
+			"fy0": AIR_SILL - MissionProps.GateDoor.AIR_LEDGE_T - 0.3, "fy1": AIR_HEAD + 1.8 + 0.3}
+
+
+## THE AIR DOOR PLACEMENT RULE (plan data and the deck's sign layout only: the same on every machine). On end wall w
+## (side 2 / 3) of district d, the spot `c` (along the wall, arc x) nearest the avenue's centre line (0 without a
+## section; candidates every 0.5 m, + before -) such that:
+##   - the door's width (air_half() each side) stays 4 m inside the wall's ends;
+##   - it stays 1 m clear of every gate's staging bay footprint (MissionWorld.bay_half + its plates) and any gate's span;
+##   - no deck sign on this wall (CitySigns.layout: over-gate and side signs) overlaps the frame's rect +- 1 m;
+##   - the flight corridor (the opening +- AIR_MARGIN, AIR_CORRIDOR m straight into the deck) crosses no building taller
+##     than AIR_TIER_MAX, no pillar core, park column, ramp (+2 m), ceiling opening, nor a hung ramp / shaft sign;
+##   - the ceiling leaves 4 m over the lintel.
+## NAN when no spot passes.
+static func air_spot(d: CityDistrict, w: Dictionary, signs: Array) -> float:
+	var plan := d.plan
+	var hole := air_hole(0.0)
+	if plan.p("ceiling") < float(hole["fy1"]) + 4.0:
+		return NAN
+	var side := int(w["side"])
+	var at := float(w["at"])
+	var inward := -1.0 if side % 2 == 0 else 1.0
+	var e := plan.extent
+	var hw := air_half()
+	var lo := e.position.x + 4.0 + hw
+	var hi := e.end.x - 4.0 - hw
+	var blocked: Array = []       # [u0, u1] the door's centre may not fall in
+	for g: Dictionary in w["gates"]:
+		var mid := (float(g["a"]) + float(g["b"])) * 0.5
+		var r := maxf(bay_half(d, w, g), (float(g["b"]) - float(g["a"])) * 0.5) + MissionProps.GateDoor.PLATE + 1.0
+		blocked.append([mid - r - hw, mid + r + hw])
+	for s: Dictionary in signs:
+		if int(s.get("side", -1)) != side:
+			continue
+		if float(s["y1"]) < float(hole["fy0"]) - 1.0 or float(s["y0"]) > float(hole["fy1"]) + 1.0:
+			continue
+		blocked.append([float(s["u0"]) - 1.0 + float(hole["fa"]), float(s["u1"]) + 1.0 + float(hole["fb"])])
+	# The corridor's blockers, as arc rects.
+	var s0 := minf(at, at + inward * AIR_CORRIDOR)
+	var band := Rect2(e.position.x, s0, e.size.x, AIR_CORRIDOR)
+	var rects: Array[Rect2] = []
+	for i in plan.buildings.size():
+		var b: Dictionary = plan.buildings[i]
+		var sz: Vector2 = b.get("size", Vector2.ZERO)
+		if sz.x > 0.0 and plan.top_of(i) > AIR_TIER_MAX:
+			rects.append(Rect2((b["center"] as Vector2) - sz * 0.5, sz))
+		if b["pillar"]:
+			var cs: Vector2 = b["core"]["size"]
+			rects.append(Rect2(Vector2(float(b["core"]["x"]), float(b["core"]["s"])) - cs * 0.5, cs))
+	for col: Dictionary in plan.columns:
+		var hc := float(col["half"]) + 1.0
+		rects.append(Rect2(float(col["x"]) - hc, float(col["s"]) - hc, hc * 2.0, hc * 2.0))
+	for rp: Dictionary in plan.ramps:
+		var a0 := minf(float(rp["s_top"]), float(rp["s_foot"]))
+		var a1 := maxf(float(rp["s_top"]), float(rp["s_foot"]))
+		rects.append(Rect2(float(rp["x0"]), a0, float(rp["x1"]) - float(rp["x0"]), a1 - a0).grow(2.0))
+	for o: Rect2 in plan.site.openings:
+		rects.append(CityStreets.ceiling_opening(o))
+	for s: Dictionary in signs:
+		if str(s["kind"]) == "ramp" or str(s["kind"]) == "shaft":
+			var p: Vector2 = s.get("at", Vector2.ZERO)
+			var hs := maxf(float(s["w"]) * 0.5, 1.0)
+			rects.append(Rect2(p - Vector2(hs, hs), Vector2(hs, hs) * 2.0))
+	var near: Array[Rect2] = []
+	for r in rects:
+		if r.intersects(band):
+			near.append(r)
+	var centre := 0.0
+	if plan.section != null:
+		var av := plan.section.lane_x("avenue")
+		centre = (av.x + av.y) * 0.5
+	var n := int(ceilf(e.size.x / 0.5))
+	for k in n * 2 + 1:
+		var off := float((k + 1) / 2) * 0.5 * (1.0 if k % 2 == 1 else -1.0)
+		var c := centre + off
+		if c < lo or c > hi:
+			continue
+		var ok := true
+		for bl: Array in blocked:
+			if c > float(bl[0]) and c < float(bl[1]):
+				ok = false
+				break
+		if not ok:
+			continue
+		var cor := Rect2(c - AIR_W * 0.5 - AIR_MARGIN, s0, AIR_W + AIR_MARGIN * 2.0, AIR_CORRIDOR)
+		for r in near:
+			if r.intersects(cor):
+				ok = false
+				break
+		if ok:
+			return c
+	return NAN
 
 
 func _c_lift(id: Variant, d: CityDistrict, bi: int) -> void:
@@ -235,6 +418,10 @@ func _c_lift(id: Variant, d: CityDistrict, bi: int) -> void:
 func _c_pose_doors() -> void:
 	for id: Variant in _doors:
 		_pose_door(id, now, true)
+
+
+func _c_fit(d: CityDistrict) -> void:
+	MissionProps.fit_mask(d.plan)
 
 
 func _c_site(o: Dictionary, clear_r: float) -> void:
@@ -251,9 +438,15 @@ func _c_finish() -> void:
 ## Free everything, give the walls back their baked leaves and their collision (restore = false when the decks are going
 ## away anyway: a stack rebuild).
 func teardown(restore: bool = true) -> void:
+	for door: Variant in _doors.values():
+		if is_instance_valid(door) and door is MissionProps.GateDoor and (door as MissionProps.GateDoor).siren != null:
+			(door as MissionProps.GateDoor).siren.stop()
 	for n: Variant in _all_nodes():
 		if is_instance_valid(n):
-			(n as Node).queue_free()
+			var node := n as Node
+			if node.get_parent() != null:      # out of the tree now: a setup begun right after reuses the names
+				node.get_parent().remove_child(node)
+			node.queue_free()
 	for l: Variant in _lights.values():
 		if is_instance_valid(l):
 			(l as Node).queue_free()
@@ -265,6 +458,8 @@ func teardown(restore: bool = true) -> void:
 		for d in _meta_decks:
 			if is_instance_valid(d) and d.plan != null:
 				d.plan.remove_meta("mission_doors")
+				if d.plan.has_meta("mission_air"):
+					d.plan.remove_meta("mission_air")
 		for d in _walled:
 			if is_instance_valid(d):
 				_rebuild_walls(d)
@@ -369,12 +564,24 @@ func _cut_wall(d: CityDistrict, w: Dictionary, g: Dictionary, body: StaticBody3D
 	var ceiling := d.plan.p("ceiling")
 	var geo := CityGeo.new(d.ring)
 	var inv := (body.get_parent() as Node3D).transform.affine_inverse()     # the body is under the door (district space)
+	# The district's slabs, and the slabs an earlier door on this deck rebuilt round its own gate: two gates in one wall
+	# slab (an end wall is one box) must both be cut, or the first door's rebuilt slab still fills the second's opening.
+	var shapes := []         # [CollisionShape3D, its transform in district space]
 	for c in col.get_children():
-		var cs := c as CollisionShape3D
+		shapes.append([c, (c as Node3D).transform])
+	for other: Variant in _doors.values():
+		var od := other as MissionProps.GateDoor
+		if od == null or od.get_parent() != d or od.body == body or od.body == null:
+			continue
+		for c in od.body.get_children():
+			if c != od.door_shape:
+				shapes.append([c, od.transform * od.body.transform * (c as Node3D).transform])
+	for pair: Array in shapes:
+		var cs := pair[0] as CollisionShape3D
 		if cs == null or cs.disabled or not cs.shape is BoxShape3D:
 			continue
 		var size := (cs.shape as BoxShape3D).size
-		var a := d.ring.world_to_arc(cs.transform.origin)
+		var a := d.ring.world_to_arc((pair[1] as Transform3D).origin)
 		var lo: float
 		var hi: float
 		if across:
@@ -392,23 +599,55 @@ func _cut_wall(d: CityDistrict, w: Dictionary, g: Dictionary, body: StaticBody3D
 		var y0 := -1.0                   # the y range CityDistrict._col_walls gives every wall slab
 		var y1 := ceiling + 1.0
 		cs.disabled = true
-		_cut.append(cs)
-		var pieces := [[lo, ga, y0], [gb, hi, y0], [maxf(lo, ga), minf(hi, gb), gh]]
+		if cs.get_parent() == col:      # another door's rebuilt slab goes with that door
+			_cut.append(cs)
+		# Beside the opening, over its head, and (an air door, whose opening starts at g.sill) under its sill.
+		var pieces := [[lo, ga, y0, y1], [gb, hi, y0, y1], [maxf(lo, ga), minf(hi, gb), gh, y1]]
+		if float(g.get("sill", 0.0)) > 0.0:
+			pieces.append([maxf(lo, ga), minf(hi, gb), y0, float(g["sill"])])
 		for pc: Array in pieces:
 			var u0 := float(pc[0])
 			var u1 := float(pc[1])
 			if u1 - u0 < 0.1:
 				continue
 			var yb := float(pc[2])
+			var yt := float(pc[3])
 			var xf: Transform3D
 			var sz: Vector3
 			if across:
-				xf = geo.frame((u0 + u1) * 0.5, at_c, (yb + y1) * 0.5)
-				sz = Vector3(u1 - u0, y1 - yb, thick)
+				xf = geo.frame((u0 + u1) * 0.5, at_c, (yb + yt) * 0.5)
+				sz = Vector3(u1 - u0, yt - yb, thick)
 			else:
-				xf = geo.frame(at_c, (u0 + u1) * 0.5, (yb + y1) * 0.5)
-				sz = Vector3(thick, y1 - yb, u1 - u0 + CityDistrict.SEAM)
+				xf = geo.frame(at_c, (u0 + u1) * 0.5, (yb + yt) * 0.5)
+				sz = Vector3(thick, yt - yb, u1 - u0 + CityDistrict.SEAM)
 			MissionProps.box_shape(body, inv * xf, Vector3.ZERO, sz)
+
+
+## Half the interior width of gate g's staging bay (GateDoor): half the gate, widened behind the wall to
+## GateDoor.BAY_MIN_W / 2, shrunk (symmetric) so the bay with its plates stays 0.5 m clear of a neighbouring gate's bay or
+## a portal / collapsed gate's back plate on the same wall and 2 m inside the deck's corners; never below the gate's own.
+static func bay_half(d: CityDistrict, w: Dictionary, g: Dictionary) -> float:
+	var ga := float(g["a"])
+	var gb := float(g["b"])
+	var mid := (ga + gb) * 0.5
+	var own := (gb - ga) * 0.5
+	var want := maxf(own, MissionProps.GateDoor.BAY_MIN_W * 0.5)
+	var plate := MissionProps.GateDoor.PLATE
+	var e := d.plan.extent
+	var across := int(w["side"]) >= 2
+	var room := minf(mid - ((e.position.x if across else e.position.y) + 2.0), ((e.end.x if across else e.end.y) - 2.0) - mid) - plate
+	for g2: Dictionary in w["gates"]:
+		if g2 == g or is_equal_approx(float(g2["a"]), ga):
+			continue
+		var a2 := float(g2["a"])
+		var b2 := float(g2["b"])
+		var reach := 1.0 + CityDistrict.PORTAL_PLATE      # a portal's back plate reaches 1 m past its sides
+		if str(g2["kind"]) == "blast_door":
+			reach = maxf((b2 - a2) * 0.5, MissionProps.GateDoor.BAY_MIN_W * 0.5) + plate - (b2 - a2) * 0.5
+		var lo := a2 - reach - 0.5
+		var hi := b2 + reach + 0.5
+		room = minf(room, (lo - mid) - plate if lo >= mid else (mid - hi) - plate)
+	return maxf(minf(want, room), own)
 
 
 ## The calls that draw district d's walls, in CityDistrict's own order (one per side, a farm side in FARM_PARTS parts), so a
@@ -441,9 +680,11 @@ static func _wall_part(geo: CityGeo, d: CityDistrict, lights: CityGeo, wp: Array
 ## One part of district d's walls re-meshed without the door leaves (CityStreets.walls reads the plan's "mission_doors"
 ## meta); the last part swaps the Walls mesh. The farm walls' light bars are left as they are (drawn into a throwaway
 ## geo: they never depend on the doors).
-func _c_walls(d: CityDistrict, doors: Dictionary, wp: Array, first: bool, last: bool) -> void:
+func _c_walls(d: CityDistrict, doors: Dictionary, wp: Array, first: bool, last: bool, air: Dictionary = {}) -> void:
 	if first:
 		d.plan.set_meta("mission_doors", doors)
+		if not air.is_empty():
+			d.plan.set_meta("mission_air", air)     # CityStreets: air openings and their frames' rects, per side
 		_meta_decks.append(d)
 		_wall_geo = CityGeo.new(d.ring)
 	_wall_part(_wall_geo, d, CityGeo.new(d.ring), wp)
@@ -523,11 +764,19 @@ func _site(o: Dictionary, d: CityDistrict, clear_r: float) -> Dictionary:
 		var o2: Dictionary = _sites[id]
 		if int(o2["deck"]) == d.plan.deck:
 			avoid.append([Vector2(float(o2["x"]), float(o2["s"])), float(o2["clear"])])
-	var out := MissionProps.snap_site(d, at, snap_reach(o), clear_r, avoid)
+	# The fit rule: the widest mech must reach the objective (MissionProps.snap_site_fit; snap_site's pick when it does).
+	var out := MissionProps.snap_site_fit(d, at, snap_reach(o), clear_r, avoid, obj_radius(o))
 	out["deck"] = d.plan.deck
 	out["clear"] = clear_r
 	_sites[o.get("id")] = out
 	return out
+
+
+## Objective `o`'s zone radius (its record's `radius`; else flag 14, defend 30: MissionPlan.RADIUS).
+static func obj_radius(o: Dictionary) -> float:
+	if float(o.get("radius", 0.0)) > 0.0:
+		return float(o["radius"])
+	return 30.0 if str(o.get("type", "")) == "defend" else 14.0
 
 
 ## How far objective `o`'s site may move to clear ground: its record's `snap`, else MissionPlan.SNAP, else DEFAULT_SNAP.
@@ -581,10 +830,16 @@ func _build_portal() -> void:
 
 # --- Doors ---------------------------------------------------------------------------------------------------------------
 
-## The state of a door at clock t from its schedule [open_at, close_at, prev_close_at] (empty: never opened) and the
-## time it is sealed at (INF: never): [state, u] with state shut | warn | opening | open | closing | sealed and u 0..1
-## through warn / opening / closing. A door open (or opening) at seal_at closes over CLOSE s from then, then is sealed;
-## one already closing finishes its closing.
+## s from open_at until a door of `kind` is passable (fully open): OPENING for a gate, LIFT_OPEN for a lift.
+static func passable_after(kind: String = "gate") -> float:
+	return LIFT_OPEN if kind == "lift" else OPENING
+
+
+## The state of a door at clock t from its schedule [open_at, close_at, prev_close_at, alarm_from] (empty: never opened)
+## and the time it is sealed at (INF: never): [state, u] with state shut | warn | opening | open | closing | sealed and u
+## 0..1 through warn / opening / closing. warn: WARN s before open_at; opening: from open_at for passable_after(kind) s;
+## open until close_at. A door open (or opening) at seal_at closes over CLOSE s from then, then is sealed; one already
+## closing finishes its closing.
 static func door_state(kind: String, sched: Array, seal_at: float, t: float) -> Array:
 	if t >= seal_at:
 		var then := door_state(kind, sched, INF, seal_at)
@@ -602,17 +857,17 @@ static func door_state(kind: String, sched: Array, seal_at: float, t: float) -> 
 	var oa := float(sched[0])
 	var ca := float(sched[1])
 	var pca := float(sched[2])
-	var t_open := GATE_OPEN if kind == "gate" else LIFT_OPEN
+	var t_open := passable_after(kind)
 	if t < oa - WARN:
 		if t < pca:
 			return ["open", 1.0]
 		if t < pca + CLOSE:
 			return ["closing", (t - pca) / CLOSE]
 		return ["shut", 0.0]
-	if t < oa - t_open:
-		return ["warn", (t - (oa - WARN)) / (WARN - t_open)]
 	if t < oa:
-		return ["opening", (t - (oa - t_open)) / t_open]
+		return ["warn", (t - (oa - WARN)) / WARN]
+	if t < oa + t_open:
+		return ["opening", (t - oa) / t_open]
 	if t < ca:
 		return ["open", 1.0]
 	if t < ca + CLOSE:
@@ -620,19 +875,47 @@ static func door_state(kind: String, sched: Array, seal_at: float, t: float) -> 
 	return ["shut", 0.0]
 
 
-## Schedule wave source `id` to open at `open_at` (shared clock): the telegraph starts WARN s before; the door stays open
-## `hold` s after open_at, then closes over CLOSE s. Called again while the door is due to be open (the new open_at is not
-## after the current close time): only the hold is extended (the earlier open_at stays, no second warning). Ramp / shaft /
-## unknown ids are accepted and do nothing; a sealed source stays sealed.
-func open_source(id: Variant, open_at: float, hold: float = HOLD) -> void:
+## When a schedule's gate alarm starts: its stored start (open_source: the order time, clamped to
+## [open_at - ALARM_LEAD, open_at]), or open_at - ALARM_LEAD for a schedule without one (an old snapshot).
+static func alarm_from(sched: Array) -> float:
+	if sched.is_empty():
+		return INF
+	var oa := float(sched[0])
+	if sched.size() > 3:
+		return clampf(float(sched[3]), oa - ALARM_LEAD, oa)
+	return oa - ALARM_LEAD
+
+
+## The gate alarm (siren + lamps + beacons at the door) at clock t: a scheduled effect, on from alarm_from(sched) (with
+## ALARM_LEAD 0: open_at, the leaves starting to move) until the leaves are fully open (open_at + OPENING), off once
+## sealed. Gates only (a lift keeps its countdown).
+static func alarm_on(kind: String, sched: Array, seal_at: float, t: float) -> bool:
+	if (kind != "gate" and kind != "air") or sched.is_empty() or t >= seal_at:
+		return false
+	return t >= alarm_from(sched) and t < float(sched[0]) + OPENING
+
+
+## Whether source `id`'s gate alarm is on at the current clock.
+func alarm(id: Variant) -> bool:
+	return alarm_on(_door_kind(id), _sched.get(id, []), _seal_at(id), now)
+
+
+## Schedule wave source `id` to open at `open_at` (shared clock; the moment the leaves START to move): the silent warn
+## state WARN s before, the opening (siren) passable_after(kind) s from open_at, then fully open `hold` s, then closing over
+## CLOSE s. Called again while the door is due to be open (the new open_at is not after the current close time): only the
+## hold is extended (the earlier open_at stays, no second opening). Ramp / shaft / unknown ids are accepted and do
+## nothing; a sealed source stays sealed. `order_at` (default: the current clock) is when the order arrived: the alarm
+## starts there, at most ALARM_LEAD s before open_at (ALARM_LEAD 0: at open_at); stored in the schedule (snapshot()).
+func open_source(id: Variant, open_at: float, hold: float = HOLD, order_at: float = NAN) -> void:
 	if not setup_ready:
 		return
 	if _sealed.has(id) or not _sources.has(id):
 		return
 	var kind := str(_sources[id].get("kind", ""))
-	if kind != "gate" and kind != "lift":
+	if kind != "gate" and kind != "lift" and kind != "air":
 		return
-	var close_at := open_at + maxf(hold, 0.0)
+	var close_at := open_at + passable_after(kind) + maxf(hold, 0.0)
+	var alarm_at := clampf(now if is_nan(order_at) else order_at, open_at - ALARM_LEAD, open_at)
 	if _sched.has(id):
 		var sc: Array = _sched[id]
 		if open_at <= float(sc[1]):
@@ -641,9 +924,9 @@ func open_source(id: Variant, open_at: float, hold: float = HOLD) -> void:
 				(_fired[id] as Dictionary)["close"] = false
 			_next = -INF
 			return
-		_sched[id] = [open_at, close_at, float(sc[1])]
+		_sched[id] = [open_at, close_at, float(sc[1]), alarm_at]
 	else:
-		_sched[id] = [open_at, close_at, -INF]
+		_sched[id] = [open_at, close_at, -INF, alarm_at]
 	_fired[id] = {"warn": false, "open": false, "close": false, "seal": bool(_fired.get(id, {}).get("seal", false))}
 	_next = -INF
 
@@ -670,7 +953,7 @@ func close_source(id: Variant, at: float = NAN) -> void:
 	if _sealed.has(id) or not _sources.has(id):
 		return
 	var kind := _door_kind(id)
-	if kind != "gate" and kind != "lift":
+	if kind != "gate" and kind != "lift" and kind != "air":
 		return
 	_sealed[id] = now if is_nan(at) else at
 	if not _fired.has(id):
@@ -683,31 +966,35 @@ func _seal_at(id: Variant) -> float:
 	return float(_sealed.get(id, INF))
 
 
-## {state, t (when this state began, -INF if always), open_at, close_at} of source `id` at the current clock.
+## {state, t (when this state began, -INF if always), open_at (the leaves start to move), close_at, alarm, alarm_from,
+## passable (fully open: the widest unit gets through; false while opening / closing / shut / sealed), passable_at
+## (open_at + passable_after(kind); INF when never scheduled)} of source `id` at the current clock.
 func source_state(id: Variant) -> Dictionary:
 	var kind := str(_sources.get(id, {}).get("kind", ""))
 	var sc: Array = _sched.get(id, [])
 	var st := door_state(kind, sc, _seal_at(id), now)
 	var began := -INF
+	var t_open := passable_after(kind)
 	if str(st[0]) == "sealed":
 		began = _seal_at(id)
 	elif not sc.is_empty() and now < _seal_at(id):
 		var oa := float(sc[0])
 		var ca := float(sc[1])
-		var t_open := GATE_OPEN if kind == "gate" else LIFT_OPEN
 		match str(st[0]):
 			"warn": began = oa - WARN
-			"opening": began = oa - t_open
-			"open": began = oa if now >= oa else -INF
+			"opening": began = oa
+			"open": began = oa + t_open if now >= oa + t_open else -INF
 			"closing": began = ca if now >= ca else float(sc[2])
 			"shut": began = ca + CLOSE if now >= ca + CLOSE else (float(sc[2]) + CLOSE if float(sc[2]) > -INF else -INF)
 	return {"state": st[0], "t": began, "open_at": float(sc[0]) if not sc.is_empty() else INF,
-			"close_at": float(sc[1]) if not sc.is_empty() else INF}
+			"close_at": float(sc[1]) if not sc.is_empty() else INF, "alarm": alarm_on(kind, sc, _seal_at(id), now),
+			"alarm_from": alarm_from(sc) if kind == "gate" or kind == "air" else INF, "passable": str(st[0]) == "open",
+			"passable_at": float(sc[0]) + t_open if not sc.is_empty() else INF}
 
 
 ## Where units of source `id` should appear, {deck, x, s} in its deck's arc coordinates, for every kind ({} for unknown
-## ids): a gate with its door, the door's recess (3 m behind the wall plane, mid-gate: hidden by the leaves until they
-## open, held in by the door's collision until open_at); every other source (lift, ramp, shaft, a gate without a door) the
+## ids): a gate with its door, the floor centre of its staging bay (source_bay: hidden by the leaves until they open, held
+## in by the door's collision until it is passable); every other source (lift, ramp, shaft, a gate without a door) the
 ## plan's point (a lift's lobby: the core is solid, so lift units step out in sight as the doors open).
 func source_point(id: Variant) -> Dictionary:
 	if not _sources.has(id):
@@ -716,11 +1003,110 @@ func source_point(id: Variant) -> Dictionary:
 	var k := int(s.get("deck", 0))
 	if not _doors.get(id) is MissionProps.GateDoor:
 		return {"deck": k, "x": float(s.get("x", 0.0)), "s": float(s.get("s", 0.0))}
-	var door := _doors[id] as Node3D
-	var d := _deck(k)
-	var local := door.transform * Vector3(0, 0, GATE_POINT)
-	var a := d.ring.world_to_arc(local)
-	return {"deck": k, "x": a.x, "s": a.y}
+	var gd := _doors[id] as MissionProps.GateDoor
+	if gd.air:       # an air door: its hiding point in the recess (h: its height over the deck floor)
+		var a := gd.arc(0.0, AIR_HIDE)
+		return {"deck": k, "x": a.x, "s": a.y, "h": AIR_SILL + (AIR_HEAD - AIR_SILL) * 0.5}
+	var c := gd.arc(0.0, -GATE_POINT)
+	return {"deck": k, "x": c.x, "s": c.y}
+
+
+## The staging bay of gate source `id` (docs/design/city-ramps-and-stack.md "Staging bay"), for placing a wave inside it
+## (loose formation facing out). {ok = false} for anything else (lifts, ramps, shafts, unknown ids, a gate without a door):
+## test `ok`. With ok = true:
+##   deck; frame (Transform3D, global when in the tree, else district-local: origin on the wall plane at floor mid-gate, +Z
+##   into the map, X along the wall, as MissionProps.gate_frame); center (Vector3, same space: the usable floor's centre);
+##   x, s, h (its arc coordinates on the deck, h the floor height 0); origin (Vector2(x, s)); out (Vector2, unit, arc: from
+##   the bay into the deck); facing (Vector3, unit, same space as frame: out of the bay into the map); exit (Vector3: on the
+##   street EXIT m in front of the door); half_width (usable, the walls' MARGIN taken off), width (2 x half_width);
+##   depth_from, depth_to (usable metres behind the wall plane), depth (depth_to - depth_from); height (true clear height
+##   under the lowest thing in the bay, over the floor's highest point); door_w (clear between the jambs), door_h (clear
+##   to the lintel's underside); door (Vector2: arc point of mid-gate on the wall plane); door_s (the wall plane's arc
+##   coordinate along `out`: x for a side wall x0 / x1, s for an end wall s0 / s1); edge (s0 / s1 / x0 / x1).
+func source_bay(id: Variant) -> Dictionary:
+	var door := _doors.get(id) as MissionProps.GateDoor
+	if door == null or not is_instance_valid(door) or door.air:      # an air door has no staging bay: air_door()
+		return {"ok": false}
+	var k := int((_sources[id] as Dictionary).get("deck", 0))
+	var d := door.get_parent() as CityDistrict
+	var geo := CityGeo.new(d.ring)
+	var to_space := d.global_transform if d.is_inside_tree() else Transform3D.IDENTITY
+	var mid_depth := (MissionProps.GateDoor.USE_FROM + MissionProps.GateDoor.USE_TO) * 0.5
+	var c := door.arc(0.0, mid_depth)
+	var ex := door.arc(0.0, -EXIT)
+	var frame := to_space * door.transform
+	var hw := door.ihalf - MissionProps.GateDoor.MARGIN
+	var side := CityPlan.SIDE_EDGE.find(str(_sources[id].get("edge", "")))
+	return {"ok": true, "deck": k, "frame": frame, "center": to_space * geo.g_point(c.x, c.y, 0.0),
+			"x": c.x, "s": c.y, "h": 0.0, "origin": c, "out": door.arc_in, "facing": frame.basis.z.normalized(),
+			"exit": to_space * geo.g_point(ex.x, ex.y, 0.0), "half_width": hw, "width": hw * 2.0,
+			"depth_from": MissionProps.GateDoor.USE_FROM, "depth_to": MissionProps.GateDoor.USE_TO,
+			"depth": MissionProps.GateDoor.USE_TO - MissionProps.GateDoor.USE_FROM, "height": door.clear_height(),
+			"door_w": door.half * 2.0, "door_h": door.gh, "door": door.arc_mid,
+			"door_s": door.arc_mid.x if absf(door.arc_in.x) > 0.5 else door.arc_mid.y,
+			"edge": CityPlan.SIDE_EDGE[side] if side >= 0 else ""}
+
+
+## The clean sign panel beside gate source `id`'s bunker frame (a flat concrete face PANEL m wide x tall, for a stencilled
+## deck number painted later; nothing is drawn on it): {ok, frame (Transform3D, space as source_bay: origin at the
+## panel's centre on its face, +Z out of it toward the street, X along the wall, Y up), size (Vector2)}; {ok = false} for
+## anything without a gate door.
+func source_sign_panel(id: Variant) -> Dictionary:
+	var door := _doors.get(id) as MissionProps.GateDoor
+	if door == null or not is_instance_valid(door) or door.air:
+		return {"ok": false}
+	var d := door.get_parent() as CityDistrict
+	var to_space := d.global_transform if d.is_inside_tree() else Transform3D.IDENTITY
+	return {"ok": true, "frame": to_space * door.transform * door.panel_xf, "size": MissionProps.GateDoor.PANEL}
+
+
+# --- Air doors (Missions' convenience API: thin wrappers over the source calls) --------------------------------------------
+
+## How many air doors deck k has (0, 1 or 2).
+func air_door_count(deck: int) -> int:
+	return (_air.get(deck, []) as Array).size()
+
+
+## Air door i of deck k: {ok, id, deck, frame (Transform3D, global in the tree, else district-local: at the opening's
+## centre, +Z into the deck, X along the wall), center (Vector3, the opening's centre, same space), x, s (arc of the
+## opening's foot on the wall plane), h_bottom, h_top (the opening's sill and head above the deck floor at the wall),
+## width, height (clear), depth (the recess, wall plane to back wall), hide (Vector3 in the recess at mid height, AIR_HIDE m
+## behind the wall plane), out (Vector3 AIR_OUT m in front of the opening at mid height), facing (unit, into the deck)};
+## {ok = false} when there is no such door.
+func air_door(deck: int, i: int) -> Dictionary:
+	var ids: Array = _air.get(deck, [])
+	if i < 0 or i >= ids.size() or not _doors.has(ids[i]):
+		return {"ok": false}
+	var door := _doors[ids[i]] as MissionProps.GateDoor
+	var d := door.get_parent() as CityDistrict
+	var to_space := d.global_transform if d.is_inside_tree() else Transform3D.IDENTITY
+	var mid_h := (AIR_HEAD - AIR_SILL) * 0.5
+	var fr := to_space * door.transform * Transform3D(Basis.IDENTITY, Vector3(0, mid_h, 0))
+	return {"ok": true, "id": ids[i], "deck": deck, "frame": fr, "center": fr.origin, "x": door.arc_mid.x, "s": door.arc_mid.y,
+			"h_bottom": AIR_SILL, "h_top": AIR_HEAD, "width": AIR_W, "height": AIR_HEAD - AIR_SILL, "depth": AIR_DEPTH,
+			"hide": fr * Vector3(0, 0, -AIR_HIDE), "out": fr * Vector3(0, 0, AIR_OUT), "facing": fr.basis.z.normalized()}
+
+
+## open_source for air door i of deck k (open_at: the leaves start to move; passable OPENING s later).
+func open_air_door(deck: int, i: int, open_at: float, hold: float = HOLD) -> void:
+	var ids: Array = _air.get(deck, [])
+	if i >= 0 and i < ids.size():
+		open_source(ids[i], open_at, hold)
+
+
+## close_source (sealed for good) for air door i of deck k.
+func close_air_door(deck: int, i: int) -> void:
+	var ids: Array = _air.get(deck, [])
+	if i >= 0 and i < ids.size():
+		close_source(ids[i])
+
+
+## source_state(...).passable for air door i of deck k (false when there is no such door).
+func air_door_passable(deck: int, i: int) -> bool:
+	var ids: Array = _air.get(deck, [])
+	if i < 0 or i >= ids.size():
+		return false
+	return bool(source_state(ids[i])["passable"])
 
 
 func _door_kind(id: Variant) -> String:
@@ -733,21 +1119,31 @@ func _pose_door(id: Variant, t: float, force: bool = false, fire: bool = true) -
 	var sc: Array = _sched.get(id, [])
 	var st := door_state(kind, sc, _seal_at(id), t)
 	var state := str(st[0])
+	var alarm_now := alarm_on(kind, sc, _seal_at(id), t)
 	var door: Node3D = _doors.get(id)
 	if door != null and is_instance_valid(door):
 		var changed: bool = force or _door_state.get(id, "") != state
 		if door is MissionProps.GateDoor:
 			var gd := door as MissionProps.GateDoor
-			gd.pose(state, float(st[1]), t)
+			gd.pose(state, float(st[1]), t, alarm_now, alarm_now and _heard(id))
 			if changed:
 				gd.door_shape.disabled = not gd.blocks(state)
+			_light(id, door, kind, alarm_now or state == "opening" or state == "open")
 		elif door is MissionProps.LiftDoor:
 			(door as MissionProps.LiftDoor).pose(state, float(st[1]), float(sc[0]) - t if not sc.is_empty() else 0.0)
-		_light(id, door, kind, state == "warn" or state == "opening")
+			_light(id, door, kind, state == "warn" or state == "opening")
 	_door_state[id] = state
 	if fire:
 		_fire_door(id, sc, t)
-	return state == "warn" or state == "opening" or state == "closing"
+	return alarm_now or state == "warn" or state == "opening" or state == "closing"
+
+
+## Whether source `id`'s siren is heard here: its deck is the stack's active deck (the viewer's, CityStack.follow), so
+## sirens of gates on other decks stay quiet.
+func _heard(id: Variant) -> bool:
+	if stack == null:
+		return true
+	return int((_sources.get(id, {}) as Dictionary).get("deck", 0)) == stack.active_deck
 
 
 func _fire_door(id: Variant, sc: Array, t: float) -> void:
@@ -781,22 +1177,29 @@ func _door_point(id: Variant) -> Vector3:
 	return Vector3.ZERO
 
 
-## One small OmniLight3D per door while it warns (none at CityQuality.LOW), removed afterwards.
+## One small OmniLight3D per door while it is lit (none at CityQuality.LOW), removed afterwards: a gate's hangs high in
+## its staging bay while the leaves open and it stands open (the units waiting there readable); a lift's in front of its
+## doors through the countdown.
 func _light(id: Variant, door: Node3D, kind: String, on: bool) -> void:
 	on = on and quality != CityQuality.LOW
 	var l: OmniLight3D = _lights.get(id)
 	if on and l == null:
 		l = OmniLight3D.new()
 		l.name = "WarnLight"
-		l.light_color = CityPalette.C["m_beacon"]
-		l.light_energy = 2.5
-		l.omni_range = 16.0
 		l.shadow_enabled = false
 		var d := door.get_parent() as CityDistrict
 		if d != null:
 			l.light_cull_mask = d.render_layer | 1
-		var gh := (door as MissionProps.GateDoor).gh if door is MissionProps.GateDoor else MissionProps.LiftDoor.H
-		l.position = Vector3(0, gh + 2.5, 3.0)
+		if door is MissionProps.GateDoor:
+			l.light_color = CityPalette.C["strip"]
+			l.light_energy = 3.0
+			l.omni_range = 24.0
+			l.position = (door as MissionProps.GateDoor).light_point()
+		else:
+			l.light_color = CityPalette.C["m_beacon"]
+			l.light_energy = 2.5
+			l.omni_range = 16.0
+			l.position = Vector3(0, MissionProps.LiftDoor.H + 2.5, 3.0)
 		door.add_child(l)
 		_lights[id] = l
 	elif not on and l != null:
@@ -807,8 +1210,9 @@ func _light(id: Variant, door: Node3D, kind: String, on: bool) -> void:
 
 # --- Flag, zones, asset, portal ------------------------------------------------------------------------------------------
 
-## Where flag objective `id` stands: {deck, x, s, h, snapped, ok} ({} for unknown ids). ok = false: no clear ground inside
-## the radius, the plan's site kept.
+## Where flag objective `id` stands: {deck, x, s, h, snapped, ok, fit, moved_for_fit} ({} for unknown ids). ok = false: no
+## clear ground inside the radius, the plan's site kept. fit: the widest mech reaches the zone (MissionProps.snap_site_fit);
+## moved_for_fit: the old snap's pick was moved for that.
 func flag_site(id: Variant) -> Dictionary:
 	return (_sites.get(id, {}) as Dictionary).duplicate() if _flags.has(id) else {}
 
@@ -971,9 +1375,9 @@ func _next_moment(id: Variant, t: float) -> float:
 	var ms: Array[float] = [seal, seal + CLOSE]
 	var sc: Array = _sched.get(id, [])
 	if not sc.is_empty() and t < seal:
-		var t_open := GATE_OPEN if _door_kind(id) == "gate" else LIFT_OPEN
-		ms.append_array([float(sc[2]), float(sc[2]) + CLOSE, float(sc[0]) - WARN, float(sc[0]) - t_open, float(sc[0]), float(sc[1]),
-				float(sc[1]) + CLOSE])
+		var t_open := passable_after(_door_kind(id))
+		ms.append_array([float(sc[2]), float(sc[2]) + CLOSE, float(sc[0]) - WARN, float(sc[0]) + t_open, float(sc[0]), float(sc[1]),
+				float(sc[1]) + CLOSE, alarm_from(sc)])
 	var best := INF
 	for m in ms:
 		if m > t and m < best:
@@ -987,7 +1391,9 @@ func _next_moment(id: Variant, t: float) -> float:
 func set_quality(q: int) -> void:
 	quality = CityQuality.clamp_level(q)
 	for id: Variant in _doors:
-		_light(id, _doors[id], _door_kind(id), _door_state.get(id, "") == "warn" or _door_state.get(id, "") == "opening")
+		var ds := str(_door_state.get(id, ""))
+		var gate := _doors[id] is MissionProps.GateDoor
+		_light(id, _doors[id], _door_kind(id), (alarm(id) or ds == "opening" or ds == "open") if gate else (ds == "warn" or ds == "opening"))
 	for id: Variant in _assets:
 		_apply_asset(id)
 
@@ -1016,8 +1422,12 @@ func restore(d: Dictionary) -> void:
 	for id: Variant in doors:
 		if _sources.has(id):
 			_sched[id] = (doors[id] as Array).duplicate()
-			_fired[id] = {"warn": true, "open": true, "close": true, "seal": true}
 			var sc: Array = _sched[id]
+			if sc.size() == 3:              # a snapshot from before the gate alarm: the alarm starts ALARM_LEAD s before open_at
+				sc.append(float(sc[0]) - ALARM_LEAD)
+			else:                           # an older, longer lead is cut to the current rule
+				sc[3] = clampf(float(sc[3]), float(sc[0]) - ALARM_LEAD, float(sc[0]))
+			_fired[id] = {"warn": true, "open": true, "close": true, "seal": true}
 			for pair: Array in [["warn", float(sc[0]) - WARN], ["open", float(sc[0])], ["close", float(sc[1])]]:
 				(_fired[id] as Dictionary)[pair[0]] = now >= float(pair[1])
 	_sealed.clear()

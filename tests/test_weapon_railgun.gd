@@ -5,7 +5,9 @@ extends TestCase
 ## each hit once, a fourth untouched; stops at a wall; knockback Δv 14 (a light target flies and staggers, a mech-class
 ## one staggers); determinism (same record -> same hits at any frame step and when started late); the trail hangs
 ## stats.trail s after the slug stops, then the node is freed; the charge glow grows in steps; one railgun per mech;
-## the weapon_range lab fires it in "single" and "hold".
+## the weapon_range lab fires it in "single" and "hold". AMMO: 18 rounds (27 with the ammo bin), one spent per slug,
+## none on a cancelled charge; dry, no charge starts (no glow, no cancel heat) and the rack's UNUSABLE rule deselects the
+## slot (hold EMPTY) until WeaponRack.refill_ammo (a supply depot's core) loads it again; slots() carries the count.
 
 const FROM := Vector3(0, 1.9, 0)
 
@@ -26,6 +28,8 @@ func setup() -> void:
 	_knockback()
 	_determinism()
 	_one_per_mech()
+	_ammo()
+	await _rack_ammo()
 	await _lab()
 	finish()
 
@@ -328,6 +332,89 @@ func _one_per_mech() -> void:
 			n += 1
 	eq(n, 1, "sanitize_loadout keeps one railgun (%s)" % str(l))
 	eq(str(l["shoulder_l"]), "railgun", "the first one stays")
+
+
+func _ammo() -> void:
+	eq(int(st["ammo"]), 18, "18 rounds (weapons.md §3.8)")
+	eq(WeaponRack.bonus_ammo(int(st["ammo"]), int(st["salvo"]), 0.5), 27, "27 with the ammo bin")
+	var m := WeaponMount.new()
+	m.setup("railgun", "shoulder_l", "me", 1, st)
+	eq(m.ammo, 18, "a mount loads 18")
+	var h := Heat.new(100000.0, 0.0)
+	var dt := 1.0 / 60.0
+	var t := 0.0
+	var shots := 0
+	# A cancelled charge spends nothing.
+	for i in 30:
+		t += dt
+		shots += m.update(dt, true, h, t, Vector3.ZERO, Vector3(0, 0, -50)).size()
+	t += dt
+	m.update(dt, false, h, t, Vector3.ZERO, Vector3(0, 0, -50))
+	eq(shots, 0, "half a charge: no slug")
+	eq(m.ammo, 18, "a cancelled charge spends no round")
+	# Held: 18 slugs over 18 cycles, then dry.
+	for i in int(80.0 / dt):
+		t += dt
+		shots += m.update(dt, true, h, t, Vector3.ZERO, Vector3(0, 0, -50)).size()
+	eq(shots, 18, "held 80 s: 18 slugs, then nothing")
+	eq(m.ammo, 0, "ammo at 0")
+	near(h.value, 10.0 + 18.0 * 30.0, 1e-3, "heat: one cancel + 18 shots, nothing while dry (%.1f)" % h.value)
+	near(m.charge, 0.0, 1e-9, "dry: no charge builds while held")
+	near(ChargeGlow.fraction(m), 0.0, 1e-9, "dry: no glow")
+	var h0 := h.value
+	t += dt
+	m.update(dt, false, h, t, Vector3.ZERO, Vector3(0, 0, -50))
+	near(h.value, h0, 1e-9, "dry: releasing costs no cancel heat")
+
+
+## The rack: slots() carries the count (27/27 with the bin); the last round deselects the slot (EMPTY); a refill loads
+## 27 again and leaves it deselected until its key.
+func _rack_ammo() -> void:
+	var world := CombatWorld.new()
+	world.use_physics = false
+	add_child(world)
+	var model := MechModel.new()
+	add_child(model)
+	model.configure("chicken", "strider", {"shoulder_l": "railgun", "back": "ammo_bin"})
+	var mech := MechController.new()
+	var rack := WeaponRack.new()
+	rack.auto_step = false
+	rack.manual_aim = true
+	add_child(rack)
+	rack.bind(world, mech, model, null, "railrack", 1)
+	rack.aim_point = Vector3(0, 3, -60)
+	await frames(2)
+	var n := rack.hardpoints.find("shoulder_l") + 1
+	if not check(n > 0, "the rack has shoulder_l"):
+		return
+	var sl: Dictionary = rack.slots()[n - 1]
+	eq(str(sl["weapon"]), "railgun", "the slot holds the railgun")
+	eq(int(sl["ammo"]), 27, "slots(): 27 rounds with the bin")
+	eq(int(sl["ammo_max"]), 27, "slots(): of 27")
+	var fired := [0]
+	rack.fired.connect(func(_n: int) -> void: fired[0] += 1)
+	rack.mounts[n - 1].ammo = 1
+	rack.set_trigger(true)
+	for i in int(6.0 / (1.0 / 60.0)):
+		rack.step(1.0 / 60.0)
+		world.advance(1.0 / 60.0)
+	rack.set_trigger(false)
+	rack.step(1.0 / 60.0)
+	eq(fired[0], 1, "the last round fires once")
+	sl = rack.slots()[n - 1]
+	eq(int(sl["ammo"]), 0, "slots(): 0 rounds")
+	check(not rack.enabled[n - 1] and not bool(sl["usable"]), "dry: deselected and unusable")
+	eq(str(sl["hold"]), "EMPTY", "dry: hold EMPTY")
+	near(rack.mounts[n - 1].charge, 0.0, 1e-9, "dry: no charge held")
+	eq(rack.refill_ammo(), 1, "a depot core refills the railgun")
+	sl = rack.slots()[n - 1]
+	eq(int(sl["ammo"]), 27, "refilled to 27")
+	check(bool(sl["usable"]) and not rack.enabled[n - 1], "refilled: usable, still deselected until its key")
+	rack.queue_free()
+	model.queue_free()
+	world.queue_free()
+	mech.free()
+	await frames(1)
 
 
 func _lab() -> void:

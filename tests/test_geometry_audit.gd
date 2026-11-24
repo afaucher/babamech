@@ -146,6 +146,9 @@ func _audit_mech_meshes() -> void:
 func _audit_enemy_meshes() -> void:
 	var parts := ["turret_base", "turret_gun", "turret_gun_wreck", "turret_sniper_gun", "turret_missile_gun",
 		"strider_chassis", "strider_breacher_chassis", "strider_sensor", "strider_leg",
+		"strider_thigh", "strider_shin", "strider_foot",
+		"trooperrig_rifle_0_torso", "trooperrig_rifle_4_head", "trooperrig_at_8_arms", "trooperrig_rifle_5_thigh_l",
+		"trooperrig_at_3_shin_r", "trooperrig_rifle_11_boot_l",
 		"tank_hull", "tank_turret", "tank_turret_wreck", "tank_vents",
 		"drone_hull", "drone_optic", "drone_cone", "trooper_rifle", "trooper_at",
 		"gunship_hull", "gunship_pods", "gunship_thrusters",

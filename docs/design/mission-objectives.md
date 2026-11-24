@@ -84,8 +84,13 @@ reveal and safety valve belong to it. **S** (built).
 - **Win**: flag raised. Progress pauses while an enemy is inside the zone and never goes backwards. **Cannot fail.**
 - **World**: a **flag point**: a mast on a rooftop terrace, a plaza or the top of a pillar tower; visible from far away
   (the alien banner comes down, ours goes up, and it stays up for the rest of the mission).
-- **Enemies**: a guard at the mast; raising the flag **raises the alarm**: one reinforcement wave heads for it (§5).
-- **HUD**: a marker and a ring on the ground; a progress bar for everyone while anyone is in the zone.
+- **Enemies**: a guard at the mast; **starting** to raise the flag raises the alarm: one reinforcement wave is ordered
+  the moment the capture starts (the flag goes active) and heads for the crew at the mast, so the flag is held under
+  attack (playtest 2026-11-23). Once ordered it arrives even if the flag is up first. It comes through a door 80-200 m
+  from the mast if there is one (never under 60 m unless no door is that far). Flag sites sit at least 60 m from every
+  door on their deck where the deck has such a site.
+- **HUD**: a marker and a ring on the ground; progress as a whole percent ("Raise the flag: 40%", 100 % only once
+  raised), in the objective panel and the zone bar, while anyone is in the zone.
 - **Needs**: the mast prop and the zone rule. **S**. Environment (mast, placement), Engine (zone, HUD, state),
   antigravity (the answering wave).
 
@@ -166,7 +171,7 @@ unlosable except by the crew going down, which is deferred with revive. See open
 - **How the crew learns about them**:
   - **In the hangar**: the briefing lists the primaries, one line a deck.
   - **On arriving on a deck**: the primary gets a marker and one comms line.
-  - **Bonuses are found**: they appear as a question-mark marker when a mech comes within about 150 m, when something
+  - **Bonuses are found**: they appear as a marker (labelled with the plain type, "FLAG" / "DEFEND", like a primary) when a mech comes within about 150 m, when something
     reveals them (the flag relay, a spotter's death, a distress call), or at once for the loud ones (artillery that is
     firing, a holdout under attack).
 - **The way down is not locked.** The decision stands that the crew may move between decks freely; a crew can leave a
@@ -194,7 +199,7 @@ then end, and it is what keeps the enemy count bounded.
 
 | | Rule (starting numbers, to tune in playtest) |
 |---|---|
-| **Size** | A deck's pool is split over **2 to 4 waves** (2 on the first decks, more with depth), each about a quarter larger than the one before, never more than 8 units. A troop squad or a dropship load counts as one unit. As built the pools are small (about half of a 9 to 11 unit deck budget), so waves are 2 to 4 units: the numbers to raise in playtest are the deck budgets |
+| **Size** | A deck's pool is split over **2 to 4 waves** (2 on the first decks, more with depth; plus a deck's extra flag waves), each about a quarter larger than the one before, never more than 12 units (`PacingDirector.WAVE_MAX`). A troop squad or a dropship load counts as one unit. A wave is `budget x (1 - garrison) x share x 1.75` units (`EnemySpawner.WAVE_POOL_SCALE`, playtest 2026-11-23: waves of 2 to 4 were too small; the garrison is unchanged, so a deck's total rises). The budget grows with the crew (`deck_budget`: 9 + 3 per extra mech + depth). Seeds 1-8: solo waves 2-5 units (mean 3.7, was 2.3), 2 crew 2-7 (4.8), 3 crew 3-9 (6.0), 4 crew 3-10 (7.1, was 4.0). A wave bigger than its door's load (gate / ramp 6, lift / shaft 4) comes out in follow-up loads, each with its own telegraph: a 10-unit wave takes 2 openings over ~7 s through a gate, 3 over ~14 s through a lift |
 | **Composition** | One idea per wave, so the crew can read it: "striders rushing", "a tank with infantry", "gunships". Light units first; heavies only from the second wave on a deck |
 | **Entry** | One source per wave (one gate, one lift, one ramp, one flight of dropships), announced by name and direction. Big waves late in a deck may use two sources at once |
 | **Behaviour** | A wave arrives already hunting: it knows where the objective or the crew is and goes there. It never hides |
@@ -209,11 +214,13 @@ down to 15 s on the lowest) and heavier unit types; the finale's last wave is th
 
 - A wave's **door is chosen when it is released**, not in the plan: the open source nearest the crew (or nearest the
   objective under attack) that is at least 60 m from every mech, preferring one within 300 m.
-- **A defend's waves and the extraction hold's wave go first**, and the first of them does not wait behind another wave.
-- **Alarm waves need someone to alarm**: a flag's alarm wave is released only while a mech is on that deck, and is
-  dropped after 20 s with nobody there. Free waves wait, without expiring, for the crew to be on the deck.
-- **A Sweep deck always keeps one wave of its own** (first in its pool), so it ends on a fight; bonus flags take what is
-  left, and a bonus flag with no wave left is simply quiet.
+- **A defend's waves, a flag's wave and the extraction hold's wave go first**, and the first of them does not wait
+  behind another wave. A flag's wave is measured from the mast (the snapped site), not from the crew.
+- Free waves wait, without expiring, for the crew to be on the deck. (The step-"done" alarm rule, released only with a
+  mech on the deck and dropped after 20 s, stays in the director but no plan uses it since flag waves moved to the start.)
+- **A Sweep deck always keeps one wave of its own** (first in its pool), so it ends on a fight; flags take what is
+  left, and a flag with no slot left gets an extra wave taken from that deck's garrison share (the garrison drops below
+  half, never under a quarter): every flag on a deck with doors has its wave.
 - A wave that has not changed for 90 s no longer blocks the next one.
 
 ### 5.3 The cap on enemies alive
@@ -249,8 +256,8 @@ a quarter of what they cost all at once, and play better.
 
 - **The pool is empty**: no more waves on that deck, whatever happens. The HUD's objective line shows it ("Waves 3 / 3").
 - **The objective is done**: waves that were answering its *start* and have not been released are **cancelled**; one
-  already arriving still arrives. Finishing the job is the way to stop the reinforcements. (A wave that answers an
-  objective being *finished*, such as the alarm when a flag goes up, is of course not cancelled by it.)
+  already arriving still arrives. Finishing the job is the way to stop the reinforcements. (Except a flag's wave: it
+  answers the capture starting and still comes if the flag is up before it is out.)
 - **The source is closed**: a gate's control box destroyed, a lift secured, a holdout guarding it: waves that would have
   used it are re-routed to another source if one is open, and cancelled if none is. A crew that closes every door on a
   deck has ended that deck's waves.
@@ -423,11 +430,17 @@ mission seed. `MissionPlan.make(sec, overrides)`; `checksum()` joins the load ba
   at the extraction portal, last, needs every primary.
 - `sources`: `[{id, deck, kind: gate | lift | ramp | shaft, x, s, toward: {x, s}, load, connector, edge}]`: every door a
   wave can use (blast-door gates, lift stops, ramp ends, shaft landings); `toward` is the direction units walk out.
-- `pools`: per deck `{deck, garrison: 0.5, waves: [{id, share, theme: light | mixed | heavy, source, trigger}]}`.
-  `share` is the wave's fraction of the deck's pool (the spawner turns it into units from its own budget, 8 at most);
-  `trigger` is `{kind: objective, id, step: start | done}` or `{kind: garrison_low}` or `{kind: linger, after}`.
+- `pools`: per deck `{deck, garrison: 0.5 (less when the deck has extra flag waves), reserve: [{id, share, theme: light |
+  mixed | heavy, source, for}]}` (2026-11-23, pacing-director.md 1.1: no triggers; `for` names the objective a group
+  belongs to, "" for a free group; the PacingDirector decides when each goes).
 
-**`WaveDirector`** (`wave_director.gd`): host only, the queue and the caps. `tick(t, facts) -> orders`.
+  `share` is the group's fraction of the deck's pool (the spawner turns it into units from the reserve budget = the solo
+  deck budget x CREW_SCALE, x 1.75, 12 at most).
+
+**Superseded 2026-11-23 by the `PacingDirector`** (`pacing_director.gd`, docs/design/pacing-director.md section 1: states,
+quiet cap, objective spikes, scout calls, co-op scaling; same order shape plus `reason`). The WaveDirector described
+below no longer exists; kept for the record. **`WaveDirector`** (`wave_director.gd`): host only, the queue and the caps.
+`tick(t, facts) -> orders`.
 
 - `facts`: `{alive: [per deck], wave_alive: {wave id: {alive, total}}, garrison_alive: [per deck], crew_deck: [decks with
   a standing mech], objectives: MissionRules.state(), closed: [source ids]}`.
@@ -442,7 +455,47 @@ mission seed. `MissionPlan.make(sec, overrides)`; `checksum()` joins the load ba
 director), `zone_enemies: {objective id: count of enemies inside its radius}`, `assets: {objective id: hp 0..1}`, `t`.
 Sweep: deck clear when `enemies[k] == 0 and waves_left[k] == 0`. Flag: accumulates time while a standing mech is in the
 zone and no enemy is. Defend: done when its waves are released and beaten, failed when its asset reaches 0. A failed
-primary sets the outcome to lost. `state()` adds `objs: {id: [state, progress, total]}`.
+primary sets the outcome to lost. `state()` adds `objs: {id: [state, progress, total]}` and `reached` (the deepest deck a
+standing mech has been on, latched). HUD text (built here so host and clients read the same from the replicated state):
+an undiscovered bonus is not listed; the flag reads "Raise the flag: 40%"; once a deck's primary is done its list starts
+with "Proceed to the next floor" (the extraction deck: the hold's line, or "Return to deck n: objective unfinished"),
+and `text()` reads "Proceed to the next floor" until a standing mech reaches the next primary's deck. The HUD has one
+objective panel, top right (the top-centre strip was removed, playtest 2026-11-23).
+
+**Objective panel** (2026-11-24, user: "no indication of what level you are on", "^ for levels above, V for below, -
+for here"). `MissionRules.panel(viewer_deck, viewer_pos, ascii)` builds it from the replicated state plus two local facts
+of the viewing pilot (their deck and (x, s) on it, never sent); `MissionHud` only lays it out. Nothing new on the wire.
+
+```
+DECK 2 OF 3                     WAVES 1 / 3     header: the pilot's deck (index + 1, top deck = 1, as painted "01"
+V1  PROCEED TO THE NEXT FLOOR                   beside every gate / ramp), held on a ramp / in a shaft (more than
+-   RAISE THE FLAG: 100% (DONE)                 2.5 m off the floor) until they stand on the next deck
+-   RAISE THE FLAG: 40% (OPTIONAL)              this deck: every known objective, done / failed too
+-   TAKING POWER CORE: 60%                      the depot line (MissionDepots), under this deck's lines
+V1  DECK 3                                      the decks below, nearest first (the way the crew travels), then
+V1  DEFEND THE POSITION: WAVE 1 / 2             the decks above, nearest first; another deck lists only what is
+       V SHAFT 90 M                             left to do; the route line under the first deck each way
+^1  DECK 1: DONE                                a finished deck: one line
+```
+
+- **Prefix** on every line and sub-header: – (this deck), ▲n (n decks above), ▼n (below), from `MissionRules.arrow`. The HUD font
+  (Godot's fallback) has the en dash but not ▲ / ▼, so `MissionHud.ascii_arrows()` (picked once, `font_has_arrows`)
+  uses the user's ASCII set "-", "^n", "Vn" for all three; the Unicode set is used if the font ever gains the arrows.
+- **Primary vs optional**: a primary line has no tag, white; a bonus ends in "(optional)", dimmer cyan; done green,
+  failed red; the next-floor / "Return to deck n" line amber. Hidden bonuses stay unlisted. `lines(deck)` is unchanged
+  for older callers ("Bonus: " prefix).
+- **Route line**: the nearest way off the pilot's deck in that direction, straight-line distance along the deck rounded
+  to 5 m: down, a ramp's mouth or a shaft (a drop through a real opening, as the bot takes them); up, a ramp's foot only
+  (shafts are one way). Lifts are left out while they don't carry mechs (`MissionRules.LIFTS_RIDE`, BotRoutePlanner
+  skips them too); locked connectors never count. No way in that direction: no route line.
+- **Waypoint**: while "Proceed to the next floor" (or "Return to deck n") leads the list and there is no extraction
+  waypoint, the HUD's waypoint diamond points at that route ("RAMP DOWN 120m", "SHAFT DOWN"); `marker()` is untouched
+  (the bot reads it).
+- **Height**: the panel never passes 40 % of the screen height (`MissionHud.PANEL_FRAC`, rows of 19 px): too long, the
+  other decks collapse to one line each, the last group first ("V1 DECK 3: 1 objective, 2 optional", their route line
+  kept), then finished decks drop, then the end is cut. Finished decks show as one line ("DECK 1: done") while there is
+  room. Plain clear-and-extract mode (no plan) keeps the old "OBJECTIVE" + text panel.
+
 
 **Who wires what**
 

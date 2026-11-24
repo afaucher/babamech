@@ -32,29 +32,56 @@ const CHASSIS := {
 			{"id": "back", "label": "Back", "mount": "back"},
 		],
 		"default_loadout": {"side_l": "laser", "side_r": "autocannon", "shoulder_l": "rockets", "shoulder_r": "", "back": "mortar"},
+		## The Strider's numbers are MechController's defaults (test_chassis_movement pins them: the Strider must not change).
+		"movement": {"walk_speed": 12.0, "run_speed": 22.0, "strafe_scale": 1.0, "accel": 30.0, "turn_rate": 1.8,
+			"climb_speed": 10.0, "thrust_accel": 34.0, "air_control": 0.35, "thrust_heat": 24.0, "thrust_ceiling": 0.0,
+			"walk_heat": 2.5, "run_heat": 9.0, "reboot_heat": 35.0, "reboot_time": 1.2, "safe_land_speed": 10.0,
+			"hard_land_speed": 18.0, "auto_land_speed": 16.0, "capsule_radius": 2.2, "capsule_height": 8.0},
 	},
-	## Squat heavy biped (docs/design/chassis-rules.md). Art built (BulwarkMeshes), gameplay not yet: not in CHASSIS_ORDER,
-	## so the hangar does not offer it. A hardpoint may list several `mounts` (hardpoint_mounts): its side guns take every
+	## Heavy biped on long forward-kneed legs (docs/design/chassis-rules.md): a slow heavy gun platform. In CHASSIS_ORDER
+	## (each pilot picks their own chassis in the hangar); bots stay on BOT_CHASSIS_ORDER until the bot phase.
+	## A hardpoint may list several `mounts` (hardpoint_mounts): its side guns take every
 	## side and shoulder weapon; `mount` stays the hardware kind (the side mount). `yaw_in_max` (deg): the most a weapon on
-	## the hardpoint may turn inward, toward the hull (it only bites on the swivel's 120 deg arc, whose boom hits the barrel
-	## past 45 deg; test_hardpoint_contact_bulwark). Not read by WeaponMount yet (phase 2: clamp the aim with it).
+	## the hardpoint may turn inward, toward the hull (it only bites on the swivel's 120 deg arc: the guns hang beside the
+	## wedge nose, and past 55 deg inward the swivel's boom meets it; test_hardpoint_contact_bulwark). WeaponMount reads it
+	## (WeaponMount.hardpoint_range: the barrel's range is the weapon's range cut by the hardpoint's).
 	"bulwark": {
 		"name": "Bulwark",
-		"blurb": "Squat heavy biped. Sumo legs, barrel hull, two heavy side guns, two back mounts.",
+		"blurb": "Heavy gun platform: slow, tough, four hardpoints. Two side guns take any side or shoulder weapon, two back mounts. Thrusters only hop and brake.",
 		"base_weight": 55.0,
 		"max_weight": 40.0,
 		"heat_cap": 130.0,
 		"cooling": 12.0,
 		"hardpoints": [
-			{"id": "side_l", "label": "Left side gun", "mount": "side", "mounts": ["side", "shoulder"], "yaw_in_max": 40.0},
-			{"id": "side_r", "label": "Right side gun", "mount": "side", "mounts": ["side", "shoulder"], "yaw_in_max": 40.0},
+			{"id": "side_l", "label": "Left side gun", "mount": "side", "mounts": ["side", "shoulder"], "yaw_in_max": 55.0},
+			{"id": "side_r", "label": "Right side gun", "mount": "side", "mounts": ["side", "shoulder"], "yaw_in_max": 55.0},
 			{"id": "back_l", "label": "Left back", "mount": "back"},
 			{"id": "back_r", "label": "Right back", "mount": "back"},
 		],
 		"default_loadout": {"side_l": "autocannon", "side_r": "rockets", "back_l": "mortar", "back_r": "radiator"},
+		## Slow and heavy (test_chassis_movement measures every target): two thirds of the Strider's speeds, a side-step
+		## strafe (no hip twist: the feet step sideways), 61 % of its turn rate, a slower pick-up. Thrust only hops and brakes:
+		## the pilot's thrust stops lifting `thrust_ceiling` m above the ground under the feet (a ~6 m ledge, not a roof), it
+		## still brakes a fall at full strength (the automatic landing burn too: thrust 30 - gravity 22 = 8 m/s^2 of braking,
+		## swept in test_auto_land_bulwark). The capsule: radius 3.6 (7.2 m across: the hull and pods are 9 m wide and 7.5 m
+		## deep, a capsule cannot be wider than tall; the pods overhang it by 0.9 m a side above the hull deck), height 8 as
+		## the Strider's (the same deck clearance).
+		"movement": {"walk_speed": 8.0, "run_speed": 14.0, "strafe_scale": 0.8, "accel": 14.0, "turn_rate": 1.1,
+			"climb_speed": 7.0, "thrust_accel": 30.0, "air_control": 0.25, "thrust_heat": 30.0, "thrust_ceiling": 6.0,
+			"walk_heat": 3.0, "run_heat": 10.0, "reboot_heat": 45.0, "reboot_time": 1.6, "safe_land_speed": 10.0,
+			"hard_land_speed": 18.0, "auto_land_speed": 16.0, "capsule_radius": 3.6, "capsule_height": 8.0},
 	},
 }
-const CHASSIS_ORDER := ["strider"]
+## The hangar's chassis, in display order (each pilot picks their own).
+const CHASSIS_ORDER := ["strider", "bulwark"]
+## The chassis a bot may fly (BotLoadout): the Strider only until the bot phase teaches bots the Bulwark (its 7.2 m capsule,
+## its hop-only thrust).
+const BOT_CHASSIS_ORDER := ["strider"]
+## The keys of a chassis' "movement" block (MechController.apply_chassis applies them; heat_cap / cooling come from the
+## chassis entry itself; gravity is the world's, not the chassis').
+const MOVEMENT_KEYS := ["walk_speed", "run_speed", "strafe_scale", "accel", "turn_rate", "climb_speed", "thrust_accel",
+	"air_control", "thrust_heat", "thrust_ceiling", "walk_heat", "run_heat", "reboot_heat", "reboot_time", "safe_land_speed",
+	"hard_land_speed", "auto_land_speed"]
 
 ## Combat stats (docs/design/weapons.md §3; first pass, tuned in the `weapon_range` lab). Every weapon has (WEAPON_STATS):
 ##   kind, damage (per hit), rate (shots/s; inside a salvo for salvo weapons), salvo (shots per trigger cycle), reload
@@ -113,10 +140,10 @@ const WEAPONS := {
 		"muzzle": 1.3, "explosive": true, "min_range": 30.0, "flight_base": 2.0, "flight_per_100": 1.0, "scatter_max": 3.0,
 		"splash_knockback": 4.0, "splash_lift": 3.0, "apex_min": 10.0, "apex_max": 28.0, "prop_blast": 8.0},
 	"railgun": {"name": "Coil Railgun", "mounts": ["shoulder"], "weight": 14.0, "passive_heat": 1.0, "active_heat": 30.0,
-		"note": "One big charged shot; pierces. One per mech.",
+		"note": "One big charged shot; pierces. 18 rounds. One per mech.",
 		"kind": "slug", "damage": 200.0, "rate": 0.25, "salvo": 1, "reload": 0.0, "speed": 200.0, "range": 400.0,
 		"falloff_start": 400.0, "falloff_min": 1.0, "spread": 0.0, "knockback": 14.0, "splash_damage": 0.0, "splash_radius": 0.0,
-		"target_heat": 0.0, "ammo": -1, "growth": 1.5, "growth_full": 120.0, "size": 1.0, "trail": 1.5, "impact_radius": 3.5,
+		"target_heat": 0.0, "ammo": 18, "growth": 1.5, "growth_full": 120.0, "size": 1.0, "trail": 1.5, "impact_radius": 3.5,
 		"muzzle": 2.05, "max_per_mech": 1, "charge": 1.0, "pierce": 3, "pierce_loss": 0.25, "cancel_heat": 10.0, "charge_steps": 4, "slew": 90.0},
 	"flamer": {"name": "Flamer", "mounts": ["side", "shoulder"], "weight": 3.0, "passive_heat": 1.0, "active_heat": 0.6,
 		"note": "Short range; a focused jet that overheats the target.",
@@ -126,20 +153,21 @@ const WEAPONS := {
 		"muzzle": 0.85, "slew": 180.0},
 	# Flak (weapons.md §3.10): a fast straight shell with a proximity fuse. Armed after arm_distance m, it bursts where its
 	# path passes closest to a hit sphere within fuse_radius m of it (any target CombatWorld.spares doesn't spare), on any
-	# contact, and at the end of its range. Direct damage only on an actual strike, on top of the splash.
+	# contact, and at the end of its range. Direct damage only on an actual strike, on top of the splash. armor_mult: both
+	# direct and splash damage x 0.35 on an armoured target (CombatTarget.armored; CombatWorld.armor_scaled).
 	"flak": {"name": "Flak Cannon", "mounts": ["side", "shoulder"], "weight": 7.0, "passive_heat": 0.5, "active_heat": 2.2,
 		"note": "Proximity-fused shells: bursts beside aircraft, on contact or at range.",
 		"kind": "flak", "damage": 6.0, "rate": 1.5, "salvo": 1, "reload": 0.0, "speed": 140.0, "range": 220.0,
 		"falloff_start": 220.0, "falloff_min": 1.0, "spread": 0.4, "knockback": 0.4, "splash_damage": 16.0, "splash_radius": 8.0,
 		"target_heat": 0.0, "ammo": 160, "growth": 3.5, "growth_full": 120.0, "size": 0.6, "trail": 0.3, "impact_radius": 2.5,
 		"muzzle": 1.46, "explosive": true, "fuse_radius": 6.0, "arm_distance": 12.0, "splash_knockback": 0.4, "prop_blast": 0.4,
-		"slew": 180.0},
+		"slew": 180.0, "armor_mult": 0.35},
 	# --- Back-mount EQUIPMENT (docs/design/back-equipment.md). Entries in this table so loadouts, the hello profile,
 	# sanitize_loadout and loadout_stats carry them unchanged; NOT in WEAPON_ORDER (weapons_for / the hangar list weapons
 	# only: offer EQUIPMENT_ORDER via equipment_for). `equipment`: "active" (the slot key activates it) or "passive".
 	# Never fires on the trigger; no behaviour in WeaponRegistry; no mesh yet (MechParts gives an empty node).
 	"repair_drone": {"name": "Repair Drone", "mounts": ["back"], "weight": 6.0, "passive_heat": 0.0, "active_heat": 15.0,
-		"note": "Key 5 selects, click launches: circles you 60 s, repairs mechs within 15 m, docks. 2 per mission.",
+		"note": "Key 5 selects, click launches: circles you 60 s, repairs mechs within 15 m, docks. 2 per mission.",   # item_note: the real key
 		"kind": "equipment", "equipment": "active", "ammo": -1, "muzzle": 0.0,
 		"charges": 2, "life": 60.0, "hover": 6.0, "radius": 15.0, "heal_rate": 0.01, "follow": 0.4, "rise": 0.5,
 		"orbit": 5.0, "orbit_period": 6.0, "dock": 1.5},
@@ -168,6 +196,15 @@ static func chassis(id: String) -> Dictionary:
 	return CHASSIS.get(id, CHASSIS["strider"])
 
 
+## The chassis' movement block plus its heat_cap / cooling (the Strider's for an unknown id).
+static func movement(id: String) -> Dictionary:
+	var c := chassis(id)
+	var out: Dictionary = (c.get("movement", CHASSIS["strider"]["movement"]) as Dictionary).duplicate()
+	out["heat_cap"] = float(c["heat_cap"])
+	out["cooling"] = float(c["cooling"])
+	return out
+
+
 static func weapon(id: String) -> Dictionary:
 	return WEAPONS.get(id, {})
 
@@ -193,6 +230,23 @@ static func equipment_for(mount: String) -> Array[String]:
 		if mount in (WEAPONS[id]["mounts"] as Array):
 			out.append(id)
 	return out
+
+
+## The slot key (1-based: the weapon rows' numbers, WeaponRack's slots) of hardpoint `hp_id` on a chassis: its place in
+## the chassis' hardpoint list (the Strider's back is 5, the Bulwark's back_l 3 / back_r 4); 0 if it has none.
+static func slot_key(chassis_id: String, hp_id: String) -> int:
+	var hps: Array = chassis(chassis_id)["hardpoints"]
+	for i in hps.size():
+		if str(hps[i]["id"]) == hp_id:
+			return i + 1
+	return 0
+
+
+## An item's catalog note with its key number for where it is mounted ("Key 5 selects" -> "Key 3 selects" on the
+## Bulwark's left back). `key` 0 leaves the note as it is.
+static func item_note(w: String, key: int = 0) -> String:
+	var n := str(weapon(w).get("note", ""))
+	return n.replace("Key 5", "Key %d" % key) if key > 0 else n
 
 
 ## The mount kinds a hardpoint accepts: its `mounts` list when it has one, else its single `mount`.

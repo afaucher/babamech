@@ -51,6 +51,10 @@ const C := {
 	# alleys and road forms (city-variety.md section 1): service paving, a drain, lane planting, string lights
 	"service": Color("8e8274"), "service_dark": Color("5d554d"), "drain": Color("4a443f"), "pipe": Color("8a8f8c"),
 	"door_back": Color("6f7a78"), "planting": Color("7fae62"), "bulb": Color("ffe6b0"),
+	# deck lettering (CitySigns, docs/design/city-signs.md): white look = off-white paint with a dark outline; dark look =
+	# warm cream on a dark blue-grey panel with a sky-blue stripe
+	"sign_white": Color("efe9da"), "sign_outline": Color("3a3e42"), "sign_panel": Color("2f3a44"),
+	"sign_cream": Color("ead9b0"), "sign_stripe": Color("62b0dc"),
 }
 
 ## A building's own shade of its body colour (cosmetic, `rng` is the building's own stream): a small shift in hue,
@@ -60,6 +64,85 @@ static func tint(col: Color, rng: RandomNumberGenerator, amount: float = 1.0) ->
 	var s := clampf(col.s * (1.0 + rng.randf_range(-0.12, 0.12) * amount), 0.0, 1.0)
 	var v := clampf(col.v * (1.0 + rng.randf_range(-0.07, 0.07) * amount), 0.0, 1.0)
 	return Color.from_hsv(h, s, v, col.a)
+
+
+# --- Tree colour jitter (docs/design/city-variety.md "Tree colour") -------------------------------------------------
+# Every tree (and roof / street planter) gets its own shade of the leaf greens: u in [-1, 1]^3 from the tree's OWN
+# generator (CityProps.tree_jitter: plan cosmetic seed + the prop's id, never a shared stream) moves hue (u.x: + toward
+# blue-green, - toward yellow-green), saturation (u.y) and value (u.z). All greens of one tree take the same u (one
+# per-channel multiplier, tree_multiplier), so its light and dark facets keep their relation. Trunks get a much smaller
+# value jitter only. Drawn per instance (MultiMesh custom data through tree_material): no new meshes, no draw calls.
+const TREE_HUE := 0.04          ## max hue shift, of the hue circle (~14 deg)
+const TREE_SAT := 0.06          ## max relative saturation shift
+const TREE_VAL := 0.09          ## max relative value shift
+const TREE_TRUNK_VAL := 0.03  ## max relative value shift of everything that is not leaf green (trunk, planter box)
+
+
+## `base` with the jitter u (each component in [-1, 1]) applied: hue +- TREE_HUE, saturation and value x (1 +- ...).
+static func tree_tint(base: Color, u: Vector3) -> Color:
+	var h := fposmod(base.h + clampf(u.x, -1.0, 1.0) * TREE_HUE, 1.0)
+	var s := clampf(base.s * (1.0 + clampf(u.y, -1.0, 1.0) * TREE_SAT), 0.0, 1.0)
+	var v := clampf(base.v * (1.0 + clampf(u.z, -1.0, 1.0) * TREE_VAL), 0.0, 1.0)
+	return Color.from_hsv(h, s, v, base.a)
+
+
+## The per-instance tint tree_material applies: rgb = tree_tint(leaf) / leaf per channel (every leaf green of the tree
+## is multiplied by it, in sRGB), a = the trunk's value factor (1 +- TREE_TRUNK_VAL, `w` in [-1, 1]).
+static func tree_multiplier(u: Vector3, w: float) -> Color:
+	var base: Color = C["leaf"]
+	var t := tree_tint(base, u)
+	return Color(t.r / base.r, t.g / base.g, t.b / base.b, 1.0 + clampf(w, -1.0, 1.0) * TREE_TRUNK_VAL)
+
+
+## A colour tree_material treats as leaf green (green the largest channel). The same test as the shader's.
+static func is_leaf(col: Color) -> bool:
+	return col.g > col.r and col.g > col.b
+
+
+## What tree_material draws for a vertex of colour `col` with instance tint `m` (tree_multiplier): for tests.
+static func tree_shade(col: Color, m: Color) -> Color:
+	if is_leaf(col):
+		return Color(clampf(col.r * m.r, 0.0, 1.0), clampf(col.g * m.g, 0.0, 1.0), clampf(col.b * m.b, 0.0, 1.0), col.a)
+	return Color(col.r * m.a, col.g * m.a, col.b * m.a, col.a)
+
+
+const _TREE_SHADER := """
+shader_type spatial;
+render_mode cull_back;
+// CityPalette.tree_material: lit like surface_material (vertex colour, sRGB, as albedo; roughness 1, metallic 0,
+// specular 0.1), with the instance's tint (MultiMesh custom data, CityPalette.tree_multiplier): leaf greens (green the
+// largest channel, CityPalette.is_leaf) x rgb, everything else x a.
+vec3 to_linear(vec3 c) {
+	return mix(pow((c + vec3(0.055)) * (1.0 / (1.0 + 0.055)), vec3(2.4)), c * (1.0 / 12.92), lessThan(c, vec3(0.04045)));
+}
+void vertex() {
+	vec3 c = COLOR.rgb;
+	if (c.g > c.r && c.g > c.b) {
+		c = clamp(c * INSTANCE_CUSTOM.rgb, vec3(0.0), vec3(1.0));
+	} else {
+		c *= INSTANCE_CUSTOM.a;
+	}
+	COLOR.rgb = to_linear(c);
+}
+void fragment() {
+	ALBEDO = COLOR.rgb;
+	ROUGHNESS = 1.0;
+	METALLIC = 0.0;
+	SPECULAR = 0.1;
+}
+"""
+static var _tree_mat: ShaderMaterial
+
+
+## The material of the tree and planter MultiMeshes (CityProps): surface_material's look plus the per-instance tint.
+## Every instance must have its custom data set (tree_multiplier; all zero would draw black).
+static func tree_material() -> ShaderMaterial:
+	if _tree_mat == null:
+		var sh := Shader.new()
+		sh.code = _TREE_SHADER
+		_tree_mat = ShaderMaterial.new()
+		_tree_mat.shader = sh
+	return _tree_mat
 
 static var _surface: StandardMaterial3D
 static var _strip: StandardMaterial3D

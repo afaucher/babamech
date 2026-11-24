@@ -40,6 +40,13 @@ when its slot is selected (Controls); passives are always on.
 - Look: a small low-poly quad drone in the launcher's accent colour. Green only while it works: a green beam (thin,
   unshaded, like the laser line) to each mech it is repairing right now, and a faint green ring on the ground at 15 m
   around the launcher while at least one beam shows. Nothing green on the rise, while idle or on the way home.
+  Beam look since 2026-11-23 (the user's pick, cell C3 of the render probe `tools/scanner_beam/`): instead of the thin
+  line, a "moving scan line" on each repaired target: one bright green ring around the body, level in the target's own
+  up frame, travelling up and down it (15-95 % of its height, one trip up and back per 3 s, eased at the turns) with
+  three fainter trail rings and a soft band fading behind it, joined to the drone's lens by a faint thin wedge (a fan
+  onto the ring's drone-facing arc with two faint edge lines). Ring radius and height fit the target (its MechModel's
+  mesh bounds, so every chassis; hit spheres for dummies / assets). The scan height is a pure function of the clock
+  since launch, so every machine shows the same scan. Unshaded, alpha-blended, no shadows (`RepairDrone._place_scan`).
 - First version: enemies cannot target the drone.
 
 ## Radiator and ammo bin

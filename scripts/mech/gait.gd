@@ -48,6 +48,12 @@ var foot_clearance := 1.3    ## least sideways gap between the two feet (m, cent
 var step_clearance := 0.25   ## how far a swinging foot clears the ground under its path (m)
 var max_step := 1.3          ## highest ledge above / below the body's floor a foot may stand on (m)
 var max_lift := 1.45         ## highest a swinging foot may rise above the line from its start to its target (m)
+var overlap_k := 0.6         ## share of run_speed from which the next step may start before the other foot lands (once it
+                             ## is halfway down); below it, at a walk, one foot steps at a time. 0 = always (long legs at a
+                             ## speed that is a jog for their size: the Bulwark)
+var reach_err := INF         ## m: a planted foot this far from its home steps at once, whatever the other foot does (the
+                             ## leg's reach: at a start from standing both feet want to go together, and the one that waits
+                             ## must not be left behind out of reach); INF = never forced (the Strider)
 
 signal stepped(foot: int, info: Dictionary)
 
@@ -64,7 +70,7 @@ func net_fields() -> Dictionary:
 	return {"step_length": Net.SPAWN, "min_stride": Net.SPAWN, "step_time": Net.SPAWN, "run_step_time": Net.SPAWN,
 		"min_step_time": Net.SPAWN, "step_height": Net.SPAWN, "run_speed": Net.SPAWN, "land_time": Net.SPAWN,
 		"settle_time": Net.SPAWN, "settle_error": Net.SPAWN, "foot_clearance": Net.SPAWN, "step_clearance": Net.SPAWN,
-		"max_step": Net.SPAWN, "max_lift": Net.SPAWN, "feet": Net.LOCAL, "facing": Net.LOCAL, "_still": Net.LOCAL,
+		"max_step": Net.SPAWN, "max_lift": Net.SPAWN, "overlap_k": Net.SPAWN, "reach_err": Net.SPAWN, "feet": Net.LOCAL, "facing": Net.LOCAL, "_still": Net.LOCAL,
 		"_airborne": Net.LOCAL}
 
 
@@ -207,7 +213,7 @@ func update(delta: float, homes: Array, up: Vector3, vel: Vector3, ground: Calla
 			want = want or absf(side) > side_trigger
 			crowding = side * (1.0 if i == 0 else -1.0) > side_trigger * 0.5
 			want = want or crowding
-		if want and _may_step(i, k, shuffle, crowding):
+		if want and (_may_step(i, k, shuffle, crowding) or err > reach_err):
 			f["stepping"] = true
 			f["t"] = 0.0
 			f["dur"] = dur
@@ -351,6 +357,6 @@ func _may_step(i: int, run_k: float, shuffle: bool = false, crowding: bool = fal
 		# A foot crowding the other one may go as soon as that one is a quarter through.
 		if crowding and float(feet[j]["t"]) >= 0.25:
 			continue
-		if (run_k < 0.6 and not shuffle) or float(feet[j]["t"]) < 0.5:
+		if (run_k < overlap_k and not shuffle) or float(feet[j]["t"]) < 0.5:
 			return false
 	return true

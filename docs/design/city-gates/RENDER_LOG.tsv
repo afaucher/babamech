@@ -1,0 +1,10 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-23T20:46:07	bay_sliding_flush_s61.png	flux3_klein_t2i	61	1024x576			23.22	bay_sliding_flush_prompt.txt
+2026-11-23T20:46:19	bay_sliding_bunker_s61.png	flux3_klein_t2i	61	1024x576			10.33	bay_sliding_bunker_prompt.txt
+2026-11-23T20:46:30	bay_sliding_gantry_s61.png	flux3_klein_t2i	61	1024x576			8.82	bay_sliding_gantry_prompt.txt
+2026-11-23T20:46:38	bay_shutter_flush_s61.png	flux3_klein_t2i	61	1024x576			7.45	bay_shutter_flush_prompt.txt
+2026-11-23T20:46:47	bay_shutter_bunker_s61.png	flux3_klein_t2i	61	1024x576			7.46	bay_shutter_bunker_prompt.txt
+2026-11-23T20:46:55	bay_shutter_gantry_s61.png	flux3_klein_t2i	61	1024x576			7.1	bay_shutter_gantry_prompt.txt
+2026-11-23T20:47:02	bay_clamshell_flush_s61.png	flux3_klein_t2i	61	1024x576			7	bay_clamshell_flush_prompt.txt
+2026-11-23T20:47:11	bay_clamshell_bunker_s61.png	flux3_klein_t2i	61	1024x576			8.04	bay_clamshell_bunker_prompt.txt
+2026-11-23T20:47:19	bay_clamshell_gantry_s61.png	flux3_klein_t2i	61	1024x576			7.12	bay_clamshell_gantry_prompt.txt

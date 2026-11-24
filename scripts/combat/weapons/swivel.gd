@@ -9,7 +9,8 @@ extends WeaponBehaviour
 ## right of the body's forward) and aim_pitch (deg, + = up), plus aim_dir (the same direction in world space). The body
 ## is WeaponMount.body_basis (the firer supplies the hardpoint node's global basis; default identity = world -Z forward,
 ## +Y up). Each tick the boom slews toward the direction from its pivot to the aim point at up to `slew` °/s (a straight
-## line in yaw/pitch), clamped to ±yaw_arc yaw and -pitch_down..+pitch_up pitch. When the aim point is outside that arc
+## line in yaw/pitch), clamped to ±yaw_arc yaw and -pitch_down..+pitch_up pitch, cut by the hardpoint's own range
+## (WeaponMount.aim_range: the Bulwark's side guns turn at most yaw_in_max inward). When the aim point is outside that arc
 ## the boom stops at the limit and the weapon holds fire (hold_reason Combat.OUT_OF_ARC).
 ## Shots leave along the boom's CURRENT direction, not straight at the aim point: after a snap turn the first rounds lag
 ## behind until the boom catches up. A shot due mid-step takes the boom direction at its exact time (re-slewed from the
@@ -38,7 +39,6 @@ static func pivot(mount: WeaponMount) -> Vector3:
 
 func tick(mount: WeaponMount, _held: bool, dt: float) -> void:
 	var st := mount.stats
-	var lim := limits(st)
 	var cur := Vector2(mount.aim_yaw, mount.aim_pitch)
 	mount.aim_from = cur
 	var to := mount.aim_at - pivot(mount)
@@ -47,8 +47,9 @@ func tick(mount: WeaponMount, _held: bool, dt: float) -> void:
 		mount.aim_dir = Combat.arc_dir(mount.body_basis, cur)
 		return
 	var want := Combat.arc_angles(mount.body_basis, to)
-	var goal := Vector2(clampf(want.x, -lim.x, lim.x), clampf(want.y, -lim.y, lim.z))
-	mount.hold_reason = "" if Combat.in_arc(want, lim.x, lim.y, lim.z) else Combat.OUT_OF_ARC
+	# The arc in force: limits(st) cut by the hardpoint's own range (WeaponMount.aim_range: the Bulwark's yaw_in_max).
+	var goal := mount.clamp_aim(want)
+	mount.hold_reason = "" if mount.in_aim_range(want) else Combat.OUT_OF_ARC
 	var step := maxf(float(st.get("slew", 240.0)), 0.0) * dt
 	var d := goal - cur
 	cur = goal if d.length() <= step else cur + d.normalized() * step

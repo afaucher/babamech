@@ -47,6 +47,26 @@ var _body_mi: MeshInstance3D = null
 var _jet_stream: LowPolyFlame.Stream = null
 var _sway_t := 0.0
 
+# Articulated near rig (docs/design/enemy-anim): EnemyMeshes.trooper_rig_part pieces posed like the civilians' rigid-part
+# figures (joint angles from a few blended poses: stand / walk / crouch / peek / air / stagger), feet planted by
+# EnemyGait (stride from the real ground speed), legs solved with LegIK.solve_two_bone. Beyond rig_lod_dist from the
+# camera (and with no camera, unless force_rig) the whole-body mesh is drawn instead with the old cheap pose.
+var _rig: Node3D = null
+var _rig_parts: Dictionary = {}       ## piece -> MeshInstance3D
+var _rig_on := false
+var _joints: Dictionary = {}          ## EnemyMeshes.trooper_joints(variant)
+var _gait := EnemyGait.new()
+var _crouch := 0.0                    ## 0 standing .. 1 crouched (smoothed)
+var _peek_w := 0.0                    ## 0 .. 1 stepped out to peek (smoothed)
+var _air_w := 0.0                     ## 0 .. 1 legs tucked (jump pack / drop / thrown)
+var _air_hold := 0.0                  ## puppet: s left of the airborne guess (it sees only the motion)
+var _pose_pelvis := Vector3.ZERO      ## last posed pelvis (rig frame; tests)
+var force_rig := false                ## tests: articulate even with no camera
+var rig_lod_dist := 70.0              ## m: articulated within this camera distance
+var anim_crouch_depth := 1.0          ## lab: how deep the crouch goes (0 = stand)
+var anim_reach_scale := 1.0           ## lab: gait reach scale
+var anim_lift_scale := 1.0            ## lab: step lift scale
+
 # Individual tactical state
 var _facing_yaw := 0.0                ## streamed via puppet_aim.x (quantized when still -> 2 Hz idle rate)
 var _peek_frac := 0.0                 ## 0 = crouched in cover, 1 = peeking/standing (streamed via puppet_aim.y)
@@ -112,6 +132,10 @@ func net_fields() -> Dictionary:
 		"_drop_start": Net.PRIVATE, "_drop_end": Net.PRIVATE,
 		"_player_prev_pos": Net.PRIVATE, "_stomped": Net.PRIVATE, "_scatter_count": Net.PRIVATE,
 		"_shots_fired": Net.PRIVATE,
+		"_rig": Net.LOCAL, "_rig_parts": Net.LOCAL, "_rig_on": Net.LOCAL, "_joints": Net.LOCAL, "_gait": Net.LOCAL,
+		"_crouch": Net.LOCAL, "_peek_w": Net.LOCAL, "_air_w": Net.LOCAL, "_air_hold": Net.LOCAL,
+		"_pose_pelvis": Net.LOCAL, "force_rig": Net.LOCAL, "rig_lod_dist": Net.LOCAL,
+		"anim_crouch_depth": Net.LOCAL, "anim_reach_scale": Net.LOCAL, "anim_lift_scale": Net.LOCAL,
 	})
 	return f
 
@@ -171,6 +195,28 @@ func _build_visuals() -> void:
 	_pivot.add_child(mi)
 	_body_mi = mi
 	_register_comp_mesh("body", mi)
+	# The near rig: the same variant in pieces (identical look), hidden until the camera is close.
+	var kit := _trooper_kit()
+	var n := int(EnemyMeshes.trooper_id(_mesh_part_id())[1])
+	_joints = EnemyMeshes.trooper_joints(n)
+	_rig = Node3D.new()
+	_rig.name = "Rig"
+	_rig.visible = false
+	_pivot.add_child(_rig)
+	for pc: String in EnemyMeshes.TROOPER_PIECES:
+		var pm := EnemyMeshes.instance(EnemyMeshes.trooper_rig_part(kit, n, pc))
+		pm.name = pc
+		_rig.add_child(pm)
+		_rig_parts[pc] = pm
+		_register_comp_mesh("body", pm)
+	_gait.reach = 0.45
+	_gait.step_time = 0.34
+	_gait.run_step_time = 0.2
+	_gait.min_step_time = 0.1
+	_gait.lift = 0.22
+	_gait.clearance = 0.24
+	_gait.settle_error = 0.07
+	_gait.settle_time = 0.2
 
 
 ## Hit sphere tracks crouched vs peeking height so peeking troopers expose a taller profile.
@@ -193,6 +239,10 @@ func muzzle_world(_weapon_id: String = "") -> Vector3:
 	var lean_z := -0.85 if _peeking or ai_state in [STATE_TELEGRAPH, STATE_FIRE] else 0.0
 	var off := Vector3(0.42, 1.88, -1.52 + lean_z) if enemy_type == "trooper_at" else Vector3(0.22, 1.42, -1.48 + lean_z)
 	return xf * off
+
+
+func _sensor_yaw() -> float:   # perception: the forward cone follows the helmet, which glances round while idle
+	return _facing_yaw
 
 
 ## Quantize yaw slightly when crouched/still so EnemySync drops idle troopers to 2 Hz keep-alive!
@@ -242,6 +292,7 @@ func _core_rupture_scale() -> float:
 
 
 func _on_destroyed_visual() -> void:
+	_set_rig(false)
 	if _pivot != null and is_instance_valid(_pivot):
 		_pivot.scale = Vector3.ONE
 		var fall_yaw := float(posmod(_look_seed, 360)) * PI / 180.0
@@ -258,6 +309,12 @@ func _on_reset_visual() -> void:
 		_pivot.position = Vector3.ZERO
 	if _body_mi != null and is_instance_valid(_body_mi):
 		_body_mi.material_override = null
+	_rig_on = not _rig_on   # base reset showed every mesh: re-apply the LOD choice
+	_set_rig(not _rig_on)
+	_gait = _new_gait_like(_gait)
+	_crouch = 0.0
+	_peek_w = 0.0
+	_air_w = 0.0
 	_stop_jump_jet()
 
 
@@ -438,13 +495,14 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 				_emit_squad("alerted", {"id": target_id, "state": "lost", "pos": _world_pos()})
 			if not _step_transit(dt, space):
 				_step_patrol(dt, space)
+			_idle_scan(dt)
 		return
 
 	_target_id = target.target_id
 	_last_target_ref = target
 	var target_pos := Vector3.ZERO
 	if _has_los:
-		target_pos = _target_aim_center(target)
+		target_pos = _target_aim_center(target) + _vis_off   # the part seen (an 8 m mech's head over a low wall)
 		_last_seen_pos = target_pos
 		_update_target_velocity(target, target_pos, dt)
 		_no_los_time = 0.0
@@ -931,12 +989,171 @@ func _update_visuals(dt: float) -> void:
 	if _dead or _pivot == null or not is_instance_valid(_pivot):
 		return
 	_sway_t += dt
-	var standing := _jump_active or _drop_active or _displacing or _peeking or _peek_frac > 0.3 or move_speed_ratio > 0.1
+	var peek_on := _peeking or ai_state in [STATE_TELEGRAPH, STATE_FIRE] or (puppet and _peek_frac > 0.3)
+	var standing := _jump_active or _drop_active or _displacing or _peeking or _peek_frac > 0.3 \
+		or move_speed_ratio > 0.1 or _vis_vel.length() > 0.8 or _stagger_anim.active
+	var near := _want_rig()
+	if near != _rig_on:
+		_set_rig(near)
+	if _rig_on:
+		_pivot.position = Vector3.ZERO
+		_pivot.scale = Vector3.ONE
+		_pivot.rotation = Vector3(0.0, _facing_yaw, 0.0)
+		_pose_rig(dt, standing, peek_on)
+		return
+	# Far LOD: the whole-body mesh with the cheap pose (crouch squash, peek lean, walk bob).
 	var target_sy := 1.0 if standing else 0.62
 	_pivot.scale.y = lerpf(_pivot.scale.y, target_sy, clampf(dt * 10.0, 0.0, 1.0))
-	# Subtle local idle/walk bob & torso sway (distinct per trooper via seeded _sway_phase / _sway_freq).
 	var bob := sin(_sway_t * (_sway_freq * 3.2 if move_speed_ratio > 0.1 else _sway_freq) + _sway_phase)
 	var tilt_z := bob * (0.06 if move_speed_ratio > 0.1 else 0.025)
-	var lean_z := -0.75 if (_peeking or ai_state in [STATE_TELEGRAPH, STATE_FIRE] or (puppet and _peek_frac > 0.3)) else 0.0
+	var lean_z := -0.75 if peek_on else 0.0
 	_pivot.position = Vector3(0.0, maxf(bob, 0.0) * 0.09 if move_speed_ratio > 0.1 else 0.0, lean_z)
 	_pivot.rotation = Vector3(0.0, _facing_yaw, tilt_z)
+
+
+## Articulated within rig_lod_dist of the camera (10 % hysteresis); with no camera only when force_rig.
+func _want_rig() -> bool:
+	if force_rig:
+		return true
+	if not is_inside_tree():
+		return false
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return false
+	var d := rig_lod_dist * (1.1 if _rig_on else 1.0)
+	return cam.global_position.distance_squared_to(_world_pos()) < d * d
+
+
+func _set_rig(on: bool) -> void:
+	_rig_on = on
+	if _rig != null and is_instance_valid(_rig):
+		_rig.visible = on
+	if _body_mi != null and is_instance_valid(_body_mi):
+		_body_mi.visible = not on
+	if on:
+		_gait = _new_gait_like(_gait)   # plant afresh under the hips
+		if _pivot != null:
+			_pivot.scale = Vector3.ONE
+
+
+func _new_gait_like(g: EnemyGait) -> EnemyGait:
+	var n := EnemyGait.new()
+	for f: String in ["reach", "step_time", "run_step_time", "min_step_time", "run_speed", "lift", "settle_time",
+			"settle_error", "clearance"]:
+		n.set(f, g.get(f))
+	return n
+
+
+## Pose the rig for this frame. Joint angles blend a few poses (the civilians' approach: rigid parts, posed by angles,
+## stride from the distance walked), with the feet from EnemyGait so a planted foot never slides:
+##   stand (hips a hair down, weapon at the ready) / walk-run (hips sink with speed, bob over the steps, lean in) /
+##   crouch (hips down and back, knees bent over planted feet, torso forward, head up, weapon braced low) /
+##   peek (stepped 0.85 m forward out of cover, where muzzle_world / world_spheres put the shot and the hit sphere) /
+##   air (legs tucked under the hips) / stagger (EnemyStaggerAnim: recoil along the push, head knock, stumble steps,
+##   weapon droop and swing, then the shake-off and the weapon back on aim).
+func _pose_rig(dt: float, standing: bool, peek_on: bool) -> void:
+	if _rig == null or not is_instance_valid(_rig) or _joints.is_empty() or not is_inside_tree():
+		return
+	var j := _joints
+	var hip_y := float(j["hip_y"])
+	var sa := _stagger_anim
+	var amp := anim_stagger_amp
+	# Airborne: exact on the host; a puppet guesses from its vertical motion (held through the jump's apex).
+	var air := false
+	if puppet:
+		var vu := absf(_vis_vel.dot(up))
+		_air_hold = 0.3 if vu > 1.5 else maxf(_air_hold - dt, 0.0)
+		air = _air_hold > 0.0
+	else:
+		air = _jump_active or _drop_active or not _grounded_now
+	var a_cr := 1.0 - exp(-dt * 7.0)
+	_crouch += ((0.0 if standing else anim_crouch_depth) - _crouch) * a_cr
+	_peek_w += ((1.0 if peek_on and not air else 0.0) - _peek_w) * (1.0 - exp(-dt * 9.0))
+	_air_w += ((1.0 if air else 0.0) - _air_w) * (1.0 - exp(-dt * 10.0))
+	var c := _crouch
+	var run := maxf(float(_cfg.get("flank_speed", 8.8)) * _pace_mult, 1.0)
+	var spd := _vis_vel.length()
+	var k := clampf(spd / run, 0.0, 1.0) * (1.0 - _air_w)
+	var shift := sa.push * (0.3 * sa.stumble * amp)
+	# Pelvis (rig frame: feet at the origin, facing -Z).
+	var drop := 0.03 + 0.12 * k + 0.05 * k * (1.0 - _gait.lift_amount()) + (hip_y - 0.5) * c + 0.1 * sa.k * amp
+	var pelvis := Vector3(shift.x, hip_y - drop, 0.13 * c - 0.85 * _peek_w + shift.z)
+	_pose_pelvis = pelvis
+	# Feet: homes under the hips (a braced, wider stance in the crouch), following the peek step and the stumble.
+	var lx := float(j["leg_x"])
+	var feet_z := -0.85 * _peek_w + shift.z
+	var home_l := [Vector3(-(lx + 0.05 * c) + shift.x, 0.0, feet_z - 0.14 * c),
+		Vector3(lx + 0.05 * c + shift.x, 0.0, feet_z + 0.1 * c)]
+	var rxf := _rig.global_transform
+	var homes: Array[Vector3] = []
+	for i in 2:
+		var h: Vector3 = home_l[i]
+		if _air_w > 0.5:
+			h = Vector3(h.x, hip_y - 0.62, 0.12)
+		homes.append(rxf * h)
+	var l1 := float(j["thigh"])
+	var l2 := float(j["shin"])
+	var ankle_y := float(j["ankle_y"])
+	var vert := pelvis.y - ankle_y
+	_gait.reach = clampf(sqrt(maxf(pow((l1 + l2) * 0.98, 2.0) - vert * vert, 0.0)) * 0.9 * anim_reach_scale, 0.12, 0.7)
+	_gait.run_speed = run
+	_gait.lift = 0.22 * anim_lift_scale
+	_gait.update(dt, homes, up, _vis_vel, rxf.origin, _air_w > 0.5)
+	# Torso: lean into speed and into the crouch, recoil along the push, shake it off.
+	var lean := 0.1 * k + 0.5 * c
+	var axis := Vector3.UP.cross(sa.push)
+	var tilt := Basis(axis.normalized(), (0.5 * sa.k + 0.08 * sa.shake) * amp) \
+		if sa.active and axis.length_squared() > 1e-6 else Basis.IDENTITY
+	var rt := tilt * Basis(Vector3.UP, 0.18 * sa.shake * amp) * Basis(Vector3.RIGHT, -lean)
+	var p0 := Vector3(0.0, hip_y, 0.0)
+	var torso_xf := Transform3D(rt, pelvis - rt * p0)
+	(_rig_parts["torso"] as Node3D).transform = torso_xf
+	# Head: kept looking forward over the lean, knocked with the hit, shaken in the recovery.
+	var n0 := Vector3(0.0, float(j["neck_y"]), 0.0)
+	var rh := rt * Basis(Vector3.RIGHT, lean * 0.75 + 0.1 * c) * Basis(Vector3.UP, 0.5 * sa.shake * amp)
+	if sa.active and axis.length_squared() > 1e-6:
+		rh = Basis(axis.normalized(), 0.45 * sa.k * amp) * rh
+	(_rig_parts["head"] as Node3D).transform = Transform3D(rh, torso_xf * n0 - rh * n0)
+	# Arms + weapon: level over the lean (braced a touch low in the crouch), knocked off aim by the stagger.
+	var s0 := Vector3(0.0, float(j["shoulder_y"]), 0.0)
+	var aim_p := lean * 0.9 - 0.1 * c * (1.0 - _peek_w) - 0.75 * sa.aim_off * amp
+	var aim_y := (0.5 * sa.aim_off * sa.side + 0.12 * sa.shake) * amp
+	var ra := rt * Basis(Vector3.UP, aim_y) * Basis(Vector3.RIGHT, aim_p)
+	(_rig_parts["arms"] as Node3D).transform = Transform3D(ra, torso_xf * s0 - ra * s0)
+	if _jet_stream != null and is_instance_valid(_jet_stream):
+		_jet_stream.position = torso_xf * Vector3(0.0, 0.98, 0.42)
+	# Legs: each solved from its hip to its gait foot, knee forward (splayed a little in the crouch).
+	var inv := rxf.affine_inverse()
+	for i in 2:
+		var sd := -1.0 if i == 0 else 1.0
+		var tag := "_l" if i == 0 else "_r"
+		var hip := pelvis + Vector3(sd * lx, 0.0, 0.0)
+		var foot := inv * _gait.pos[i]
+		var ankle_want := Vector3(foot.x, foot.y + ankle_y, foot.z)
+		var pole := Vector3(sd * 0.2 * c, 0.0, -1.0)
+		var r := LegIK.solve_two_bone(hip, ankle_want, l1, l2, pole)
+		var knee: Vector3 = r["joint"]
+		var ankle: Vector3 = r["end"]
+		var h0 := Vector3(sd * lx, hip_y, 0.0)
+		var k0 := Vector3(sd * lx, float(j["knee_y"]), 0.0)
+		var a0 := Vector3(sd * lx, ankle_y, 0.0)
+		var bt := EnemyGait.limb_basis(knee - hip, pole, Vector3.DOWN, Vector3.FORWARD)
+		(_rig_parts["thigh" + tag] as Node3D).transform = Transform3D(bt, hip - bt * h0)
+		var bs := EnemyGait.limb_basis(ankle - knee, pole, Vector3.DOWN, Vector3.FORWARD)
+		(_rig_parts["shin" + tag] as Node3D).transform = Transform3D(bs, knee - bs * k0)
+		(_rig_parts["boot" + tag] as Node3D).transform = Transform3D(Basis.IDENTITY, ankle - a0)
+
+
+## Rig-frame point of a piece's local point (tests / shots): e.g. the visual muzzle.
+func rig_point(piece: String, p: Vector3) -> Vector3:
+	if not _rig_parts.has(piece):
+		return p
+	return (_rig_parts[piece] as Node3D).transform * p
+
+
+## The visual muzzle in world space (the kit's muzzle point carried by the arms piece).
+func visual_muzzle() -> Vector3:
+	var m := Vector3(0.42, 1.88, -1.52) if enemy_type == "trooper_at" else Vector3(0.22, 1.4, -1.48)
+	if not _rig_on or _rig == null or not _rig.is_inside_tree():
+		return global_transform * m if is_inside_tree() else m
+	return _rig.global_transform * rig_point("arms", m)

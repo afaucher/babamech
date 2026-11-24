@@ -7,6 +7,8 @@ extends NetTest
 ## builds no Hit of its own; B's copy is never written by B. Both machines draw a fuse burst beside the target.
 ## The test dummy is a plain CombatTarget with no HP stream, so "both agree" is checked as: the host's HP loss equals the
 ## damage B decided and sent (one splash share, the falloff at B's burst point), and both bursts sit at the same point.
+## ARMOUR (§3.10): the dummy is armoured (CombatTarget.armored, spawn data set on both machines), so the share B decides
+## and sends is already x flak's armor_mult (0.35): the host applies exactly that, once, and scales nothing again.
 
 const PEERS := 2
 const SEED := 11
@@ -81,6 +83,14 @@ func run_host() -> void:
 		print("[flak] burst points %.4f m apart (%s)" % [d, link])
 		check(d < BURST_TOL, "both machines burst at the same point (%.3f m apart)" % d)
 		check((hb[0][1] as Vector3).distance_to(centre) < 1.5 + 6.0 + 0.5, "beside the target (%.2f m from its centre)" % (hb[0][1] as Vector3).distance_to(centre))
+		if sent.size() == 1:
+			var fst := MechCatalog.weapon("flak")
+			var dh := maxf((hb[0][1] as Vector3).distance_to(centre) - 1.5, 0.0)
+			var full := float(fst["splash_damage"]) * (1.0 - dh / float(fst["splash_radius"]))
+			var am := float(fst["armor_mult"])
+			print("[flak] armoured share %.3f (unarmoured %.3f at the host's burst point)" % [float(sent[0][1]), full])
+			near(float(sent[0][1]), full * am, 0.2, "the hit arrives already reduced: x %.2f of the splash share (%.3f)" % [am, full * am])
+			near(lost, full * am, 0.2, "the host applies the reduced damage, not reduced again")
 	command(b, "finish", {})
 	check(await wait_done(peers - 1, 20.0), "the client is done")
 
@@ -160,6 +170,7 @@ func _make_dummy(pos: Vector3) -> void:
 	dummy.owner_peer = 0
 	dummy.team = "enemy"
 	dummy.mass_class = "static"
+	dummy.armored = true                 # spawn data, the same on both machines (weapons.md §3.10)
 	dummy.set_max_hp({"body": 1000.0})
 	dummy.add_hit_sphere("body", Vector3.ZERO, 1.5)
 	add_child(dummy)

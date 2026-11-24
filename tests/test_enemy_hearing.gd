@@ -124,6 +124,7 @@ func _shot_near_alerts_and_turns() -> void:
 func _shot_far_does_not() -> void:
 	_rig(Vector3(80, 0, 50))
 	var t := _enemy("turret", "hear_t2", Vector3.ZERO)
+	t.sight_range = 30.0   # hearing only: a firing mech is otherwise noticed by sight in any direction (EnemyBase.LOUD_TIME)
 	await frames(1)
 	_step(0.1)
 	_laser_along(80.0, 2)
@@ -212,6 +213,7 @@ func _heard_alert_relays() -> void:
 func _slow_shot_heard_on_arrival() -> void:
 	_rig(Vector3(10, 0, 100))
 	var t := _enemy("turret", "hear_t5", Vector3.ZERO)
+	t.sight_range = 30.0   # hearing only: a firing mech is otherwise noticed by sight in any direction (EnemyBase.LOUD_TIME)
 	await frames(1)
 	_step(0.1)
 	var st := _w.stats("autocannon")

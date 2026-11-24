@@ -7,7 +7,7 @@ extends Node3D
 ##   - Lightweight A* pathfinder over CityPlan.walk_graph() (alleys off) in 2D arc (x, s) space.
 ##   - Unified Audio event bus: joins group "enemy_squad" and emits `enemy_event(kind, enemy, payload)`.
 
-const RELAY_RADIUS := 52.0
+const RELAY_RADIUS := 60.0        ## m (perception pass: a block's width; was 52)
 const MEMORY_TIME := 14.0         ## s before a target drops off the shared target board
 const SEP_MARGIN := 2.6           ## m extra separation between mobile squadmates
 const MAX_WRECKS := 10            ## LRU cap on persistent charred/flaming wrecks per squad
@@ -17,7 +17,7 @@ const HEAR_IMPACT_RADIUS := 30.0  ## m (+ the splash radius) from its eye to an 
 const COVER_EXPOSURE_PENALTY := 140.0     ## m A* penalty for road nodes in open LOS of the threat (beats side-street detour)
 const COVER_MID_EXPOSURE_PENALTY := 70.0  ## m A* penalty when edge midpoint is exposed to the threat
 const WAVE_PLAYER_CLEAR := 25.0           ## m min distance from standing player mech before wave units emerge from a source
-const WAVE_PROXIMITY_MAX_DELAY := 8.0     ## s max hold if a player camps a wave door (< WaveDirector.GRACE = 10 s)
+const WAVE_PROXIMITY_MAX_DELAY := 8.0     ## s max hold if a player camps a wave door (< PacingDirector.GRACE = 10 s)
 ## Per-deck last-enemy hunt / reveal / anti-soft-lock thresholds (host-only, docs/design/enemies.md §5, mission-section.md §15):
 ## Never hunt or reveal while > HUNT_MAX_REMAINING enemies remain on a deck (including queued wave units) or before
 ## the crew has actually had combat contact on that deck.
@@ -38,6 +38,7 @@ signal enemy_deck_changed(enemy: EnemyBase, old_deck: int, new_deck: int)
 var world: CombatWorld
 var plan: CityPlan
 var ring: RingFrame
+const SLOT_STALE := 6.0           ## s an attack slot may be held without telegraphing / firing before it is pruned
 var max_attackers := 2            ## max simultaneous telegraphing/firing enemies per player target
 var slot_stagger := 0.8           ## s breathing gap after a burst before another enemy grabs the slot
 var enemies: Array[EnemyBase] = []
@@ -65,6 +66,10 @@ var _deck_cut_rects: Dictionary = {}      ## deck k -> Array[Rect2]
 var _deck_drops: Dictionary = {}     ## deck k -> int count of Drop Ships called in on deck k
 var max_drops_per_deck := 1          ## cap per deck (1 solo, 2 in 3-4p co-op) so deck-clear never drags on
 var drops_enabled := true            ## host toggle for Scout Drone -> Drop Ship call-ins
+var air_doors_enabled := true        ## dropships use the decks' air doors when there are any (tests force the fallback)
+## Host: orders air door `id` (deck, open_at, hold) open on every machine. MissionFlow sets it (its order goes out as a
+## replicated mission.wave order); unset (no MissionFlow: a bare test drive) the door is opened here on this machine only.
+var air_door_hook := Callable()
 var _drop_seq := 0
 var _cover_repath_at := -INF       ## combat clock stamp of last budgeted AI cover-path solve (at most 1 per frame)
 var deck_of := Callable()
@@ -75,6 +80,7 @@ var _crew_pos_by_deck: Dictionary = {}  ## deck -> PackedVector3Array of standin
 var _live_assets: Dictionary = {}       ## asset_id -> live AssetTarget (for abandoned-defend wave wakeup)
 var _heard: Array = []            ## pending hearings [{e, s (shooter), due (combat clock)}]: slow shots reach them later
 var hear_checks := 0              ## player-fire stimuli the hearing evaluated here (stays 0 on a crew client)
+var _last_fired: Dictionary = {}  ## shooter target_id -> combat clock of its last shot (perception: a firing mech is loud)
 ## Per-deck last-enemy hunt / reveal / anti-soft-lock valve (docs/design/enemies.md §5, mission-section.md §15; host-only).
 var hunt_last_quiet_s := HUNT_QUIET_S     ## s of deck quiet after contact (<= hunt_max_remaining left) before Step 1 hunt
 var hunt_max_remaining := HUNT_MAX_REMAINING  ## hard cap: never trigger last-enemy hunt/reveal above this count
@@ -88,7 +94,8 @@ var _hunt_tick_acc := 0.0                 ## 4 Hz accumulator for _step_hunt_and
 var _fireteams: Array = []        ## Array[EnemyTroopSquad] active tactical fireteams
 var _pending_wave_orders: Array[Dictionary] = []  ## queued orders awaiting open_at & 25 m player clearance
 var _wave_spawned_total: Dictionary = {}          ## wave_id -> int total units spawned so far
-var _wave_unreleased_pending: Dictionary = {}     ## wave_id -> int units owed after a partial release (for WaveDirector)
+var _staged: Dictionary = {}                      ## host: wave_id -> [{e, path, wait}] units waiting in a closed gate bay
+var _wave_unreleased_pending: Dictionary = {}     ## wave_id -> int units owed after a partial release (for PacingDirector)
 var _wave_decks: Dictionary = {}                  ## wave_id -> int deck index (so queued waves count toward deck remaining)
 var _transit_refresh := 0.0                       ## s until the next wave cross-deck transit pick (_step_wave_transit)
 
@@ -105,15 +112,15 @@ func net_fields() -> Dictionary:
 		"_graph_nodes": Net.LOCAL, "_graph_adj": Net.LOCAL, "_occluders": Net.LOCAL, "_occluder_rects": Net.LOCAL,
 		"_deck_graphs": Net.LOCAL, "_deck_plans": Net.LOCAL, "_deck_rings": Net.LOCAL, "_deck_occluders": Net.LOCAL,
 		"_deck_occluder_rects": Net.LOCAL, "_cut_rects": Net.LOCAL, "_deck_cut_rects": Net.LOCAL, "_deck_drops": Net.OWNER, "max_drops_per_deck": Net.SPAWN,
-		"drops_enabled": Net.SPAWN, "_drop_seq": Net.PRIVATE, "_cover_repath_at": Net.PRIVATE,
+		"drops_enabled": Net.SPAWN, "air_doors_enabled": Net.LOCAL, "air_door_hook": Net.LOCAL, "_drop_seq": Net.PRIVATE, "_cover_repath_at": Net.PRIVATE,
 		"deck_of": Net.LOCAL, "_awake": Net.PRIVATE, "_awake_at": Net.PRIVATE,
 		"_awake_targets_n": Net.PRIVATE, "_crew_pos_by_deck": Net.PRIVATE, "_live_assets": Net.LOCAL,
-		"_heard": Net.PRIVATE, "hear_checks": Net.PRIVATE,
+		"_heard": Net.PRIVATE, "hear_checks": Net.PRIVATE, "_last_fired": Net.PRIVATE,
 		"hunt_last_quiet_s": Net.SPAWN, "hunt_max_remaining": Net.SPAWN,
 		"reveal_hunt_delay_s": Net.SPAWN, "cull_idle_s": Net.SPAWN,
 		"_deck_quiet": Net.PRIVATE, "_deck_engaged": Net.PRIVATE, "_deck_hunt_refresh": Net.PRIVATE, "_hunt_tick_acc": Net.PRIVATE,
 		"_fireteams": Net.PRIVATE, "_pending_wave_orders": Net.PRIVATE,
-		"_wave_spawned_total": Net.PRIVATE, "_wave_unreleased_pending": Net.PRIVATE, "_wave_decks": Net.PRIVATE,
+		"_wave_spawned_total": Net.PRIVATE, "_staged": Net.PRIVATE, "_wave_unreleased_pending": Net.PRIVATE, "_wave_decks": Net.PRIVATE,
 		"_transit_refresh": Net.PRIVATE}
 
 
@@ -260,7 +267,7 @@ func register_fireteam(ft: EnemyTroopSquad) -> void:
 		_fireteams.append(ft)
 
 
-# --- Mission Waves Phase 1 (Host Scheduler & WaveDirector Count Helpers) ----------------------------------
+# --- Mission Waves Phase 1 (Host Scheduler & PacingDirector Count Helpers) ----------------------------------
 
 ## Immediate release path called by `EnemySpawner.spawn_wave(order, wave, source, ctx)` when `MissionFlow` reaches
 ## `order.open_at` (door just opened). Spawns up to `min(order.max_units, source.load)` units immediately, tagged with
@@ -295,7 +302,7 @@ func spawn_wave_now(order: Dictionary, wave_def: Dictionary, source_def: Diction
 	return pending_after
 
 
-## Queue (or immediately spawn if open_at has passed and source is clear of players) a WaveDirector release order.
+## Queue (or immediately spawn if open_at has passed and source is clear of players) a PacingDirector release order.
 ## Respects `order.open_at`, `order.max_units`, `source_def.load`, 25 m player proximity hold, partial follow-ups,
 ## and puts every spawned wave unit immediately into active hunt mode (docs/design/mission-objectives.md §5 & §9).
 func queue_wave(order: Dictionary, wave_def: Dictionary, source_def: Dictionary, deck_budget_val: int,
@@ -380,6 +387,16 @@ func _release_wave_entry(entry: Dictionary) -> Array[EnemyBase]:
 	var spawned := EnemySpawner.spawn_specs(specs, use_plan, use_ring, world, self,
 		int(entry["seed"]), bool(entry["skip_meshes"]), "", deck, wave_id)
 	_wave_spawned_total[wave_id] = int(_wave_spawned_total.get(wave_id, 0)) + spawned.size()
+	# Gate-bay staging: units created in a closed bay wait (dormant) for roll_out_wave() when the door is passable.
+	if not specs.is_empty() and bool(specs[0].get("staged", false)):
+		var lst: Array = _staged.get(wave_id, [])
+		for i in spawned.size():
+			var path: Array[Vector3] = []
+			for p: Variant in specs[i].get("exit", []):
+				path.append(p as Vector3)
+			lst.append({"e": spawned[i], "path": path, "wait": float(specs[i].get("exit_wait", 0.0))})
+		_staged[wave_id] = lst
+		return spawned
 	# Wave units arrive immediately hunting the nearest standing crew mech on their deck (docs/design/mission-objectives.md §5.7).
 	var src_def: Dictionary = entry["source"]
 	var sx := float(src_def.get("x", 0.0))
@@ -396,6 +413,70 @@ func _release_wave_entry(entry: Dictionary) -> Array[EnemyBase]:
 			e.begin_hunt_pursuit(hunt_t, hunt_t.global_position)
 	note_deck_activity(deck)
 	return spawned
+
+
+## Host: the door of a staged group is passable: wake its units, give each its hunt target and its roll-out lane
+## (BayFormation: row by row). Returns the units rolled out.
+func roll_out_wave(wave_id: String) -> int:
+	var lst: Array = _staged.get(wave_id, [])
+	_staged.erase(wave_id)
+	var n := 0
+	var deck := -1
+	for st: Dictionary in lst:
+		var ev: Variant = st["e"]
+		if ev == null or not is_instance_valid(ev):
+			continue   # freed while staged (culled, the drive torn down)
+		var e := ev as EnemyBase
+		if e.destroyed():
+			continue
+		deck = e.spawn_deck
+		var pos := e.global_position if e.is_inside_tree() else e.position
+		var hunt_t := _nearest_player_on_deck(pos, e.spawn_deck)
+		if hunt_t == null and e.defend_target_id != "":
+			hunt_t = _asset_target_by_id(e.defend_target_id)
+		e.roll_out(st["path"], float(st["wait"]))
+		if hunt_t != null:
+			if not (hunt_t is AssetTarget):
+				e.hear_fire(hunt_t)
+			e.begin_hunt_pursuit(hunt_t, hunt_t.global_position)
+		n += 1
+	if n > 0 and deck >= 0:
+		note_deck_activity(deck)
+	return n
+
+
+## Host (PacingDirector's quiet cap when no group can make contact in time): send the `n` mobile garrison units of `deck`
+## nearest `near` (world) hunting the nearest standing crew mech (begin_hunt_pursuit: the fastest reliable contact).
+## Units already hunting or alerted are skipped. Returns how many were sent.
+func send_garrison_hunt(deck: int, n: int, near: Vector3) -> int:
+	var cands: Array = []
+	for e in enemies:
+		if not is_instance_valid(e) or e.destroyed() or e.puppet or e.wave != "" or e.spawn_deck != deck \
+				or not e.is_mobile() or e.is_alerted() or e.ai_mode != "live":
+			continue
+		var pos := e.global_position if e.is_inside_tree() else e.position
+		cands.append([pos.distance_squared_to(near), e])
+	cands.sort_custom(func(a: Array, b: Array) -> bool: return float(a[0]) < float(b[0]))
+	var sent := 0
+	for c: Array in cands:
+		if sent >= n:
+			break
+		var e := c[1] as EnemyBase
+		var pos := e.global_position if e.is_inside_tree() else e.position
+		var pt := _nearest_player_on_deck(pos, deck)
+		if pt == null:
+			break
+		e.hear_fire(pt)
+		e.begin_hunt_pursuit(pt, pt.global_position)
+		sent += 1
+	if sent > 0:
+		note_deck_activity(deck)
+	return sent
+
+
+## Host: wave ids with units still waiting in a closed bay.
+func staged_waves() -> Array:
+	return _staged.keys()
 
 
 func _asset_target_by_id(asset_id: String) -> AssetTarget:
@@ -424,7 +505,7 @@ func _nearest_player_on_deck(from_w: Vector3, deck: int) -> CombatTarget:
 	return best
 
 
-## Host fact for WaveDirector (`facts["garrison_alive"]`): count of living garrison enemies (`wave == ""`) per deck.
+## Host fact for PacingDirector (`facts["garrison_alive"]`): count of living garrison enemies (`wave == ""`) per deck.
 func alive_garrison_per_deck(decks: int) -> Array[int]:
 	var out: Array[int] = []
 	out.resize(maxi(decks, 1))
@@ -436,7 +517,7 @@ func alive_garrison_per_deck(decks: int) -> Array[int]:
 	return out
 
 
-## Host fact for WaveDirector (`facts["wave_alive"]`): {wave_id: {"alive": int, "total": int spawned so far}}.
+## Host fact for PacingDirector (`facts["wave_alive"]`): {wave_id: {"alive": int, "total": int spawned so far}}.
 func wave_counts() -> Dictionary:
 	var out: Dictionary = {}
 	for wid: String in _wave_spawned_total.keys():
@@ -451,7 +532,7 @@ func wave_counts() -> Dictionary:
 	return out
 
 
-## Host fact for WaveDirector (`facts["wave_pending"]`): {wave_id: units owed after a partial release (> 0 only)}.
+## Host fact for PacingDirector (`facts["wave_pending"]`): {wave_id: units owed after a partial release (> 0 only)}.
 func pending_wave_counts() -> Dictionary:
 	var out: Dictionary = {}
 	for wid: String in _wave_unreleased_pending.keys():
@@ -875,8 +956,88 @@ func request_dropship(target_pos: Vector3, deck: int) -> EnemyDropDrone:
 	ds.up = u
 	ds.transform = Transform3D(Basis(f.cross(u).normalized(), u, -f), spawn_w)
 	ds.configure_drop(drop_w, bool(zone["is_roof"]), float(zone["half_span"]), exfil_w)
+	# Through an air door when the deck has one: created hidden in its recess, dormant (staged), the door ordered open.
+	var air := pick_air_door(deck, Vector2(d_ring.world_to_arc(drop_w).x, d_ring.world_to_arc(drop_w).y) if d_ring != null else Vector2.ZERO, true)
+	if not air.is_empty():
+		var fw: Vector3 = air["facing"]
+		var hu := d_ring.up_at(air["hide"] as Vector3) if d_ring != null else Vector3.UP
+		fw = (fw - hu * fw.dot(hu)).normalized()
+		ds.up = hu
+		ds.transform = Transform3D(Basis(fw.cross(hu).normalized(), hu, -fw), air["hide"] as Vector3)
+		ds.configure_air_arrival(air)
 	add_enemy(ds)
+	if not air.is_empty():
+		var now := world.now
+		ds.air_ordered_at = now
+		order_air_door(str(air["id"]), deck, now + EnemyDropDrone.AIR_ORDER_LEAD, EnemyDropDrone.AIR_ARRIVE_HOLD)
 	return ds
+
+
+## The deck's mission world (air doors), or null.
+func mission_world() -> Object:
+	var st := world.city_stack() if world != null else null
+	var mw: Variant = st.get("mission") if st != null else null
+	return mw if mw is Object and (mw as Object).has_method("air_door_count") else null
+
+
+## Host: the air door of `deck` a dropship should use near arc point `near` ({} = none usable: the in-deck fallback).
+## Usable: it exists and is not sealed. Score: the straight distance from its `out` point to `near`, + AIR_SEEN_PENALTY
+## when `hidden_from_crew` and a standing crew mech on the deck is within AIR_SEEN_R of `out` with a clear sightline over
+## the plan's buildings (a cheap check: the crew should not watch it come out). Deterministic (ties: lower index).
+func pick_air_door(deck: int, near: Vector2, hidden_from_crew: bool) -> Dictionary:
+	if not air_doors_enabled:
+		return {}
+	var mw := mission_world()
+	if mw == null:
+		return {}
+	var d_ring := deck_ring(deck)
+	var crew: Array[Vector2] = []
+	if hidden_from_crew and world != null:
+		for t: CombatTarget in world.targets:
+			if is_instance_valid(t) and t.team == "player" and t.is_hittable() and t.is_inside_tree() and on_deck(t.global_position, deck):
+				var ta := d_ring.world_to_arc(t.global_position) if d_ring != null else Vector3(t.global_position.x, t.global_position.z, 0.0)
+				crew.append(Vector2(ta.x, ta.y))
+	var best := {}
+	var best_score := INF
+	for i in int(mw.call("air_door_count", deck)):
+		var d: Dictionary = mw.call("air_door", deck, i)
+		if not bool(d.get("ok", false)):
+			continue
+		if str((mw.call("source_state", d["id"]) as Dictionary).get("state", "")) == "sealed":
+			continue
+		var oa := d_ring.world_to_arc(d["out"] as Vector3) if d_ring != null else Vector3((d["out"] as Vector3).x, (d["out"] as Vector3).z, 0.0)
+		var out2 := Vector2(oa.x, oa.y)
+		var score := out2.distance_to(near)
+		for c: Vector2 in crew:
+			if c.distance_to(out2) <= AIR_SEEN_R and not arc_segment_occluded(c, out2, deck):
+				score += AIR_SEEN_PENALTY
+				break
+		if score < best_score:
+			best_score = score
+			best = d.duplicate()
+			best["i"] = i
+	return best
+
+
+## Host: order air door `id` open at `open_at` for `hold` s (after its opening) on every machine (air_door_hook), or
+## here only. Called again with the same open_at and a longer hold it only extends the hold (MissionWorld.open_source).
+func order_air_door(id: String, deck: int, open_at: float, hold: float) -> void:
+	if air_door_hook.is_valid():
+		air_door_hook.call(id, deck, open_at, hold)
+		return
+	var mw := mission_world()
+	if mw != null:
+		mw.call("open_source", id, open_at, hold)
+
+
+## The door state of air door `id` (MissionWorld.source_state) or {} without a mission world.
+func air_door_state(id: String) -> Dictionary:
+	var mw := mission_world()
+	return mw.call("source_state", id) as Dictionary if mw != null else {}
+
+
+const AIR_SEEN_R := 140.0      ## m: a crew mech this close to an air door's out point with a clear sightline sees it
+const AIR_SEEN_PENALTY := 260.0 ## m added to that door's score (another door, even farther, is preferred)
 
 
 func _pick_drop_zone(d_plan: CityPlan, d_ring: RingFrame, target_pos: Vector3, deck: int) -> Dictionary:
@@ -930,6 +1091,9 @@ func _pick_drop_zone(d_plan: CityPlan, d_ring: RingFrame, target_pos: Vector3, d
 	var far_s := d_plan.extent.end.y - 10.0 if pick_pt.y >= t2.y else d_plan.extent.position.y + 10.0
 	var spawn_arc := Vector2(clampf(pick_pt.x + (18.0 if pick_pt.x >= lane else -18.0), ext.position.x, ext.end.x), far_s)
 	var exfil_arc := Vector2(clampf(pick_pt.x + (-24.0 if pick_pt.x >= lane else 24.0), ext.position.x, ext.end.x), far_s)
+	# The ship appears / leaves there (no flying door yet): never inside a building, pillar or ramp's footprint.
+	spawn_arc = _air_clear_point(spawn_arc, deck, ext)
+	exfil_arc = _air_clear_point(exfil_arc, deck, ext)
 	return {
 		"spawn": d_ring.arc_to_world(spawn_arc.x, spawn_arc.y, EnemyDropDrone.CRUISE_ALT),
 		"drop": d_ring.arc_to_world(pick_pt.x, pick_pt.y, CityPlan.CURB_H),
@@ -937,6 +1101,36 @@ func _pick_drop_zone(d_plan: CityPlan, d_ring: RingFrame, target_pos: Vector3, d
 		"is_roof": false,
 		"half_span": 6.5,
 	}
+
+
+## The nearest point to `at` (searched across the deck, then inward along s, 4 m steps) whose column is clear of every
+## building / pillar / tower footprint and ramp of `deck` by EnemyDropDrone.CLEAR_H: where a dropship may appear.
+func _air_clear_point(at: Vector2, deck: int, ext: Rect2) -> Vector2:
+	var blocks: Array[Rect2] = []
+	for item: Dictionary in deck_occluders(deck):
+		blocks.append((item["rect"] as Rect2).grow(EnemyDropDrone.CLEAR_H))
+	var d_plan := deck_plan(deck)
+	if d_plan != null:
+		for c: Dictionary in d_plan.columns:
+			var ch := float(c.get("half", 2.0))
+			blocks.append(Rect2(float(c["x"]) - ch, float(c["s"]) - ch, ch * 2.0, ch * 2.0).grow(EnemyDropDrone.CLEAR_H))
+		for r: Dictionary in d_plan.ramps:
+			var s0 := minf(float(r["s_top"]), float(r["s_foot"]))
+			var s1 := maxf(float(r["s_top"]), float(r["s_foot"]))
+			blocks.append(Rect2(float(r["x0"]), s0, float(r["x1"]) - float(r["x0"]), s1 - s0).grow(EnemyDropDrone.CLEAR_H))
+	var inward := 1.0 if at.y < ext.get_center().y else -1.0
+	for ring_i in 40:
+		for side: float in [0.0, 1.0, -1.0]:
+			for k in (1 if side == 0.0 else ring_i):
+				var p := Vector2(clampf(at.x + side * 4.0 * float(k + 1), ext.position.x, ext.end.x), at.y + inward * 4.0 * float(ring_i))
+				var free := true
+				for b: Rect2 in blocks:
+					if b.has_point(p):
+						free = false
+						break
+				if free:
+					return p
+	return at
 
 
 ## True when 2D arc point `pt` is open, obstacle-free street/plaza ground with a clear vertical sky shaft for dropship
@@ -1127,10 +1321,19 @@ func _hear_radius_for(e: EnemyBase, base_r: float, bonus: float = 0.0) -> float:
 	return maxf(base_r, ext) + bonus
 
 
+## True when player target `tid` fired within `window` s (EnemyBase perception: a firing mech is noticed in any
+## direction inside its notice range, with a clear line; host / solo only, like the hearing).
+func fired_recently(tid: String, window: float) -> bool:
+	return world != null and _last_fired.has(tid) and world.now - float(_last_fired[tid]) <= window
+
+
 func _on_shot_fired(record: Dictionary) -> void:
 	if not _hearing(record):
 		return
 	hear_checks += 1
+	var who := _shooter_of(str(record.get("shooter", "")), int(record.get("peer", 0)))
+	if who != null:
+		_last_fired[who.target_id] = world.now
 	var st := world.stats(str(record.get("weapon", "")))
 	var origin: Vector3 = record.get("origin", Vector3.ZERO)
 	var dir: Vector3 = record.get("dir", Vector3.FORWARD)
@@ -1243,16 +1446,8 @@ func active_slots_for(tid: String) -> int:
 func request_attack_slot(enemy_id: String, tid: String, priority: float = 1.0) -> bool:
 	if _slots.get(enemy_id, "") == tid:
 		return true
-	# Prune dead/missing slot holders.
-	for eid: String in _slots.keys():
-		var alive := false
-		for e in enemies:
-			if is_instance_valid(e) and e.target_id == eid and not e.destroyed():
-				alive = true
-				break
-		if not alive:
-			_slots.erase(eid)
 	var now := world.now if world != null else 0.0
+	prune_attack_slots(now)
 	if active_slots_for(tid) >= maxi(max_attackers, 1):
 		return false
 	if slot_stagger > 0.0 and now < _slot_ready_at:
@@ -1260,6 +1455,26 @@ func request_attack_slot(enemy_id: String, tid: String, priority: float = 1.0) -
 	_slots[enemy_id] = tid
 	_last_slot_time[enemy_id] = now - priority * 0.05
 	return true
+
+
+## Drop slot holders that can no longer use their slot: dead or gone, asleep (their deck has no crew: they never tick
+## again to release it), switched to another target, or holding it SLOT_STALE s without telegraphing / firing (lost the
+## target, wandered off). A sleeping holder used to keep a solo pilot's only slot forever (no enemy fired for 340 s).
+func prune_attack_slots(now: float) -> void:
+	if _slots.is_empty():
+		return
+	var by_id := {}
+	for e in enemies:
+		if is_instance_valid(e) and not e.destroyed():
+			by_id[e.target_id] = e
+	for eid: String in _slots.keys():
+		var e: EnemyBase = by_id.get(eid)
+		var keep := e != null and e._is_awake() and e._target_id == str(_slots[eid])
+		var busy: bool = e != null and e.ai_state in [EnemyBase.STATE_TELEGRAPH, EnemyBase.STATE_FIRE, EnemyBase.STATE_COOLDOWN]
+		if keep and not busy and now - float(_last_slot_time.get(eid, now)) > SLOT_STALE:
+			keep = false
+		if not keep:
+			_slots.erase(eid)
 
 
 func release_attack_slot(enemy_id: String) -> void:

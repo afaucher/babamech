@@ -7,8 +7,17 @@ extends TestCase
 ##   4. Scout Drone beacon triggers EnemySquad.request_dropship() obeying strict per-deck cap (1 solo) & living-defender
 ##      guard, and never runs on client puppets.
 ##   5. Co-op EnemySync replicates dynamic "add" (Drop Ship + deployed EnemyTroopSquad) and "gone" (exfiltrated Drop Ship).
+##   6. Real stack missions (seeds ROUND_TRIP_SEEDS, every deck): a full round trip through the deck's air doors (created
+##      hidden in a recess, not hittable until its door is passable, out through the opening, fly in, drop, fly out, in
+##      through an air door, removed inside its recess, the door shut again afterwards), the hull box never touching the
+##      collision world (buildings, towers, pillars, park columns, walls, ceiling, the door frames; mechs aside), never
+##      outside the deck's walls (but in a door) or above its ceiling, through the wall plane only while that door is
+##      passable; the squad lands on valid street ground. Deck 0 again with the air doors switched off (the fallback).
 
 const DT := 1.0 / 60.0
+const TEST_TIMEOUT := 900
+const ROUND_TRIP_SEEDS := [1, 4, 7, 403112]
+const ROUND_TRIP_LIMIT := 150.0   ## game s per flight
 
 
 func setup() -> void:
@@ -17,7 +26,12 @@ func setup() -> void:
 	await _rooftop_drop_and_scout_drone_beacon_cap()
 	await _multi_seed_stack_reachable_drop_zones()
 	await _coop_enemy_sync_add_and_gone()
+	await _stack_round_trips_clear()
 	finish()
+
+
+func _init() -> void:
+	timeout_sec = float(TEST_TIMEOUT)
 
 
 func _world(physics: bool = false) -> CombatWorld:
@@ -391,3 +405,140 @@ func _coop_enemy_sync_add_and_gone() -> void:
 	hsq.queue_free()
 	hw.queue_free()
 	await frames(1)
+
+
+## 6. One flight per deck per seed in the real game (TestDrive, plan mode), at 2x game speed; then deck 0 again with the
+## air doors off (EnemySquad.air_doors_enabled = false: the in-deck fallback).
+func _stack_round_trips_clear() -> void:
+	var box := BoxShape3D.new()
+	box.size = EnemyDropDrone.HULL_SIZE * 0.98
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = box
+	q.collide_with_areas = false
+	var flights := 0
+	var through_doors := 0
+	Engine.time_scale = 2.0
+	for seed_n: int in ROUND_TRIP_SEEDS:
+		var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+		td.city_mode = TestDrive.MODE_STACK
+		td.seed_value = seed_n
+		td.objectives = true
+		add_child(td)
+		await frames(4)
+		td.drive_override = true
+		td.mech.move_input = Vector2.ZERO
+		var sq: EnemySquad = td.combat.squad
+		var pt: PlayerTarget = td.combat.player_target
+		var mw: MissionWorld = td.stack.mission
+		sq.max_drops_per_deck = 99
+		var runs: Array = []
+		for k in td.stack.decks.size():
+			runs.append([k, true])
+		runs.append([0, false])
+		for run: Array in runs:
+			var k: int = run[0]
+			var doors_on: bool = run[1]
+			sq.air_doors_enabled = doors_on
+			var plan: CityPlan = sq.deck_plan(k)
+			var nodes: Array = plan.walk_graph()["nodes"]
+			var tn: Vector2 = nodes[(7919 * (k + 1) + seed_n) % nodes.size()]
+			var mp := td.stack.from_deck_arc(k, tn.x, tn.y, 0.5)
+			td.mech.global_position = mp
+			td.mech.velocity = Vector3.ZERO
+			pt.global_position = mp
+			await frames(2)
+			for e in sq.enemies.duplicate():
+				if is_instance_valid(e) and e.enemy_type == "dropship":
+					sq.remove_enemy(e)
+					e.queue_free()
+			sq._deck_drops.clear()
+			var ds := sq.request_dropship(td.stack.from_deck_arc(k, tn.x, tn.y, 1.0), k)
+			var tag := "seed %d deck %d%s" % [seed_n, k, "" if doors_on else " (doors off)"]
+			if not check(ds != null, tag + ": a dropship is called in"):
+				continue
+			flights += 1
+			var door_n := mw.air_door_count(k) if doors_on else 0
+			var air_in := str(ds._air_in.get("id", ""))
+			if door_n > 0:
+				through_doors += 1
+				check(air_in != "" and ds.staged and not ds.is_hittable(), tag + ": created hidden in an air door's recess, not hittable")
+			else:
+				check(air_in == "" and not ds.staged, tag + ": no air door: the in-deck appear point")
+			var drop_arc := ds._arc2(ds._drop_pos)
+			var landed := [null]
+			ds.troops_deployed.connect(func(_d: EnemyDropDrone, arr: Array) -> void: landed[0] = arr.duplicate())
+			var removed := [false]
+			var ds_id := ds.target_id
+			var on_removed := func(e: EnemyBase) -> void:
+				if is_instance_valid(e) and e.target_id == ds_id:
+					removed[0] = true
+			sq.enemy_removed.connect(on_removed)
+			q.exclude = [td.mech.get_rid()] as Array[RID]
+			var hits := 0
+			var outside := 0
+			var early_hit := 0
+			var shut_pass := 0
+			var t := 0.0
+			var first_hit := ""
+			var last_pos := ds._world_pos()
+			var air_out := ""
+			while t < ROUND_TRIP_LIMIT and not removed[0]:
+				await get_tree().physics_frame
+				t += Engine.time_scale / float(Engine.physics_ticks_per_second)
+				pt.repair_all()
+				if removed[0] or not is_instance_valid(ds) or ds.destroyed():
+					break
+				last_pos = ds._world_pos()
+				air_out = str(ds._air_out.get("id", ""))
+				var ph := ds._drop_phase
+				var in_door := ph == EnemyDropDrone.PHASE_DOOR_OUT or ph == EnemyDropDrone.PHASE_DOOR_IN
+				var a := ds._arc2(last_pos)
+				if in_door and air_in != "":
+					var did := air_in if ph == EnemyDropDrone.PHASE_DOOR_OUT else air_out
+					var passable := bool(mw.source_state(did).get("passable", false))
+					if ds.staged and ds.is_hittable():
+						early_hit += 1
+					if not plan.extent.has_point(a) and not ds.staged and not passable \
+							and (ph == EnemyDropDrone.PHASE_DOOR_OUT or ds._air_open_at > 0.0):
+						shut_pass += 1   # moving behind the wall plane with its door not fully open
+				q.transform = ds.global_transform
+				for hh: Dictionary in ds.get_world_3d().direct_space_state.intersect_shape(q, 4):
+					if not (hh["collider"] is CharacterBody3D):
+						hits += 1
+						if first_hit == "":
+							first_hit = "%s at %s h %.1f (%s)" % [str((hh["collider"] as Node).name) if hh["collider"] is Node else "?",
+								str(a), ds.ring.height(last_pos), ph]
+						break
+				if (not plan.extent.has_point(a) and not in_door) or ds.ring.height(last_pos) + EnemyDropDrone.HULL_SIZE.y * 0.5 > plan.p("ceiling"):
+					outside += 1
+			sq.enemy_removed.disconnect(on_removed)
+			print("[Test] round trip %s: %.1f s, doors %s>%s, hull contacts %d, outside %d, troops %d %s" % [tag, t, air_in, air_out,
+				hits, outside, (landed[0] as Array).size() if landed[0] is Array else -1, first_hit])
+			eq(hits, 0, tag + ": the hull never touches geometry (%s)" % first_hit)
+			eq(outside, 0, tag + ": never outside the walls (but in a door) or above the ceiling")
+			eq(early_hit, 0, tag + ": not hittable while hidden")
+			eq(shut_pass, 0, tag + ": behind the wall plane only while its door is passable")
+			check(removed[0], tag + ": the round trip ends (left the deck) within %.0f s (%.1f)" % [ROUND_TRIP_LIMIT, t])
+			var arr: Array = landed[0] if landed[0] is Array else []
+			check(arr.size() >= 3, tag + ": the squad was dropped (%d)" % arr.size())
+			check(EnemySquad._valid_ground_drop_point(plan, drop_arc), tag + ": the drop zone is valid street ground")
+			if door_n > 0 and air_out != "":
+				var dd := {}
+				for i in door_n:
+					var cand := mw.air_door(k, i)
+					if str(cand.get("id", "")) == air_out:
+						dd = cand
+				var off := last_pos.distance_to(dd["hide"] as Vector3) if not dd.is_empty() else -1.0
+				check(not dd.is_empty() and off < 2.0, tag + ": removed inside the recess of %s (%.1f m from its hide point)" % [air_out, off])
+				# The door shuts again after its hold.
+				var w := 0.0
+				while w < 20.0 and str(mw.source_state(air_out).get("state", "")) != "shut":
+					await get_tree().physics_frame
+					w += Engine.time_scale / float(Engine.physics_ticks_per_second)
+				eq(str(mw.source_state(air_out).get("state", "")), "shut", tag + ": %s shut again after the ship went in" % air_out)
+		sq.air_doors_enabled = true
+		td.queue_free()
+		await frames(2)
+	Engine.time_scale = 1.0
+	check(flights >= 16, "round trips flown over %d seeds (%d)" % [ROUND_TRIP_SEEDS.size(), flights])
+	check(through_doors >= 8, "most went through air doors (%d)" % through_doors)

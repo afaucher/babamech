@@ -12,7 +12,7 @@ extends Control
 ##          "traced"     the silhouette of every component: the union of the convex hulls of its actual meshes
 ##          "schematic"  traced outline plus every mesh's plate seams, joint markers, the body axis and slot numbers
 ##
-## Geometry: a MechModel (low-poly art, the given pilot head, strider) is built off-tree once per view and loadout, every mesh's
+## Geometry: a MechModel (low-poly art, the given pilot head and chassis: `chassis`, the Strider by default) is built off-tree once per view and loadout, every mesh's
 ## vertices are projected into 2D and grouped by component (head, torso, leg_l, leg_r, one per hardpoint id), then cached.
 ## Each component is a separate zone tinted by its health (cyan > 2/3, amber > 1/3, red, destroyed = grey with a red
 ## cross). Everything stays inside the heat arc and above the panel's state text (`area()`).
@@ -26,7 +26,7 @@ const VIEW_LABEL := {"front": "front", "side": "side profile", "three": "3/4"}
 const STYLE_LABEL := {"geometric": "geometric", "traced": "traced", "schematic": "schematic"}
 const BASE_IDS := ["head", "torso", "leg_l", "leg_r"]
 const HEAD := "chicken"
-const CHASSIS := "strider"
+const CHASSIS := "strider"   ## the default chassis (`chassis` picks the drawn one: its own parts, components, hardpoints)
 
 ## Camera per view: yaw (deg, from the mech's right side toward its front; 90 = head-on), elevation (deg), mirror
 ## (screen x flipped so the mech's left is on the left), stride (legs posed mid-stride so both read).
@@ -66,6 +66,10 @@ var head := HEAD:                  ## the pilot head id (traced from its mesh)
 		head = v if MechCatalog.HEADS.has(v) else HEAD
 		queue_redraw()
 var slot_of: Dictionary = {}       ## {hardpoint id: slot number} for the badges (the weapon rows' numbers)
+var chassis := CHASSIS:            ## the chassis drawn (MechCatalog id): the local pilot's
+	set(v):
+		chassis = v if MechCatalog.CHASSIS.has(v) else CHASSIS
+		queue_redraw()
 
 static var _lay := {}       ## layout() results by view, style, loadout and panel size
 static var _geo := {}       ## "view|loadout" -> projected geometry (model units, y down), see _build()
@@ -78,7 +82,7 @@ func _init() -> void:
 
 
 func _draw() -> void:
-	paint(self, size, view, style, mounted, health, head, slot_of)
+	paint(self, size, view, style, mounted, health, head, slot_of, chassis)
 
 
 # --- Layout --------------------------------------------------------------------------------------------------------
@@ -99,17 +103,18 @@ static func area(panel: Vector2) -> Rect2:
 
 
 ## Every component id the diagram shows for a loadout: head, torso, both legs and every hardpoint of the chassis.
-static func component_ids(_loadout: Dictionary = {}) -> Array[String]:
+static func component_ids(_loadout: Dictionary = {}, chassis_: String = CHASSIS) -> Array[String]:
 	var out: Array[String] = []
 	out.assign(BASE_IDS)
-	for hp: Dictionary in MechCatalog.chassis(CHASSIS)["hardpoints"]:
+	for hp: Dictionary in MechCatalog.chassis(chassis_)["hardpoints"]:
 		out.append(str(hp["id"]))
 	return out
 
 
 ## The zones in panel pixels: {component id: Array[PackedVector2Array]} (what takes that component's colour).
-static func zones(view_: String, style_: String, loadout: Dictionary, panel: Vector2, head_: String = HEAD) -> Dictionary:
-	var lay := layout(view_, style_, loadout, panel, head_)
+static func zones(view_: String, style_: String, loadout: Dictionary, panel: Vector2, head_: String = HEAD,
+		chassis_: String = CHASSIS) -> Dictionary:
+	var lay := layout(view_, style_, loadout, panel, head_, chassis_)
 	var out := {}
 	for it: Dictionary in lay["items"]:
 		var id := str(it["id"])
@@ -121,15 +126,18 @@ static func zones(view_: String, style_: String, loadout: Dictionary, panel: Vec
 
 ## The drawable items, fitted into the panel: {items: [{id, polys, seams, depth}], joints: [{id, pos}], axis: [a, b],
 ## ground: y, tags: {hardpoint id: pos}, xf: Transform2D}.
-static func layout(view_: String, style_: String, loadout: Dictionary, panel: Vector2, head_: String = HEAD) -> Dictionary:
-	var key := "%s|%s|%s|%s|%s" % [view_, style_, str(MechCatalog.sanitize_loadout(CHASSIS, loadout)), str(panel), head_]
+static func layout(view_: String, style_: String, loadout: Dictionary, panel: Vector2, head_: String = HEAD,
+		chassis_: String = CHASSIS) -> Dictionary:
+	var key := "%s|%s|%s|%s|%s|%s" % [view_, style_, str(MechCatalog.sanitize_loadout(chassis_, loadout)), str(panel), head_,
+		chassis_]
 	if not _lay.has(key):
-		_lay[key] = _layout(view_, style_, loadout, panel, head_)
+		_lay[key] = _layout(view_, style_, loadout, panel, head_, chassis_)
 	return _lay[key]
 
 
-static func _layout(view_: String, style_: String, loadout: Dictionary, panel: Vector2, head_: String) -> Dictionary:
-	var g := geometry(view_, loadout, head_)
+static func _layout(view_: String, style_: String, loadout: Dictionary, panel: Vector2, head_: String,
+		chassis_: String = CHASSIS) -> Dictionary:
+	var g := geometry(view_, loadout, head_, chassis_)
 	var items: Array = []
 	match style_:
 		"geometric":
@@ -275,10 +283,10 @@ static func _signed_area(p: PackedVector2Array) -> float:
 ##   groups: [{id, name, hull, depth, minor, weapon}]   one per part (a mesh or a small subtree: a foot, a weapon)
 ##   comps:  [{id, union: [poly], hulls: [poly], depth}] per component: the union of its meshes' hulls, and the hulls
 ##   joints: [{id, kind, pos}]  hip / knee / ankle / foot per leg;  axis: [top, bottom];  ground: y;  tags: {hp: pos}
-static func geometry(view_: String, loadout: Dictionary, head_: String = HEAD) -> Dictionary:
-	var key := "%s|%s|%s" % [view_, str(MechCatalog.sanitize_loadout(CHASSIS, loadout)), head_]
+static func geometry(view_: String, loadout: Dictionary, head_: String = HEAD, chassis_: String = CHASSIS) -> Dictionary:
+	var key := "%s|%s|%s|%s" % [view_, str(MechCatalog.sanitize_loadout(chassis_, loadout)), head_, chassis_]
 	if not _geo.has(key):
-		_geo[key] = _build(view_, loadout, head_)
+		_geo[key] = _build(view_, loadout, head_, chassis_)
 	return _geo[key]
 
 
@@ -296,10 +304,10 @@ static func _basis(view_: String) -> Array:
 	return [r, u, f]
 
 
-static func _build(view_: String, loadout: Dictionary, head_: String) -> Dictionary:
+static func _build(view_: String, loadout: Dictionary, head_: String, chassis_: String = CHASSIS) -> Dictionary:
 	var m := MechModel.new()
 	m.art = "lowpoly"
-	m.configure(head_, CHASSIS, loadout)
+	m.configure(head_, chassis_, loadout)
 	if bool((CAMS.get(view_, CAMS["front"]) as Dictionary)["stride"]):
 		m.params["gait"] = 1.0
 		m._process(0.25)   # a quarter cycle: one leg forward, the other back, neither lifted
@@ -344,7 +352,7 @@ static func _build(view_: String, loadout: Dictionary, head_: String) -> Diction
 		out_groups.append({"id": grp["id"], "name": nm, "hull": hull, "depth": float(grp["dsum"]) / int(grp["n"]),
 			"minor": minor, "weapon": not nm.ends_with(":mount")})
 	# A hardpoint with no hardware and no weapon (an empty back mount) still gets a zone: a small square at its mount.
-	for hp: Dictionary in MechCatalog.chassis(CHASSIS)["hardpoints"]:
+	for hp: Dictionary in MechCatalog.chassis(chassis_)["hardpoints"]:
 		var hid := str(hp["id"])
 		if comps.has(hid):
 			continue
@@ -377,7 +385,7 @@ static func _build(view_: String, loadout: Dictionary, head_: String) -> Diction
 				joints.append({"id": id, "kind": k, "pos": proj.call(lp[k] as Vector3)})
 	var top := m.hip_height() + 3.2
 	var tags := {}
-	for hp: Dictionary in MechCatalog.chassis(CHASSIS)["hardpoints"]:
+	for hp: Dictionary in MechCatalog.chassis(chassis_)["hardpoints"]:
 		var hid := str(hp["id"])
 		var pts := PackedVector2Array()
 		for grp: Dictionary in out_groups:
@@ -417,7 +425,7 @@ static func _walk(n: Node, xf: Transform3D, comp: String, group: String, out: Ar
 	elif nm.begins_with("HP_"):
 		comp = nm.substr(3)
 		group = comp
-	elif comp.begins_with("side_") or comp.begins_with("shoulder_") or comp == "back":
+	elif comp.begins_with("side_") or comp.begins_with("shoulder_") or comp.begins_with("back"):   # back, back_l, back_r
 		if group == comp:
 			group = comp + (":mount" if nm == "Mount" else ":weapon")
 	elif comp != "head":
@@ -425,7 +433,8 @@ static func _walk(n: Node, xf: Transform3D, comp: String, group: String, out: Ar
 			if nm.begins_with(part) and (nm.ends_with("_l") or nm.ends_with("_r")) and group == "":
 				comp = "leg_" + nm.right(1)
 				group = nm
-		if comp == "torso" and group == "" and nm in ["Torso", "Pelvis", "Nose", "Hatch", "BackPlate", "ShoulderPod_l", "ShoulderPod_r"]:
+		if comp == "torso" and group == "" and nm in ["Torso", "Pelvis", "Nose", "Hatch", "BackPlate", "ShoulderPod_l", "ShoulderPod_r",
+				"Pod_l", "Pod_r"]:
 			group = nm
 	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
 		var faces := (n as MeshInstance3D).mesh.get_faces()
@@ -514,12 +523,12 @@ static func hp_col(v: float) -> Color:
 
 ## Draw the diagram into canvas item `c` for a status panel of `panel` size.
 ## `head_`: the pilot head id (its silhouette is traced); `slot_of`: {hardpoint id: slot number} for the badges (the
-## weapon rows' numbers; default: the chassis' hardpoint order, 1-5).
+## weapon rows' numbers; default: the chassis' hardpoint order, 1-n).
 static func paint(c: CanvasItem, panel: Vector2, view_: String, style_: String, loadout: Dictionary, hp: Dictionary,
-		head_: String = HEAD, slot_of: Dictionary = {}) -> void:
+		head_: String = HEAD, slot_of: Dictionary = {}, chassis_: String = CHASSIS) -> void:
 	if _font == null:
 		_font = ThemeDB.fallback_font
-	var lay := layout(view_, style_, loadout, panel, head_)
+	var lay := layout(view_, style_, loadout, panel, head_, chassis_)
 	var schematic := style_ == "schematic"
 	var geometric := style_ == "geometric"
 	# Ground line and body axis (schematic: dashed construction lines; others: a faint ground tick).
@@ -613,7 +622,7 @@ static func paint(c: CanvasItem, panel: Vector2, view_: String, style_: String, 
 			c.draw_arc(pos, 2.6, 0.0, TAU, 12, jc, 1.0, true)
 			c.draw_circle(pos, 0.9, jc)
 		var slot := 1
-		for hpd: Dictionary in MechCatalog.chassis(CHASSIS)["hardpoints"]:
+		for hpd: Dictionary in MechCatalog.chassis(chassis_)["hardpoints"]:
 			var hid := str(hpd["id"])
 			var num := int(slot_of.get(hid, slot))
 			if (lay["badges"] as Dictionary).has(hid):

@@ -26,10 +26,14 @@ const ROOF_SIGHT_MIN := 15.0
 const ROOF_SIGHT_EYE := 6.0
 const ROOF_SIGHT_AIM := 2.5
 const ROOF_SIGHT_POINTS := 3
+## Mission waves: every wave of a deck's pool is this many times budget x (1 - pool.garrison) x share (user playtest
+## 2026-11-23: inbound waves were too small at 2-4 units). Waves only: the garrison is unchanged, so a deck's total rises.
+const WAVE_POOL_SCALE := 1.75
+const BAY_HEAVY_MAX := 2           ## heavies (tank, gunship) in one gate-bay opening at most
 
 
 ## Deterministic total unit budget for one deck (garrison + waves combined; deeper decks & larger crews scale up).
-## Kept cleanly inside WaveDirector.DECK_CAP (24) so 4-mech co-op + waves never stall on caps or frame budget.
+## Kept cleanly inside PacingDirector.DECK_CAP (24) so 4-mech co-op + waves never stall on caps or frame budget.
 static func deck_budget(crew_size: int = 1, deck: int = 0) -> int:
 	var crew := clampi(crew_size, 1, 4)
 	var depth := maxi(deck, 0)
@@ -259,6 +263,7 @@ static func spawn_specs(specs: Array[Dictionary], plan: CityPlan, ring: RingFram
 		e.spawn_deck = spawn_deck
 		e.wave = str(sp.get("wave", wave_id))
 		e.defend_target_id = str(sp.get("defend_target_id", ""))
+		e.staged = bool(sp.get("staged", false))   # gate bay: dormant until MissionFlow rolls the group out
 		var x := float(sp["x"])
 		var s := float(sp["s"])
 		var h := float(sp["h"])
@@ -315,7 +320,14 @@ static func spawn_specs(specs: Array[Dictionary], plan: CityPlan, ring: RingFram
 # --- Mission Waves Phase 1 (docs/design/mission-objectives.md §5 & §9) ------------------------------------
 
 ## Plan one wave release batch at `source_def` respecting `wave_pool_share` (= 1 - pool.garrison), `wave_def.share`,
-## `WaveDirector.WAVE_MAX`, `order.max_units`, and `source_def.load`. Returns {specs, total_units, spawn_count, pending}.
+## WAVE_POOL_SCALE, `PacingDirector.WAVE_MAX`, `order.max_units`, and `source_def.load`. Returns {specs, total_units,
+## spawn_count, pending}. Size: clamp(round(budget x wave_pool_share x share x WAVE_POOL_SCALE), 2 (1 for a budget of 1),
+## WAVE_MAX), or `wave_def.units` when > 0 (a director patrol); the caller's budget carries the crew scaling (MissionFlow:
+## PacingDirector.reserve_budget).
+## GATE BAYS: with `source_def.bay` (BayFormation's normalised bay) the units are laid out in the bay (BayFormation.layout:
+## seeded loose staggered rows, the same generator, drawn after the type roll) instead of the recess grid, at most
+## BAY_HEAVY_MAX heavies per opening; units that do not fit the bay stay pending (the follow-up load). Each spec then
+## carries "staged": true, "exit": [Vector3 arc x, s, h] (BayFormation.exit_path) and "exit_wait" (s) for the roll-out.
 static func plan_wave(plan: CityPlan, ring: RingFrame, order: Dictionary, wave_def: Dictionary,
 		source_def: Dictionary, budget: int, mission_seed: int = 1, already_spawned: int = 0,
 		wave_pool_share: float = 1.0) -> Dictionary:
@@ -323,7 +335,10 @@ static func plan_wave(plan: CityPlan, ring: RingFrame, order: Dictionary, wave_d
 	var share := clampf(float(wave_def.get("share", 0.3)), 0.05, 1.0)
 	var pool_share := clampf(wave_pool_share, 0.0, 1.0)
 	var min_u := 1 if budget <= 1 else 2
-	var total_units := clampi(roundi(float(maxi(budget, 1)) * pool_share * share), min_u, WaveDirector.WAVE_MAX)
+	var total_units := clampi(roundi(float(maxi(budget, 1)) * pool_share * share * WAVE_POOL_SCALE), min_u,
+			PacingDirector.WAVE_MAX)
+	if int(wave_def.get("units", 0)) > 0:
+		total_units = mini(int(wave_def["units"]), PacingDirector.WAVE_MAX)
 	var remaining := maxi(total_units - already_spawned, 0)
 	var source_load := maxi(int(source_def.get("load", 6)), 1)
 	var max_u := maxi(int(order.get("max_units", remaining)), 0)
@@ -335,9 +350,11 @@ static func plan_wave(plan: CityPlan, ring: RingFrame, order: Dictionary, wave_d
 
 	# Defend-objective waves (trigger: {kind: "objective", id: "<defend_id>", step: "start"}, id != "hold") may target
 	# that defend relay alongside crew mechs; all other waves and garrisons ignore AssetTargets in missions.
-	var defend_id := ""
+	var defend_id := str(wave_def.get("for", ""))
+	if defend_id == "hold":
+		defend_id = ""
 	var trig: Variant = wave_def.get("trigger", {})
-	if trig is Dictionary and str((trig as Dictionary).get("kind", "")) == "objective" \
+	if defend_id == "" and trig is Dictionary and str((trig as Dictionary).get("kind", "")) == "objective" \
 			and str((trig as Dictionary).get("step", "")) == "start":
 		var tid_s := str((trig as Dictionary).get("id", ""))
 		if tid_s != "" and tid_s != "hold":
@@ -361,6 +378,23 @@ static func plan_wave(plan: CityPlan, ring: RingFrame, order: Dictionary, wave_d
 	var yaw_out := _yaw_toward(src_pt, tw_pt)
 
 	var types := _roll_wave_types(rng, theme, skind, count)
+	var bay: Dictionary = source_def.get("bay", {}) if source_def.get("bay") is Dictionary else {}
+	var slots: Array[Dictionary] = []
+	if not bay.is_empty():
+		var heavies := 0
+		for i in types.size():
+			if types[i] in BayFormation.HEAVY:
+				heavies += 1
+				if heavies > BAY_HEAVY_MAX:
+					types[i] = "strider_breacher"
+		slots = BayFormation.layout(bay, types, rng)
+		var fit: Array[String] = []
+		for sl: Dictionary in slots:
+			fit.append(str(sl["kind"]))
+		pending += types.size() - fit.size()
+		types = fit
+		if types.is_empty():
+			return {"specs": specs, "total_units": total_units, "spawn_count": 0, "pending": pending}
 	var used: Array[Vector2] = []
 	var trooper_idx := 0
 	var ft_gid := "%s_ft_%d" % [wave_id, already_spawned]
@@ -372,7 +406,11 @@ static func plan_wave(plan: CityPlan, ring: RingFrame, order: Dictionary, wave_d
 		var row := i / 3
 		var col := (i % 3) - 1
 		var pt: Vector2
-		if in_recess:
+		if not slots.is_empty():
+			pt = slots[i]["arc"]
+			if is_air:
+				h = CityPlan.CURB_H + float(slots[i]["h"])
+		elif in_recess:
 			# Hidden gate recess behind the boundary wall (MissionWorld.source_point): keep inside the recess!
 			pt = src_pt + right * (float(col) * 2.2) - fwd * (float(row) * 2.4)
 		else:
@@ -386,6 +424,11 @@ static func plan_wave(plan: CityPlan, ring: RingFrame, order: Dictionary, wave_d
 			"pocket": "wave_" + wave_id, "patrol": walk_out, "wave": wave_id,
 			"defend_target_id": defend_id,
 		}
+		if not slots.is_empty():
+			var cruise := CityPlan.CURB_H + (GUNSHIP_CRUISE_ALT if tid == "gunship" else DRONE_CRUISE_ALT)
+			sp["staged"] = true
+			sp["exit"] = BayFormation.exit_path(bay, slots[i], cruise, CityPlan.CURB_H)
+			sp["exit_wait"] = BayFormation.exit_wait(slots[i])
 		if tid.begins_with("trooper_"):
 			sp["squad_group"] = ft_gid
 			sp["squad_anchor"] = exit_pt + fwd * 4.0
@@ -404,7 +447,8 @@ static func plan_wave(plan: CityPlan, ring: RingFrame, order: Dictionary, wave_d
 ##   ctx    = {stack: CityStack, world: CombatWorld, squad: EnemySquad, seed: int, crew: int, pool: Dictionary}
 ##            (optional overrides for tests: plan, ring, budget, skip_meshes, respect_open_at)
 ## Creates at most `order.max_units` (and `source.load`) units now at `source.point` (or `source`), sized from
-## `budget * (1 - pool.garrison) * wave.share` (min 2), tagged with `e.wave = order.wave`, `e.spawn_deck = order.deck`,
+## `budget * (1 - pool.garrison) * wave.share * WAVE_POOL_SCALE` (min 2), tagged with `e.wave = order.wave`, `e.spawn_deck = order.deck`,
+
 ## and `e.defend_target_id` (for defend waves), added to `ctx.squad` (streamed by EnemySync), arriving hunting.
 ## Returns the number of units of that wave STILL TO SPAWN (0 when complete; follow-up orders call again).
 static func spawn_wave(order: Dictionary, wave: Dictionary, source: Dictionary, ctx: Dictionary) -> int:

@@ -18,6 +18,8 @@ const ALT_BREAKOFF := 15.0
 const ALT_MAX := 17.5
 const CEILING_CAP := 34.0
 const CLOSE_ENGAGE_R := 68.0
+const EVADE_RING_MIN := 45.0       ## a disarmed gunship circles its target between these (m)
+const EVADE_RING_MAX := 70.0
 const MUZZLE_L := Vector3(-1.9, -0.25, -2.1)
 const MUZZLE_R := Vector3(1.9, -0.25, -2.1)
 
@@ -398,15 +400,50 @@ func _step_cover_skim(dt: float, target_pos: Vector3, space: PhysicsDirectSpaceS
 			else:
 				_cover_path_timer = 0.05
 	var steer_goal := target_pos
+	# A flier flies straight at the goal, over the roofs in the way (skim height raised to clear the tallest of them),
+	# unless something it cannot clear under the ceiling cap (a tower / pillar) is in the way: then the street path.
+	# The street path (the walkers' graph) starts at the crossing nearest to it, often behind it: it took a gunship that
+	# had lost sight of a mech on the deck's edge street round a block, 99-124 m out, past its 88 m rockets
+	# (test_wave_pursuit, seed 1 deck 1 shaft source).
+	var here := _world_to_arc2(_world_pos())
+	var skim_alt := _skim_clear_alt(here, _world_to_arc2(target_pos))
+	if skim_alt > 0.0:
+		_path_points.clear()
+	else:
+		skim_alt = ALT_SKIM
 	while not _path_points.is_empty():
 		var wp := _arc_to_world_alt(_path_points[0], ALT_SKIM)
-		if _world_pos().distance_to(wp) < 8.5:
+		var off := wp - _world_pos()
+		off -= up * off.dot(up)   # horizontal: a gunship above skim height never got within 8.5 m of a waypoint in 3D
+		if off.length() < 8.5:
 			_path_points.pop_front()
 		else:
 			steer_goal = wp
 			break
 	var spd := float(_cfg.get("flank_speed", 17.0)) * speed_scale * _speed_mult
-	_fly_toward(steer_goal, ALT_SKIM, spd, dt, space, target_pos)
+	_fly_toward(steer_goal, skim_alt, spd, dt, space, target_pos)
+
+
+## Height to fly arc segment a-b straight: ALT_SKIM when nothing tall is in the way, else 5 m over the tallest roof it
+## crosses (footprints grown 3 m); -1 when that would pass CEILING_CAP - 3 (a tower / pillar): take the street path.
+func _skim_clear_alt(a: Vector2, b: Vector2) -> float:
+	var alt := ALT_SKIM
+	if squad == null or not squad.has_method("deck_occluders"):
+		return alt
+	var lo := Vector2(minf(a.x, b.x), minf(a.y, b.y)) - Vector2(4.0, 4.0)
+	var hi := Vector2(maxf(a.x, b.x), maxf(a.y, b.y)) + Vector2(4.0, 4.0)
+	for item: Dictionary in squad.deck_occluders(spawn_deck):
+		var h := float(item["h"])
+		if h < ALT_SKIM - 2.0 or h + 5.0 <= alt:
+			continue
+		var r: Rect2 = item["rect"]
+		if hi.x < r.position.x or lo.x > r.end.x or hi.y < r.position.y or lo.y > r.end.y:
+			continue
+		if EnemySquad._segment_hits_rect(a, b, r.grow(3.0)):
+			if h + 5.0 > CEILING_CAP - 3.0:
+				return -1.0
+			alt = h + 5.0
+	return alt
 
 
 func _step_attack_strafe(dt: float, target_pos: Vector3, spd_mult: float, space: PhysicsDirectSpaceState3D) -> void:
@@ -439,6 +476,21 @@ func _step_breakoff(dt: float, target_pos: Vector3, space: PhysicsDirectSpaceSta
 	var radial := away / dist if dist > 0.1 else (-global_basis.z if is_inside_tree() else Vector3.FORWARD)
 	var tangent := radial.cross(up).normalized() * _flank_sign
 	var rad_w := 0.72 if (evasive and dist < 60.0) else 0.45
+	# An armed break-off is lateral, inside its rockets' reach: past CLOSE_ENGAGE_R + 8 m it curves back in instead of
+	# opening the range further (it used to end 100-125 m out, beyond its 88 m rockets, on every salvo).
+	if not evasive and dist > CLOSE_ENGAGE_R + 8.0:
+		rad_w = -0.35
+	# A disarmed gunship (pods shot off) evades in a ring round its target, not away from it: its old 0.45 outward
+	# weight flew it to the far end of the deck, 400 m out and out of sight, where no one could finish it and a sweep
+	# never ended (seed 4 deck 0, d0_w1 gunship at 8 % hull). Ring: out under EVADE_RING_MIN, level to EVADE_RING_MAX,
+	# back in beyond it.
+	if evasive:
+		if dist < EVADE_RING_MIN:
+			rad_w = 0.72
+		elif dist <= EVADE_RING_MAX:
+			rad_w = 0.0
+		else:
+			rad_w = -0.4
 	var dir := (tangent * 0.85 + radial * rad_w).normalized()
 	var alt := ALT_BREAKOFF + (1.2 if evasive else 0.0)
 	var spd := 15.0 * speed_scale * _speed_mult
@@ -452,6 +504,16 @@ func _fly_toward(goal_w: Vector3, want_alt: float, spd: float, dt: float, space:
 		up = ring.up_at(pos)
 	if _avoid_t > 0.0:
 		_avoid_t = maxf(_avoid_t - dt, 0.0)
+	# A goal in the 12 m strip along the deck's wall (a mech on the edge street) is steered for at its nearest point
+	# inside the keep-in rect below: aiming past the rect made the keep-in push back every frame and the gunship stalled
+	# on the rect's edge, short of its attack range (seed 1 deck 2: 76 m from a mech at x 129, rect edge x 123).
+	var gp: CityPlan = squad.deck_plan(spawn_deck) if (squad != null and squad.has_method("deck_plan")) else null
+	if gp != null and ring != null:
+		var ga := ring.world_to_arc(goal_w)
+		var gx: Rect2 = gp.extent.grow(-12.5)
+		var gin := Vector2(clampf(ga.x, gx.position.x, gx.end.x), clampf(ga.y, gx.position.y, gx.end.y))
+		if gin.distance_squared_to(Vector2(ga.x, ga.y)) > 0.01:
+			goal_w = ring.arc_to_world(gin.x, gin.y, ga.z)
 	var to_g := goal_w - pos
 	to_g -= up * to_g.dot(up)
 	var dir := to_g.normalized() if to_g.length_squared() > 0.25 else (-global_basis.z if is_inside_tree() else Vector3.FORWARD)
@@ -526,14 +588,21 @@ func _fly_toward(goal_w: Vector3, want_alt: float, spd: float, dt: float, space:
 	var step_h := dir * eff_spd * dt
 	var climb_rate := 12.5 if (climb_over or target_alt > cur_alt + 1.0) else 7.5
 	var d_alt := clampf(target_alt - cur_alt, -7.5 * dt, climb_rate * dt)
+	# Below the floor height (just out of a gate bay, or knocked low) it climbs at the climb rate, never snaps up, and
+	# not while something is right overhead (a bay's lintel): it moves out from under it first.
+	var low_floor := ALT_MIN - 0.5
+	if cur_alt < low_floor - 0.05:
+		if d_alt > 0.0 and space != null and _air_ray_hit(space, pos, pos + up * 6.0):
+			d_alt = 0.0
+		low_floor = minf(low_floor, cur_alt + maxf(d_alt, 0.0))
 	var next_pos := pos + step_h + up * d_alt
 	if ring != null:
 		up = ring.up_at(next_pos)
-		var nh := clampf(ring.height(next_pos), ALT_MIN - 0.5, CEILING_CAP)
+		var nh := clampf(ring.height(next_pos), low_floor, CEILING_CAP)
 		var a3 := ring.world_to_arc(next_pos)
 		next_pos = ring.arc_to_world(a3.x, a3.y, nh)
 	else:
-		next_pos.y = clampf(next_pos.y, ALT_MIN - 0.5, CEILING_CAP)
+		next_pos.y = clampf(next_pos.y, low_floor, CEILING_CAP)
 	var want_fwd := dir
 	if not is_nan(look_target.x):
 		var lt := look_target - next_pos
@@ -687,6 +756,8 @@ func _update_visuals(dt: float) -> void:
 		_body_pivot.position.y = sin(_hover_t * 2.8) * 0.22
 		_body_pivot.rotation = Vector3(_aim_pitch, 0.0, _bank_roll)
 	super._update_visuals(dt)
+	if _body_pivot != null and is_instance_valid(_body_pivot):   # stagger: the hull rocks away from the hit, settles
+		_body_pivot.basis = stagger_rock_basis(0.18 * anim_stagger_amp) * _body_pivot.basis
 
 
 func debug_info() -> Dictionary:

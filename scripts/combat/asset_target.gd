@@ -39,6 +39,7 @@ var mech: CollisionObject3D = null
 func _init(id: String = "", r: float = 2.5, h: float = 6.0) -> void:
 	super._init()
 	mass_class = "static"
+	armored = true                # weapons.md §3.10: flak's armor_mult applies
 	owner_peer = 0
 	team = "player"
 	set_max_hp({"body": 1.0})     # never written: full forever (repairable false, destroyed false)
