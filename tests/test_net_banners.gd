@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Invader banners across machines (docs/design/banners.md) over a real crew mission of 2, once per link (off, coast).
 ## Both machines set up OccupationBanners on their own TestDrive's stack and CombatWorld (TestDrive.banners, the
 ## Engine wiring): the same checksum. The client shoots one banner with autocannon records; each hit is decided on the

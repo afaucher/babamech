@@ -1,0 +1,19 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-25T17:15:45	1_breach_walk_s11.png	flux3_klein_t2i	11	1024x576			9.18	1_breach_walk_prompt.txt
+2026-11-25T17:15:48	1_breach_walk_s22.png	flux3_klein_t2i	22	1024x576			3.29	1_breach_walk_prompt.txt
+2026-11-25T17:15:53	2_rail_sleds_s11.png	flux3_klein_t2i	11	1024x576			3.71	2_rail_sleds_prompt.txt
+2026-11-25T17:15:56	2_rail_sleds_s22.png	flux3_klein_t2i	22	1024x576			3.31	2_rail_sleds_prompt.txt
+2026-11-25T17:16:00	3_floor_drop_s11.png	flux3_klein_t2i	11	1024x576			3.72	3_floor_drop_prompt.txt
+2026-11-25T17:16:04	3_floor_drop_s22.png	flux3_klein_t2i	22	1024x576			3.32	3_floor_drop_prompt.txt
+2026-11-25T17:16:08	4_overhead_crane_s11.png	flux3_klein_t2i	11	1024x576			3.73	4_overhead_crane_prompt.txt
+2026-11-25T17:16:11	4_overhead_crane_s22.png	flux3_klein_t2i	22	1024x576			3.31	4_overhead_crane_prompt.txt
+2026-11-25T17:16:15	5_alcove_airlocks_s11.png	flux3_klein_t2i	11	1024x576			3.71	5_alcove_airlocks_prompt.txt
+2026-11-25T17:16:19	5_alcove_airlocks_s22.png	flux3_klein_t2i	22	1024x576			3.34	5_alcove_airlocks_prompt.txt
+2026-11-25T17:16:23	6_carousel_s11.png	flux3_klein_t2i	11	1024x576			3.72	6_carousel_prompt.txt
+2026-11-25T17:16:26	6_carousel_s22.png	flux3_klein_t2i	22	1024x576			3.31	6_carousel_prompt.txt
+2026-11-25T17:16:30	7_cutaway_lift_s11.png	flux3_klein_t2i	11	1024x576			3.72	7_cutaway_lift_prompt.txt
+2026-11-25T17:16:34	7_cutaway_lift_s22.png	flux3_klein_t2i	22	1024x576			3.3	7_cutaway_lift_prompt.txt
+2026-11-25T17:16:38	8_belly_ramp_s11.png	flux3_klein_t2i	11	1024x576			3.71	8_belly_ramp_prompt.txt
+2026-11-25T17:16:41	8_belly_ramp_s22.png	flux3_klein_t2i	22	1024x576			3.29	8_belly_ramp_prompt.txt
+2026-11-25T17:16:45	9_mass_driver_s11.png	flux3_klein_t2i	11	1024x576			3.7	9_mass_driver_prompt.txt
+2026-11-25T17:16:49	9_mass_driver_s22.png	flux3_klein_t2i	22	1024x576			3.3	9_mass_driver_prompt.txt

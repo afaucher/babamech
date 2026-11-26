@@ -79,7 +79,7 @@ func step(delta: float) -> void:
 	if _body == null or delta <= 0.0:
 		return
 	var a := _audio()
-	if a == null:
+	if a == null or a.skip_cues():   # headless: no sound (AudioDirector.silent)
 		_step_queue.clear()
 		return
 	if city == null and not _city_scanned and is_inside_tree():

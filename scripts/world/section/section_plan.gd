@@ -174,14 +174,6 @@ func clear_height() -> float:
 	return p("pitch") - p("slab")
 
 
-func s_of(k: int, theta: float) -> float:
-	return theta * radius_of(k)
-
-
-func theta_of(k: int, s: float) -> float:
-	return s / radius_of(k)
-
-
 ## Length of deck k along the arc (lower decks are longer: same angle, bigger radius).
 func arc_of(k: int) -> float:
 	return span * radius_of(k)

@@ -53,7 +53,6 @@ func _play() -> void:
 	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = SEED
-	td.objectives = true
 	add_child(td)
 	await frames(4)
 	mf = td.mission
@@ -93,7 +92,6 @@ func _play() -> void:
 				o["type"], mf.now(), mf.rules.obj_state(id), str(mf.director.state()), str(td.enemies_alive_per_deck())]):
 			return
 	eq(mf.rules.outcome, "won", "the mission is won")
-	check(mf.unspawned.is_empty(), "every wave went through EnemySpawner.spawn_wave (stub: %s)" % str(mf.unspawned))
 	print("phase1: won at t=%.1f, %d orders, peak alive deck %d / section %d" % [mf.now(), orders.size(), peak_deck, peak_sec])
 
 	# Groups: arrival (order for a staged bay group, door otherwise), build spacing, ceilings.

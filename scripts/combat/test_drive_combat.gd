@@ -52,6 +52,7 @@ func setup(td: TestDrive) -> void:
 	add_child(world)
 	world.prewarm_mesh_pool(MESH_POOL_PREWARM, ImpactFx.pool_plan() + Rocket.pool_plan() + RepairDrone.pool_plan())
 	CombatWorld.warm_target_scripts()    # splash's per-script check, at load instead of on a target's first splash
+	WeaponRegistry.prewarm_enemy_weapons()   # enemy shots' meshes (rockets, shells) at load, not on their first shot
 	var crew := td.crewed and Net.online()
 	if crew:
 		world.set_clock(CombatNet.session_clock)   # fire records' t on the shared clock (before anything reads now)

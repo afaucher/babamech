@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Enemies hear a client's fire (EnemySquad hearing, host-only) over a real crew mission of 2 in the stack, once per link
 ## (off, coast). The host idles every enemy but one turret E on the entry deck, which it moves about 30 m in front of the
 ## client's mech, facing away, with its sight cut (sight_range 1 m: only hearing can alert it).

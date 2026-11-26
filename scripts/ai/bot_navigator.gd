@@ -54,7 +54,7 @@ func setup(p: CityPlan, r: RingFrame, rng: RandomNumberGenerator) -> void:
 		_build_explore_route()
 
 
-## A hop-only chassis (MechController.thrust_ceiling > 0, the Bulwark): only the roofs it can hop onto (roof_h <= h)
+## A hop-only chassis (MechCatalog.bot_hop_height > 0, the Bulwark): only the roofs it can hop onto (roof_h <= h)
 ## stay jumpable; a roof it cannot reach is never chosen as a vantage or perch.
 func drop_roofs_above(h: float) -> void:
 	for i in range(_roofs.size() - 1, -1, -1):

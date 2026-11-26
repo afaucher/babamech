@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Inter-frame performance & stutter profiler (runs real TestDrive combat with physics, AI, weapons, props, HUD, audio).
 ## Measures per-frame CPU time (p50 / p95 / p99 / max) and breaks down CombatWorld/AI, WeaponRack, WorldAimMarkers,
 ## Audio prewarm, and warm vs. cold gameplay frames so bursty spikes are caught automatically.
@@ -15,6 +16,7 @@ func setup() -> void:
 func _profile_test_drive() -> void:
 	var audio := get_tree().root.get_node_or_null("Audio") as AudioDirector
 	if audio != null:
+		audio.silent = false   # time the live game's audio path (headless runs are silent by default: AudioDirector.silent)
 		audio.bank.clear_cache()
 		audio.bank.start_async_prewarm()   # exercise the exact non-blocking live-game audio path
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive

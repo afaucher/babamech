@@ -7,13 +7,10 @@ extends TestCase
 ## - TestDrive.entry_spawn gives a crew of 4 four slots on the entry road, none overlapping;
 ## - dropped below the lowest deck it respawns at the entry; N (new city, solo) rebuilds the stack on the next seed;
 ## - an offline crew (TestDrive.offline_crew = 4) spawns 3 idle puppets in the crew slots;
-## - city_mode "district" (what --district picks) still builds the single district, unchanged.
+## - the stack is the only city: a forced city_mode or `--district` changes nothing (the district mode was cut).
 
 
 func setup() -> void:
-	eq(TestDrive.launch_mode(PackedStringArray()), TestDrive.MODE_STACK, "the stack is the default city")
-	eq(TestDrive.launch_mode(PackedStringArray(["--district"])), TestDrive.MODE_DISTRICT, "--district picks the single district")
-	eq(TestDrive.launch_mode(PackedStringArray(["--stack"])), TestDrive.MODE_STACK, "--stack picks the stack")
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	add_child(td)
 	await frames(4)
@@ -28,7 +25,8 @@ func setup() -> void:
 	check(td.city != null and td.city == st.decks[k], "td.city is the stack's entry deck")
 	check(td.city.global_position.length() < 0.001, "the entry deck sits at the world origin (%s)" % td.city.global_position)
 	check(td.city.plan.buildings.size() > 10, "the entry deck has a city (%d buildings)" % td.city.plan.buildings.size())
-	eq(td.mission_checksum(), st.checksum(), "the mission checksum is the stack's")
+	check(td.mission != null and td.mission.plan != null, "the solo drive plays the plan (the one mission mode)")
+	eq(td.mission_checksum(), st.checksum() + "/" + td.mission.plan.checksum(), "the mission checksum is the stack's + the plan's")
 	check(td.combat.enemies.size() >= 3, "enemies found spots on the entry deck (%d)" % td.combat.enemies.size())
 	for e in td.combat.enemies:
 		if is_instance_valid(e):
@@ -100,14 +98,13 @@ func setup() -> void:
 		check(mi.global_position.distance_to(tdc.crew_spawn(i, 4).origin) < 1.0, "offline crew mech %d is in its slot" % i)
 	tdc.queue_free()
 	await frames(2)
-	# The single district (--district): unchanged.
+	# The stack is the only city: an old forced mode ("district") still builds the stack.
 	var tdd := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	tdd.city_mode = TestDrive.MODE_DISTRICT
+	tdd.city_mode = "district"
 	add_child(tdd)
 	await frames(4)
-	check(tdd.stack == null and tdd.city != null and tdd.city.plan.buildings.size() > 10, "city_mode district builds one district")
-	eq(tdd.mission_checksum(), tdd.city.plan.checksum(), "the district's mission checksum is its plan's")
-	check(absf(tdd.city.ring.height(tdd.mech.global_position)) < 1.5, "the district mech spawns on the street")
+	check(tdd.stack != null and tdd.city_mode == TestDrive.MODE_STACK and tdd.city == tdd.stack.decks[int(tdd.stack.section.entry["deck"])],
+		"a forced 'district' city_mode builds the stack")
 	tdd.queue_free()
 	await frames(1)
 	finish()

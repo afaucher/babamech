@@ -3,7 +3,8 @@ extends TestCase
 ## CHASSIS_SIGHT the head / legs offsets over low cover, the capsule radius the "reached the body" slack of a sight ray):
 ## a rifle trooper 80 m off, for a Strider and a Bulwark (a real PlayerTarget of each, set up from its chassis):
 ##  - in the open: notices, fires, and its rounds damage the mech;
-##  - behind a 5 m wall 5 m in front of it (partial cover: the torso line blocked): it still sees the mech's head over
+##  - behind a wall 5 m in front of it (partial cover: the torso line blocked; 5 m for the Bulwark, 8 m for the 11.7 m
+##    Strider, whose aim centre is 6.9 m up since its 2026-11-24 hit-volume refit): it still sees the mech's head over
 ##    the wall, aims at it (the sight offset) and hits it;
 ##  - behind a 30 m building (full cover): never alerted, never fires, no damage.
 ## Headless, physics on (a floor, boxes), combat clock only.
@@ -56,7 +57,8 @@ func _box(size: Vector3, at: Vector3) -> StaticBody3D:
 func _run(chassis: String, cover: String) -> Dictionary:
 	var wall: StaticBody3D = null
 	if cover == "low":
-		wall = _box(Vector3(30, 5.0, 0.6), Vector3(0, 2.5, -75))
+		var wh := 8.0 if chassis == "strider" else 5.0
+		wall = _box(Vector3(30, wh, 0.6), Vector3(0, wh * 0.5, -75))
 	elif cover == "full":
 		wall = _box(Vector3(60, 30, 4), Vector3(0, 15, -20))
 	await frames(2)

@@ -142,7 +142,8 @@ func _radiator() -> void:
 func _ammo_bin() -> void:
 	eq(WeaponRack.bonus_ammo(36, 6, 0.5), 54, "rockets 36 -> 54")
 	eq(WeaponRack.bonus_ammo(18, 3, 0.5), 27, "missiles 18 -> 27")
-	eq(WeaponRack.bonus_ammo(3, 1, 0.5), 5, "mortar 3 -> 4.5 -> 5")
+	eq(WeaponRack.bonus_ammo(6, 1, 0.5), 9, "mortar 6 -> 9")
+	eq(WeaponRack.bonus_ammo(3, 1, 0.5), 5, "an odd count rounds up: 3 -> 4.5 -> 5")
 	eq(WeaponRack.bonus_ammo(10, 6, 0.5), 18, "15 rounds up to a whole salvo of 6: 18")
 	eq(WeaponRack.bonus_ammo(-1, 1, 0.5), -1, "unlimited stays unlimited")
 	eq(WeaponRack.bonus_ammo(36, 6, 0.0), 36, "no bonus: unchanged")
@@ -157,7 +158,7 @@ func _ammo_bin() -> void:
 	await _free(r)
 	var r2 := await _rack({"shoulder_l": "rockets", "back": "mortar"}, "nobin")
 	eq(int((r2["rack"] as WeaponRack).slots()[1 + 1]["ammo"]), 36, "without the bin: 36 rockets")
-	eq(int((r2["rack"] as WeaponRack).slots()[4]["ammo"]), 3, "and 3 mortar shells")
+	eq(int((r2["rack"] as WeaponRack).slots()[4]["ammo"]), 6, "and 6 mortar shells")
 	await _free(r2)
 
 

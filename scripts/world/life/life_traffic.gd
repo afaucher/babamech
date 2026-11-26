@@ -606,14 +606,6 @@ func lap_time_at(li: int, u: float) -> float:
 	return 0.0
 
 
-## The earliest time >= after when vehicle vid's own timetable is at lap distance u again (to rejoin it with no jump).
-func rejoin_time(vid: int, u: float, after: float) -> float:
-	var v: Dictionary = vehicles[vid]
-	var lo: Dictionary = loops[int(v["loop"])]
-	var a := lap_time_at(int(v["loop"]), u)
-	return after + fposmod(a - _lap_time(vid, after), float(lo["L"]))
-
-
 ## Whether pod vid carries passengers on the lap running at time t, and how many (0 for carts, and while docked).
 func riders(vid: int, t: float) -> int:
 	if vehicles[vid]["kind"] != "pod":
@@ -622,11 +614,6 @@ func riders(vid: int, t: float) -> int:
 	if lp.h(vid + 70000, k, 77) >= 0.5:
 		return 0
 	return 1 + (1 if lp.h(vid + 70000, k, 78) < 0.5 else 0)
-
-
-## The lap distance between two vehicles of one loop, going backward from `ahead` to `behind`.
-func gap_behind(li: int, ahead_u: float, behind_u: float) -> float:
-	return fposmod(ahead_u - behind_u, float(loops[li]["length"]))
 
 
 func loop_vehicles(li: int) -> Array[int]:

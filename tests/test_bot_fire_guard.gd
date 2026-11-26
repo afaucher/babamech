@@ -107,7 +107,10 @@ func _scene(wid: String, mate_at: Vector3, mate_vel: Vector3, guard: bool, relay
 	var t := 0.0
 	while t < fire_for + 9.0:
 		mate.position += mate_vel * DT
-		var mates := [{"pos": mate.position, "vel": mate_vel, "up": UP}] + BotFireGuard.asset_states(w)
+		# the mate as BotFireGuard.crew_states describes a Strider (its body_extent capsule)
+		var ext := PlayerTarget.body_extent("strider")
+		var mates := [{"pos": mate.position, "vel": mate_vel, "up": UP, "r": maxf(float(ext["r"]), BotFireGuard.HULL_R),
+			"hi": maxf(float(ext["hi"]), BotFireGuard.HULL_HI)}] + BotFireGuard.asset_states(w)
 		var dot := aim
 		var abort := BotFireGuard.missile_abort(w, SHOOTER, aim, mates, UP) if guard else Vector3.INF
 		if abort != Vector3.INF:

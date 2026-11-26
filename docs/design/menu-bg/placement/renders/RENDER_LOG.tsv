@@ -1,0 +1,7 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-25T17:17:01	A_cradle_s11.png	flux3_klein_refs	11	1024x848	C:\Users\alexa\Documents\GitHub\babamech\docs\design\menu-bg\placement\engine_A_cradle.png		11.81	A_cradle_prompt.txt
+2026-11-25T17:17:11	A_cradle_s22.png	flux3_klein_refs	22	1024x848	C:\Users\alexa\Documents\GitHub\babamech\docs\design\menu-bg\placement\engine_A_cradle.png		10.04	A_cradle_prompt.txt
+2026-11-25T17:17:23	B_outside_s11.png	flux3_klein_refs	11	1024x848	C:\Users\alexa\Documents\GitHub\babamech\docs\design\menu-bg\placement\engine_B_outside.png		11.15	B_outside_prompt.txt
+2026-11-25T17:17:33	B_outside_s22.png	flux3_klein_refs	22	1024x848	C:\Users\alexa\Documents\GitHub\babamech\docs\design\menu-bg\placement\engine_B_outside.png		10.08	B_outside_prompt.txt
+2026-11-25T17:17:44	C_holo_s11.png	flux3_klein_refs	11	1024x848	C:\Users\alexa\Documents\GitHub\babamech\docs\design\menu-bg\placement\engine_C_holo.png		11.28	C_holo_prompt.txt
+2026-11-25T17:17:55	C_holo_s22.png	flux3_klein_refs	22	1024x848	C:\Users\alexa\Documents\GitHub\babamech\docs\design\menu-bg\placement\engine_C_holo.png		10.48	C_holo_prompt.txt

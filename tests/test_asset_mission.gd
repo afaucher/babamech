@@ -1,5 +1,5 @@
 extends TestCase
-## Mission assets end to end in a SOLO stack drive in plan mode (TestDrive.objectives; fixture from
+## Mission assets end to end in a SOLO stack drive (objectives are the only mode; fixture from
 ## tests/test_mission_objectives.gd, seed 7: deck 2's primary is a defend). MissionFlow registers the relay's body through
 ## TestDriveCombat.add_asset; enemy-team hits on that AssetTarget go through CombatWorld.resolve_hit (the path a shell's
 ## direct hit takes) and must reach MissionFlow.damage_asset: asset_hp drops by damage / asset_max_hp() (ASSET_MAX_HP x the crew scale), the target's
@@ -30,7 +30,6 @@ func _run() -> void:
 	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = SEED
-	td.objectives = true
 	add_child(td)
 	await frames(4)
 	var mf := td.mission
@@ -42,6 +41,10 @@ func _run() -> void:
 	if not eq(str(p.get("type", "")), "defend", "seed 7: deck 2's primary is a defend"):
 		return
 	var id := str(p["id"])
+	# Played as a crew of 3 (the scale a host would have sent; solo has no host, so the test schedules it here).
+	mf.receive_scale({"n": 3, "at": mf.now(), "reason": "test"})
+	mf._tick_scale()
+	eq(mf.crew_scale(), 3, "scale 3")
 	_kill_all()
 	var site: Dictionary = mf.rules.objective(id)["site"]
 	await frames(20)
@@ -72,6 +75,22 @@ func _run() -> void:
 	check(await _until(func() -> bool: return absf(t.hp_fraction() - float(mf.asset_hp[id])) < 0.011, 2.0),
 		"the target's mirrored HP follows the mission's (%.3f vs %.3f)" % [t.hp_fraction(), float(mf.asset_hp[id])])
 	eq(mf.rules.outcome, "", "still running")
+	# Ease off (user 2026-11-25): two pilots leave, the scale drops 3 -> 1 at its `at`. The relay keeps its HP FRACTION;
+	# its hit points rescale (600 -> 1050), on the mission side and on the AssetTarget's mirror.
+	var f0 := float(mf.asset_hp[id])
+	var mx0 := mf.asset_max_hp()
+	var at := mf.now() + 0.5
+	mf.receive_scale({"n": 1, "at": at, "reason": "leave", "pilot": 3})
+	await _until(func() -> bool: return mf.crew_scale() == 1, 2.0)
+	eq(mf.crew_scale(), 1, "the scale dropped at its `at`")
+	near(float(mf.scale_at), at, 1e-6, "applied at the scheduled time")
+	near(mx0, MissionFlow.ASSET_MAX_HP * float(MissionFlow.ASSET_HP_SCALE[2]), 0.01, "3 pilots: 600 hit points")
+	near(mf.asset_max_hp(), MissionFlow.ASSET_MAX_HP * float(MissionFlow.ASSET_HP_SCALE[0]), 0.01, "1 pilot: 1050 hit points")
+	near(float(mf.asset_hp[id]), f0, 1e-6, "the relay keeps its HP fraction (%.3f)" % f0)
+	check(await _until(func() -> bool: return absf(t.hp_max - mf.asset_max_hp()) < 0.01, 2.0),
+		"the AssetTarget's mirrored max follows (%.0f)" % t.hp_max)
+	near(t.hp_fraction(), f0, 0.011, "and its fraction stays")
+	near(t.hp_value, f0 * mf.asset_max_hp(), 1.0, "hp = fraction x the new max")
 	rec["shot_index"] = 9101
 	w.resolve_hit(rec, st, t, "body", c, Vector3.UP, Vector3.DOWN, mf.asset_max_hp())
 	near(float(mf.asset_hp.get(id, 1.0)), 0.0, 1e-4, "a lethal hit empties the relay")

@@ -19,8 +19,12 @@ extends Node
 ##     hold objective, a clear spot 60-90 m from its site (DownedRules.RESPAWN_NEAR_*: out of its zone, clear ground by
 ##     MissionProps.snap_site, no live enemy within 40 m if a candidate allows it, facing the site). Otherwise the arrival point (SectionPlan.arrival(k), the enemy spawner's
 ##     safe bubble) of the deck the crew's LEAD pilot is on (the deepest deck any standing crewmate is on; nobody
-##     standing: the deck the pilot went down on), offset by crew seat and dropped onto clear floor; on the entry deck
-##     (and in a district) the pilot's own crew spawn slot, the old respawn point.
+##     standing: the deck the pilot went down on), offset by crew seat and dropped onto clear floor (arrival_spot: a lift /
+##     shaft arrival anchors on the nearest walk node clear of the well); on the entry deck (and in a district) the pilot's
+##     own crew spawn slot, the old respawn point. EVERY spot (objective or arrival) is a SAFE spot for the widest capsule,
+##     whatever chassis respawns (2026-11-26, seed 6: a Strider respawned on deck 1's lift platform and fell to deck 2):
+##     plan_safe (off lift platforms, floor openings, cuts, ramps; free on the fit mask; connected to the walk graph) and
+##     spot_problems == "" (the widest capsule clear of static collision, floor under its whole footprint).
 ##   BOTS (host): every bot's PlayerTarget gets auto_redeploy (it cannot hold a key) and revive_wait (DownedRules.bot_wait:
 ##     8 s when a standing crewmate can revive it, else 2 s). The local mech flown by MissionBot (--bot) gets the same.
 ##   QUERIES for the bot (Engine session's MissionBot): downed_crew() -> [{peer, name, pos, revive, bot}] (revivable
@@ -40,6 +44,13 @@ const SEARCH := [Vector2.ZERO, Vector2(0, 8), Vector2(0, -8), Vector2(8, 0), Vec
 
 ## The small floor search around a spot near an objective (it must not slide back toward the zone).
 const NEAR_STEPS := [Vector2.ZERO, Vector2(0, 3), Vector2(0, -3), Vector2(3, 0), Vector2(-3, 0)]
+## Arrival respawn (arrival_spot): each crew seat's offset from the anchor (9 m apart: two Bulwarks side by side), the
+## rings searched round it and the bearings per ring; a lift / shaft anchor moves to a walk node this far from the well.
+const SEAT_OFFS := [Vector2(-4.5, 0), Vector2(4.5, 0), Vector2(-4.5, 9), Vector2(4.5, 9)]
+const SPOT_RINGS := [4.0, 8.0, 12.0, 16.0, 20.0, 25.0, 30.0, 36.0, 42.0, 50.0, 60.0, 70.0]
+const SPOT_BEARINGS := 12
+const ANCHOR_CLEAR := 8.0
+const SEAT_APART := 2.0 * CityPlan.MECH_R_MAX + 1.0   ## m between two seats' arrival spots (two Bulwarks + 1 m)
 
 var drive: TestDrive
 var beacons: Dictionary = {}      ## pilot id -> Node3D beacon on its wreck (cosmetic)
@@ -47,11 +58,12 @@ var placed: Array = []            ## [pilot id, deck, Transform3D, kind] of each
 var last_kind := ""               ## the last redeploy_transform's pick: objective | arrival | slot
 var _look := {}                   ## pilot id -> [rate, phase] of its beacon (looks generator)
 var _t := 0.0                     ## looks clock
+var _seat_spots: Dictionary = {}  ## deck -> [arrival_spot per seat, in seat order] (plan + static collision: cached)
 
 
 func net_fields() -> Dictionary:
 	return {"drive": Net.LOCAL, "beacons": Net.LOCAL, "placed": Net.LOCAL, "last_kind": Net.LOCAL, "_look": Net.LOCAL,
-		"_t": Net.LOCAL}
+		"_t": Net.LOCAL, "_seat_spots": Net.LOCAL}
 
 
 static func attach(td: TestDrive) -> DownedCrew:
@@ -303,13 +315,73 @@ func redeploy_transform(id: int, m: MechController) -> Transform3D:
 	var k := lead_deck(id, m)
 	if k == int(drive.stack.section.entry["deck"]):
 		return slot
-	var arr: Dictionary = drive.stack.section.arrival(k)
-	var i := maxi(drive.spawn_order.find(id), 0)
-	var off := Vector2(-4.0 + 8.0 * float(i % 2), 10.0 * floorf(i / 2.0))
-	var got := _floor_near(k, float(arr["x"]) + off.x, float(arr["s"]) + off.y, m)
+	var got := arrival_spot(k, maxi(drive.spawn_order.find(id), 0), m)
 	if got.has("xf"):
 		last_kind = "arrival"
 	return got.get("xf", slot)
+
+
+## The respawn spot by deck k's arrival for crew seat `seat`: {xf, x, s} or {} when nothing near is safe. ANCHOR: the
+## arrival point (SectionPlan.arrival(k)). The seat's offset (SEAT_OFFS) on top, then rings of SPOT_BEARINGS bearings at
+## SPOT_RINGS m round it, nearest first, the first SAFE spot (_floor_near: plan_safe + spot_problems; a lift platform /
+## opening is never one) at least SEAT_APART from the lower seats' spots wins; for a lift / shaft arrival with nothing
+## safe in reach, the same search from the nearest walk-graph node clear of the well by ANCHOR_CLEAR. Plan data + the built deck's static collision: the owner decides, every machine sees
+## its teleport.
+func arrival_spot(k: int, seat: int, m: MechController) -> Dictionary:
+	var seat_n := posmod(seat, SEAT_OFFS.size())
+	var cached: Array = _seat_spots.get(k, [])
+	if seat_n < cached.size():
+		return cached[seat_n]
+	var sec := drive.stack.section
+	var arr: Dictionary = sec.arrival(k)
+	var anchor := Vector2(float(arr["x"]), float(arr["s"]))
+	var well := str(arr["kind"]) in ["lift", "shaft"]
+	var steps: Array = [Vector2.ZERO]
+	for r: float in SPOT_RINGS:
+		for i in SPOT_BEARINGS:
+			steps.append(Vector2.from_angle(TAU * float(i) / float(SPOT_BEARINGS)) * r)
+	# Seats in order, each SEAT_APART from the seats before it (two pilots respawning together never share a spot).
+	while cached.size() <= seat_n:
+		var s := cached.size()
+		var start: Vector2 = anchor + SEAT_OFFS[s]
+		var taken: Array = []
+		for c: Dictionary in cached:
+			if c.has("x"):
+				taken.append(Vector2(float(c["x"]), float(c["s"])))
+		var got := _floor_near(k, start.x, start.y, m, steps, taken)
+		if got.is_empty() and well:
+			# nothing safe round the well within SPOT_RINGS: from the nearest walk node clear of it
+			var alt: Vector2 = _clear_node(k, anchor) + SEAT_OFFS[s]
+			got = _floor_near(k, alt.x, alt.y, m, steps, taken)
+		if got.is_empty() and not taken.is_empty():
+			got = _floor_near(k, start.x, start.y, m, steps)   # crowded: a safe spot all the same
+		cached.append(got)
+	if m.is_inside_tree():
+		_seat_spots[k] = cached
+	return cached[seat_n]
+
+
+## The walk-graph node of deck k nearest `p` that is ANCHOR_CLEAR m clear of every lift platform and floor opening there
+## (`p` itself when the deck has no node).
+func _clear_node(k: int, p: Vector2) -> Vector2:
+	var sec := drive.stack.section
+	var g := (drive.stack.decks[k] as CityDistrict).plan.walk_graph()
+	var best := p
+	var best_d := INF
+	for n: Vector2 in g["nodes"]:
+		var d := n.distance_to(p)
+		if d >= best_d:
+			continue
+		var clear := true
+		for ci in sec.connectors.size():
+			var lift := str(sec.connectors[ci]["kind"]) == "lift"
+			if (lift or sec.is_hole(ci, k)) and sec.connector_rect(ci, k).grow(ANCHOR_CLEAR).has_point(n):
+				clear = false
+				break
+		if clear:
+			best_d = d
+			best = n
+	return best
 
 
 ## The ACTIVE defend or hold objective on deck k (the replicated mission state: MissionRules.obj_state, applied from the
@@ -406,50 +478,112 @@ func _slot_of(id: int) -> Transform3D:
 	return drive._spawn
 
 
-## A clear floor spot near deck k's (x, s): a downward ray hits level floor and a mech's height above it is free.
-## {xf} facing along the deck, or {} when nothing near is clear.
-func _floor_near(k: int, x: float, s: float, m: MechController, steps: Array = SEARCH) -> Dictionary:
+## A SAFE floor spot near deck k's (x, s), trying `steps` offsets in order: a downward ray (static collision only: lift
+## platforms move) hits level floor, a mech's height above it is free, and is_safe_spot holds (the WIDEST capsule, for
+## every chassis: one rule, so the spot never depends on who respawns). {xf, x, s} facing along the deck, or {}.
+func _floor_near(k: int, x: float, s: float, m: MechController, steps: Array = SEARCH, taken: Array = []) -> Dictionary:
 	var st := drive.stack
 	if not m.is_inside_tree():
 		return {}
 	var space := m.get_world_3d().direct_space_state
 	var ring := st.deck_ring(k)
+	var fq := MissionProps.fit_mask((st.decks[k] as CityDistrict).plan).query([], 0.6)
 	for off: Vector2 in steps:
-		var base := st.from_deck_arc(k, x + off.x, s + off.y)
+		var px := x + off.x
+		var ps := s + off.y
+		var near_taken := false
+		for tk: Vector2 in taken:
+			near_taken = near_taken or tk.distance_to(Vector2(px, ps)) < SEAT_APART
+		if near_taken or not plan_safe(st, k, Vector2(px, ps), fq):
+			continue
+		var base := st.from_deck_arc(k, px, ps)
 		var up := ring.up_at(base)
 		var q := PhysicsRayQueryParameters3D.create(base + up * 4.0, base - up * 3.0)
-		q.exclude = [m.get_rid()]
-		var hit := space.intersect_ray(q)
+		var hit := BotFit._static_ray(space, q)
 		if hit.is_empty() or (hit["normal"] as Vector3).dot(up) < 0.8:
 			continue
 		var p: Vector3 = (hit["position"] as Vector3) + up * 0.3
 		var q2 := PhysicsRayQueryParameters3D.create(p + up * 0.5, p + up * 8.0)
-		q2.exclude = [m.get_rid()]
-		if not space.intersect_ray(q2).is_empty():
+		if not BotFit._static_ray(space, q2).is_empty():
 			continue
-		if not _fits_wide(k, x + off.x, s + off.y, m, space, ring, ring.height(p) - 0.3):
+		if spot_problems(st, k, p, space) != "":
 			continue
 		var f := ring.tangent_at(p)
 		f = (f - up * f.dot(up)).normalized()
-		return {"xf": Transform3D(Basis(f.cross(up), up, -f), p)}
+		return {"xf": Transform3D(Basis(f.cross(up), up, -f), p), "x": px, "s": ps}
 	return {}
 
 
-## A WIDE chassis (capsule over the Strider's 2.2 m, the Bulwark) respawns only where its own capsule fits
-## (BotFit.clear_at) and never in a lift well: deck k's arrival point on a lift-served deck is the lift platform's centre,
-## sunken in its shaft, where a Bulwark stayed wedged for the rest of a mission (seed 3, deck 1). The Strider's search is
-## unchanged (always true).
-func _fits_wide(k: int, x: float, s: float, m: MechController, space: PhysicsDirectSpaceState3D, ring: RingFrame,
-		h_floor: float) -> bool:
-	var mv := MechCatalog.movement(m.chassis_id)
-	var r := float(mv["capsule_radius"])
-	if r <= 2.2 + 0.01:
-		return true
-	var sec := drive.stack.section
+## The plan-data half of a safe spot at deck k's `p`: off every lift platform / floor opening / floor cut / ramp by the
+## widest capsule, free on the fit mask, and connected there to the deck's walk graph (`fq`: a FitMask query; not in a
+## sealed pocket a mech could never leave).
+static func plan_safe(st: CityStack, k: int, p: Vector2, fq: MissionProps.FitQuery) -> bool:
+	var plan: CityPlan = (st.decks[k] as CityDistrict).plan
+	var r := CityPlan.MECH_R_MAX
+	var sec := st.section
 	for ci in sec.connectors.size():
-		if str(sec.connectors[ci]["kind"]) == "lift" and sec.connector_rect(ci, k).grow(r).has_point(Vector2(x, s)):
+		if (str(sec.connectors[ci]["kind"]) == "lift" or sec.is_hole(ci, k)) and sec.connector_rect(ci, k).grow(r).has_point(p):
 			return false
-	return BotFit.clear_at(space, ring, x, s, r, float(mv["capsule_height"]), h_floor)
+	for c: Rect2 in plan.floor_cuts():
+		if c.grow(r + CityStreets.HOLE_CURB).has_point(p):
+			return false
+	for rp: Dictionary in plan.ramps:
+		var s0 := minf(float(rp["s_top"]), float(rp["s_foot"]))
+		var s1 := maxf(float(rp["s_top"]), float(rp["s_foot"]))
+		if Rect2(float(rp["x0"]), s0, float(rp["x1"]) - float(rp["x0"]), s1 - s0).grow(r).has_point(p):
+			return false
+	var c := fq.m.index_of(p)
+	if c < 0 or fq.m.free[c] == 0:
+		return false
+	return fq.reaches(p)
+
+
+## What is wrong with a respawn spot at world point `pos` for deck k ("" = a safe standing spot for the widest capsule):
+## "deck" (not on deck k), "lift" (a lift platform / well, + the capsule), "hole" (a connector's opening in deck k's
+## floor), "cut" (a floor cut + curb), "ramp" (a ramp's surface), "fit" (the fit mask: the widest capsule + margin
+## touches a building, column, wall or bay), "capsule" (the widest capsule hits static collision there), "edge" (no floor
+## under part of the capsule's footprint). Plan data + the built deck's static collision only.
+static func spot_problems(st: CityStack, k: int, pos: Vector3, space: PhysicsDirectSpaceState3D) -> String:
+	var out := PackedStringArray()
+	var a := st.to_deck_arc(pos)
+	if int(a["deck"]) != k:
+		out.append("deck")
+	var p := Vector2(float(a["x"]), float(a["s"]))
+	var r := CityPlan.MECH_R_MAX
+	var sec := st.section
+	var plan: CityPlan = (st.decks[k] as CityDistrict).plan
+	for ci in sec.connectors.size():
+		var kind := str(sec.connectors[ci]["kind"])
+		if kind == "lift" and sec.connector_rect(ci, k).grow(r).has_point(p):
+			out.append("lift")
+		elif kind != "lift" and sec.is_hole(ci, k) and sec.connector_rect(ci, k).grow(r).has_point(p):
+			out.append("hole")
+	for c: Rect2 in plan.floor_cuts():
+		if c.grow(r + CityStreets.HOLE_CURB).has_point(p):
+			out.append("cut")
+	for rp: Dictionary in plan.ramps:
+		var s0 := minf(float(rp["s_top"]), float(rp["s_foot"]))
+		var s1 := maxf(float(rp["s_top"]), float(rp["s_foot"]))
+		if Rect2(float(rp["x0"]), s0, float(rp["x1"]) - float(rp["x0"]), s1 - s0).grow(r).has_point(p):
+			out.append("ramp")
+	var mask := MissionProps.fit_mask(plan)
+	var c := mask.index_of(p)
+	if c < 0 or mask.free[c] == 0:
+		out.append("fit")
+	var ring := st.deck_ring(k)
+	var h := ring.height(pos) - ring.height(st.from_deck_arc(k, p.x, p.y))
+	if space != null:
+		if not BotFit.clear_at(space, ring, p.x, p.y, r, 8.0, maxf(h, 0.0)):
+			out.append("capsule")
+		for off: Vector2 in [Vector2.ZERO, Vector2(r, 0), Vector2(-r, 0), Vector2(0, r), Vector2(0, -r)]:
+			var b := st.from_deck_arc(k, p.x + off.x, p.y + off.y)
+			var up := ring.up_at(b)
+			var q := PhysicsRayQueryParameters3D.create(b + up * 2.0, b - up * 1.5)
+			var hit := BotFit._static_ray(space, q)
+			if hit.is_empty():
+				out.append("edge")
+				break
+	return " ".join(out)
 
 
 # --- The beacon on a wreck (cosmetic) --------------------------------------------------------------------------------

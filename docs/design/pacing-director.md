@@ -2,8 +2,10 @@
 
 Design for the three decisions the user took on `pacing-research.md` section 8 (2026-11-23). Research and sources are
 there; this file is what gets built. It is the mission plan's ("objectives") behaviour, the default mode since
-2026-11-23 (user: "make the objectives the default"); `--no-objectives` / the hangar's Objectives box selects the old
-clear-and-extract mission.
+2026-11-23 (user: "make the objectives the default") and the ONLY mode since 2026-11-25 (user: "Cut the legacy modes.":
+the old clear-and-extract mission, the single-district mode, `--no-objectives`, the objectives setting and the hangar's
+Objectives box are gone; `--objectives` is accepted and ignored). Tests of a narrow system that must not see the director use the TEST-ONLY
+QuietSectionFixture (docs/testing.md "Fixtures").
 
 User decisions recorded here (not in decisions.md):
 - "replace fixed waves": the director decides when groups are released; the plan no longer fixes wave triggers.
@@ -29,7 +31,8 @@ lift, ramp or shaft with its door telegraph) and replaces the *when*. WaveDirect
   objective spikes (1.5) or when a scout completes a call (1.6). When a deck's reserve is empty, the cap and scout calls
   release a **patrol** (1 to 2 light units) from a per-deck patrol allowance (`PATROLS` 3 solo, +1 per extra pilot);
   when that is empty too nothing more comes: a deck is finite and a sweep can end.
-- Caps, as built: `DECK_CAP` 24 / `SECTION_CAP` 40 count enemies **in play** (every wave unit, staged ones included:
+- Caps, as built: the deck cap (`DECK_CAP_BY_CREW` [14, 16, 20, 24] by crew size since 1.5b; was 24 for everyone) /
+  `SECTION_CAP` 40 count enemies **in play** (every wave unit, staged ones included:
   they exist; garrison units that are alerted or within 150 m of a standing mech; only on a deck with a standing pilot)
   plus groups in flight, so a sleeping
   garrison far from the crew no longer starves reinforcements (playtest: "cap room 1" twice); hard ceilings on
@@ -125,6 +128,12 @@ active, mostly with the bot still above 85 % structure; seed 22 won with the rel
 - Depots: at least `MissionPlan.DEPOT_CORES_MIN` 2 cores per depot (cores per pilot otherwise: solo 2, two 2, three 3,
   four 4), and depot n of a deck prefers a site 60-150 m (straight line) from its anchor n (`depot_anchors`: the defend
   sites, then the hold zone), the one nearest 100 m, after the source / depot-gap / objective-gap rules.
+- Re-measured 2026-11-25 (solo veteran bot, bonuses off, first primary defend of seeds 2 / 7 / 10 / 16 / 22 / 32):
+  Strider 6 of 6 won (relay end 0.14-0.92); Bulwark 4 won, seed 16 lost (3 downs to the defend's own trooper group,
+  which also did most of the relay damage while the bot stood), seed 22 never reached its defend (downed by garrison
+  snipers on the way). Relay damage taken while the only pilot was down: 0-15 % of the relay; respawn 75 m from the
+  site, back in its zone in about 4 s. No director change (the 80 % rule holds on the decided defends);
+  `test_bot_bulwark_mission` won 5 of 5 identical runs (488 s, relay min 0.61).
 - "In play" (the caps) now counts only units on a deck with a standing pilot: wave units stranded on a deck the crew left
   (17 of them on seed 7's deck 0, an enemy transit bug) no longer hold back the crew's deck.
 
@@ -149,6 +158,13 @@ director releases the next group now, `rest` or not, toward that position: by dr
 else from the nearest door. Limits: one call per scout per 45 s, one call-release per deck per 30 s, and calls obey the
 caps. Killing the scout during the tell cancels the call. With the reserve and patrol allowance empty a call brings
 nothing.
+
+As built: the drone's `EnemyBase.comms_relayed` fires only when the beacon completes (`EnemyDrone._complete_beacon`), so
+a scout killed during its tell never reaches the director; `PacingFacts` turns it into `scout_call(deck, x, s, id)` on the
+host. A call over a limit (per scout, per deck, the engage ceiling, the scout budget, nothing left) is dropped at once. A
+call that only lacks room under the caps or a source waits, but at most `SCOUT_CALL_TTL` 20 s (audit 2026-11: before, it
+waited forever and fired minutes later out of context); it also lapses once nobody stands on its deck, and at most
+`SCOUT_CALL_MAX` 8 wait (the oldest lapses first). A lapse is logged as `scout ... expired`.
 
 ### 1.6a Gate alarm (user, 2026-11-23; timing corrected the same day: "the siren is the door opening signal")
 A gate's siren and lamps run while its leaves open: `open_at` is the moment the leaves START to move and the siren
@@ -178,6 +194,45 @@ More enemies, same enemies. One factor `CREW_SCALE = [1.0, 1.0, 1.6, 2.2]` (inde
 size and `ENGAGE_TARGET`; garrison keeps its existing crew scaling. No HP, damage or accuracy change. A disabled pilot
 does not attract new non-objective releases aimed at their position.
 
+**Which crew size: the host's crew scale (user, 2026-11-25: "Run it from the host, enforce this! And ease off when a
+player leaves."; as built).** Every crew-sized number of a mission reads one value, `MissionFlow.crew_scale()` (1..4), and
+only the host derives it (`MissionFlow.host_crew_scale`): at the launch from the launch crew, hangar bots included, sent as
+`mission.launch` `scale`; 1 solo. Readers: `PacingDirector.make(..., crew_scale())` (`crew_n`: `CREW_SCALE`,
+`ENGAGE_TARGET`, `DECK_CAP_BY_CREW`, `DEFEND_EVERY_BY_CREW`, `DEFEND_UNITS_MAX`, the solo defend themes,
+`DEFEND_BUILD_MIN_CREW`, the 3+ two-direction rule, `BUILD_GAP / CREW_SCALE`, patrol / scout / hold allowances), the
+reserve's unit budget and group sizes (`MissionFlow.wave_sizes`, the spawn ctx), the relay's HP (`MissionFlow.asset_max_hp`,
+`ASSET_HP_SCALE`), the depot cores (`MissionDepots.setup`). A client never sizes anything from its own crew list. The
+garrison (`TestDrive.spawn_enemies`) stays as it was: built pre-play from the seed and the launch crew, checksummed.
+Enforced by `test_net_contract` section 5 (AGENTS.md rule 8); the wire: docs/networking.md "Crew scale".
+
+**A pilot leaves (ease off).** On the host's leaver hook (`MissionFlow.on_member_retired`, a player or a hangar bot
+alike) the host recomputes the scale from the members still in the crew (at least 1); if it changed, every machine
+switches at the same shared-clock moment `at` = now + `SCALE_LEAD` 1 s (`mission.scale {n, at}`; before the release the
+start value just changes). Scale only goes down mid-mission (a higher value is accepted with a warning). At `at`:
+- Director (`PacingDirector.rescale`): `crew_n` changes; the by-crew options (deck cap, defend cadence), `ENGAGE_TARGET`,
+  the defend unit cap and solo themes, `DEFEND_BUILD_MIN_CREW`, the two-source rule and `BUILD_GAP / CREW_SCALE` follow at
+  once. Unreleased reserve groups resize (their size is read at the new scale); released, staged and in-flight groups keep
+  the scale they were released at (`release_crew`: spawn ctx, size, defend cap, theme). Nobody is despawned.
+- Allowances: used counts stay counted. Patrols left per deck = max(0, new allowance - patrols already taken); scout
+  releases and hold patrols compare their used counts with the new budgets (remaining = max(0, new - used)).
+- A defend in progress keeps its clock: its next group is due `defend_every` (the new cadence) after its LAST group, with
+  the new size cap and theme; the groups already released are untouched.
+- The extraction hold keeps `HOLD_EVERY`; its extra patrol allowance becomes `HOLD_PATROLS + n - 1` minus those already
+  added, and the engage ceiling it waits under is the new `ENGAGE_TARGET`. Its two-source start already happened.
+- Relay: max HP = `ASSET_MAX_HP x ASSET_HP_SCALE[n - 1]`, keeping the current HP fraction (`asset_hp` is the fraction,
+  the host's; destroyed stays destroyed). The AssetTarget mirror gets the new max.
+- Depots: cores already placed stay (no socket removed). Garrison and everything alive: untouched.
+- The leaver's per-pilot entries go (host: director intensity / engagement, PacingFacts, depot claim bookkeeping);
+  `TestDrive.crew_members()` already no longer lists it, so crew facts and intensity follow.
+- Logged on every machine: `[mission] scale a -> b` and the combat log's `scale` record (from, to, reason, pilot, at).
+
+What follows the LIVE state stays live: who stands, is downed or redeploying, which deck each pilot is on, each pilot's
+intensity and engagement (crew facts every evaluation).
+
+**Overrides:** `PacingDirector.make(plan, overrides, crew)` takes any key of its `options`. The by-crew options
+(`BY_CREW`: `deck_cap`, `defend_every`) default to their tables; an override wins, as a number (every crew size) or a
+4-entry array (index = pilots - 1). There are no scalar `DECK_CAP` / `DEFEND_EVERY` constants any more.
+
 ### 1.8 Networking
 Shape: **host-arbitrated world system that spawns host-owned actors** (AGENTS.md rule 6).
 - Only the host runs `PacingDirector.tick(t, facts)`. Facts come from host state: replicated pilot HP / heat / position
@@ -188,7 +243,8 @@ Shape: **host-arbitrated world system that spawns host-owned actors** (AGENTS.md
   patrol`) and `mission.state` "dir", which gains `pace: {"<deck>": [state, s in state, quiet s, last reason]}` and
   `intensity: {"<pilot id>": I}` (small ints, pilot ids as strings, negative for hangar bots, at the existing ~4 Hz).
   Clients `apply_state` for the HUD-free uses: logs (CombatLog prints `src=host` intensity), and door telegraphs at
-  `open_at` on the shared clock as today. No new message; the dictionaries ride the existing ones.
+  `open_at` on the shared clock as today. No new message for pacing itself; the dictionaries ride the existing ones. The
+  crew scale (1.7) has its own: `mission.scale {n, at}` (2026-11-25), plus `scale` in the launch and the state.
 - Late join / host loss: state is in `mission.state`; as built, host migration is not implemented (as with the
   old waves: a client's mirror only has counters, not the reserve cursor).
 - Spawned units are ordinary `EnemySync` actors; nothing new on the wire for them.
@@ -387,7 +443,7 @@ Replaces the 1.5 s automatic respawn (user decision 2026-11-22). Every number li
   (and in a district) it is the pilot's own crew spawn slot: the old respawn point.
   **Exception (coordinator, 2026-11-24, from bot evidence: a solo pilot lost a defend because the relay died during
   the walk back)**: when the deck the pilot went down on has an ACTIVE defend or hold objective, the respawn lands
-  60-90 m from that objective's site (`RESPAWN_NEAR_OBJECTIVE` 75 m first, then 60, then 90; 8 bearings each, starting
+  60-90 m from that objective's site (`RESPAWN_NEAR_TRIES`: 75 m first, then 60, then 90; 8 bearings each, starting
   on the side of the deck's arrival point), out of its zone (+10 m), on clear ground (`MissionProps.snap_site`, the
   depots' / flags' snap rule), facing the site, preferring a spot with no live enemy within 40 m. Decided by the
   mech's owner from plan data + the replicated objective state; its teleport is what every machine sees. Same rule

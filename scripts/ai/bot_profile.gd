@@ -16,8 +16,9 @@ const LOADOUTS := {
 	"flamer_brawler": {"side_l": "flamer", "side_r": "gatling", "shoulder_l": "rockets", "shoulder_r": "", "back": ""},
 	# The Bulwark's four hardpoints (side_l / side_r take side and shoulder weapons, back_l / back_r back items): the bot
 	# Bulwark's kit in tests/test_bot_bulwark_*: a sustained gun, a rocket pod for burst, the mortar for roof turrets it
-	# cannot climb to, a radiator for its heavier heat.
-	"bulwark": {"side_l": "autocannon", "side_r": "rockets", "back_l": "mortar", "back_r": "radiator"},
+	# cannot climb to, a radiator for its heavier heat. "belly": the belly turret prototype's gatling (docs/design/
+	# bulwark-effectiveness.md; drop the key with the prototype).
+	"bulwark": {"side_l": "autocannon", "side_r": "rockets", "back_l": "mortar", "back_r": "radiator", "belly": "gatling"},
 }
 
 const PROFILES := {

@@ -31,7 +31,7 @@ var disable_cause := ""             ## PlayerTarget.disable_cause: the component
 var redeploying := false            ## PlayerTarget.redeploying: held to respawn, the penalty runs (still disabled)
 var revive := 0.0                   ## PlayerTarget.revive_progress as 0..1 of DownedRules.REVIVE_TIME (the crew's revive bar)
 var aid := 0                        ## PlayerTarget.aid_charges: repair-drone charges left (0..3; the crew's "can revive")
-## WeaponMount.aim_yaw, aim_pitch (deg, body frame) per hardpoint in NetMechCodec.MOUNTS order: 10 values.
+## WeaponMount.aim_yaw, aim_pitch (deg, body frame) per hardpoint in NetMechCodec.MOUNTS order: 12 values.
 var mount_aim := PackedFloat32Array()
 
 

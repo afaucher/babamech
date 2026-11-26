@@ -1,10 +1,11 @@
 extends TestCase
 ## VISUAL: the mission HUD in plan mode (mission objectives phase 1). Shots in test_logs/shots/:
-## `objectives_hud_demo` (MechHud demo + MissionHud.demo_plan over a plain backdrop: the structured objective panel top
-## right, DEMO_PLAN.panel: "DECK 1 OF 3", deck 1's flag and two bonuses, deck 2 below with its route line, deck 3; the
+## `objectives_hud_demo` (MechHud demo + MissionHud.demo_plan over a plain backdrop: the objective panel top right,
+## DEMO_PLAN.panel: "DECK 1 OF 3", deck 1's flag and two bonuses, then "PROCEED TO DECK 2" and "RAMP DOWN 120 M"; the
 ## reinforcement line and zone bar under the objective line, a "? DEFEND" marker, the projected defend ring, the INBOUND
 ## arrow on the left edge) and `objectives_drive_flag` (a live solo stack drive in plan mode, seed 7, the mech standing
-## in deck 1's flag ring with every enemy killed: the world's mast and ring, the list, the zone bar).
+## in deck 1's flag ring with every enemy killed: the world's mast and ring, the list (the flag done: "PROCEED TO DECK 2"
+## leads with its route hint, nothing of decks 2 and 3 listed), the zone bar).
 ## Runs only under `.\test_runner.ps1 -Visual` (hidden desktop, takes the GPU lock).
 
 const VISUAL := true
@@ -31,6 +32,7 @@ func setup() -> void:
 	var img := await sc.grab("objectives_hud_demo")
 	var vs := Vector2(img.get_width(), img.get_height())
 	check(not hud.mission_hud.panel().is_empty(), "the demo draws the structured panel")
+	eq(hud.mission_hud.shown_lines().slice(3), ["Proceed to deck 2", "ramp down 120 m"], "the demo: proceed to deck 2, the way")
 	sc.not_blank(img, _frac(hud.mission_hud.list_panel.get_global_rect(), vs), "objective list")
 	sc.not_blank(img, _frac(hud.mission_hud.alert_panel.get_global_rect(), vs), "reinforcement line")
 	sc.not_blank(img, _frac(hud.mission_hud.zone_panel.get_global_rect(), vs), "zone bar")
@@ -42,7 +44,6 @@ func setup() -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = 7
-	td.objectives = true
 	add_child(td)
 	await frames(10)
 	if check(td.mission != null and td.mission.plan != null, "plan mode drive"):
@@ -62,7 +63,12 @@ func setup() -> void:
 		if h2 != null:
 			check(h2.mission_hud.list_panel.visible, "the drive shows the objective list")
 			check(str(h2.mission_hud.panel().get("header", "")).begins_with("DECK 1 of "), "the drive's panel: DECK 1 of n")
-			print("drive panel rows: %s" % [h2.mission_hud.shown_lines()])
+			var rows: Array = h2.mission_hud.shown_lines()
+			print("drive panel rows: %s" % [rows])
+			check(rows.has("Proceed to deck 2") or rows.has("Raise the flag: 100% (done)") or str(rows).contains("flag"),
+				"the drive's panel lists deck 1's flag / the proceed line (%s)" % [rows])
+			for r: Variant in rows:
+				check(not str(r).begins_with("V1") and not str(r).contains("Deck 3"), "no prefix, deck 3 unlisted (%s)" % r)
 			sc.not_blank(img2, _frac(h2.mission_hud.list_panel.get_global_rect(), Vector2(img2.get_width(), img2.get_height())),
 				"drive objective list")
 	td.queue_free()

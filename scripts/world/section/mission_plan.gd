@@ -55,8 +55,11 @@ extends RefCounted
 ## waves_per_deck (reserve groups per deck before depth), primary ("" = rolled; "sweep" | "flag" | "defend":
 ## every deck's primary is that type wherever the deck allows it (flag: a primary site; defend: a site, a source within
 ## DEFEND_REACH and room for 2 waves; sweep: the departure outside the arrival's SAFE_RADIUS), ignoring `types` and the first deck's flag / sweep preference; a
-## deck that cannot have it keeps the rolled type. The roll still happens, so the generator advances as without it.
-## "" leaves every plan identical to before the option existed).
+## deck that cannot have it keeps the rolled type. Each deck's objective and depot generators start from the state the
+## UNFORCED plan had there (make() builds it first and replays its _deck_states / _depot_states), so a deck whose type is
+## unchanged by the option is byte-identical to the unforced plan's, whatever was forced on the decks before it (a flag
+## draws a defend-bonus coin, other types do not; a defend deck draws a second depot). "" leaves every plan identical to
+## before the option existed).
 ## primary_types(): each deck's primary type in deck order (not the hold). find_seed(type, opts): the first seed with an
 ## unforced primary of that type (for bots and tests).
 
@@ -104,6 +107,10 @@ var sources: Array[Dictionary] = []
 var pools: Array[Dictionary] = []
 var depots: Array[Dictionary] = []
 var _rng := RandomNumberGenerator.new()
+## The objective generator's state at the start of each deck, and the depot generator's (recorded on every plan; a plan
+## with a forced primary replays the unforced plan's, so forcing one deck never shifts another deck's draws).
+var _deck_states: Array = []
+var _depot_states: Array = []
 
 
 func net_fields() -> Dictionary:
@@ -111,7 +118,7 @@ func net_fields() -> Dictionary:
 		"options": Net.SPAWN,        # the mission settings, fixed at creation, same everywhere
 		# all of the below are recomputed from the section plan + options on every machine and verified by checksum()
 		"deck_count": Net.LOCAL, "section_checksum": Net.LOCAL, "objectives": Net.LOCAL, "sources": Net.LOCAL,
-		"pools": Net.LOCAL, "depots": Net.LOCAL, "_rng": Net.LOCAL,
+		"pools": Net.LOCAL, "depots": Net.LOCAL, "_rng": Net.LOCAL, "_deck_states": Net.LOCAL, "_depot_states": Net.LOCAL,
 	}
 
 
@@ -133,10 +140,17 @@ static func make(sec: SectionPlan, overrides: Dictionary = {}) -> MissionPlan:
 	m.deck_count = sec.deck_count
 	m.section_checksum = sec.checksum()
 	m._rng.seed = int(sec.p("seed")) * 1597334677 + 2654435761
+	# A forced primary: each deck's generators start where the UNFORCED plan's did (its draws on one deck depend on the
+	# deck's primary type, e.g. the flag's defend-bonus coin), so the other decks roll exactly as without the option.
+	var replay: MissionPlan = null
+	if str(m.options["primary"]) != "":
+		var plain: Dictionary = m.options.duplicate(true)
+		plain["primary"] = ""
+		replay = MissionPlan.make(sec, plain)
 	m._make_sources(sec)
-	m._make_objectives(sec)
+	m._make_objectives(sec, replay._deck_states if replay != null else [])
 	m._make_pools(sec)
-	m._make_depots(sec)    # last, own generator: nothing above shifts
+	m._make_depots(sec, replay._depot_states if replay != null else [])    # last, own generator: nothing above shifts
 	return m
 
 
@@ -344,11 +358,15 @@ func wave_count(k: int) -> int:
 	return clampi(int(options["waves_per_deck"]) + depth, 0, WAVES_CAP)
 
 
-func _make_objectives(sec: SectionPlan) -> void:
+## `replay`: the generator state per deck to start from (a forced primary: the unforced plan's _deck_states).
+func _make_objectives(sec: SectionPlan, replay: Array = []) -> void:
 	var types: Array = options["types"]
 	var ex_deck := int(sec.extraction["deck"])
 	var primaries: Array = []
 	for k in deck_count:
+		if k < replay.size():
+			_rng.state = int(replay[k])
+		_deck_states.append(_rng.state)
 		var sites := sec.encounter_sites(k)
 		var dep := sec.departure(k)
 		# Waves this deck can still tie to an objective (the extraction deck keeps its last for the hold).
@@ -419,7 +437,7 @@ func _make_objectives(sec: SectionPlan) -> void:
 			objectives.append(b)
 			used.append(at)
 			n += 1
-	var zone := MissionRules.extraction_zone(sec, float(MissionRules.DEFAULTS["zone_depth"]))
+	var zone := MissionRules.extraction_zone(sec, MissionRules.ZONE_DEPTH)
 	var h := _record("hold", "hold", ex_deck, "primary", zone.get_center(), primaries)
 	h["params"] = {"hold": float(options["hold"]), "zone": zone}
 	objectives.append(h)
@@ -658,11 +676,15 @@ func _objective_points(k: int) -> Array[Vector2]:
 	return out
 
 
-func _make_depots(sec: SectionPlan) -> void:
+## `replay`: the depot generator's state per deck to start from (a forced primary: the unforced plan's _depot_states).
+func _make_depots(sec: SectionPlan, replay: Array = []) -> void:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = int(sec.p("seed")) * 2246822519 + 3266489917
 	var ex_deck := int(sec.extraction["deck"])
 	for k in deck_count:
+		if k < replay.size():
+			rng.state = int(replay[k])
+		_depot_states.append(rng.state)
 		var two := k == ex_deck
 		for o: Dictionary in deck_objectives(k):
 			if str(o["type"]) == "defend":

@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## A slow client's mission load (the UHD 620 LAN bug: CityStack.build blocked the laptop's main thread ~7.8 s, ENet's
 ## default peer timeout dropped it at ~5.8 s of silence and it went back to the menu with "The host left").
 ## The client blocks its main thread STALL_MS right in the mission's _ready (TestDrive.test_stall_ms: OS.delay_msec, no

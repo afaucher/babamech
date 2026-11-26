@@ -45,6 +45,9 @@ func _seed(seed_: int) -> void:
 		if n == 0:
 			table.append("seed %d deck %d: none" % [seed_, k])
 		var signs := CitySigns.layout(d.plan, d.ring)
+		var planned := MissionWorld.air_doors(d.plan)
+		eq(planned.size(), n, "seed %d deck %d: air_doors(plan) gives the doors built" % [seed_, k])
+		_signs_in_keep_outs(d, signs, planned, "seed %d deck %d" % [seed_, k])
 		for i in n:
 			var a := mw.air_door(k, i)
 			if not check(bool(a.get("ok", false)), "seed %d deck %d door %d: air_door ok" % [seed_, k, i]):
@@ -62,6 +65,8 @@ func _seed(seed_: int) -> void:
 			var w: Dictionary = d.plan.boundary()[side]
 			near(float(a["s"]), float(w["at"]), 0.01, "%s: on the wall plane" % id)
 			var x := float(a["x"])
+			if i < planned.size():
+				near(x, float(planned[i]["c"]), 1e-6, "%s: where air_doors(plan) puts it" % id)
 			check(x - MissionWorld.air_half() > d.plan.extent.position.x and x + MissionWorld.air_half() < d.plan.extent.end.x, "%s: inside its wall" % id)
 			table.append("seed %d deck %d %s (%s): x %.1f, avenue %.1f, offset %.1f" % [seed_, k, str(src["edge"]), str(w["kind"]), x, centre, x - centre])
 			# Clear of signs on its wall and of gates' bays.
@@ -103,6 +108,43 @@ func _seed(seed_: int) -> void:
 	eq(after, before, "seed %d: teardown gives every Walls mesh and shape back" % seed_)
 	stack.queue_free()
 	await frames(2)
+
+
+## The looks fit the gameplay keep-outs (2026-11-25: air doors are placed from plan data alone, MissionWorld.air_spot):
+## every over-gate deck sign within GATE_SIGN_HALF of its gate's centre line, every hung ramp sign inside its ramp's
+## keep-out (ramp_keep_out) or clear of every door's flight corridor, and no other sign on an end wall over a door's frame
+## (the frame check per door, below).
+func _signs_in_keep_outs(d: CityDistrict, signs: Array, planned: Array, what: String) -> void:
+	var walls := d.plan.boundary()
+	for s: Dictionary in signs:
+		match str(s["kind"]):
+			"over_gate":
+				var side := int(s["side"])
+				var mid := (float(s["u0"]) + float(s["u1"])) * 0.5
+				var gate_mid := INF
+				for w: Dictionary in walls:
+					if int(w["side"]) == side:
+						for g: Dictionary in w["gates"]:
+							var gm := (float(g["a"]) + float(g["b"])) * 0.5
+							if absf(gm - mid) < absf(gate_mid - mid):
+								gate_mid = gm
+				check(absf(mid - gate_mid) < 0.01 and float(s["u1"]) - float(s["u0"]) <= MissionWorld.GATE_SIGN_HALF * 2.0 + 1e-4,
+						"%s: the over-gate sign (%.1f m wide) fits the band kept over its gate (%.1f m)" % [what, float(s["u1"]) - float(s["u0"]),
+						MissionWorld.GATE_SIGN_HALF * 2.0])
+			"ramp":
+				var at: Vector2 = s["at"]
+				var panel := Rect2(at - Vector2(float(s["w"]) * 0.5, CitySigns.HANG_T), Vector2(float(s["w"]), CitySigns.HANG_T * 2.0))
+				var inside := MissionWorld.ramp_keep_out(d.plan.ramps[int(s["ramp"])]).encloses(panel)
+				var clear := true
+				for ad: Dictionary in planned:
+					var w: Dictionary = ad["wall"]
+					var inward := -1.0 if int(w["side"]) % 2 == 0 else 1.0
+					var s0 := minf(float(w["at"]), float(w["at"]) + inward * MissionWorld.AIR_CORRIDOR)
+					var c := float(ad["c"])
+					var cor := Rect2(c - MissionWorld.AIR_W * 0.5 - MissionWorld.AIR_MARGIN, s0, MissionWorld.AIR_W + MissionWorld.AIR_MARGIN * 2.0, MissionWorld.AIR_CORRIDOR)
+					if cor.intersects(panel):
+						clear = false
+				check(inside or clear, "%s: the ramp %d sign at %s lies in its ramp's keep-out or clear of every flight corridor" % [what, int(s["ramp"]), str(at)])
 
 
 func _fingerprint(stack: CityStack) -> Array:

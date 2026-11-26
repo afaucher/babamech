@@ -5,12 +5,14 @@ extends TestCase
 ## HP, dmg_out aggregation / kill / est, the 10 s summary (window sums, combat flag off after 6 s quiet, enemies within
 ## 150 m), the down / respawn lines, the end summary (totals, lowest HP and when, combat vs quiet, longest stretches),
 ## that every line parses as `[Flow] t=<float> <tag> key=value...`, and that a disabled or unstarted log prints nothing.
+## The `damaged` contract (HP actually removed: hardpoint overkill, a wrecked hardpoint's hit on the torso, zero-damage
+## hits never paired with the next hit's damage). A bot's heat / shutdown come from its MechController.
 ## Threat and pacing (docs/design/pacing-director.md 3): PilotIntensity against the table of 1.2, PacingStats (quiet
 ## stretches, peaks, kill intervals), and a staged physics scene (real EnemyTurrets, a wall, CombatLog stepped at 60 Hz):
 ## own shots (hit / miss, coalesced), enemy shots at the pilot coalesced per 1 s with their hits, threat lines at 1 Hz
 ## with the right counts (one enemy in sight, one behind the wall, one beyond 200 m), the p>e ray budget (never more than
 ## 12 a second, 12 nearest listed), a host-owned hangar bot's own threat lines (bot=1, negative pilot id), intensity / director state from mission state (src=host, pace lines), and the
-## note_release / note_scout / note_depot / note_pace records (no-ops once the log ended).
+## note_release / note_scout / note_depot / note_pace / note_scale records (no-ops once the log ended).
 
 var world: CombatWorld
 var pt: PlayerTarget
@@ -24,6 +26,7 @@ var out: Array[String] = []
 func setup() -> void:
 	_build()
 	_run()
+	_dealt_contract()
 	_intensity_table()
 	_pacing_stats()
 	await _threat_scene()
@@ -133,7 +136,7 @@ func _run() -> void:
 	if eq(dout.size(), 1, "the kill prints at once"):
 		eq(dout[0]["tgt"], "e2/target", "kill target")
 		eq(dout[0]["kill"], "1", "kill flag")
-		eq(dout[0]["amt"], "25.0", "kill amount")
+		eq(dout[0]["amt"], "20.0", "kill amount (the 20 HP it had: damaged reports HP dealt, not the 25 requested)")
 		eq(dout[0]["est"], "0", "applied here: exact")
 	_to(4.0)
 	dout = _recs("dmg_out")
@@ -165,7 +168,7 @@ func _run() -> void:
 	var sums := _recs("summary")
 	if eq(sums.size(), 1, "summary at 10 s"):
 		eq(sums[0]["in"], "87.0", "damage taken in the window")
-		eq(sums[0]["out"], "62.0", "damage dealt in the window")
+		eq(sums[0]["out"], "57.0", "damage dealt in the window (30 + 20 + 7)")
 		eq(sums[0]["combat"], "1", "in combat (hit at 9 s)")
 		eq(sums[0]["near"], "1", "one live enemy within 150 m (e2 dead, e3 at 200 m)")
 		eq(sums[0]["nearest"], "100.0", "nearest enemy")
@@ -211,12 +214,12 @@ func _run() -> void:
 		var e := ends[0]
 		eq(e["outcome"], "won", "outcome")
 		eq(e["reason"], "test_run", "reason without spaces")
-		eq(e["in"], "567.0", "total taken (87 + 300 + 150 + 30 fall)")
-		eq(e["out"], "62.0", "total dealt")
+		eq(e["in"], "517.0", "total taken (87 + 300 + 100 of the 150 head hit: the head had 100 + 30 fall)")
+		eq(e["out"], "57.0", "total dealt")
 		eq(e["kills"], "1", "kills")
 		eq(e["est"], "1", "some dealt damage was estimated")
-		eq(e["taken_by"], "target:537.0,env:30.0", "taken by source kind")
-		eq(e["dealt_by"], "autocannon:30.0,rail:25.0,laser:7.0", "dealt by weapon")
+		eq(e["taken_by"], "target:487.0,env:30.0", "taken by source kind")
+		eq(e["dealt_by"], "autocannon:30.0,rail:20.0,laser:7.0", "dealt by weapon")
 		eq(e["hp_min"], "46", "lowest total HP %")
 		eq(e["hp_min_mt"], "22.0", "when")
 		eq(e["core_min"], "0", "lowest core component %")
@@ -234,6 +237,63 @@ func _run() -> void:
 	_hit("e1", 1, "cannon", pt, "torso", 10.0)
 	_to(40.0)
 	eq(out.size(), n, "nothing after the end")
+
+
+## The `damaged` contract (amount = HP actually removed, no event when nothing was dealt, a destroyed hardpoint's hits land
+## on the torso) as the log sees it: overkill on a hardpoint logs its HP; the next hit on the wreck logs comp=torso; a hit
+## that deals nothing (invulnerable) prints nothing, or amt=0 with its heat for a heat-only hit, and its hit_landed never
+## takes the NEXT hit's damage; a hit on a dead target prints no dmg_out. A fresh log on the same world (the first ended).
+func _dealt_contract() -> void:
+	pt._setup_components({"side_l": "autocannon"})   # a fresh mech with a side_l weapon (WEAPON_HP)
+	var lines: Array[String] = []
+	var c := CombatLog.new()
+	add_child(c)
+	c.set_physics_process(false)
+	c.sink = func(l: String) -> void:
+		lines.append(l)
+		out.append(l)
+	c.bind(world, pt)
+	c.start()
+	c.step(1.0)
+	_hit("e1", 1, "cannon", pt, "side_l", PlayerTarget.WEAPON_HP + 50.0)
+	c.step(1.0)
+	_hit("e1", 1, "lance", pt, "side_l", 30.0)   # the wrecked hardpoint: the torso takes it
+	c.step(1.0)
+	pt.invuln_left = 5.0
+	_hit("e1", 1, "bolter", pt, "torso", 40.0)          # nothing dealt, no heat: no line
+	_hit("e1", 1, "flamer", pt, "torso", 5.0, 3.0)      # nothing dealt, heat: amt 0 with its heat
+	pt.invuln_left = 0.0
+	_hit("e1", 1, "rifle", pt, "torso", 10.0)           # same shooter, same frame: its own 10 only
+	c.step(1.0)
+	check(e2.destroyed(), "e2 died in the first run")
+	_hit("player1", 1, "rail", e2, "body", 25.0)        # a wreck: nothing dealt, no dmg_out
+	c.step(2.0)
+	c.finish("won")
+	var din := _recs_in(lines, "dmg_in")
+	var by_wpn := {}
+	for d in din:
+		by_wpn[d["wpn"]] = d
+	eq(din.size(), 4, "four dmg_in lines (cannon, lance, flamer, rifle; the bolter dealt nothing): %s" % [by_wpn.keys()])
+	if check(by_wpn.has("cannon"), "the hardpoint overkill line"):
+		eq(by_wpn["cannon"]["comp"], "side_l", "on the hardpoint")
+		eq(by_wpn["cannon"]["amt"], "%.1f" % PlayerTarget.WEAPON_HP, "the HP it had, not the 130 requested")
+	if check(by_wpn.has("lance"), "the hit on the wrecked hardpoint"):
+		eq(by_wpn["lance"]["comp"], "torso", "lands on the torso")
+		eq(by_wpn["lance"]["amt"], "30.0", "in full")
+		check(str(by_wpn["lance"]["hp"]).begins_with("torso:370/400"), "torso HP: " + str(by_wpn["lance"]["hp"]))
+	check(not by_wpn.has("bolter"), "a hit that dealt nothing prints nothing")
+	if check(by_wpn.has("flamer"), "a heat-only hit (no damage dealt) still logs its heat"):
+		eq(by_wpn["flamer"]["amt"], "0.0", "no damage")
+		eq(by_wpn["flamer"]["heat_in"], "3.0", "its heat")
+	if check(by_wpn.has("rifle"), "the hit after the zero-damage ones"):
+		eq(by_wpn["rifle"]["amt"], "10.0", "its own damage only (nothing carried over from the zero-damage hits)")
+	eq(_recs_in(lines, "dmg_out").size(), 0, "a hit on a dead target: no dmg_out")
+	var en := _recs_in(lines, "end")
+	if eq(en.size(), 1, "end line"):
+		eq(en[0]["in"], "%.1f" % (PlayerTarget.WEAPON_HP + 40.0), "total taken = HP actually lost (80 + 30 + 10)")
+		eq(en[0]["out"], "0.0", "nothing dealt")
+	c.queue_free()
+	pt._setup_components({})
 
 
 func _line_of(tag: String, i: int) -> String:
@@ -497,7 +557,16 @@ func _threat_scene() -> void:
 	var cb := CrewBot.new()
 	cb.target = bp
 	add_child(cb)
-	c.bots_fn = func() -> Dictionary: return {-2: cb}
+	# Its MechController, out of the tree (no physics step: the heat stays where the test puts it). As in play, the bot's
+	# target is bound to it: heat lives on the controller, the target's own gauge is never ticked (regression: bots logged
+	# heat 0 / shut 0 from PlayerTarget.heat).
+	var bm := MechController.new()
+	bm.position = bp.position
+	bm.heat = 0.7 * bm.heat_cap
+	cb.mech = bm
+	bp.mech = bm
+	var bots := {-2: cb}   # (captured as a dictionary: a lambda capturing cb itself errors once cb is freed)
+	c.bots_fn = func() -> Dictionary: return bots
 	ta._target_id = "player-2"   # A turns on the bot
 	_step_log(c, 8.5)
 	var bth := _recs_bot(lines, "threat", "1")
@@ -507,6 +576,10 @@ func _threat_scene() -> void:
 		eq(bl["engaging"], "1", "A engages the bot (target, awake, within 60 m)")
 		eq(bl["seen_by"], "1", "A sees the bot")
 		check(int(bl["rays"]) <= CombatLog.LOS_RAYS, "the bot's own ray budget")
+		eq(bl["heat"], "0.70", "the bot's heat from its MechController")
+		eq(bl["shut"], "0", "not shut down")
+	var bi0 := (c.tracks[1] as PilotTrack).intensity.value if c.tracks.size() > 1 else -1.0
+	bm.add_heat(bm.heat_cap)   # overheat: shutdown
 	th = _recs_bot(lines, "threat", "0")
 	eq(th[th.size() - 1]["pilot"], "0", "the local pilot's line: pilot = the line's peer")
 	eq(th[th.size() - 1]["seen_by"], "0", "A no longer has the local pilot as target")
@@ -521,6 +594,10 @@ func _threat_scene() -> void:
 	_step_log(c, 9.5)
 	bth = _recs_bot(lines, "threat", "1")
 	eq(bth[bth.size() - 1]["i"], "30", "the bot's intensity from mission state (negative id key)")
+	eq(bth[bth.size() - 1]["heat"], "1.00", "the bot overheated: its controller's heat")
+	eq(bth[bth.size() - 1]["shut"], "1", "the bot's shutdown in its threat line")
+	var bi1 := (c.tracks[1] as PilotTrack).intensity.value if c.tracks.size() > 1 else -1.0
+	check(bi1 >= minf(bi0 + 4.9, 100.0), "the bot's own intensity gets +5/s while shut down (its controller's shutdown): %.1f -> %.1f" % [bi0, bi1])
 	th = _recs_bot(lines, "threat", "0")
 	eq(th[th.size() - 1]["src"], "host", "intensity from mission state")
 	eq(th[th.size() - 1]["i"], "55", "this pilot's (peer 1)")
@@ -544,6 +621,11 @@ func _threat_scene() -> void:
 	CombatLog.note_release("w3", 1, "gate_2", 3, ["tank", "drone", "tank"], "cap")
 	CombatLog.note_scout("completed", "drone_7", 1)
 	CombatLog.note_depot("grant", "dep_0", 2)
+	CombatLog.note_scale(3, 2, "leave", -1, 123.4567)
+	var scl := _recs_in(lines, "scale")
+	if eq(scl.size(), 1, "scale line"):
+		eq([scl[0]["from"], scl[0]["to"], scl[0]["reason"], scl[0]["pilot"], scl[0]["at"]], ["3", "2", "leave", "-1", "123.457"],
+			"scale: from, to, reason, pilot (a bot's negative id), at")
 	var rel := _recs_in(lines, "release")
 	if eq(rel.size(), 1, "release line"):
 		eq(rel[0]["kinds"], "tank:2,drone:1", "kinds counted")
@@ -560,6 +642,14 @@ func _threat_scene() -> void:
 	var before_free := _recs_bot(lines, "threat", "0").size()
 	w.fired.emit(Combat.fire_record("player1", 1, "side_l", "autocannon", Vector3(0, 3, 0), tb.position, 0.0, 200))
 	tb.free()
+	# Its controller freed first while the track still holds it (cb.mech / PilotTrack.mech): no "Trying to cast a freed
+	# object". (The target lets go of it first: CombatWorld._body_excludes tests `is` before is_instance_valid on a
+	# PlayerTarget's freed mech, a separate bug, reported.)
+	bp.mech = null
+	bm.free()
+	_step_log(c, 12.5)
+	var bot_nomech := _recs_bot(lines, "threat", "1")
+	check(not bot_nomech.is_empty() and float(bot_nomech[bot_nomech.size() - 1]["mt"]) > 11.5, "the bot still logs with its controller freed")
 	bp.free()
 	cb.free()
 	var gone := Combat.fire_record("tB", 1, "enemy_cannon", "enemy_cannon", Vector3(-80, 4, 0), Vector3(0, 3, 0), 0.0, 9)
@@ -570,7 +660,7 @@ func _threat_scene() -> void:
 	eq(th.size() - before_free, 5, "threat lines go on after enemies / bots are freed under the log")
 	eq(th[th.size() - 1]["near"], "16", "the freed enemy is not counted")
 	var bot_after := _recs_bot(lines, "threat", "1")
-	check(bot_after.is_empty() or float(bot_after[bot_after.size() - 1]["mt"]) <= 11.5 + 0.01, "no bot lines once it is freed")
+	check(bot_after.is_empty() or float(bot_after[bot_after.size() - 1]["mt"]) <= 12.5 + 0.01, "no bot lines once it is freed")
 	c.finish("won")
 	var ds := _recs_in(lines, "deck_sum")
 	check(ds.size() == 1 and ds[0].has("eng_pct") and ds[0].has("quiet30") and ds[0].has("kint_med"), "deck summary at the end")
@@ -580,6 +670,7 @@ func _threat_scene() -> void:
 		check(en[0].has("quiet30") and en[0].has("kint_p90") and en[0].has("in_pm"), "pacing fields on the end line")
 	var n := lines.size()
 	CombatLog.note_release("w4", 1, "gate_2", 3)
+	CombatLog.note_scale(2, 1, "leave", 3, 1.0)
 	eq(lines.size(), n, "notes are no-ops once the log ended")
 	eq(CombatLog.current, null, "no running log")
 	_report_tool(lines)

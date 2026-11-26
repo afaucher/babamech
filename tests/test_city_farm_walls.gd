@@ -23,9 +23,13 @@ extends TestCase
 ## Recaptured 2026-11-23 (map sealed: a portal's recess gets a back plate, CityDistrict._col_walls): 1/0 has the entry
 ## portal, so one shape more; with the portal plates taken out it is exactly the old capture (PRE_PLATE, asserted in
 ## _deck). 4/1 has no portal and is unchanged. Was 1/0 [1366, 1996002468] (forms off and live).
-const GOLDEN_COLLISION := {"1/0": [1367, 4047391608], "4/1": [2030, 4209122442]}
-const GOLDEN_LIVE := {"1/0": [1367, 4047391608], "4/1": [2075, 2245239995]}
-const PRE_PLATE := {"1/0": [1366, 1996002468], "4/1": [2030, 4209122442]}      ## forms off, portal plates left out
+## Recaptured 2026-11-26 (ramp-end collision, tests/test_ramp_stuck.gd: parapets as prisms ending square to the deck,
+## end blocks CityDistrict.END_GUARD tall; same shape counts). Was GOLDEN_COLLISION {"1/0": [1367, 4047391608], "4/1":
+## [2030, 4209122442]}, GOLDEN_LIVE {"1/0": [1367, 4047391608], "4/1": [2075, 2245239995]}, PRE_PLATE {"1/0": [1366,
+## 1996002468], "4/1": [2030, 4209122442]}.
+const GOLDEN_COLLISION := {"1/0": [1367, 1339546450], "4/1": [2030, 1937480447]}
+const GOLDEN_LIVE := {"1/0": [1367, 1339546450], "4/1": [2075, 2085075242]}
+const PRE_PLATE := {"1/0": [1366, 3206981072], "4/1": [2030, 1937480447]}      ## forms off, portal plates left out
 const FORMS_OFF := {"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0}
 const FARM_TRIS_PER_M := 32.0      ## budget: lit + light-bar triangles per metre of farm wall (target ~30)
 

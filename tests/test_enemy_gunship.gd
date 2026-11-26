@@ -267,7 +267,6 @@ func _engaged_stays_in_range_and_visible(seed_n: int) -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = seed_n
-	td.objectives = true
 	add_child(td)
 	await frames(4)
 	td.drive_override = true

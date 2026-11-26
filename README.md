@@ -11,8 +11,6 @@ Co-op (up to 4) third-person mech combat in Godot 4.7 / GDScript: chicken-legged
 .\run.ps1                      # the game (menu)
 .\run.ps1 -Crew 2              # a host + a joiner over ENet on this PC (each its own window and settings file)
 .\run.ps1 -Crew 4 -Link coast  # four windows, simulated coast-to-coast link
-.\run.ps1 --no-objectives      # the old clear-and-extract mission (objectives + pacing director + depots are the
-                               # default; the hangar's Objectives box remembers it; in a crew the host's mode rules)
 .\lab.ps1                      # the lab: every scene with tunable params
 .\test_runner.ps1 -TestAll     # all tests, headless
 .\build.ps1                    # tests + Windows export (build\windows\babamech.exe)
@@ -26,6 +24,11 @@ Godot is found by `godot_env.ps1` (`$env:BABAMECH_GODOT`, `build\deps`, or the f
 - **Settings**: pilot name, head, video, audio, simulated link (saved at once to `user://settings.cfg`).
 - **Hangar** (after Play/Join): the crew with each pilot's name / head / chassis, your chassis and loadout
   (weapons with weight, passive heat, active heat), a 3D line-up of the crew's mechs. Launch is a stub.
+- **The mission**: one mode (user 2026-11-25: "Cut the legacy modes."): the mission plan's objectives, the pacing
+  director's waves, supply depots and the extraction hold, solo and in a crew, in the multi-deck section stack. No flag
+  or setting selects another: `--objectives` is accepted and ignored, `--no-objectives` and the old "objectives" setting
+  are gone, and so are the hangar's Objectives box and the single-district mode (`--district`). Tests of a narrow system may
+  use a TEST-ONLY fixture instead (docs/testing.md "Fixtures"), never reachable from the game.
 - **Lab**: placeholder mech (leg lengths, crouch, stance, walk, head, loadout) and the head gallery.
 
 ## Not committed

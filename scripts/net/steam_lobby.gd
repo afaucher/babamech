@@ -27,6 +27,11 @@ const ENTER_FULL := 4
 var lobby_id := 0
 var _wired_to: Object = null   ## the Steam object whose signals are connected (a test's fake replaces the real one)
 var _join_requested := false   ## Steam also sends lobby_joined to a lobby's creator: only a join we asked for counts
+## A createLobby / joinLobby still in flight. leave() while one is (the session's open timeout gave up, the player
+## cancelled) marks it abandoned: when Steam answers late, that lobby is left at once instead of staying open as a ghost
+## (a lobby nobody hosts, still listed for Join, and a lobby_id that made the next create() fail "already in a lobby").
+var _create_requested := false
+var _join_abandoned := false
 
 
 func _ready() -> void:
@@ -68,6 +73,7 @@ func create(max_members: int) -> bool:
 		failed.emit("already in a lobby")
 		return false
 	_wire(steam)
+	_create_requested = true
 	steam.call("createLobby", _const("LOBBY_TYPE_PUBLIC", 2), max_members)
 	return true
 
@@ -95,6 +101,7 @@ func join(id: int) -> bool:
 		return false
 	_wire(steam)
 	_join_requested = true
+	_join_abandoned = false
 	steam.call("joinLobby", id)
 	return true
 
@@ -105,7 +112,10 @@ func leave() -> void:
 		steam.call("leaveLobby", lobby_id)
 		print("[Steam] left lobby ", lobby_id)
 	lobby_id = 0
+	if _join_requested:
+		_join_abandoned = true   # a late lobby_joined is left (_on_lobby_joined)
 	_join_requested = false
+	_create_requested = false     # a late lobby_created is left (_on_lobby_created)
 
 
 ## The Steam overlay's invite dialog for this lobby (M7, "Invite crew"). False without Steam or a lobby.
@@ -154,6 +164,12 @@ func _wire(steam: Object) -> void:
 
 
 func _on_lobby_created(result: int, id: int) -> void:
+	if not _create_requested:
+		# Created after we gave up on it (leave() ran first): close it, or it stays open with nobody hosting.
+		if result == 1 and id != 0 and id != lobby_id:
+			_leave_id(id, "created after it was abandoned")
+		return
+	_create_requested = false
 	if result != 1:
 		failed.emit("Steam couldn't open a lobby (%d)" % result)
 		return
@@ -168,7 +184,10 @@ func _on_lobby_created(result: int, id: int) -> void:
 
 func _on_lobby_joined(id: int, _permissions: int, _locked: bool, response: int) -> void:
 	if not _join_requested:
-		return   # the creator's own echo after createLobby
+		if _join_abandoned and response == ENTER_SUCCESS and id != lobby_id:
+			_join_abandoned = false
+			_leave_id(id, "entered after the join was abandoned")
+		return   # otherwise the creator's own echo after createLobby
 	_join_requested = false
 	if response != ENTER_SUCCESS:
 		var reason := "Steam refused the lobby (%d)" % response
@@ -190,6 +209,13 @@ func _on_lobby_match_list(lobbies: Array) -> void:
 
 func _on_join_requested(id: int, friend_id: int) -> void:
 	invite_accepted.emit(id, friend_id)
+
+
+func _leave_id(id: int, why: String) -> void:
+	var steam := SteamIdentity.steam()
+	if steam != null:
+		steam.call("leaveLobby", id)
+	print("[Steam] left lobby ", id, ": ", why)
 
 
 static func _const(name_: String, fallback: int) -> int:

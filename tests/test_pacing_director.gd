@@ -20,13 +20,20 @@ func setup() -> void:
 	_sweep()
 	_hold()
 	_scouts()
+	_scout_expiry()
 	_patrols_then_hunt()
 	_borrow()
 	_defend_by_crew()
 	_caps()
+	_overrides()
+	_freed_mech()
 	_scaling()
 	_determinism()
 	_round_trip()
+	_rescale()
+	_rescale_defend()
+	_rescale_determinism()
+	_rescale_round_trip()
 	finish()
 
 
@@ -380,6 +387,56 @@ func _scouts() -> void:
 	eq(got, s.d.scout_budget(), "scouts cause at most scout_budget() releases on a deck (%d)" % got)
 
 
+## Audit 2026-11 (finding 2): a scout call held for lack of room lapses after SCOUT_CALL_TTL s (before the fix it waited
+## forever and fired once room appeared, minutes later), lapses when nobody stands on its deck, and the queue is bounded.
+func _scout_expiry() -> void:
+	var opts := {"rest_first": 1000.0, "arrival_rest": 1000.0, "quiet_cap": 1000.0, "deck_cap": 24}
+	var scouts := func(x: Sim) -> Array: return x.orders.filter(func(o: Dictionary) -> bool: return o["reason"] in ["scout", "patrol"])
+	# Fresh: held while there is no room, served once room appears within the lifetime.
+	var a := _solo(_plan(), opts)
+	a.step(2)
+	a.alive = [23, 0]   # room 1: no group, no patrol fits
+	a.d.scout_call(0, 0.0, 300.0, "drone_a", a.t)
+	a.step(int(5.0 / DT))
+	eq((scouts.call(a) as Array).size(), 0, "no room: the call is held")
+	eq(a.d.pending_calls().size(), 1, "and waits")
+	a.alive = [0, 0]
+	a.step()
+	eq((scouts.call(a) as Array).size(), 1, "room within SCOUT_CALL_TTL: the held call is served")
+	# Stale: room only after the lifetime.
+	var b := _solo(_plan(), opts)
+	b.step(2)
+	b.alive = [23, 0]
+	b.d.scout_call(0, 0.0, 300.0, "drone_a", b.t)
+	b.step(int((PacingDirector.SCOUT_CALL_TTL + 2.0) / DT))
+	b.alive = [0, 0]
+	b.step(int(10.0 / DT))
+	eq((scouts.call(b) as Array).size(), 0, "a call held past SCOUT_CALL_TTL never fires (%s)" % str(b.orders))
+	eq(b.d.pending_calls().size(), 0, "it lapsed")
+	check(b.events.any(func(e: Dictionary) -> bool: return e["tag"] == "scout" and e["ev"] == "expired"), "logged as expired")
+	# Nobody on its deck any more: lapses at once, and does not fire when the crew comes back.
+	var c := _solo(_plan(), opts)
+	c.step(2)
+	c.alive = [23, 0]
+	c.d.scout_call(0, 0.0, 300.0, "drone_a", c.t)
+	c.step(4)
+	c.pilots[1] = {"deck": 1, "x": 0.0, "s": 150.0}
+	c.step(2)
+	eq(c.d.pending_calls().size(), 0, "the crew left the call's deck: it lapsed")
+	c.alive = [0, 0]
+	c.pilots[1] = {"deck": 0, "x": 0.0, "s": 150.0}
+	c.step(int(5.0 / DT))
+	eq((scouts.call(c) as Array).size(), 0, "nothing fires when the crew returns (%s)" % str(c.orders))
+	# Bounded.
+	var q := _solo(_plan(), opts)
+	q.step(2)
+	q.alive = [23, 0]
+	for i in 20:
+		q.d.scout_call(0, 0.0, 300.0, "drone_q%d" % i, q.t)
+	q.step()
+	check(q.d.pending_calls().size() <= PacingDirector.SCOUT_CALL_MAX, "at most SCOUT_CALL_MAX calls wait (%d)" % q.d.pending_calls().size())
+
+
 # --- Patrols, garrison hunt, a sweep can end -----------------------------------------------------------------------
 
 func _patrols_then_hunt() -> void:
@@ -441,6 +498,67 @@ func _caps() -> void:
 	s5.active = [6, 0]
 	s5.step(int(25.0 / DT))
 	eq(s5.orders.size(), 0, "the hard alive ceiling still holds (35 of 36)")
+
+
+## Audit 2026-11 (finding 4): the by-crew tables are only defaults; an explicit "deck_cap" / "defend_every" wins for
+## every crew size, as a number or as a per-crew array (before the fix an array was stored as-is and broke the caps; the
+## dead scalar DECK_CAP / DEFEND_EVERY constants are gone).
+func _overrides() -> void:
+	for n in [1, 2, 3, 4]:
+		var d := PacingDirector.make(_plan(), {"deck_cap": 9, "defend_every": 12.0}, n)
+		eq(int(d.options["deck_cap"]), 9, "%d pilots: a scalar deck_cap override wins over the table" % n)
+		near(float(d.options["defend_every"]), 12.0, 0.001, "%d pilots: a scalar defend_every override wins" % n)
+		var arr := PacingDirector.make(_plan(), {"deck_cap": [10, 11, 12, 13], "defend_every": [50.0, 40.0, 33.0, 31.0]}, n)
+		eq(arr.options["deck_cap"], [10, 11, 12, 13][n - 1], "%d pilots: an array deck_cap override is indexed by crew" % n)
+		eq(arr.options["defend_every"], [50.0, 40.0, 33.0, 31.0][n - 1], "%d pilots: an array defend_every override too" % n)
+		var plain := PacingDirector.make(_plan(), {}, n)
+		eq(plain.options["deck_cap"], PacingDirector.DECK_CAP_BY_CREW[n - 1], "%d pilots: no override, the table" % n)
+		eq(plain.options["defend_every"], PacingDirector.DEFEND_EVERY_BY_CREW[n - 1], "%d pilots: defend_every from its table" % n)
+	check(not ("DECK_CAP" in PacingDirector.new().get_script().get_script_constant_map()), "no dead scalar DECK_CAP")
+	check(not ("DEFEND_EVERY" in PacingDirector.new().get_script().get_script_constant_map()), "no dead scalar DEFEND_EVERY")
+	# Behaviour: solo, a cap raised to 30 releases a 4-unit group with 20 in play (the solo table's 14 would hold it).
+	var s := _solo(_plan(), {"rest_first": 1000.0, "arrival_rest": 1000.0, "deck_cap": 30})
+	s.alive = [20, 0]
+	s.until(func(x: Sim) -> bool: return not x.orders.is_empty(), 30.0)
+	check(not s.orders.is_empty() and int(s.orders[0]["max_units"]) == 4, "the overridden cap is the one applied (%s)" % str(s.orders))
+	var t := _solo(_plan(), {"rest_first": 1000.0, "arrival_rest": 1000.0})
+	t.alive = [20, 0]
+	t.step(int(30.0 / DT))
+	eq(t.orders.size(), 0, "without it the solo table (14) holds everything at 20 in play")
+	# A defend override is the defend's clock.
+	var dv := _solo(_plan(), {"rest_first": 1000.0, "arrival_rest": 1000.0, "quiet_cap": 1000.0, "defend_every": 10.0})
+	dv.step(4)
+	dv.engaging = [10, 0]
+	dv.objs["d0_b0"] = ["active", 0.0, 2.0]
+	dv.step()
+	dv.step(int(11.0 / DT))
+	eq(dv.orders.size(), 2, "defend_every 10: the second defend group 10 s after the first")
+
+
+## Review 2026-11-25: a crew member's mech freed while it is still listed (a hangar bot's controller freed before its
+## PlayerTarget) must not raise in PacingFacts ("Left operand of 'is' is a previously freed instance" before the fix);
+## the pilot counts as not standing, and the director ticks on with it.
+func _freed_mech() -> void:
+	var pf := PacingFacts.new()
+	var pt := PlayerTarget.new()
+	pt.target_id = "bot_a"
+	var gone := Node3D.new()
+	gone.free()
+	var alive := Node3D.new()
+	var pilots := [{"peer": -1, "target": pt, "mech": gone, "deck": 0, "downed": false},
+		{"peer": 1, "target": null, "mech": alive, "deck": 0, "downed": false}]
+	var got := pf.collect(pilots, null, [], 2)
+	var bot: Dictionary = (got["pilots"] as Dictionary).get("-1", {})
+	check(bool(bot.get("disabled", false)), "a pilot whose mech was freed counts as not standing (%s)" % str(bot))
+	check(not bool(bot.get("engaged", true)), "and is never engaged")
+	check(not bool(((got["pilots"] as Dictionary).get("1", {}) as Dictionary).get("disabled", true)), "the other pilot stands")
+	var s := _solo(_plan(), {"rest_first": 1000.0, "arrival_rest": 1000.0})
+	var f := s.facts()
+	f["pilots"] = got["pilots"]
+	s.d.tick(s.t + DT, f)
+	check(true, "the director ticks with it")
+	alive.free()
+	pt.free()
 
 
 # --- Co-op ---------------------------------------------------------------------------------------------------------
@@ -509,6 +627,136 @@ func _round_trip() -> void:
 	var c2 := PacingDirector.make(_plan(), {}, 3)
 	c2.apply_state(var_trip)
 	near(c2.intensity(-1), s.d.intensity(-1), 0.6, "var_to_bytes round trip too")
+
+
+## Ease off when a pilot leaves (user 2026-11-25; MissionFlow applies PacingDirector.rescale at the host's `at`): from 3
+## to 2 pilots mid-mission the BY_CREW options, ENGAGE_TARGET and the allowances follow at once (used counts stay counted),
+## a released group keeps the scale it was released at (its spawner definition and size), groups not released yet take
+## the new one; a scale going back UP is applied the same way.
+func _rescale() -> void:
+	var s := Sim.new(_plan(), {"rest_first": 0.5, "arrival_rest": 0.5, "build_gap": 1.0}, 3)
+	s.pilots[1] = {"deck": 0, "x": 60.0, "s": 150.0}
+	s.pilots[2] = {"deck": 0, "x": 60.0, "s": 160.0}
+	s.pilots[-1] = {"deck": 0, "x": 60.0, "s": 140.0}
+	s.sizes["d0_w4"] = 9
+	s.sizes["d0_w5"] = 9
+	s.until(func(x: Sim) -> bool: return not x.orders.is_empty(), 30.0)
+	if not check(not s.orders.is_empty(), "3 pilots: a build release before the rescale"):
+		return
+	var rel := str(s.orders[0]["wave"])
+	eq(s.d.status(rel), "released", "group %s is released" % rel)
+	var rel_def := s.d.group_def(rel)
+	# Two patrols taken on deck 0 before the leave (the allowance's used count).
+	var p1 := s.d._new_patrol(0)
+	var p2 := s.d._new_patrol(0)
+	check(not p1.is_empty() and not p2.is_empty(), "two patrols taken")
+	eq(s.d.patrols_left(0), s.d.patrol_allowance() - 2, "3 pilots: allowance 5, 2 used, 3 left")
+	s.d._scout_rel[0] = 3
+	eq(int(s.d.group_def("d0_w4")["units"]), 0, "3 pilots: the defend group is not capped (plan size)")
+	var old := s.d.rescale(2)
+	eq(old, 3, "rescale returns the old scale")
+	eq(s.d.crew_n, 2, "crew_n 2")
+	eq(int(s.d.options["deck_cap"]), int(PacingDirector.DECK_CAP_BY_CREW[1]), "deck cap follows (16)")
+	near(float(s.d.options["defend_every"]), float(PacingDirector.DEFEND_EVERY_BY_CREW[1]), 0.001, "defend cadence follows (38 s)")
+	eq(s.d.engage_target(), 6, "ENGAGE_TARGET x CREW_SCALE[2 pilots]")
+	eq(s.d.patrol_allowance(), 4, "patrol allowance 4")
+	eq(s.d.patrols_left(0), 2, "patrols left = max(0, 4 - 2 used)")
+	eq(s.d.patrols_left(1), 4, "an untouched deck gets the whole new allowance")
+	eq(s.d.scout_budget(), 3, "scout budget 3 ...")
+	check(s.d._scout_rel[0] >= s.d.scout_budget(), "... and 3 already used: no scout release left on deck 0")
+	eq(s.d.hold_patrols(), 4, "hold patrols 4")
+	eq(int(s.d.group_def("d0_w4")["units"]), int(PacingDirector.DEFEND_UNITS_MAX[1]), "an unreleased defend group takes the 2-pilot cap (5)")
+	eq(s.d.release_crew(rel), 3, "the released group keeps the scale it was released at")
+	eq(s.d.release_crew("d0_w2"), 2, "an unreleased group reads the new scale")
+	eq(str(s.d.group_def(rel)), str(rel_def), "the released group's spawner definition is untouched")
+	eq(s.d.release_crews(), {rel: 3}, "release_crews lists the released group at its scale")
+	# Allowances never go negative.
+	s.d._patrols[0] = 0
+	s.d.rescale(1)
+	eq(s.d.patrols_left(0), 0, "an allowance used up stays at 0 (max(0, 3 - 5 used))")
+	# Up again (no mid-mission join exists; MissionFlow warns): applied the same way.
+	eq(s.d.rescale(4), 1, "a rescale up is accepted")
+	eq(int(s.d.options["deck_cap"]), int(PacingDirector.DECK_CAP_BY_CREW[3]), "deck cap 24 at 4 pilots")
+	eq(s.d.rescale(4), 4, "the same scale again changes nothing")
+	# An override keeps winning across a rescale.
+	var o := PacingDirector.make(_plan(), {"deck_cap": [10, 11, 12, 13], "defend_every": 20.0}, 3)
+	o.rescale(1)
+	eq(int(o.options["deck_cap"]), 10, "an array override is re-indexed by the new scale")
+	near(float(o.options["defend_every"]), 20.0, 0.001, "a number override stays")
+	# A leaver's per-pilot entries go.
+	s.d.forget_pilot(-1)
+	check(not s.d.state()["intensity"].has("-1") and not s.d._int.has("-1") and not s.d._eng_t.has("-1"),
+		"forget_pilot drops the leaver's intensity and engagement")
+
+
+## A defend in progress when the crew shrinks 3 -> 1: its next group comes on the new cadence (counted from its last group)
+## with the new size cap and the solo theme; the group already released keeps its own.
+func _rescale_defend() -> void:
+	var s := Sim.new(_plan(), {"rest_first": 1000.0, "arrival_rest": 1000.0, "quiet_cap": 1000.0}, 3)
+	s.pilots[1] = {"deck": 0, "x": 0.0, "s": 150.0}
+	s.sizes["d0_w4"] = 9
+	s.sizes["d0_w5"] = 9
+	s.step(4)
+	s.engaging = [30, 0]   # build held off: only the defend's own clock releases
+	s.objs["d0_b0"] = ["active", 0.0, 2.0]
+	var o := s.step()
+	if not check(o.size() == 1 and str(o[0]["wave"]) == "d0_w4", "3 pilots: the defend's first group at once (%s)" % str(o)):
+		return
+	var t0 := float(o[0]["t"])
+	var first := s.d.group_def("d0_w4")
+	s.step(int(10.0 / DT))
+	s.d.rescale(1)
+	s.until(func(x: Sim) -> bool: return x.orders.size() > 1, 60.0)
+	if check(s.orders.size() == 2, "the second defend group comes"):
+		near(float(s.orders[1]["t"]) - t0, float(PacingDirector.DEFEND_EVERY_BY_CREW[0]), 0.5,
+			"on the solo cadence (45 s after the first, not 30)")
+		var g5 := s.d.group_def("d0_w5")
+		eq(int(g5["units"]), int(PacingDirector.DEFEND_UNITS_MAX[0]), "with the solo cap (4)")
+		eq(str(g5["theme"]), "mixed", "and the solo theme")
+		eq(int(s.orders[1]["max_units"]), int(PacingDirector.DEFEND_UNITS_MAX[0]), "the order holds 4 units of room")
+	eq(str(s.d.group_def("d0_w4")), str(first), "the first group (released at 3) is unchanged")
+
+
+## The same facts and the same rescale tick give the same orders and state.
+func _rescale_determinism() -> void:
+	var a := Sim.new(_plan(), {}, 3)
+	var b := Sim.new(_plan(), {}, 3)
+	for sm: Sim in [a, b]:
+		sm.pilots[1] = {"deck": 0, "x": 0.0, "s": 150.0}
+		sm.pilots[2] = {"deck": 0, "x": 10.0, "s": 150.0}
+	for i in int(160.0 / DT):
+		if i == 200:
+			for sm: Sim in [a, b]:
+				sm.d.rescale(2)
+				sm.pilots.erase(2)
+				sm.d.forget_pilot(2)
+		if i == 300:
+			a.objs["d0_p"] = ["active", 0.0, 20.0]
+			b.objs["d0_p"] = ["active", 0.0, 20.0]
+		a.step()
+		b.step()
+	eq(JSON.stringify(a.orders), JSON.stringify(b.orders), "a rescale mid-run: the same orders (%d)" % a.orders.size())
+	eq(JSON.stringify(a.d.state()), JSON.stringify(b.d.state()), "and the same state")
+
+
+## State round trip with the scale: the host's director rescaled, its state() through JSON to a client's director that
+## applied the same mission.scale: the mirror and the scale-dependent reads agree.
+func _rescale_round_trip() -> void:
+	var s := Sim.new(_plan(), {}, 3)
+	s.pilots[1] = {"deck": 0, "x": 0.0, "s": 150.0}
+	s.pilots[-1] = {"deck": 0, "x": 5.0, "s": 160.0, "engaged": true}
+	s.step(8)
+	s.d.rescale(2)
+	s.step(4)
+	var c := PacingDirector.make(_plan(), {}, 3)
+	c.rescale(2)   # the client applies the same change at the same `at`
+	c.apply_state(JSON.parse_string(JSON.stringify(s.d.state())))
+	eq(c.crew_n, s.d.crew_n, "crew_n agrees")
+	eq(int(c.options["deck_cap"]), int(s.d.options["deck_cap"]), "deck cap agrees")
+	eq(c.engage_target(), s.d.engage_target(), "ENGAGE_TARGET agrees")
+	eq(str(c.state()["waves"]), str(s.d.state()["waves"]), "wave counters round-trip")
+	eq(c.waves_left_all(), s.d.waves_left_all(), "waves_left mirrors")
+	near(c.intensity(-1), s.d.intensity(-1), 0.6, "the bot's intensity round-trips")
 
 
 ## A bonus flag's group is lent to build / the cap once the free groups are gone; the flag, started later, still gets one.

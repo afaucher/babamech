@@ -115,6 +115,10 @@ func muzzle_world(_weapon_id: String = "") -> Vector3:
 	return super.muzzle_world()
 
 
+func _max_aim_pitch() -> float:
+	return deg_to_rad(52.0)
+
+
 func _track_aim(target_pos: Vector3, dt: float) -> float:
 	if not is_inside_tree():
 		return 0.0

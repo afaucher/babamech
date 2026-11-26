@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Two chassis in one crew (host + 1 client, once per link): the host flies a Strider, the client joins in one (the
 ## handshake's default) and switches to a Bulwark with its own loadout in the hangar (sys.profile): the host's roster and
 ## the client's own copy of it show the change. Then the crew launches; on EVERY machine each crew member's mech has the

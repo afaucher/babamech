@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Teammates' pilot heads across machines (integration plan W7, docs/design/pilot-heads.md §7), host + 1 client, once per
 ## link. The host (B) judges what it shows of the client's (A's) mech: the puppet's head and accent are A's roster
 ## profile; CrewSync gave it a PilotPuppetLink; MechRig feeds its head; A's streamed overheat makes A's head overheated

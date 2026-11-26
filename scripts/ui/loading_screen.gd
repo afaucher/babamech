@@ -273,11 +273,9 @@ func _label(nm: String, text: String, size_: int, col: Color) -> Label:
 	return l
 
 
-## The mission line: "Section 57036" (a stack) or "District 12"; the first tip follows from the seed.
-func set_mission(seed_value: int, mode: String = NetMission.MODE_STACK) -> void:
-	mission_label.text = ("District %d" if mode == NetMission.MODE_DISTRICT else "Section %d") % seed_value
-	if mode == NetMission.MODE_DISTRICT:
-		section_label.text = "One city district" + _ff_suffix()
+## The mission line: "Section 57036"; the first tip follows from the seed. `mode` is always the stack (kept for callers).
+func set_mission(seed_value: int, _mode: String = NetMission.MODE_STACK) -> void:
+	mission_label.text = "Section %d" % seed_value
 	_tip = absi(seed_value) % TIPS.size()
 	_show_tip()
 

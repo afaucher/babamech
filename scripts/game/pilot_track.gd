@@ -49,10 +49,33 @@ func valid() -> bool:
 	return is_instance_valid(target) and target is PlayerTarget
 
 
+## The pilot's MechController, where its heat and shutdown live (the same source as the local pilot's
+## CombatLog._heat / _shut): the one its target is bound to, else the track's own `mech`; null when neither is a live
+## controller. A bound PlayerTarget's own `heat` gauge is never ticked (PlayerTarget.apply_heat forwards to the mech), so
+## reading it for a bot logged heat 0 forever. Never casts a freed object.
+func controller() -> MechController:
+	if valid():
+		var m: Variant = (target as PlayerTarget).mech
+		if is_instance_valid(m) and m is MechController:
+			return m as MechController
+	if is_instance_valid(mech) and mech is MechController:
+		return mech as MechController
+	return null
+
+
+## Heat 0..1 of the pilot's mech (its controller's gauge; the target's own gauge only without a controller).
+func heat_frac() -> float:
+	var m := controller()
+	if m != null:
+		return m.heat / maxf(m.heat_cap, 0.001)
+	return (target as PlayerTarget).heat.fraction() if valid() and (target as PlayerTarget).heat != null else 0.0
+
+
 func shutdown() -> bool:
-	if is_instance_valid(mech) and mech is Object and (mech as Object).get("shutdown") != null:
-		return bool((mech as Object).get("shutdown"))
-	return valid() and (target as PlayerTarget).heat.shutdown
+	var m := controller()
+	if m != null:
+		return m.shutdown
+	return valid() and (target as PlayerTarget).heat != null and (target as PlayerTarget).heat.shutdown
 
 
 ## The printed intensity: the host director's when mission state has it, else this machine's computation.

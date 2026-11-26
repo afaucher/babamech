@@ -6,16 +6,17 @@ extends Node
 ## end_mission and listen to Session.mission_started / mission_go / mission_ended. Events ride Session's reliable events,
 ## kinds "mission.*".
 ##
-##   LAUNCH   The host's Launch: mission.launch {seed, mode, start_t, crew, friendly_fire, objectives} to the crew (start_t = host_time() + LAUNCH_LEAD
-##            on the shared clock; mode = what the seed builds, MODE_STACK (the multi-deck section) or MODE_DISTRICT (one
-##            city district); crew = the roster by seat, each {peer, seat, name, head, chassis, accent, loadout};
-##            friendly_fire = the host's crew option (Session.friendly_fire; absent = true): TestDrive.friendly_fire;
-##            objectives = DEV plan mode (Session.objectives; absent = false): TestDrive.objectives, MissionFlow).
+##   LAUNCH   The host's Launch: mission.launch {seed, mode, start_t, crew, friendly_fire, scale} to the crew
+##            (scale = the host's crew scale, see SCALE; start_t = host_time() + LAUNCH_LEAD
+##            on the shared clock; mode = what the seed builds, always MODE_STACK (the multi-deck section; the mission
+##            is always the plan's objectives); crew = the roster by seat, each {peer, seat, name, head, chassis, accent,
+##            loadout}; friendly_fire = the host's crew option (Session.friendly_fire; absent = true):
+##            TestDrive.friendly_fire).
 ##            Every machine, the host included, gets mission_started(params), plays the bay alert and loads the mission
 ##            when the shared clock reaches start_t. The crew goes to "mission" (lobby data; joiners are refused with
 ##            ON_MISSION until it ends).
 ##   LOADING  Each machine builds the mission from params.seed + mode, holds its mech still and reports its checksum (the
-##            stack's CityStack.checksum(), or the district plan's; report_built: the host keeps its own, a client sends
+##            stack's CityStack.checksum() + the plan's; report_built: the host keeps its own, a client sends
 ##            mission.ready {sum}). The host compares each with
 ##            its own: a different one is a DESYNC (printed, noted in telemetry, kept in `desyncs`), and that pilot is
 ##            sent out (Session.kick, reason DESYNC). A member that has not reported LOAD_TIMEOUT after start_t is sent
@@ -46,6 +47,12 @@ extends Node
 ##            answer to a re-sent claim goes to the asker only, same seq) or depot.deny {depot, reason, n} to the asker
 ##            (host_depot_deny). Session.depot_claimed(from, data) fires on the host, depot_granted(grant) /
 ##            depot_denied(data) on clients. Nothing is kept here: the cores left ride in mission.state ("depots").
+##   SCALE    The crew scale (AGENTS.md rule 8, docs/networking.md "Crew scale"): the host decides it. The launch carries the
+##            start value (params.scale = MissionFlow.host_crew_scale(launch crew, hangar bots included)); every change
+##            after (a member left: MissionFlow.on_member_retired) goes out as a reliable mission.scale {n, at, from,
+##            reason, pilot} (host_scale), `at` on the shared clock: every machine applies n at `at`. Kept in `scales`
+##            (client_scale emits Session.mission_scale(change) on clients); mission.go carries "scales" for a barrier
+##            latecomer. A change whose `at` is not newer than the last one this machine has is ignored (MissionFlow).
 ##   END      The host leaving the mission (Esc in the test drive) sends mission.end {reason}: every client gets
 ##            mission_ended(reason) and goes back to the hangar; the crew is back in "lobby". A client leaving the
 ##            mission only leaves it on its own machine (the host's mission goes on without its mech moving).
@@ -62,8 +69,10 @@ const LAUNCH_LEAD := 2.5     ## seconds of bay alert between Launch and the load
 const START_LEAD := 0.5      ## seconds between mission.go and the start
 const LOAD_TIMEOUT := 45.0   ## host: a member that hasn't reported this long after start_t is sent out
 const HOST_ENDED := "The host ended the mission"
-const MODE_STACK := "stack"          ## the multi-deck mission section (CityStack): the default
-const MODE_DISTRICT := "district"    ## one city district (the pre-stack test drive)
+const MODE_STACK := "stack"          ## the multi-deck mission section (CityStack): the only mode
+## The crew-scale rule lives game side (MissionFlow.host_crew_scale, the only derivation of the scale): loaded when the
+## host launches, not at the autoload (no game classes in the net layer's load).
+const SCALE_RULE := "res://scripts/game/mission_flow.gd"
 
 var phase := IDLE
 ## {seed, mode, start_t, crew, friendly_fire} of the launched mission ({} = none).
@@ -82,6 +91,8 @@ var slow: Array = []
 var state: Dictionary = {}
 ## Plan mode: every wave order of this mission, in order ({wave, deck, source, open_at, max_units}).
 var waves: Array = []
+## Every crew-scale change of this mission (host: sent; client: heard), in order ({n, at, from, reason, pilot}).
+var scales: Array = []
 
 ## The load barrier's timeout for this machine (LOAD_TIMEOUT; tests shorten it on every process).
 var load_timeout := LOAD_TIMEOUT
@@ -119,6 +130,7 @@ func reset() -> void:
 	local_sum = ""
 	state = {}
 	waves = []
+	scales = []
 	_sums = {}
 	_judged = {}
 	build_ms = {}
@@ -183,7 +195,7 @@ func seconds_to_load() -> float:
 	return maxf(float(params.get("start_t", 0.0)) - s.host_time(), 0.0)
 
 
-## Host: launch a mission on `seed_value` (built as `mode`: MODE_STACK or MODE_DISTRICT) for the crew as it is now.
+## Host: launch a mission on `seed_value` (built as `mode`: MODE_STACK, the only one) for the crew as it is now.
 func host_launch(seed_value: int, mode: String = MODE_STACK) -> bool:
 	var s := _s()
 	if s == null or not s.online() or not s.hosting or phase != IDLE:
@@ -195,11 +207,12 @@ func host_launch(seed_value: int, mode: String = MODE_STACK) -> bool:
 	desyncs.clear()
 	slow.clear()
 	params = {"seed": seed_value, "mode": clean_mode(mode), "start_t": s.host_time() + LAUNCH_LEAD, "crew": crew,
-		"friendly_fire": s.friendly_fire, "objectives": s.objectives}
+		"friendly_fire": s.friendly_fire, "scale": launch_scale(crew)}
 	phase = LAUNCH
 	s.set_crew_state("mission")
 	s.send_event(0, "mission.launch", params)
-	_note("mission launch: seed %d, %s, crew %d, loads at %.3f" % [seed_value, params["mode"], crew.size(), float(params["start_t"])])
+	_note("mission launch: seed %d, %s, crew %d, scale %d, loads at %.3f" % [seed_value, params["mode"], crew.size(),
+		int(params["scale"]), float(params["start_t"])])
 	launches += 1
 	FlowLog.say("relaunch" if launches > 1 else "launch", "#%d seed %d, %s, crew %d" % [launches, seed_value, params["mode"], crew.size()])
 	s.mission_started.emit(params)
@@ -259,6 +272,48 @@ func host_wave(order: Dictionary) -> void:
 		str(o.get("source", "")), float(o.get("open_at", 0.0)), int(o.get("max_units", 0)), str(o.get("reason", ""))])
 
 
+## Host: the crew scale changes at `at` on the shared clock (MissionFlow.on_member_retired): keep it and send it to the
+## crew (reliable mission.scale {n, at, from, reason, pilot}).
+func host_scale(change: Dictionary) -> void:
+	var s := _s()
+	if s == null or not s.online() or not s.hosting or phase == IDLE:
+		return
+	var c := clean_scale(change)
+	if c.is_empty():
+		return
+	scales.append(c)
+	s.send_event(0, "mission.scale", c)
+	_note("mission scale %d -> %d at %.3f (%s, pilot %d)" % [int(c["from"]), int(c["n"]), float(c["at"]), str(c["reason"]),
+		int(c["pilot"])])
+
+
+## The launch's crew scale: MissionFlow.host_crew_scale(the launch crew, hangar bots included). 1 when the rule can't load.
+static func launch_scale(crew: Array) -> int:
+	var rule := load(SCALE_RULE) as GDScript
+	if rule == null:
+		push_warning("[Net] the crew-scale rule did not load: scale 1")
+		return 1
+	return clampi(int(rule.call("host_crew_scale", crew)), 1, 4)
+
+
+## A scale change as it may be believed from the wire: {n: 1..4, at: finite, from: 0..4, reason, pilot}, {} when malformed.
+static func clean_scale(d: Dictionary) -> Dictionary:
+	var at := float(d.get("at", NAN))
+	var n := int(d.get("n", 0))
+	if is_nan(at) or is_inf(at) or n < 1 or n > 4:
+		return {}
+	return {"n": n, "at": at, "from": clampi(int(d.get("from", 0)), 0, 4), "reason": str(d.get("reason", "")).left(24),
+		"pilot": int(d.get("pilot", 0))}
+
+
+func _take_scale(d: Dictionary) -> void:
+	var c := clean_scale(d)
+	if c.is_empty():
+		return
+	scales.append(c)
+	_s().mission_scale.emit(c)
+
+
 ## Client: ask the host for a power core of depot `depot` (reliable depot.claim). The host answers it as itself (MissionDepots).
 func client_depot_claim(depot: String, n: int) -> void:
 	var s := _s()
@@ -305,9 +360,9 @@ func _on_depot_event(from: int, kind: String, data: Dictionary) -> void:
 				"n": int(data.get("n", 0))})
 
 
-## A known mission mode (anything else builds the stack).
-static func clean_mode(mode: String) -> String:
-	return MODE_DISTRICT if mode == MODE_DISTRICT else MODE_STACK
+## A known mission mode: the stack is the only one (anything else builds it).
+static func clean_mode(_mode: String) -> String:
+	return MODE_STACK
 
 
 ## Crew members of the launched mission still in the roster, host first.
@@ -348,9 +403,11 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 			for e: Variant in data.get("crew", []) as Array:
 				if e is Dictionary:
 					crew.append((e as Dictionary).duplicate(true))
-			params = {"seed": int(data.get("seed", 1)), "mode": clean_mode(str(data.get("mode", MODE_DISTRICT))),
+			params = {"seed": int(data.get("seed", 1)), "mode": clean_mode(str(data.get("mode", MODE_STACK))),
 				"start_t": float(data.get("start_t", 0.0)), "crew": crew,
-				"friendly_fire": bool(data.get("friendly_fire", true)), "objectives": bool(data.get("objectives", false))}
+				"friendly_fire": bool(data.get("friendly_fire", true))}
+			if data.has("scale"):   # the host's crew scale (MissionFlow.crew_scale reads it; never recomputed here)
+				params["scale"] = clampi(int(data["scale"]), 1, 4)
 			phase = LAUNCH
 			s.set_crew_state("mission")
 			_note("mission launch heard: seed %d, %s, crew %d, loads at %.3f" % [int(params["seed"]), params["mode"], crew.size(), float(params["start_t"])])
@@ -368,6 +425,12 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 				for o: Variant in data.get("waves", []) as Array:
 					if o is Dictionary:
 						_take_wave(o)
+				for c: Variant in data.get("scales", []) as Array:
+					if c is Dictionary:
+						_take_scale(c)   # MissionFlow ignores one it already has (by `at`)
+		"mission.scale":
+			if phase != IDLE:
+				_take_scale(data)
 		"mission.wave":
 			if phase != IDLE and data.get("order") is Dictionary:
 				_take_wave(data["order"])
@@ -469,6 +532,8 @@ func _send_go() -> void:
 					ahead.append(w)
 			if not ahead.is_empty():
 				go["waves"] = ahead   # ... and opens the doors still to open at the same time
+			if not scales.is_empty():
+				go["scales"] = scales   # ... and plays at the crew scale in force (changes decided during the load)
 			s.send_event(p, "mission.go", go)
 	_note("mission go: %d at the barrier, starts at %.3f" % [members().size(), start_at])
 

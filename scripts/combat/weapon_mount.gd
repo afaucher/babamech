@@ -32,6 +32,7 @@ var held := false                 ## the trigger this step
 var muzzle_at := Vector3.ZERO     ## this step's muzzle and aim point (update sets them before the behaviour's tick)
 var aim_at := Vector3.ZERO
 var hold_reason := ""             ## why the behaviour holds fire right now ("" = it may fire): HUD / lab readout
+var frame: RingFrame = null       ## the deck frame range gates measure along (the mortar; WeaponRack sets it), null = flat
 var heat_due := 0.0               ## hook: one-off heat a behaviour charges in tick, paid right after it (railgun cancel;
                                   ## dropped while the heat is shut down)
 ## The body this weapon is mounted on (its -Z = forward, +Y = up): the firer supplies it with set_body_basis (WeaponRack
@@ -74,7 +75,7 @@ func net_fields() -> Dictionary:
 		"spin": Net.OWNER, "bloom": Net.OWNER, "charge": Net.OWNER, "held": Net.PRIVATE, "muzzle_at": Net.PRIVATE,
 		"aim_at": Net.PRIVATE, "hold_reason": Net.PRIVATE, "heat_due": Net.PRIVATE,
 		"body_basis": Net.PRIVATE, "aim_yaw": Net.OWNER, "aim_pitch": Net.OWNER, "aim_dir": Net.OWNER, "aim_from": Net.PRIVATE,
-		"_arc_held": Net.PRIVATE, "parked": Net.PRIVATE, "hp_range": Net.SPAWN}
+		"_arc_held": Net.PRIVATE, "parked": Net.PRIVATE, "hp_range": Net.SPAWN, "frame": Net.LOCAL}
 
 
 func setup(id: String, hp: String, shooter_id: String, shooter_peer: int, st: Dictionary) -> void:

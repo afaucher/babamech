@@ -461,8 +461,9 @@ Every machine sorts the standing crew (`crew_facts`, not downed) by peer id. Alo
 (0.4 r) off the centre at a per-index angle, hunt a contested flag after 4 s and on a defend go at once for wave units
 within 70 m of the site. A downed anchor drops out of the sort, so an escort takes over. Every bot works the same task
 list (the same replicated state). Sweeps: everyone sweeps.
-**Friendly fire** (on by default): after PlayerBot chose its trigger, `_ff_guard` holds it while a teammate's mech is within
-`FF_CLEAR` 4 m of the line from the eye to the aim point or within `FF_SPLASH` 8 m of the aim point (`stats().ff_holds`).
+**Friendly fire** (on by default): after PlayerBot chose its trigger, `_ff_guard` hands the slots to `BotFireGuard`
+(`scripts/game/bot_fire_guard.gd`), which disables every slot whose shot could reach a crew mech or a friendly asset
+(`stats().ff_holds`).
 
 ### 9.5 Running it headless
 - Solo: `godot --headless -- --bot veteran --objectives` with a solo launch, or the tests: `.\test_runner.ps1 -TestName

@@ -29,7 +29,7 @@ func setup() -> void:
 	d["chassis"] = "bulwark"
 	d["loadout"] = BotProfile.get_loadout("bulwark")
 	GameSettings.save_settings(d)
-	TestDrive.solo_launch = {"seed": SEED, "mode": TestDrive.MODE_STACK, "objectives": true}
+	TestDrive.solo_launch = {"seed": SEED, "mode": TestDrive.MODE_STACK}
 	TestDrive.bot_profile = "veteran"
 	TestDrive.dev_bot_travel = false
 	TestDrive.offline_crew = 2

@@ -129,7 +129,21 @@ func _stack(seed_: int) -> void:
 		plans.append(CityPlan.for_deck(sec, k))
 	eq(stack.checksum(), CityStack.sum_of(sec, plans), "%s: same inputs, same stack checksum" % what)
 	check(stack.checksum() != CityStack.sum_of(SectionPlan.make({"seed": seed_ + 100}), plans), "%s: another section, another checksum" % what)
-	print("%s stack: %s" % [what, str(stack.stats)])
+	# The load barrier covers the street props and the air doors too (2026-11-25, code audit): one prop laid out 1 m off on
+	# one deck is another checksum; every deck's air doors are in it.
+	var sum := stack.checksum()
+	var it: Dictionary = stack.decks[stack.decks.size() - 1].props.items[0]
+	var x0 := float(it["x"])
+	it["x"] = x0 + 1.0
+	check(stack.checksum() != sum, "%s: a prop laid out elsewhere fails the load checksum" % what)
+	it["x"] = x0
+	eq(stack.checksum(), sum, "%s: and the same layout passes it again" % what)
+	var doors := 0
+	for p in plans:
+		doors += MissionWorld.air_doors(p).size()
+		eq(MissionWorld.air_checksum(p), MissionWorld.air_checksum(CityPlan.for_deck(sec, p.deck)), "%s deck %d: air doors from the plan, deterministic" % [what, p.deck])
+	check(doors >= 1, "%s: the stack has air doors in its checksum (%d)" % [what, doors])
+	print("%s stack: %s, checksum %s, air doors %d" % [what, str(stack.stats), sum, doors])
 	await frames(2)
 	for ci in sec.connectors.size():
 		if sec.connectors[ci]["kind"] == "ramp":

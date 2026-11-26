@@ -1,4 +1,6 @@
 extends TestCase
+## Runs ~120 s alone (four balance scenarios incl. city_solo): an explicit limit so the runner (1.5x + 30 s) gives it room.
+const TEST_TIMEOUT := 240.0
 ## Headless regression test for PlayerBot, BotNavigator, BotMetrics, BalanceScenarios, and BalanceVerdict.
 ## Verifies:
 ##   1. Profile & loadout catalog validity.

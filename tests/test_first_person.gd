@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## The test drive's first-person camera (C): the same ChaseCamera moves to the pilot's eyes, drops the head's render
 ## layer from its cull mask (the head stays on every other view), follows the body, still resolves an aim point for the
 ## weapons, and C again restores the chase view behind the mech. Run for the Strider, then the Bulwark (Session.chassis_id),

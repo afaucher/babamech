@@ -24,9 +24,19 @@ extends RefCounted
 ##                Strider's jets behind and below the posed hips
 ##   rig          (optional) MechRig / Gait numbers over the Strider's ({rig var or "gait.<var>": value}; MechRig.RIG_KEYS,
 ##                GAIT_KEYS); none = the Strider's
+##   move         (optional) "biped" (default) or "hover": a hover chassis (the Wasp) has no gait rig: MechModel builds its
+##                fans and stand-only legs from the keys below instead of legs / toes / spur, and poses them with its
+##                cosmetic hooks (set_fan_spin, set_fan_tilt, set_legs_pose, set_bank)
+##   body_y       (hover) the body origin's height over the ground, model units (the standing legs put the soles on y 0)
+##   fans         (hover) {pivot, ring, rotor, rotor_at, tilt_max}: the right main fan's gimbal (body space) and parts
+##   hover_legs   (hover) the leg parts {socket, hip, thigh, knee, shin, ankle, foot, toe, spur}, the hip pin (body
+##                space), segment lengths, the toes and spur on the foot
 ## Cosmetic data only (no gameplay state).
 
 const ORDER := ["strider", "bulwark"]
+## Chassis whose art is built but which are not playable yet (MechCatalog.DRAFT_CHASSIS): the lab, the part gallery and the
+## review shots show them (MechModel.show_drafts); nothing in the game can pick one.
+const DRAFTS := ["wasp"]
 
 static var _cache: Dictionary = {}
 
@@ -34,24 +44,39 @@ static var _cache: Dictionary = {}
 ## The chassis' entry (the Strider's for an unknown id).
 static func of(id: String) -> Dictionary:
 	if not _cache.has(id):
-		_cache[id] = _bulwark() if id == "bulwark" else _strider()
+		match id:
+			"bulwark": _cache[id] = _bulwark()
+			"wasp": _cache[id] = _wasp()
+			_: _cache[id] = _strider()
 	return _cache[id]
 
 
+## A built chassis (playable or draft).
 static func has(id: String) -> bool:
-	return id in ORDER
+	return id in ORDER or id in DRAFTS
+
+
+## True for a chassis without a gait rig (entry "move" "hover").
+static func is_hover(id: String) -> bool:
+	return str(of(id).get("move", "biped")) == "hover"
 
 
 ## A part's mesh / instance / fresh build, whichever chassis' builder owns it.
 static func mesh(part: String) -> ArrayMesh:
+	if part.begins_with(WaspMeshes.PREFIX):
+		return WaspMeshes.mesh(part)
 	return BulwarkMeshes.mesh(part) if part.begins_with(BulwarkMeshes.PREFIX) else MechMeshes.mesh(part)
 
 
 static func instance(part: String) -> MeshInstance3D:
+	if part.begins_with(WaspMeshes.PREFIX):
+		return WaspMeshes.instance(part)
 	return BulwarkMeshes.instance(part) if part.begins_with(BulwarkMeshes.PREFIX) else MechMeshes.instance(part)
 
 
 static func build(part: String) -> ArrayMesh:
+	if part.begins_with(WaspMeshes.PREFIX):
+		return WaspMeshes.build(part)
 	return BulwarkMeshes.build(part) if part.begins_with(BulwarkMeshes.PREFIX) else MechMeshes.build(part)
 
 
@@ -89,7 +114,9 @@ static func _bulwark() -> Dictionary:
 		"rest": BulwarkMeshes.REST_LENGTH,
 		"body": [["torso", "bulwark_torso"], ["pelvis", "bulwark_pelvis"], ["nose", "bulwark_nose"], ["hatch", "hatch"]],
 		"mirrored": [["pod", "bulwark_pod"]],
-		"mount_hw": {"side": ["bulwark_side_mount", BulwarkMeshes.SIDE_REACH]},
+		# "belly": the belly turret prototype's pintle mount (MechCatalog hardpoint "belly", mount kind "belly").
+		"mount_hw": {"side": ["bulwark_side_mount", BulwarkMeshes.SIDE_REACH],
+			"belly": ["bulwark_belly_mount", BulwarkMeshes.BELLY_REACH]},
 		"legs": {"thigh": "bulwark_thigh", "shin": "bulwark_shin", "tarsus": "bulwark_ankle", "socket": "bulwark_hip_socket",
 			"hip": "bulwark_hip_cap", "knee": "bulwark_knee_cap", "ankle": "bulwark_ankle_cap", "foot": "bulwark_boot"},
 		"toes": [["bulwark_toe", BulwarkMeshes.TOES[0][0], BulwarkMeshes.TOES[0][1]],
@@ -134,3 +161,37 @@ const BULWARK_RIG := {
 	"foot_gap": 0.9, "bob": 0.12, "lean": 0.08, "sway": 0.035, "absorb": 0.38, "absorb_time": 0.13,
 	"sag_depth": 0.42, "sag_pitch": 0.12, "sag_roll": 0.03, "sag_time": 0.8,
 }
+
+
+## The Wasp (WaspMeshes; art phase 1, not playable: DRAFTS): a hover chassis. No gait: two main fans on gimbals (each
+## tilts within tilt_max, an ellipse of pitch / roll in rad), two stand-only mini chicken legs (a hip and a knee pin,
+## poses WaspMeshes.DANGLE and stand_angles()). The biped keys (rest, legs, toes, angles) are the Strider's, kept so a
+## reader that looks them up by mistake gets numbers, not an error; MechModel never uses them for a hover chassis.
+static func _wasp() -> Dictionary:
+	var s := _strider()
+	s["move"] = "hover"
+	s["body_scale"] = WaspMeshes.BODY_SCALE
+	s["layout"] = WaspMeshes.LAYOUT
+	s["mounts"] = WaspMeshes.MOUNTS
+	s["body"] = [["torso", "wasp_hull"], ["nose", "wasp_nose"], ["hatch", "hatch"], ["fin", "wasp_fin"]]
+	s["mirrored"] = [["strut", "wasp_strut"]]
+	s["mount_hw"] = {"stub": ["wasp_stub_mount", WaspMeshes.STUB_REACH], "chin": ["wasp_chin_mount", WaspMeshes.CHIN_REACH]}
+	s["body_y"] = WaspMeshes.BODY_Y
+	s["fans"] = {"pivot": WaspMeshes.FAN_PIVOT, "ring": "wasp_fan_ring", "rotor": "wasp_rotor",
+		"rotor_at": Vector3(0, WaspMeshes.ROTOR_Y, 0), "tilt_max": WaspMeshes.FAN_TILT_MAX}
+	s["hover_legs"] = {"socket": "wasp_hip_socket", "hip": "wasp_hip_cap", "thigh": "wasp_thigh", "knee": "wasp_knee_cap",
+		"shin": "wasp_shin", "ankle": "wasp_ankle_cap", "foot": "wasp_foot", "toe": "wasp_toe", "spur": "wasp_spur",
+		"hip_at": WaspMeshes.HIP, "thigh_l": WaspMeshes.THIGH_L, "shin_l": WaspMeshes.SHIN_L, "foot_h": WaspMeshes.FOOT_H,
+		"toes": WaspMeshes.TOES, "spur_at": WaspMeshes.SPUR_ROOT}
+	var tm: Vector2 = WaspMeshes.FAN_TILT_MAX
+	s["params"] = [
+		{"id": "fan_spin", "label": "Fan spin (rev/s)", "min": 0.0, "max": 8.0, "value": 4.0},
+		{"id": "fan_tilt", "label": "Fan tilt forward (rad)", "min": -tm.x, "max": tm.x, "value": 0.0},
+		{"id": "fan_roll", "label": "Fan tilt outward (rad)", "min": -tm.y, "max": tm.y, "value": 0.0},
+		{"id": "legs_pose", "label": "Legs (0 dangle, 1 stand)", "min": 0.0, "max": 1.0, "value": 0.0},
+		{"id": "bank", "label": "Bank roll (rad)", "min": -0.5, "max": 0.5, "value": 0.0},
+		{"id": "pitch", "label": "Bank pitch (rad)", "min": -0.3, "max": 0.3, "value": 0.0},
+		{"id": "body", "label": "Body scale", "min": 0.6, "max": 1.6, "value": 1.0},
+		{"id": "head", "label": "Head scale", "min": 0.5, "max": 2.0, "value": 1.15},
+	]
+	return s

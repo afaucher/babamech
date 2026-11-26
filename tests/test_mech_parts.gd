@@ -123,6 +123,7 @@ func setup() -> void:
 	_body_detail()
 	_equipment()
 	await _bulwark()
+	await _wasp()
 	finish()
 
 
@@ -561,3 +562,234 @@ func _faces(mesh: ArrayMesh) -> int:
 	for s in mesh.get_surface_count():
 		n += mesh.surface_get_array_len(s) / 3
 	return n
+
+
+
+## The Wasp's parts (WaspMeshes; a draft chassis: art phase 1, docs/design/chassis-rules.md 6.6, 6.7, 3.3, 9.1): saved
+## files match the builders, face budgets, nothing thinner than 0.02, joints sized to the segments, the team colour on the
+## fan rings, the legs in the Strider's leg colours, the assembled model (every named node the future hover controller
+## will drive, no pusher fans), its pose hooks, the catalog entry (not playable: not in CHASSIS / CHASSIS_ORDER /
+## BOT_CHASSIS_ORDER; max_item_weight), its size against the Strider and the Bulwark at game scale (printed) and its faces
+## with the heaviest loadout.
+func _wasp() -> void:
+	const BUDGET := {"wasp_hull": 1600, "wasp_fan_ring": 550, "wasp_thigh": 300, "wasp_shin": 300}
+	for part: String in WaspMeshes.all_parts():
+		check(part.begins_with(WaspMeshes.PREFIX), "%s is a wasp_ part" % part)
+		check(not MechMeshes.has_part(part) and not BulwarkMeshes.has_part(part), "%s belongs to WaspMeshes only" % part)
+		if not check(ResourceLoader.exists(WaspMeshes.path(part)), "%s has a saved file" % part):
+			continue
+		var saved := load(WaspMeshes.path(part)) as ArrayMesh
+		var built := WaspMeshes.build(part)
+		eq(_faces(saved), _faces(built), "%s: the saved file matches the builder (faces)" % part)
+		check(saved.get_aabb().is_equal_approx(built.get_aabb()), "%s: the saved file matches the builder (bounds)" % part)
+		for s in saved.get_surface_count():
+			check(saved.surface_get_name(s) in ["matte", "glow", "accent"], "%s: surface %s is matte / glow / accent" % [part, saved.surface_get_name(s)])
+		var n := _faces(built)
+		var cap := int(BUDGET.get(part, 400))
+		check(n <= cap, "%s: within its face budget (%d <= %d)" % [part, n, cap])
+		var thin := _thinnest(built)
+		check(thin >= 0.0195, "%s: nothing thinner than 0.02 (thinnest shell %.4f)" % [part, thin])
+	for part: String in ["wasp_hull", "wasp_fan_ring", "wasp_thigh", "wasp_shin"]:
+		check(_accent_surface(WaspMeshes.mesh(part)) >= 0, "%s has an accent surface (on the fan ring: the team-colour read)" % part)
+	# The legs wear the Strider's leg colours in the same places (user, 2026-11-25): the same surfaces as its parts.
+	for pair: Array in [["wasp_thigh", "thigh"], ["wasp_shin", "shin"], ["wasp_foot", "foot"], ["wasp_spur", "spur"], ["wasp_toe", "toe"],
+			["wasp_knee_cap", "knee_cap"], ["wasp_ankle_cap", "ankle_cap"]]:
+		eq(str(_surface_names(WaspMeshes.mesh(pair[0]))), str(_surface_names(MechMeshes.mesh(pair[1]))), "%s has %s's surfaces" % pair)
+	# Joints sized to the load (rule 3.3): drum radius >= 0.55 x the thicker segment it joins (WaspMeshes THIGH_THICK, SHIN_FOOT_THICK).
+	check(WaspMeshes.HIP_DRUM.x >= 0.55 * WaspMeshes.THIGH_THICK, "hip drum %.3f >= 0.55 x the thigh's thickness" % WaspMeshes.HIP_DRUM.x)
+	check(WaspMeshes.KNEE_DRUM.x >= 0.55 * WaspMeshes.THIGH_THICK, "knee drum %.3f >= 0.55 x the thigh's thickness" % WaspMeshes.KNEE_DRUM.x)
+	check(WaspMeshes.ANKLE_DRUM.x >= 0.55 * WaspMeshes.SHIN_FOOT_THICK, "ankle drum %.3f >= 0.55 x the shin's foot end" % WaspMeshes.ANKLE_DRUM.x)
+	near(WaspMeshes.mesh("wasp_thigh").get_aabb().position.y, -WaspMeshes.THIGH_L, 0.02, "wasp_thigh reaches its knee pin")
+	near(WaspMeshes.mesh("wasp_shin").get_aabb().position.y, -WaspMeshes.SHIN_L, 0.02, "wasp_shin reaches its ankle pin")
+	# The catalog: a draft (not playable), the light chassis' weight limit, and the Strider / Bulwark untouched by it.
+	check(not MechCatalog.CHASSIS.has("wasp"), "the Wasp is not in MechCatalog.CHASSIS (no gameplay yet)")
+	check(not "wasp" in MechCatalog.CHASSIS_ORDER and not "wasp" in MechCatalog.BOT_CHASSIS_ORDER, "nor in the hangar's or the bots' order")
+	check(MechCatalog.DRAFT_CHASSIS.has("wasp") and ChassisParts.has("wasp") and not "wasp" in ChassisParts.ORDER, "a draft chassis with built art")
+	eq(str(MechCatalog.chassis("wasp")["name"]), "Strider", "gameplay's chassis('wasp') is the Strider (unknown)")
+	eq(str(MechCatalog.entry("wasp")["name"]), "Wasp", "entry('wasp') is the Wasp")
+	eq(MechCatalog.max_item_weight("wasp"), 7.0, "the Wasp: no item over weight 7")
+	check(is_inf(MechCatalog.max_item_weight("strider")) and is_inf(MechCatalog.max_item_weight("bulwark")), "no item limit on the Strider or the Bulwark")
+	for hp: Dictionary in MechCatalog.entry("wasp")["hardpoints"]:
+		for w: String in MechCatalog.WEAPON_ORDER + MechCatalog.EQUIPMENT_ORDER:
+			if float(MechCatalog.weapon(w)["weight"]) > float(hp["max_item_weight"]):
+				check(not MechCatalog.fits(hp, w), "wasp %s refuses %s (weight %.0f)" % [hp["id"], w, MechCatalog.weapon(w)["weight"]])
+		check(MechCatalog.items_for(hp).size() >= 4, "wasp %s takes at least four light weapons (%s)" % [hp["id"], str(MechCatalog.items_for(hp))])
+	for c: String in ["strider", "bulwark"]:
+		for hp: Dictionary in MechCatalog.chassis(c)["hardpoints"]:
+			var plain: Array[String] = []
+			for w: String in MechCatalog.WEAPON_ORDER + MechCatalog.EQUIPMENT_ORDER:
+				for kind: Variant in MechCatalog.hardpoint_mounts(hp):
+					if kind in (MechCatalog.weapon(w)["mounts"] as Array) and not plain.has(w):
+						plain.append(w)
+			eq(str(MechCatalog.items_for(hp)), str(plain), "%s %s: items_for unchanged by the weight rule" % [c, hp["id"]])
+		eq(str(MechCatalog.sanitize_loadout(c, {})), str(MechCatalog.sanitize_loadout(c, {}, true)), "%s: sanitize_loadout the same with drafts" % c)
+	var sl := MechCatalog.sanitize_loadout("wasp", {"stub_l": "railgun", "stub_r": "autocannon", "chin": "autocannon"}, true)
+	eq(str(sl), str({"stub_l": "", "stub_r": "autocannon", "chin": ""}), "wasp sanitize: the railgun (a shoulder item, 14) and the chin's autocannon (7 > 6) emptied")
+	eq(str(MechCatalog.sanitize_loadout("wasp", {}, true)), str(MechCatalog.entry("wasp")["default_loadout"]), "the Wasp's default loadout is valid")
+	check(not MechCatalog.sanitize_loadout("wasp", {}).has("stub_l"), "without drafts a 'wasp' loadout is the Strider's (gameplay)")
+	# Unreachable from the game: without show_drafts a model asked for the Wasp builds the Strider.
+	var plain_m := MechModel.new()
+	plain_m.configure("chicken", "wasp", {})
+	add_child(plain_m)
+	await frames(1)
+	eq(plain_m.chassis_id, "strider", "MechModel without show_drafts: 'wasp' gives the Strider")
+	plain_m.queue_free()
+	# The assembled Wasp.
+	var m := MechModel.new()
+	m.show_drafts = true
+	m.configure("chicken", "wasp", {})
+	add_child(m)
+	await frames(1)
+	eq(m.chassis_id, "wasp", "show_drafts: the model builds the Wasp")
+	check(m.is_hover() and ChassisParts.is_hover("wasp") and not ChassisParts.is_hover("strider") and not ChassisParts.is_hover("bulwark"),
+		"the Wasp is the hover chassis")
+	for n: String in ["Torso", "Nose", "Hatch", "Fin", "Cockpit", "Head_chicken", "Strut_l", "Strut_r", "fan_l", "fan_r", "rotor_l", "rotor_r",
+			"HP_stub_l", "HP_stub_r", "HP_chin", "socket_l", "socket_r", "hip_l", "hip_r", "thigh_l", "thigh_r", "knee_l", "knee_r", "shin_l",
+			"shin_r", "ankle_l", "ankle_r", "foot_l", "foot_r"]:
+		check(m.find_child(n, true, false) != null, "wasp has %s" % n)
+	for n: String in ["pusher_l", "pusher_r", "BackPlate", "Pelvis", "tarsus_l", "ShoulderPod_l", "Pod_l"]:
+		check(m.find_child(n, true, false) == null, "wasp has no %s" % n)
+	for hp: String in ["HP_stub_l", "HP_stub_r", "HP_chin"]:
+		check(m.find_child(hp, true, false).find_child("Mount", false, false) != null, "%s has its mount" % hp)
+	for side: String in ["l", "r"]:
+		var foot := m.find_child("foot_" + side, true, false)
+		var toes := 0
+		for c in foot.get_children():
+			if c.name.begins_with("toe"):
+				toes += 1
+		eq(toes, 3, "wasp foot_%s has three toes" % side)
+		check(foot.find_child("spur", true, false) != null, "wasp foot_%s has its spur" % side)
+		check((m.find_child("fan_" + side, true, false) as Node3D).find_child("Ring", false, false) != null, "fan_%s has its ring" % side)
+	# Every allowed item on every hardpoint shows its mesh.
+	for hp: Dictionary in MechCatalog.entry("wasp")["hardpoints"]:
+		for w: String in MechCatalog.items_for(hp):
+			m.configure("chicken", "wasp", {hp["id"]: w})
+			var node := m.find_child("HP_" + str(hp["id"]), true, false)
+			var gun := node.find_child("Weapon_" + w, true, false) if node != null else null
+			check(gun != null and gun.get_child_count() == 1, "wasp %s mounts %s" % [hp["id"], w])
+	m.configure("chicken", "wasp", {})
+	await frames(1)
+	# The hooks (cosmetic, local).
+	m.time_scale = 0.0
+	var rotor := m.find_child("rotor_r", true, false) as Node3D
+	var rotor_l := m.find_child("rotor_l", true, false) as Node3D
+	m._rotor_angle = 0.0
+	m.set_fan_spin(2.0)
+	m.step_fans(0.1)
+	m.pose()
+	near(rotor.rotation.y, 0.2 * TAU, 1e-4, "set_fan_spin + step_fans turn the rotor (2 rev/s for 0.1 s)")
+	near(rotor_l.rotation.y, -0.2 * TAU, 1e-4, "the left rotor turns the other way")
+	var fan := m.find_child("fan_r", true, false) as Node3D
+	m.set_fan_tilt(Vector2(0.2, 0.0))
+	near(fan.rotation.x, -0.2, 1e-5, "set_fan_tilt pitches the fan (front edge down)")
+	m.set_fan_tilt(Vector2(5.0, 5.0))
+	var cl := m.fan_tilt(1)
+	var tm: Vector2 = WaspMeshes.FAN_TILT_MAX
+	near(Vector2(cl.x / tm.x, cl.y / tm.y).length(), 1.0, 1e-4, "set_fan_tilt clamps to the tilt ellipse")
+	check(tm.x >= deg_to_rad(15.0) and tm.y >= deg_to_rad(10.0), "the fans vector: at least 15 deg forward / back, 10 deg sideways (%s rad)" % str(tm))
+	m.set_fan_tilt(Vector2.ZERO)
+	m.set_fan_tilt(Vector2(0.1, 0.0), -1)
+	check(m.fan_tilt(-1).is_equal_approx(Vector2(0.1, 0.0)) and m.fan_tilt(1).is_equal_approx(Vector2.ZERO), "set_fan_tilt(side) tilts one fan")
+	m.set_fan_tilt(Vector2.ZERO)
+	var foot_r := m.find_child("foot_r", true, false) as Node3D
+	m.set_legs_pose(0.0)
+	var dangle := foot_r.global_position
+	m.set_legs_pose(1.0)
+	var stand := foot_r.global_position
+	check(dangle.y > stand.y + 0.05, "set_legs_pose: the dangling foot is tucked up (%.3f over the standing one)" % (dangle.y - stand.y))
+	near(stand.y, 0.0, 0.002, "set_legs_pose(1): the foot stands on the model's ground")
+	var body := m.find_child("Body", false, false) as Node3D
+	m.set_bank(0.3, -0.1)
+	near(body.rotation.z, -0.3, 1e-5, "set_bank rolls the body (right side down)")
+	near(body.rotation.x, -0.1, 1e-5, "set_bank pitches the body")
+	m.set_bank(0.0, 0.0)
+	m.set_external_pose([{}, {}], Vector3(0, 0.5, 0), Vector3.ZERO, 0.3)   # MechRig's call: ignored by a hover chassis
+	near(body.position.y, m.hip_height(), 1e-4, "set_external_pose does not move a hover chassis")
+	m.clear_external_pose()
+	# The lab: every Wasp param to its ends (test_lab sweeps the subject's first chassis only).
+	for p: Dictionary in m.lab_params():
+		for v: float in [float(p["min"]), float(p["max"])]:
+			m.set_lab_param(str(p["id"]), v)
+	for p: Dictionary in m.param_specs():
+		m.set_lab_param(str(p["id"]), float(p["value"]))
+	var lab := MechModel.new()
+	add_child(lab)
+	lab.set_lab_option("chassis", "wasp")
+	eq(lab.chassis_id, "wasp", "the lab's chassis option reaches the Wasp")
+	check("wasp" in (lab.lab_options()[2]["choices"] as Array), "the lab lists the Wasp")
+	lab.set_lab_option("chassis", "strider")
+	eq(lab.chassis_id, "strider", "and back to the Strider")
+	lab.queue_free()
+	# Size at game scale (mech scale 2) against the Strider and the Bulwark (printed: the report's table).
+	var sizes := {}
+	for c: String in ["strider", "bulwark", "wasp"]:
+		m.configure("chicken", c, {})
+		if c == "wasp":
+			m.set_legs_pose(1.0)
+		await frames(1)
+		var all := AABB()
+		var comb := 0.0
+		for mi_n in m.find_children("*", "MeshInstance3D", true, false):
+			var mi := mi_n as MeshInstance3D
+			if mi.mesh == null or not mi.is_visible_in_tree():
+				continue
+			var b := mi.global_transform * mi.mesh.get_aabb()
+			all = b if all.size == Vector3.ZERO else all.merge(b)
+			if m.find_child("Head_chicken", true, false).is_ancestor_of(mi):
+				comb = maxf(comb, b.end.y)
+		sizes[c] = [all, comb * 2.0]
+	var hb := WaspMeshes.mesh("wasp_hull").get_aabb()
+	var k := 2.0 * WaspMeshes.BODY_SCALE
+	var hull_w := hb.size.x * k
+	var hull_l := hb.size.z * k
+	var hull_h := (WaspMeshes.HATCH_Y + 0.1 - hb.position.y) * k   # belly to the hatch rim
+	var fan_d := 2.0 * (WaspMeshes.RING_OUT + 0.018) * k
+	var wasp_all: AABB = sizes["wasp"][0]
+	var width := wasp_all.size.x * 2.0
+	var comb_w: float = sizes["wasp"][1]
+	var belly := (WaspMeshes.BODY_Y + hb.position.y * WaspMeshes.BODY_SCALE) * 2.0
+	var leg := (WaspMeshes.THIGH_L + WaspMeshes.SHIN_L + WaspMeshes.FOOT_H) * k
+	print("  size at scale 2 (m): comb landed  strider %.2f  bulwark %.2f  wasp %.2f" % [sizes["strider"][1], sizes["bulwark"][1], comb_w])
+	print("    overall width     strider %.2f  bulwark %.2f  wasp %.2f (across the fans)" % [(sizes["strider"][0] as AABB).size.x * 2.0,
+		(sizes["bulwark"][0] as AABB).size.x * 2.0, width])
+	print("    overall height    strider %.2f  bulwark %.2f  wasp %.2f (landed)" % [(sizes["strider"][0] as AABB).end.y * 2.0,
+		(sizes["bulwark"][0] as AABB).end.y * 2.0, wasp_all.end.y * 2.0])
+	print("    wasp hull %.2f wide x %.2f tall (belly to hatch rim; %.2f to the coaming) x %.2f long; fan diameter %.2f; belly %.2f over the ground landed; leg (thigh + shin + foot) %.2f" % [
+		hull_w, hull_h, hb.size.y * k, hull_l, fan_d, belly, leg])
+	check(hull_w >= 3.85 and hull_w <= 4.05, "the hull pod is about 3.9-4.0 m wide (pass 2: a smidge wider; %.2f)" % hull_w)
+	check(hull_h >= 3.2 and hull_h <= 3.8, "the hull pod is 3.2-3.8 m tall to the hatch rim (%.2f)" % hull_h)
+	check(hull_l >= 4.85 and hull_l <= 5.15, "the hull pod is about 4.9-5.1 m long, chin block included (pass 2: slightly longer; %.2f)" % hull_l)
+	check(width <= 8.8, "no more than about 8.8 m across the fans (8.5 grown with the hull in pass 2; %.2f)" % width)
+	check(fan_d >= 0.75 * hull_w, "each main fan about the hull's width (%.2f vs %.2f)" % [fan_d, hull_w])
+	check(comb_w < 0.7 * float(sizes["strider"][1]) and comb_w < float(sizes["bulwark"][1]) - 1.0, "small next to the others: comb %.2f m (Strider %.2f, Bulwark %.2f)" % [
+		comb_w, sizes["strider"][1], sizes["bulwark"][1]])
+	check(width < (sizes["bulwark"][0] as AABB).size.x * 2.0, "narrower than the Bulwark")
+	# Faces, heaviest loadout (rule 6.6: the light chassis is the cheapest).
+	var heavy := {}
+	for c: String in ["strider", "bulwark", "wasp"]:
+		var lo := {}
+		for hp: Dictionary in MechCatalog.entry(c)["hardpoints"]:
+			var best := ""
+			for w: String in MechCatalog.items_for(hp):
+				if w == "railgun" and lo.values().has("railgun"):
+					continue
+				if best == "" or _faces(MechMeshes.mesh("weapon_" + w)) > _faces(MechMeshes.mesh("weapon_" + best)):
+					best = w
+			lo[hp["id"]] = best
+		m.configure("chicken", c, lo)
+		await frames(1)
+		heavy[c] = _tree_faces(m)
+		print("  %s, heaviest loadout %s: %d faces" % [c, str(lo), heavy[c]])
+	var parts_faces := {}
+	for n: String in ["Torso", "Nose", "Hatch", "Fin", "Strut_r", "fan_r", "HP_stub_r", "HP_chin", "socket_r", "hip_r", "Cockpit"]:
+		var pn := m.find_child(n, true, false)
+		var own := pn as MeshInstance3D
+		parts_faces[n] = _tree_faces(pn) + (_faces(own.mesh as ArrayMesh) if own != null else 0)
+	print("  wasp faces by part (right side): %s" % str(parts_faces))
+	check(int(heavy["wasp"]) < int(heavy["bulwark"]) and float(heavy["wasp"]) <= 0.85 * float(heavy["strider"]),
+		"the Wasp is the cheapest chassis (%d faces vs Strider %d, Bulwark %d)" % [heavy["wasp"], heavy["strider"], heavy["bulwark"]])
+	m.configure("chicken", "strider", {})
+	eq(m.leg_bend, -1.0, "back to the Strider from the Wasp: its chicken legs")
+	near(float(m.params["thigh"]), 1.1, 1e-6, "and its thigh")
+	check(m.find_child("fan_l", true, false) == null and m.find_child("thigh_l", true, false) != null, "and its biped node tree")
+	m.queue_free()

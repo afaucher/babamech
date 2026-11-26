@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## VISUAL: the Bulwark in play, run with .\test_runner.ps1 -Visual -TestName test_visual_bulwark. Shots (also copied to
 ## docs/design/chassis-concepts/ingame/): the chase view with the HUD (its damage diagram, four weapon rows), first person
 ## forward and looking down from the pilot's well, the chase view while thrusting (jets under the engine block), a side

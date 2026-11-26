@@ -16,10 +16,10 @@ took, what it changed, and what is still to build.
 ## Built (scaffold)
 | Piece | File | From cast |
 |---|---|---|
-| Session autoload: ENet + Steam transports, hello handshake, roster (max **4**), refusals, leave / host left, kick, set_members | `scripts/net/net_session.gd` | ported, cut down (no shared run, seats, snapshots, world, objects, casts, orders yet) |
+| Session autoload: ENet + Steam transports, hello handshake, roster (max **4**), refusals, leave / host left, kick | `scripts/net/net_session.gd` | ported, cut down (no shared run, seats, snapshots, world, objects, casts, orders yet) |
 | Pilot profile in the handshake: `name`, `head`, `chassis`, `accent`, `loadout` in `sys.hello`; changes later via `sys.profile`; the host makes each loadout valid for its chassis (`NetSession.clean_loadout`) | `net_session.gd` | new (cast carried `character`) |
 | Shared mission start (co-op step 1): host Launch, load barrier on the city checksum, desync / slow-load send-out, one mech per crew member | `net_mission.gd` (child "Mission" of Session), `scripts/game/test_drive.gd`, `scripts/game/mech_spawn.gd` | cast's M1 (`crew_flow.gd`), cut down to launch + barrier |
-| The city stack in the mission (W2): the launch carries `mode` (`stack`, the default, or `district`); every machine builds the multi-deck section (`SectionPlan` + `CityStack`) from the seed, the barrier compares `CityStack.checksum()`, the crew spawns on the entry road | `net_mission.gd`, `scripts/game/test_drive.gd` | new |
+| The city stack in the mission (W2): the launch carries `mode` (always `stack`; the district mode was cut 2026-11-25); every machine builds the multi-deck section (`SectionPlan` + `CityStack`) from the seed, the barrier compares `CityStack.checksum()`, the crew spawns on the entry road | `net_mission.gd`, `scripts/game/test_drive.gd` | new |
 | Relayed broadcast: `Session.broadcast_event(kind, data)` (a client's goes through the host, the others hear the real sender and stamp) | `net_session.gd` | new |
 | Mech snapshots (co-op step 2): the owner streams its mech on `T_SNAP` at 30 Hz, the host forwards; puppets interpolated ~100 ms behind the shared clock | `net_mech_stream.gd` (child "Mechs" of Session), `net_mech_codec.gd`, `net_puppet_buffer.gd`, `net_mech_state.gd`; game side `scripts/game/crew_sync.gd`, `mech_puppet.gd` | cast's M2 (`NetSnapshot`, `NetCodec`, `NetInterp`) |
 | Enemies in co-op (W4): host-only spawn and AI, manifest + T_ENEMY stream + reliable "enemy.*" events, client puppets, enemy fire records on every machine | `net_enemy_stream.gd` (child "Enemies" of Session), `net_enemy_codec.gd`, `net_enemy_buffer.gd`, `net_enemy_state.gd`; game side `scripts/game/enemy_sync.gd` | cast's M3 (host-owned actors) |
@@ -56,13 +56,14 @@ mission ends; mid-mission join is not built: cast's M6 seat handover is the mode
 
 ## Mission (co-op step 1)
 ```
-host -> crew     mission.launch {seed, mode, start_t, crew, friendly_fire, objectives}  Session.start_mission(seed, mode): start_t = host_time() + 2.5 s
+host -> crew     mission.launch {seed, mode, start_t, crew, friendly_fire, objectives, scale}  Session.start_mission(seed, mode): start_t = host_time() + 2.5 s; scale: "Crew scale" below
 client -> host   mission.loading {}                     Session.report_mission_loading(): right before the (blocking) build
 client -> host   mission.ready  {sum, ms}               Session.report_mission_built(TestDrive.mission_checksum(), build ms)
 host -> crew     mission.wait   {ready: [peer]}         the set of members that reported changed (the loading screen's ready ticks: Session.mission_ready_peers())
 host -> crew     mission.go     {start_at}              every remaining member reported the host's sum; start_at = +0.5 s
 host -> crew     mission.state  {state}                 the mission's progress changed (W6, below): Session.send_mission_state
 host -> crew     mission.wave   {order}                 plan mode: a reinforcement wave order (below): Session.send_mission_wave
+host -> crew     mission.scale  {n, at, from, reason, pilot}   the crew scale changes at `at` ("Crew scale" below): Session.send_mission_scale
 host -> crew     mission.end    {reason}                the host left the mission (Esc), or the outcome's hold ended: Session.end_mission()
 ```
 - Only the host's Launch counts (a client's button reads "Waiting for the host to launch"). Every machine, the host too,
@@ -72,9 +73,8 @@ host -> crew     mission.end    {reason}                the host left the missio
   (`Session.friendly_fire`; absent = true): every machine sets `td.friendly_fire` (`Net.SPAWN`) from it before
   TestDriveCombat sets up, which hands it to `CombatWorld.friendly_fire`. Solo: `TestDrive.solo_launch` carries the
   hangar's setting; a test drive with neither has it on. The loading screen's section line says "Friendly fire on / off".
-- **The city** (`params.mode`): `stack` (the default) builds the multi-deck mission section, `SectionPlan.make({seed})`
-  then `CityStack.build`; `district` builds one `CityDistrict` (the pre-stack test drive). A launch without a mode is
-  read as `district`. The stack is placed with the ENTRY deck's floor through the world origin, and `td.city` is that
+- **The city** (`params.mode`, always `stack`; any other value builds it too): the multi-deck mission section,
+  `SectionPlan.make({seed})` then `CityStack.build`. The stack is placed with the ENTRY deck's floor through the world origin, and `td.city` is that
   deck, so the systems that still read one district (combat, enemy spawner, audio, player AI) work in world space on the
   entry deck (per-deck work is W3). Every mech's ring is the entry deck's frame (shared axis: up / gravity right on every
   deck); `stack.follow(camera)` lights the camera's deck on each machine; falling 25 m below the LOWEST deck's floor
@@ -82,8 +82,15 @@ host -> crew     mission.end    {reason}                the host left the missio
   reads footstep surfaces from the deck it is on.
 - Each machine builds the city from `params.seed` + `mode`, spawns one mech per crew entry (seat order: two columns 8 m
   apart, rows 10 m apart: `TestDrive.entry_spawn(entry, deck, i, n)` around `CityStack.entry_transform()` on the entry
-  road, or `TestDrive.spawn_point(i, n)` on the district's avenue), holds its own still, and reports
-  `TestDrive.mission_checksum()` (`CityStack.checksum()`, or `CityPlan.checksum()` for a district).
+  road), holds its own still, and reports `TestDrive.mission_checksum()` (`CityStack.checksum()` + "/" + the
+  `MissionPlan` checksum; the stack's alone under the TEST-ONLY quiet fixture).
+  `CityStack.checksum()` covers the section (`SectionPlan.checksum()`) and, for every deck, its plan
+  (`CityPlan.checksum()`), its street-prop layout (`CityProps.layout_checksum`: props are host-arbitrated by index and
+  block shots) and its air doors (`MissionWorld.air_checksum`), so a layout difference in any of them is a desync.
+  Restore paths that take a peer's buffer validate it and ignore a malformed one instead of reading past its end or
+  allocating by the peer's count: `CityProps.restore` (`valid_snapshot`), `LifeCrowd` / `LifeFleet` / `LifeTram.restore`,
+  `AmbientLife.restore` (sizes clamped to what arrived), `MissionWorld.restore` (only known ids and shapes); the snapshot
+  codecs (`NetMechCodec` / `NetEnemyCodec.decode`) stop at a short entry.
   The host compares with its own: a mismatch is printed (`[Net] DESYNC ...`), noted in telemetry (`NetTelemetry.note`, a
   `.notes.txt` beside the CSV), kept in `Session.mission.desyncs`, and that pilot is sent out. A member silent for 45 s
   after `start_t` is sent out too. Then `mission.go`; `Session.mission_go(elapsed)` fires everywhere at `start_at` and
@@ -93,11 +100,51 @@ host -> crew     mission.end    {reason}                the host left the missio
   (input, camera, HUD, combat). Remote mechs are puppets of their owners' snapshots (below).
 - **Seed**: the Launch (host or solo) rolls a fresh seed from a launch-only generator seeded by the clock (not a gameplay
   roll; it is broadcast), unless `--seed N` forces it. Solo, the hangar hands `{seed, mode}` to the test drive itself
-  (`TestDrive.solo_launch`); the plain test drive (`run.ps1 -TestDrive`, tests) uses `--seed` (default 1). Flags:
-  `--stack` / `--district` (`TestDrive.launch_mode`); tests force a mode with `td.city_mode` before adding the scene. N
+  (`TestDrive.solo_launch`); the plain test drive (`run.ps1 -TestDrive`, tests) uses `--seed` (default 1). The
+  stack is the only city (user 2026-11-25 "Cut the legacy modes."; `--stack` is ignored, `--district` gone). N
   (new city) is solo only. A client leaving the mission (Esc) leaves only on its own machine; the host leaving ends it for
   the crew (`mission_ended` on the clients, back to the hangar).
-- Tests: `test_net_mission` (2), `test_net_mission_4` (full crew), `test_net_mission_desync` (3, launched as a district;
+- **Leavers** (audit 2026-11 #1): a member who drops or quits mid-mission (`Session.peer_left`: on the host from
+  `_drop`, on a client when the host's `sys.roster` no longer lists it) is retired on every machine by
+  `CrewSync.retire`: its PlayerTarget leaves CombatWorld (enemies, weapons and bots stop seeing it), its puppet and mech
+  are freed (`TestDrive.drop_mech`), `Session.mechs` drops its buffer. Crew lists, downed / revive lists and the
+  mission facts count members only, so a downed leaver is simply gone (a bot going to revive it logs "gone"). A member
+  gone before the mission is set up is retired at setup. The host quitting ends the session (`session_ended`, back to
+  the menu with the reason); no host migration. Test: `test_net_leaver` (3). The host's leaver hook
+  (`TestDrive.member_retired` -> `MissionFlow.on_member_retired`) eases the mission off: "Crew scale" below.
+- **Crew scale** (AGENTS.md rule 8; user 2026-11-25: "Run it from the host, enforce this! And ease off when a player
+  leaves."). Every crew-scaled gameplay value (the director's `crew_n` and everything it sizes, the reserve's group sizes
+  and spawn ctx, the defend relay's HP, the depot cores) reads ONE value: `MissionFlow.crew_scale()` (1..4), the scale in
+  force on this machine. **The host owns it**: only `MissionFlow.host_crew_scale(members)` derives it from a crew, at the
+  launch from the launch crew with its hangar bots (`NetMission.launch_scale` -> `mission.launch` `scale`), on a retire
+  from the members still in the crew (`TestDrive.crew_members()`: players and bots alike). A client never computes it
+  from `Session.crew()` / `roster` / `spawn_order` / `crew_members()` / `crew_bots`: it reads the launch's `scale`
+  (MissionFlow.setup, before anything is built from it: it travels with the crew list) and the host's changes. Solo: 1.
+  ```
+  host -> crew   mission.launch {..., scale}                      the start value
+  host -> crew   mission.scale  {n, at, from, reason, pilot}      reliable, a change: every machine applies n at `at`
+  host -> crew   mission.state  {state: {..., "scale": [n, at]}}  plan mode: the newest decision (a late state)
+  host -> crew   mission.go     {..., scales?}                    every change so far (a barrier latecomer)
+  ```
+  A **scheduled change** on the shared clock: on a retire the host recomputes; if the value changed it sends
+  `mission.scale` with `at = host_time() + MissionFlow.SCALE_LEAD` (1 s; before the release `at` = now: the start value
+  just changes) and every machine, the host too, applies it when its clock reaches `at` (each records the `at` it applied:
+  `MissionFlow.scale_at`, equal everywhere). Changes are ordered by `at` (the host keeps each one at least 1 ms after the
+  previous); one whose `at` is not newer than the newest this machine knows is ignored (a duplicate, a late copy). The
+  scale only goes down mid-mission (no mid-mission join); a higher value is accepted with a warning. **What rescales at
+  `at`**: the director (`PacingDirector.rescale`: CREW_SCALE, ENGAGE_TARGET, DECK_CAP / DEFEND_EVERY by crew, the defend
+  unit cap and solo themes, DEFEND_BUILD_MIN_CREW, the two-source rule, BUILD_GAP / CREW_SCALE; allowances keep their
+  used counts: remaining = max(0, new - used); groups not released yet resize); the relay's max HP
+  (`asset_max_hp()`), keeping its HP **fraction** (`asset_hp` is the fraction, the host's, replicated in the state as
+  before; destroyed stays destroyed). **What does not**: released / staged / in-flight groups (they keep the scale they
+  were released at: `PacingDirector.release_crew`, their spawn ctx and size), anything alive, the garrison (built pre-play
+  from the seed and the launch crew, checksummed), the depot cores already placed. The host also drops the leaver's
+  per-pilot entries (director intensity / engagement, PacingFacts, depot claim bookkeeping). Logged on every machine:
+  `[mission] scale a -> b` and the combat log's `scale` record. **Enforced** by `tests/test_net_contract.gd` section 5:
+  game / section / enemy / combat code that sizes anything from a crew count fails unless it is in `crew_scale` /
+  `host_crew_scale` or allowlisted with a reason (spawn slots, the pre-play garrison, index pairing). Tests:
+  `test_net_scale` (3), `test_mission_flow`, `test_pacing_director`, `test_asset_mission`.
+- Tests: `test_net_mission` (2), `test_net_mission_4` (full crew), `test_net_mission_desync` (3;
   one client perturbs its checksum with `Session.mission.checksum_salt`, is sent out, and is refused when it tries to
   come back); `test_net_stack` (2) / `test_net_stack_3` (3), scenario `tests/net_stack_case.gd`: same seed, mode and
   stack checksum everywhere, each mech in its entry slot on the entry deck's floor, no two overlapping, and
@@ -171,8 +218,8 @@ host -> crew     mission.state  {state}      reliable, on every change: MissionR
 host -> crew     mission.go     {start_at, state?}   carries the latest state (if any) for a member that reaches the barrier late
 ```
 - Every machine builds the same `MissionRules.make(section)` (no overrides: extraction on, crew-wipe loss off) in
-  `MissionFlow` (`scripts/game/mission_flow.gd`, child "MissionFlow" of the test drive, stack mode only; a district has
-  no section, so no objective). Objectives: clear every deck, then reach the extraction zone (docs/design/mission-section.md §14).
+  `MissionFlow` (`scripts/game/mission_flow.gd`, child "MissionFlow" of the test drive). The objectives are the plan's
+  (below, "The plan"); the evaluation, end and solo rules here apply to them.
 - **The host decides** (a host alone too): about 4 times a second (`EVAL_INTERVAL` 0.25 s) it feeds
   `{"t": Session.host_time(), "enemies": td.enemies_alive_per_deck(), "crew": [{peer, downed, deck, x, s}]}` to
   `rules.evaluate()`; deck / x / s from `CityStack.to_deck_arc(pos)` of its own mech and of each puppet still in the
@@ -191,18 +238,18 @@ host -> crew     mission.go     {start_at, state?}   carries the latest state (i
   its hangar (`FrontEnd.next_screen = "hangar"`). No automatic respawn any more (user decision 2026-11-24): a downed mech
   waits for a crewmate's repair drone or its pilot holds SPACE to respawn (docs/design/pacing-director.md §4,
   `DownedRules`); `MissionRules` "wipe" stays off by default (on: lost when every pilot is down and nobody redeploys).
-- **Plan mode** (mission objectives, docs/design/mission-objectives.md §7 / §9; THE DEFAULT since 2026-11-23: GameSettings
-  `objectives` (default true, the hangar's Objectives box) unless `--no-objectives` (`--objectives` still forces it) on
-  the host -> `Session.objectives` -> `mission.launch` `objectives`, so every machine plays the HOST's mode whatever its
-  own flags; solo: `TestDrive.solo_launch.objectives`). Every machine builds `MissionPlan.make(sec)`,
-  `MissionRules.make(sec, {plan})`, `PacingDirector.make(plan, {}, crew size)` (docs/design/pacing-director.md), then `stack.setup_mission(plan)` (MissionWorld, behind the
+- **The plan** (mission objectives, docs/design/mission-objectives.md §7 / §9; THE ONLY MODE since 2026-11-25, user:
+  "Cut the legacy modes."; no setting, `--objectives` accepted and ignored, `--no-objectives` gone). `mission.launch`
+  carries no mode switch any more (the `objectives` key, `Session.objectives`, `TestDrive.objectives`, the hangar's
+  Objectives box and the transitional clear + extract rules are gone). Every machine builds `MissionPlan.make(sec)`,
+  `MissionRules.make(sec, {plan})`, `PacingDirector.make(plan, {}, crew_scale())` (docs/design/pacing-director.md), then `stack.setup_mission(plan)` (MissionWorld, behind the
   loading screen, before the barrier) and `rules.set_site` from its `flag_site` / `asset_site` (kept on the plan's site
   when `ok` is false). The barrier's checksum is `"<stack>/<plan.checksum()>"`. The host's garrison is
   `plan.pool(k).garrison` of each deck's budget (`EnemySpawner.spawn_all(..., garrison_share)`).
   ```
   host -> crew   mission.wave  {order: {wave, deck, source, open_at, max_units, reason}}   reliable, one per director order (~130 B)
   host -> crew   mission.state {state}   rules.state() + {"dir": PacingDirector.state() (waves, next, left, pace, intensity),
-                                         "assets": {defend id: hp}, "depots": {...}}, on change
+                                         "assets": {defend id: hp}, "depots": {...}, "scale": [n, at] once changed}, on change
   host -> crew   mission.go    {start_at, state?, waves?}   + the orders whose open_at is still ahead (late barrier member)
   ```
   The host tick (4 Hz, same gate) evaluates the rules first (facts t, enemies, crew, waves_left, waves, zone_enemies,
@@ -228,18 +275,18 @@ host -> crew     mission.go     {start_at, state?}   carries the latest state (i
 
 ## Mech snapshots (co-op step 2)
 ```
-client -> host   T_SNAP  its own mech (60 bytes)                          30 Hz, unreliable, sequenced (newest wins)
-host -> client   T_SNAP  the host's mech + the other clients' (<= 164 B)  each forwarded sample once, with its age
+client -> host   T_SNAP  its own mech (63 bytes)                          30 Hz, unreliable, sequenced (newest wins)
+host -> client   T_SNAP  the host's mech + the other clients' (<= 173 B)  each forwarded sample once, with its age
 ```
-- **Entry (52 bytes, `NetMechCodec`)**: seat (3 bits) + teleport counter (4 bits); flags grounded / thrusting / emergency /
+- **Entry (55 bytes, `NetMechCodec`)**: seat (3 bits) + teleport counter (4 bits); flags grounded / thrusting / emergency /
   shutdown / hover / designator / disabled / redeploying; age (2 ms units: a forwarded sample keeps its moment on the shared clock); position
   (i24 mm x3); velocity (i16 cm/s x3); yaw in the ring frame (u16); hip twist `leg_yaw` (i8); heat (u8 of heat_cap); last
-  touchdown speed (u8, the landing dip); aim point relative to the mech (i16 x3, 1/4 m); PlayerTarget component HP (u8 x 11,
+  touchdown speed (u8, the landing dip); aim point relative to the mech (i16 x3, 1/4 m); PlayerTarget component HP (u8 x 12,
   `NetMechCodec.COMPONENTS`: torso (the hull), head, leg_l, leg_r, then the union of every chassis' hardpoint ids: side_l,
-  side_r, shoulder_l, shoulder_r, back, back_l, back_r (the Bulwark's back saddles; its side guns reuse side_l / side_r);
+  side_r, shoulder_l, shoulder_r, back, back_l, back_r, belly (the Bulwark's back saddles and its belly turret prototype, 2026-11-25; its side guns reuse side_l / side_r);
   255 = absent, e.g. a Strider's back_l); `disable_cause` (u8: 0 none, else 1 + index in COMPONENTS); WeaponMount `aim_yaw` / `aim_pitch` per hardpoint
-  (i8 x 10, 1.5 deg steps, `NetMechCodec.MOUNTS`); `aid` (u8: the owner's repair-drone charges in bits 0-1, the revive bar in
-  bits 2-7: downed / revive, pacing-director.md §4). Packet = 7 (NetWire header) + 1 (count) + 52 per mech: 60 B up, 164 B
+  (i8 x 12, 1.5 deg steps, `NetMechCodec.MOUNTS`: the five Strider hardpoints and the belly); `aid` (u8: the owner's repair-drone charges in bits 0-1, the revive bar in
+  bits 2-7: downed / revive, pacing-director.md §4). Packet = 7 (NetWire header) + 1 (count) + 55 per mech: 63 B up, 173 B
   down in a full crew. `MAX_PACKET` (512) is a bandwidth budget, not a transport limit (user decision 2026-11-24: don't
   trim bytes while far under the ceiling; pack tighter only when a packet approaches it). The hard limit is one datagram,
   the ~1200 B unreliable MTU of ENet / Steam: above it a packet fragments and one lost fragment loses it all. Crouch is not runtime state (a
@@ -315,9 +362,9 @@ host -> crew     enemy.ev     {l: [[kind, n, data]...]}               one reliab
 ```
 - **Spawn and AI on the host only.** `TestDrive.spawn_enemies` (TestDriveCombat.rebuild_encounters asks it): solo, as
   before; in a crew mission the HOST runs `EnemySpawner` from the mission seed around `TestDrive.encounter_origin()`
-  (the stack's entry, or the district's first slot: the same whatever seat the host has), scaled to the crew size, and
+  (the stack's entry: the same whatever seat the host has), scaled to the crew size, and
   tags each enemy with `spawn_deck` (`CityStack.deck_at`); a client spawns none. EnemySpawner now lays the encounter out
-  from the plan's avenue lane (`CityPlan.avenue_x()`: x = 0 in a district, the entry's lane on a stack deck) and refuses
+  from the plan's avenue lane (`CityPlan.avenue_x()`: the entry's lane on a stack deck) and refuses
   floor holes, so it lands in front of the entry on the stack.
 - **Every deck** (stack): the host spawns one encounter per deck k (`stack.decks[k].plan`, `stack.deck_ring(k)`, laid out
   from the entry's arc spot on that deck; its plan comes from the mission seed and k, so the layout is per deck and
@@ -350,6 +397,11 @@ host -> crew     enemy.ev     {l: [[kind, n, data]...]}               one reliab
 - **Enemy fire.** The host forwards every enemy fire record its CombatWorld fires (`rec.enemy`) as `fire`; each client
   fires it on its own CombatWorld (peer 1, team enemy), so every machine sees the shot, and only the victim's machine
   builds the Hit on its own mech (`CombatWorld.decides`); the host shows the impact on the puppet.
+- **Shot drops** (Weapons, 2026-11-25; `docs/design/weapons.md` §5.1). When a projectile (player or enemy) stops on
+  something a machine decides (its own mech, a host-owned target its shot hit, a prop its shot hit), that machine tells the
+  crew on `combat.hit` (a client: as `end` on the hit it sends anyway, else `{drop: [[shot, pt, n], ...]}` to the host;
+  the host relays drops to the other clients once a frame), and every other machine ends its still-flying copy at that
+  point, so one shot does not land on two deciders. No new event kind; `scripts/net/` unchanged.
 - **Targeting.** Host enemies already see every crew mech: CrewSync registers each puppet as a PlayerTarget (team
   "player", the owner's peer), and enemies lead it from its puppet's streamed velocity.
 - **Missions.** `TestDrive.enemies_alive_per_deck() -> Array[int]` (`EnemySync.alive_per_deck(enemies, decks)`): alive

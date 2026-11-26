@@ -13,6 +13,8 @@ extends CombatEffect
 ## `on_hit(...)` resolves it (damage × falloff, Δv along the flight, splash, impact fx) and returns true to stop; the
 ## railgun overrides it to pierce. Reaching max_time with nothing met calls `reach_range()`: gone without a burst by
 ## default (the rocket air-bursts, the mortar shell lands).
+## DROPS: a terminal on_hit in the sweep reports itself (CombatWorld.shot_stopped: told to the crew when this machine
+## decided it); a stop another machine decided arrives as `drop_at(point, normal)`, which ends a copy still flying there.
 ## CURVED SWEEP (sub_step() > 0): chords run between grid points k × sub_step from the last grid point swept (`_swept`),
 ## plus max_time itself as the final point, so a frame step that doesn't reach the next grid point sweeps nothing yet and
 ## the chords are the same at any frame rate and when started late.
@@ -137,6 +139,7 @@ func _sweep(e0: float, e1: float) -> void:
 			if on_hit(h, te):
 				world.life_sweep(record, c0, hp, Combat.PROJECTILE_RADIUS)
 				end_time = te
+				world.shot_stopped(self, h)      # decided here: the crew's copies end at this point (CombatWorld.drop_shot)
 				return
 			ta = te       # pierced: carry on from the hit (a piercing on_hit must return true for world geometry)
 			a = h["point"]
@@ -159,6 +162,20 @@ func on_hit(h: Dictionary, e: float) -> bool:
 	world.splash(record, stats, h["point"], target)
 	world.spawn_impact(h["point"], h["normal"], float(stats.get("impact_radius", 1.0)), h.get("color", MechMeshes.GREY),
 		bool(stats.get("explosive", false)))
+	return true
+
+
+## Another machine decided this shot stopped at `point` (CombatWorld.drop_shot): if still flying, end here now through
+## on_hit with no target (the impact look of a hit on something there, once; splash and the rest only where this machine
+## decides them, as for any hit). False when it had already ended (its own hit stands; nothing is applied again).
+func drop_at(point: Vector3, normal: Vector3, color: Color = MechMeshes.GREY) -> bool:
+	if end_time >= 0.0:
+		return false
+	var e := clampf(elapsed, 0.0, max_time)
+	on_hit({"target": null, "component": "", "point": point, "normal": normal, "frac": 0.0, "color": color}, e)
+	end_time = e
+	_swept = maxf(_swept, e)
+	_update_look()
 	return true
 
 

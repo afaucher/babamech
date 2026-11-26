@@ -398,6 +398,27 @@ func _snapshot() -> void:
 	b.restore(PackedByteArray())
 	eq(b.state_of(id), CityProps.STANDING, "an empty snapshot stands everything up")
 	eq(b.snapshot().size(), 4, "and snapshots as empty")
+	# A peer's malformed buffer (2026-11-25, audit): rejected as a whole, nothing read past its end, no loop by its count.
+	check(CityProps.valid_snapshot(bytes, b.items.size()), "malformed: the real snapshot is valid")
+	var huge := bytes.duplicate()
+	huge.encode_u32(0, 0xFFFFFFFF)
+	var bad := {"an oversized count": huge, "a truncated buffer": bytes.slice(0, bytes.size() - 3),
+			"a padded buffer": bytes + PackedByteArray([0, 0, 0, 0]), "a count only": PackedByteArray([9, 0, 0, 0])}
+	var foreign := bytes.duplicate()
+	foreign.encode_u32(4, b.items.size())          # the first record names a prop this layout does not have
+	bad["an id past the layout"] = foreign
+	var nan := bytes.duplicate()
+	nan.encode_float(8, NAN)
+	bad["a NaN pose"] = nan
+	var more := PackedByteArray()
+	more.resize(4 + (b.items.size() + 1) * CityProps.SNAP_REC)
+	more.encode_u32(0, b.items.size() + 1)         # well-formed records, but more than this layout has props
+	bad["more records than props"] = more
+	for what: String in bad:
+		b.restore(bytes)
+		check(not CityProps.valid_snapshot(bad[what], b.items.size()), "malformed: %s is invalid" % what)
+		b.restore(bad[what])
+		eq(b.snapshot().size(), 4, "malformed: %s is ignored (every prop stands)" % what)
 	a.queue_free()
 	b.queue_free()
 

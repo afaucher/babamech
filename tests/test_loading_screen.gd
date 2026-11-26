@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## The mission loading screen (LoadingScreen, docs/design/hud.md "Loading screen") in a SOLO test drive:
 ## 1. Covered solo load (TestDrive.cover_solo, the game's solo path): the screen is up and opaque in the same frame the
 ##    scene is added (before anything was drawn), every frame until `loaded`, with the HUD hidden; it shows the mission

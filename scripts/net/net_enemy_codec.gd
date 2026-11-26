@@ -60,10 +60,6 @@ static func state_name(i: int) -> String:
 	return str(STATES[i]) if i >= 0 and i < STATES.size() else "idle"
 
 
-static func entry_size(s: NetEnemyState) -> int:
-	return BASE_SIZE + mini(s.hp.size(), MAX_COMPONENTS)
-
-
 ## The payload for `states` (at most MAX_ENTRIES; the rest are left out: split before calling).
 static func encode(states: Array[NetEnemyState]) -> PackedByteArray:
 	var b := StreamPeerBuffer.new()

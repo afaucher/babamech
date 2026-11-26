@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## VISUAL: the mission loading screen (LoadingScreen, docs/design/hud.md "Loading screen") really draws, and covers the
 ## mission scene while it loads. Runs only under `.\test_runner.ps1 -Visual`. Shots in test_logs/shots/:
 ##   loading_solo_midload   a real solo test drive (TestDrive.cover_solo) caught before its build: only the screen shows

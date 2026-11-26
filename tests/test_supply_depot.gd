@@ -34,20 +34,25 @@ func setup() -> void:
 
 # --- F. Off the roads (2026-11-24: seed 2's d0_depot0 stood on a road line and wedged the bot) ----------------------
 
-const KEEP_SEEDS: Array[int] = [1, 2, 3, 7, 17, 26, 403112]
+const KEEP_SEEDS: Array[int] = [1, 2, 3, 7, 17, 22, 26, 403112]
 
 
 ## On built decks: every depot's footprint (+ the 4 m margin) is clear of the road strips, ramps, floor cuts, gate bay
-## corridors and sources, and 3 m (+ half-width) off every walk-graph edge; the standing area in front of the socket
-## wall fits a mech capsule within claim range; seed 2 deck 1's depot left the road line at (-57, -154).
+## corridors and sources, and 3 m (+ half-width) off every walk-graph edge (tier 0 / 1; tier 2 drops the latter); the
+## standing area in front of the socket wall fits a mech capsule within claim range; seed 2 deck 1's depot left the road
+## line at (-57, -154). WIDEST MECH (2026-11-26, seed 22's d1_depot1 wedged a Bulwark), measured on the built deck's
+## static collision with the widest capsule (CityPlan.MECH_R_MAX, BotFit): it stands at the standing spot; it gets there
+## from a walk-graph edge by one or two straight lines; it walks right round the depot (a capsule probe every metre on a
+## loop fit_r() off the footprint: no pocket, no gap narrower than the capsule). Every depot in sites is ok; seed 22 deck
+## 1's second depot is validly placed or absent.
 func _keep_out() -> void:
 	var total := 0
-	var fallbacks := 0
+	var dropped := 0
+	var rb := CityPlan.MECH_R_MAX
 	for sd in KEEP_SEEDS:
 		var t := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 		t.city_mode = TestDrive.MODE_STACK
 		t.seed_value = sd
-		t.objectives = true
 		add_child(t)
 		await frames(3)
 		var dp := t.mission.depots if t.mission != null else null
@@ -55,17 +60,20 @@ func _keep_out() -> void:
 			t.queue_free()
 			await frames(2)
 			continue
-		fallbacks += dp.placement_fallbacks
+		dropped += dp.unplaced.size()
 		var sec := t.stack.section
+		var space := t.get_world_3d().direct_space_state
 		for id: String in dp.sites:
 			total += 1
 			var st: Dictionary = dp.sites[id]
 			var k := int(st["deck"])
 			var at := Vector2(float(st["x"]), float(st["s"]))
 			var f := int(st["face"])
-			var tag := "seed %d %s at (%.0f, %.0f) face %d" % [sd, id, at.x, at.y, f]
-			if bool(st.get("fallback", false)):
-				continue
+			var tier := int(st.get("tier", 0))
+			var tag := "seed %d %s at (%.0f, %.0f) face %d tier %d" % [sd, id, at.x, at.y, f, tier]
+			check(bool(st.get("ok", false)), tag + ": ok (no fallback placement)")
+			if sd == 22 and id == "d1_depot1":
+				print("[Test] seed 22 d1_depot1: placed at (%.1f, %.1f), tier %d (plan site (-88, -250))" % [at.x, at.y, tier])
 			var fr := MissionDepots.footprint_rect(at, f)
 			for sg: Dictionary in sec.segments(k):
 				if str(sg["form"]) != "none" and fr.grow(MissionDepots.KEEP_MARGIN).intersects(sg["rect"]):
@@ -75,7 +83,7 @@ func _keep_out() -> void:
 			for ed: Array in g["edges"]:
 				var a: Vector2 = g["nodes"][int(ed[0])]
 				var b: Vector2 = g["nodes"][int(ed[1])]
-				if MissionDepots.rect_seg_dist(fr, a, b) < MissionDepots.WALK_GAP:
+				if tier < 2 and MissionDepots.rect_seg_dist(fr, a, b) < MissionDepots.WALK_GAP:
 					check(false, tag + ": 3 m off walk edge %s-%s" % [a, b])
 			for c: Rect2 in cp.floor_cuts():
 				check(not fr.grow(MissionDepots.KEEP_MARGIN).intersects(c), tag + ": clear of a floor cut")
@@ -83,17 +91,83 @@ func _keep_out() -> void:
 				var rr := Rect2(float(rp["x0"]), minf(float(rp["s_top"]), float(rp["s_foot"])), float(rp["x1"]) - float(rp["x0"]),
 					absf(float(rp["s_top"]) - float(rp["s_foot"])))
 				check(not fr.grow(MissionDepots.KEEP_MARGIN).intersects(rr.grow(2.0)), tag + ": clear of a ramp")
-			eq(MissionDepots.keep_hit(dp.keep_out(k), at, f), "", tag + ": the whole keep-out (bay corridors, sources, masts)")
+			eq(MissionDepots.keep_hit(dp.keep_out(k), at, f, tier < 2), "", tag + ": the whole keep-out (bay corridors, sources, masts)")
 			var sp := MissionDepots.stand_point(at, f)
 			check(bool(MissionProps.snap_site(t.stack.decks[k], sp, 0.0, MissionDepots.MECH_R)["ok"]),
 				tag + ": a mech capsule fits in front of the socket wall")
 			check(dp.footprint_dist(id, sp.x, sp.y) <= MissionDepots.CLAIM_RANGE, tag + ": the standing spot is within claim range")
 			if sd == 2 and k == 0:
 				check(at.distance_to(Vector2(-57.0, -154.0)) > 6.0, tag + ": seed 2 deck 1's depot is off the road line at (-57, -154)")
+			# The widest capsule, on the built deck's static collision (the depot's own body included).
+			var ring := t.stack.deck_ring(k)
+			var h0 := float(st.get("h", 0.0))
+			check(BotFit.clear_at(space, ring, sp.x, sp.y, rb, 8.0, h0), tag + ": the widest capsule stands at the standing spot")
+			check(_reaches_walk(space, ring, g, sp, rb), tag + ": the widest capsule gets to the standing spot from a walk-graph edge")
+			var stuck := []
+			for q: Vector2 in _loop_points(fr, MissionProps.fit_r() + 0.1):
+				if not BotFit.clear_at(space, ring, q.x, q.y, rb, 8.0, h0):
+					stuck.append("(%.1f, %.1f)" % [q.x, q.y])
+			check(stuck.is_empty(), tag + ": the widest capsule walks right round the depot (blocked at %s)" % [stuck])
+		if sd == 22:
+			check(not dp.unplaced.has("d1_depot1") or not dp.sites.has("d1_depot1"), "seed 22 d1_depot1: placed validly or absent")
+		for id: String in dp.unplaced:
+			print("[Test] seed %d: %s not placed (no valid site on its deck)" % [sd, id])
+			check(not dp.sites.has(id) and not dp.cores_left.has(id), "seed %d %s: an unplaced depot has no site and no cores" % [sd, id])
 		t.queue_free()
 		await frames(3)
-	print("[Test] depots off the roads: %d placed over seeds %s, %d by the plain-snap fallback" % [total, KEEP_SEEDS, fallbacks])
-	eq(fallbacks, 0, "no depot needed the plain-snap fallback")
+	print("[Test] depots: %d placed over seeds %s, %d not placed" % [total, KEEP_SEEDS, dropped])
+
+
+## Probe points on the loop `d` off rect `r`: every metre along the four sides, every 15 degrees round the corners.
+func _loop_points(r: Rect2, d: float) -> Array[Vector2]:
+	var out: Array[Vector2] = []
+	for i in int(ceilf(r.size.x)) + 1:
+		var x := minf(r.position.x + float(i), r.end.x)
+		out.append(Vector2(x, r.position.y - d))
+		out.append(Vector2(x, r.end.y + d))
+	for i in int(ceilf(r.size.y)) + 1:
+		var y := minf(r.position.y + float(i), r.end.y)
+		out.append(Vector2(r.position.x - d, y))
+		out.append(Vector2(r.end.x + d, y))
+	var corners := [[r.position, PI], [Vector2(r.end.x, r.position.y), PI * 1.5], [r.end, 0.0], [Vector2(r.position.x, r.end.y), PI * 0.5]]
+	for c: Array in corners:
+		for a in 7:
+			out.append((c[0] as Vector2) + Vector2.from_angle(float(c[1]) + PI * 0.5 * float(a) / 6.0) * d)
+	return out
+
+
+## The widest capsule gets from a walk-graph edge to `sp` by one straight line, or two (via a 4 m grid point within 40 m):
+## the walk-graph points tried are the nearest point of each edge, nearest 12 first.
+func _reaches_walk(space: PhysicsDirectSpaceState3D, ring: RingFrame, g: Dictionary, sp: Vector2, r: float) -> bool:
+	var pts := []
+	for ed: Array in g["edges"]:
+		var a: Vector2 = g["nodes"][int(ed[0])]
+		var b: Vector2 = g["nodes"][int(ed[1])]
+		var c := Geometry2D.get_closest_point_to_segment(sp, a, b)
+		pts.append([c.distance_to(sp), c.y, c.x])
+	pts.sort()
+	var ends := []
+	for i in mini(12, pts.size()):
+		var c := Vector2(float(pts[i][2]), float(pts[i][1]))
+		if BotFit.clear_at(space, ring, c.x, c.y, r):
+			ends.append(c)
+	for c: Vector2 in ends:
+		if float(BotFit.line_fit(space, ring, c, sp, r)["bad"]) == 0.0:
+			return true
+	var mids := []
+	for i in range(-10, 11):
+		for j in range(-10, 11):
+			var m := sp + Vector2(i, j) * 4.0
+			mids.append([m.distance_to(sp), m.y, m.x])
+	mids.sort()
+	for mm: Array in mids:
+		var m := Vector2(float(mm[2]), float(mm[1]))
+		if not BotFit.clear_at(space, ring, m.x, m.y, r) or float(BotFit.line_fit(space, ring, m, sp, r)["bad"]) > 0.0:
+			continue
+		for c: Vector2 in ends:
+			if float(BotFit.line_fit(space, ring, c, m, r)["bad"]) == 0.0:
+				return true
+	return false
 
 
 # --- A. The effect ---------------------------------------------------------------------------------------------
@@ -207,7 +281,6 @@ func _drive() -> void:
 	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = SEED
-	td.objectives = true
 	add_child(td)
 	await frames(4)
 	var mf := td.mission
@@ -261,12 +334,27 @@ func _drive() -> void:
 	var pt := td.combat.player_target
 	pt.apply_damage(200.0, "torso", "test")
 	td.mech.heat = td.mech.heat_cap * 0.9
-	await _stand(site, 6.0 + 6.0)
+	# Out of range: the first gap past CLAIM_RANGE + RANGE_SLACK where a Strider capsule stands clear (a prop or a tree there
+	# would push the mech back toward the depot).
+	var gap := MissionDepots.CLAIM_RANGE + MissionDepots.RANGE_SLACK + 2.0
+	var fdir: Vector2 = MissionDepots.FACE_DIRS[int(site["face"])]
+	var fhalf := SupplyDepot.footprint_half(int(site["face"]))
+	var ring0 := td.stack.deck_ring(int(site["deck"]))
+	var sp3 := td.get_world_3d().direct_space_state
+	while gap < 40.0:
+		var gp := Vector2(float(site["x"]), float(site["s"])) + fdir * (absf(fdir.x) * fhalf.x + absf(fdir.y) * fhalf.y + gap)
+		if BotFit.clear_at(sp3, ring0, gp.x, gp.y, 2.4, 8.0, float(site.get("h", 0.0))):
+			break
+		gap += 1.0
+	await _stand(site, gap)
 	await _seconds(2.6)
 	var full := int(dp.cores_max[id0])
 	eq(int(dp.cores_left[id0]), full, "out of range: no core taken")
 	eq(dp.progress_line(), "", "out of range: no progress line")
-	eq(dp.refusal(dp.local_peer(), id0), "range", "the host refuses a claim from out of range")
+	var ma := td.stack.to_deck_arc(td.mech.global_position)
+	eq(dp.refusal(dp.local_peer(), id0), "range", "the host refuses a claim from out of range (mech deck %d (%.1f, %.1f), %.1f m from %s's footprint at (%.1f, %.1f) face %d)" % [
+		int(ma["deck"]), float(ma["x"]), float(ma["s"]), dp.footprint_dist(id0, float(ma["x"]), float(ma["s"])), id0, float(site["x"]),
+		float(site["s"]), int(site["face"])])
 	# In range: the line rises, then the core is taken after 2 s.
 	_kill_all()
 	await _stand(site, 3.0)
@@ -408,10 +496,13 @@ func _bot(dp: MissionDepots) -> void:
 	td.crew_bots.erase(-2)
 
 
-## Stand the mech `gap` m off the +s face of the depot at `site` (its footprint), still.
+## Stand the mech `gap` m off the socket wall of the depot at `site` (its footprint, the side its stand spot is on), still.
 func _stand(site: Dictionary, gap: float) -> void:
-	var s := float(site["s"]) + SupplyDepot.footprint_half(int(site.get("face", 0))).y + gap
-	td.mech.global_position = td.stack.from_deck_arc(int(site["deck"]), float(site["x"]), s, float(site.get("h", 0.0)) + 0.5)
+	var f := int(site.get("face", 0))
+	var dir: Vector2 = MissionDepots.FACE_DIRS[f]
+	var half := SupplyDepot.footprint_half(f)
+	var p := Vector2(float(site["x"]), float(site["s"])) + dir * (absf(dir.x) * half.x + absf(dir.y) * half.y + gap)
+	td.mech.global_position = td.stack.from_deck_arc(int(site["deck"]), p.x, p.y, float(site.get("h", 0.0)) + 0.5)
 	td.mech.velocity = Vector3.ZERO
 	td.mech.move_input = Vector2.ZERO
 	await _seconds(0.05)

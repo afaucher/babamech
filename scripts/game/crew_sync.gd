@@ -11,11 +11,18 @@ extends Node
 ##   - HANGAR BOTS (docs/design/hangar-bots.md): on the host, each bot's body (TestDrive.crew_bots, CrewBot) is streamed
 ##     like the local mech (Session.mechs.feed_owned); elsewhere a bot is a puppet like any teammate (its PlayerTarget's
 ##     owner is the host, PlayerTarget.bind clamps the negative pilot id to 1).
+##   - LEAVERS (Session.peer_left, every machine): retire(peer) takes the leaver's mech out of the mission here: its
+##     PlayerTarget leaves CombatWorld (enemies, weapons and bots stop seeing it), its puppet, pilot link and mech are
+##     freed (TestDrive.drop_mech: also out of `mechs`, the life pushers and viewers). A member already gone when the
+##     mission is set up (left while loading) is retired at setup. Crew lists (TestDrive.crew_members, DownedCrew, the
+##     mission facts) already skip non-members; the HUD crew panel follows the roster.
 ## Nothing here touches the wire: it only asks Session (begin / feed / pose / end).
 
 var drive: TestDrive
 var puppets: Dictionary = {}        ## owner peer -> MechPuppet
 var targets: Dictionary = {}        ## owner peer -> PlayerTarget (the puppets')
+
+var retired: Array[int] = []       ## pilot ids whose mechs were retired here (left mid-mission; tests, diagnostics)
 
 var _last_pos := Vector3.INF
 var _bot_last: Dictionary = {}      ## host: bot pilot id -> its mech's position at the last feed
@@ -23,7 +30,8 @@ var _bot_last: Dictionary = {}      ## host: bot pilot id -> its mech's position
 
 ## Authority (scripts/net/net.gd): scene wiring on this machine; the state it moves is declared by the mechs.
 func net_fields() -> Dictionary:
-	return {"drive": Net.LOCAL, "puppets": Net.LOCAL, "targets": Net.LOCAL, "_last_pos": Net.LOCAL, "_bot_last": Net.LOCAL}
+	return {"drive": Net.LOCAL, "puppets": Net.LOCAL, "targets": Net.LOCAL, "retired": Net.LOCAL, "_last_pos": Net.LOCAL,
+		"_bot_last": Net.LOCAL}
 
 
 func _ready() -> void:
@@ -60,10 +68,59 @@ func setup(td: TestDrive, seats: Dictionary) -> void:
 		pl.bind_puppet(pp, td.combat.world if td.combat != null else null)
 	if sess != null and sess.mechs != null:
 		sess.mechs.begin(local, seats, td.crew_bots.keys())
+	if sess != null and sess.online():
+		if not sess.peer_left.is_connected(retire):
+			sess.peer_left.connect(retire)
+		# Left while the mission loaded: a player of the LAUNCH crew no longer in the roster (never a bot, never a mech
+		# the launch didn't list, e.g. tests/test_perf_coop.gd's synthetic puppets).
+		var launched := {}
+		for e: Variant in sess.mission_params().get("crew", []) as Array:
+			launched[int((e as Dictionary).get("peer", 0))] = true
+		for p: int in puppets.keys():
+			if launched.has(p) and not NetSession.is_bot_id(p) and not sess.has_member(p):
+				retire(p)
+
+
+## A crew member left (Session.peer_left): take its mech out of the mission on this machine. Its PlayerTarget leaves
+## CombatWorld first (nothing targets or hits it from now on), then its nodes go. Its owner decided its HP, downed and
+## revive state, and that owner is gone: nothing is handed over (the mission facts count the members still here).
+func retire(peer: int) -> void:
+	if drive == null or peer == MechSpawn.owner_of(drive.mech) or drive.crew_bots.has(peer) or NetSession.is_bot_id(peer):
+		return   # never this machine's own mech, and never a hangar bot (bots leave with the host's session, not alone)
+	if not puppets.has(peer) and not targets.has(peer):
+		return
+	var pt := targets.get(peer) as PlayerTarget
+	targets.erase(peer)
+	var w: CombatWorld = drive.combat.world if drive.combat != null else null
+	if pt != null and is_instance_valid(pt):
+		if w != null:
+			w.unregister(pt)
+		pt.queue_free()
+	if w != null:
+		# CombatNet's live hooks for this shooter bind the puppet and its model: drop them before those nodes go.
+		var key := "player%d" % peer
+		w.set_anchor(key, Callable())
+		w.designators.erase(key)
+		for k: String in w.muzzles.keys():
+			if k.begins_with(key + "/"):
+				w.muzzles.erase(k)
+	var pp := puppets.get(peer) as MechPuppet
+	puppets.erase(peer)
+	if pp != null and is_instance_valid(pp):
+		pp.target = null
+	var sess := Net.session()
+	if sess != null and sess.mechs != null:
+		sess.mechs.drop(peer)
+	drive.drop_mech(peer)
+	retired.append(peer)
+	drive.member_retired(peer)   # host: TestDrive.crew_member_left + MissionFlow.on_member_retired (crew_members() is clean now)
+	FlowLog.say("crew mech retired", "pilot %d left: mech and target removed" % peer)
 
 
 func _exit_tree() -> void:
 	var sess := Net.session()
+	if sess != null and sess.peer_left.is_connected(retire):
+		sess.peer_left.disconnect(retire)
 	if sess != null and sess.mechs != null:
 		sess.mechs.end()
 

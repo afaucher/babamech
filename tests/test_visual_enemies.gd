@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## VISUAL: enemy silhouettes, scale vs. 8 m player mech, palette contrast in sunlit city, active telegraphs,
 ## and Test Drive rooftop overview looking down onto occupied streets/parks (50-120 m visibility check).
 ## Runs only under `.\test_runner.ps1 -Visual`.
@@ -111,20 +112,25 @@ func setup() -> void:
 	env.queue_free()
 	await frames(4)
 
-	# 3. Test Drive rooftop vantage looking down the occupied avenue (matches user screenshot perspective).
+	# 3. Test Drive rooftop vantage looking down the occupied entry road (matches user screenshot perspective). The stack
+	# (the only city; QUIET_SECTION: the full garrison, nothing released): the camera sits 14 m left of the entry, 18 m
+	# up, looking 48 m into the map along the road.
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_DISTRICT   # the rooftop camera below sits at district arc coordinates (avenue at x = 0); W4 kept it
 	add_child(td)
 	await frames(12)
 	td.drive_override = true
 	var ring := td.city.ring
+	var entry := td.stack.entry_transform()
+	var up := ring.up_at(entry.origin)
+	var fwd := (-entry.basis.z - up * up.dot(-entry.basis.z)).normalized()
+	var right := fwd.cross(up).normalized()
 	var roof_cam := Camera3D.new()
 	roof_cam.fov = 60.0
 	add_child(roof_cam)
 	roof_cam.current = true
-	var from := ring.arc_to_world(-14.0, 14.0, 18.0)
-	var look_at_pt := ring.arc_to_world(0.0, 62.0, 3.0)
-	roof_cam.look_at_from_position(from, look_at_pt, ring.up_at(from))
+	var from := entry.origin - right * 14.0 + fwd * 2.0 + up * 18.0
+	var look_at_pt := entry.origin + fwd * 50.0 + up * 3.0
+	roof_cam.look_at_from_position(from, look_at_pt, up)
 	await frames(12)
 	var img_city := await sc.grab("enemies_test_drive_rooftop")
 	sc.not_blank(img_city, Rect2(0.05, 0.1, 0.9, 0.8), "enemies in sunlit Test Drive city from rooftop")

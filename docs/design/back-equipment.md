@@ -86,7 +86,7 @@ when its slot is selected (Controls); passives are always on.
   "PASSIVE" / "", `in_range` false, `usable`. **`hint`** (for the HUD): the drone slot says `"PRESS <n>"` (its own key)
   when usable, deselected and none out, `"CLICK TO LAUNCH"` when selected and it can launch now, `""` otherwise; always
   `""` on weapons and passives. A destroyed back hardpoint stops the radiator and the launch. Ammo bin:
-  `WeaponRack.bonus_ammo` (rockets 54, missiles 27, mortar 3 -> 5), `ammo_max` reports the bigger load.
+  `WeaponRack.bonus_ammo` (rockets 54, missiles 27, mortar 6 -> 9), `ammo_max` reports the bigger load.
 - **Drone** (`RepairDrone`, a `CombatEffect`; `CombatWorld.launch_drone(record)`, `drone_of(shooter)`,
   `set_anchor(shooter, () -> Node3D)` / `anchor_of`): follows its launcher's node on this machine (the rack registers
   its mech; CombatNet registers each puppet's). Orbit: centre = the launcher's hover point (`hover` above the back

@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## VISUAL: the test drive firing its default loadout through WeaponRack (run with .\test_runner.ps1 -Visual). The rack's
 ## input reading is off; the test aims at the nearest live enemy (or 60 m ahead) and holds the trigger, then grabs the
 ## chase camera's view mid-fire. Look at test_logs/shots/weapon_drive.png.

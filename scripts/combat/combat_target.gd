@@ -175,12 +175,18 @@ func can_act() -> bool:
 
 # --- Verbs (the owner only) ------------------------------------------------------------------------------
 
+## `damaged` carries the HP actually removed (clamped by what the component had); nothing is emitted when nothing was
+## dealt (a component already at 0). No overkill spill to another component.
 func apply_damage(amount: float, component: String, src: String) -> void:
 	if amount <= 0.0 or hp.is_empty():
 		return
 	var c := component if hp.has(component) else str(hp.keys()[0])
-	hp[c] = maxf(float(hp[c]) - amount, 0.0)
-	damaged.emit(amount, c, src)
+	var before := float(hp[c])
+	var dealt := minf(amount, before)
+	if dealt <= 0.0:
+		return
+	hp[c] = before - dealt
+	damaged.emit(dealt, c, src)
 
 
 func apply_impulse(dv: Vector3, src: String) -> void:

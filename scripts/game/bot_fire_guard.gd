@@ -22,9 +22,9 @@ extends RefCounted
 ## Skipped when friendly fire is off (shots pass teammates).
 
 const MARGIN := 2.0          ## m of clearance beyond a mech's hull
-const HULL_R := 2.2          ## m: a Strider's radius (PlayerTarget.body_radius; other chassis: PlayerTarget.body_extent)
+const HULL_R := 2.2          ## m: the least crew radius (crew mechs use PlayerTarget.body_extent: the Strider 3.63)
 const HULL_LO := 0.3         ## m above its feet...
-const HULL_HI := 7.8         ## ...to the top of its head
+const HULL_HI := 7.8         ## ...to the least top (crew mechs: body_extent's, the Strider 11.35)
 const PREDICT_MAX := 2.5     ## s: crew motion is extrapolated at most this far
 const MISSILE_SIDE := 5.0    ## m: extra side clearance for a homing missile's curve
 const MORTAR_DESCENT := 14.0 ## m: the mortar's last stretch checked as a line (down onto the landing point)
@@ -84,10 +84,11 @@ static func crew_states(crew: Array, me: Node3D = null) -> Array:
 			continue
 		var mc := m as MechController
 		var st := {"pos": mc.global_position, "vel": mc.velocity, "up": mc.up()}
-		if mc.chassis_id != "strider":   # another chassis' capsule from its hit spheres (the Bulwark: r 5.1, top 8.9 m)
-			var ext := PlayerTarget.body_extent(mc.chassis_id)
-			st["r"] = float(ext["r"])
-			st["hi"] = maxf(float(ext["hi"]), HULL_HI)
+		# Every chassis' capsule from its hit spheres (the Strider: r 3.63, top 11.35 m since its 2026-11-24 refit, which
+		# outgrew HULL_R / HULL_HI; the Bulwark: r 5.1, top 8.9 m).
+		var ext := PlayerTarget.body_extent(mc.chassis_id)
+		st["r"] = maxf(float(ext["r"]), HULL_R)
+		st["hi"] = maxf(float(ext["hi"]), HULL_HI)
 		out.append(st)
 	return out
 

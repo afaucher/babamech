@@ -24,6 +24,13 @@ var strip_x := PackedFloat32Array()     ## x of every ceiling light strip, for a
 var stats: Dictionary = {}     ## triangles, shapes and build time of the last build()
 
 const SEAM := 0.06     ## facet slabs overlap by this much, so a ray down the crease between two still hits
+## Collision height of a ramp parapet's end block over the ribbon (drawn CityStreets.END_H, 1.3 m). A box corner a mech
+## capsule can walk round must be either low enough to step onto or taller than the capsule's straight side (the Strider's
+## reaches 5.8 m): a corner whose top is in between (the 1.3 m block, the 2.5 m parapet guard, tried at 4 m too) met the
+## capsule's side with contacts that Godot's capsule-box solver let it sink into and then never left, every
+## move_and_slide blocked (section seed 9, deck 1, x -58 s -101; tests/test_ramp_stuck.gd). At 6.5 m the block, an
+## invisible post above the drawn 1.3 m, also covers the parapet guard's end corners.
+const END_GUARD := 6.5
 const PORTAL_PLATE := 1.0    ## m: the back plate sealing a portal's recess (_col_walls)
 
 var _digest := 0
@@ -616,8 +623,9 @@ static func ring_points(col: Dictionary) -> PackedVector3Array:
 
 
 ## A ramp part a mech can walk: per facet piece one box tilted to the slope with its top face on the ribbon (reaching
-## down to the floor along the embankment), one per parapet (PARAPET_GUARD tall, over the drawn 1 m) and one per edge beam, so neighbouring pieces meet with no
-## step; the parapets' end blocks; per pier its plinth, shaft, cross-head and cross beam.
+## down to the floor along the embankment), one convex prism per parapet (PARAPET_GUARD tall, over the drawn 1 m) and one
+## box per edge beam, so neighbouring pieces meet with no step; the parapets' end blocks (END_GUARD tall); per pier its
+## plinth, shaft, cross-head and cross beam.
 func _ramp_collision(body: StaticBody3D, geo: CityGeo, r: Dictionary) -> int:
 	var span := CityStreets.ramp_span(r, plan.site.slab)
 	var x0 := float(r["x0"])
@@ -643,19 +651,28 @@ func _ramp_collision(body: StaticBody3D, geo: CityGeo, r: Dictionary) -> int:
 		if on_bank:
 			thick = maxf(ha, hb) + 0.5
 		_shape(body, xf, Vector3(0, -thick * 0.5, 0), Vector3(x1 - x0, thick, length))
+		# Parapet ends: square to the deck (as drawn), not square to the slope. A box tilted to the slope ended in a face
+		# leaning PARAPET_GUARD * slope out past the ramp's end (0.4 m at a 9 deg foot), an invisible overhang whose
+		# corner pinned a mech capsule walking into it from beside the foot against the floor (section seed 9, deck 1,
+		# x -58 s -101: no move in any direction). Each piece overlaps its neighbour by SEAM (as before), not past the
+		# ramp's own two ends.
+		var da := 0.0 if k == 0 else SEAM * 0.5
+		var db := 0.0 if k == br.size() - 2 else SEAM * 0.5
 		for side: float in [-1.0, 1.0]:
 			# Taller than drawn (PARAPET_GUARD): a mech would step over the 1 m parapet.
-			_shape(body, xf, Vector3(side * ((x1 - x0) - CityStreets.PARAPET_W) * 0.5, CityStreets.PARAPET_GUARD * 0.5, 0),
-					Vector3(CityStreets.PARAPET_W, CityStreets.PARAPET_GUARD, length))
+			var xo := x0 if side < 0.0 else x1
+			var xi := xo - side * CityStreets.PARAPET_W
+			_convex(body, Transform3D.IDENTITY, _parapet_points(geo, xo, xi, br[k], br[k + 1], ha, hb, da, db))
 			if not on_bank:      # the edge beam under the soffit
 				_shape(body, xf, Vector3(side * ((x1 - x0) - CityStreets.BEAM_W) * 0.5, -CityStreets.RAMP_THICK - CityStreets.BEAM_D * 0.5, 0),
 						Vector3(CityStreets.BEAM_W, CityStreets.BEAM_D, length))
 				count += 1
 		count += 3
 	# The parapets' end blocks, and each pier: plinth, shaft, cross-head (with its haunch) and the cross beam.
+	# An end block's collision is END_GUARD tall (invisible above the drawn END_H), so it also swallows the parapet's end.
 	for eb in CityStreets.end_blocks(r, span):
-		var bh := CityStreets.END_H + 0.3
-		_shape(body, geo.frame(eb.x, eb.y, eb.z), Vector3(0, CityStreets.END_H - bh * 0.5, 0), Vector3(CityStreets.END_W, bh, CityStreets.END_L))
+		var bh := END_GUARD + 0.3
+		_shape(body, geo.frame(eb.x, eb.y, eb.z), Vector3(0, END_GUARD - bh * 0.5, 0), Vector3(CityStreets.END_W, bh, CityStreets.END_L))
 		count += 1
 	for s in CityStreets.pier_s(r, plan):
 		var hp := CityStreets.pier_heights(r, s)
@@ -670,6 +687,24 @@ func _ramp_collision(body: StaticBody3D, geo: CityGeo, r: Dictionary) -> int:
 				Vector3(x1 - x0 - 0.1, CityStreets.CROSS_D, CityStreets.CROSS_L))
 		count += 4
 	return count
+
+
+## One facet piece of a ramp parapet (x from xo to xi, s from sa to sb, ribbon heights ha / hb there) as a convex prism
+## PARAPET_GUARD tall over the ribbon, its ends square to the faceted deck like the drawn parapet's, each end pushed out
+## along the slope by da / db (the SEAM overlap with the next piece; 0 at the ramp's own ends, flush with the drawn end).
+static func _parapet_points(geo: CityGeo, xo: float, xi: float, sa: float, sb: float, ha: float, hb: float, da: float,
+		db: float) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	for xx: float in [xo, xi]:
+		var a := geo.g_point(xx, sa, ha)
+		var b := geo.g_point(xx, sb, hb)
+		var along := (b - a).normalized()
+		var ua := geo.g_point(xx, sa, ha + CityStreets.PARAPET_GUARD) - a
+		var ub := geo.g_point(xx, sb, hb + CityStreets.PARAPET_GUARD) - b
+		a -= along * da
+		b += along * db
+		out.append_array([a, a + ua, b, b + ub])
+	return out
 
 
 ## A box over the ground rectangle `r` from height y0 to y1, one piece per facet.

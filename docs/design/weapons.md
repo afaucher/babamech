@@ -91,7 +91,7 @@ range over the same cycle; for explosive weapons it counts direct + splash damag
 | `swivel` | Swivel Boom | side | twin slugs | 12 | 4 /s (alternating barrels) | 75 m/s | 160 m (100% to 80 → 50%) | 0.8° fixed | **1.6** | – | ∞ | 4 | 0.3 | 1.0 / shot | 4.0 | 48 | 1.0 m |
 | `rockets` | Rocket Pod | shoulder | dumb-fire salvo | 26 | 6 rockets 0.1 s apart, 4 s reload (4.6 s cycle) | 45 m/s | 250 m (no falloff) | 3.5° + wobble | 0.4 | 18 dmg / 4 m | **36** (6 salvos) | 6 | 0.2 | 10 / salvo | 2.2 | 57 | 2.5 m |
 | `missiles` | Guided Missiles | shoulder | crosshair-guided | 30 | 3 missiles 0.3 s apart, 5 s reload (5.9 s cycle) | 35 → 55 m/s | 350 m (9 s life) | none | 0.6 | 12 dmg / 5 m | **18** (6 salvos) | 7 | 0.4 | 8 / salvo | 1.4 | 21 | 3.0 m |
-| `mortar` | Back Mortar | back | arcing shell | 80 | 1 per 3.5 s | ballistic (2.0–4.5 s flight) | 30–250 m (min range!) | 0–3 m scatter with range | 4.0 radial + 3.0 lift | 50 dmg / 8 m | 3 | 9 | 0.4 | 18 / shell | 5.1 | 37 | 6.0 m |
+| `mortar` | Back Mortar | back | arcing shell | 80 | 1 per 3.5 s | ballistic (2.0–4.5 s flight) | 30–250 m (min range!) | 0–3 m scatter with range | 4.0 radial + 3.0 lift | 50 dmg / 8 m | **6** (9 with the bin) | 9 | 0.4 | 18 / shell | 5.1 | 37 | 6.0 m |
 | `railgun` | Coil Railgun | shoulder (one per mech) | charged slug | 200 | 1.0 s charge, 4 s cycle | 200 m/s | 400 m (no falloff) | none | **14.0** | – (pierces 3 targets, −25% each) | **18** (27 with the bin) | 14 | 1.0 | 30 / shot (10 on an early release) | 7.5 | 50 (18 rounds: 3600 damage, 72 s held) | 3.5 m |
 | `flamer` | Flamer | side, shoulder | focused flame jet | 1.5 / chunk | 10 chunks /s | 32 m/s | **45 m** (no falloff) | 5° cone | 0 | **+2.2 target heat / chunk** | ∞ | 3 | 1.0 | 0.6 / chunk | 6.0 | 15 (+22 heat/s) | – |
 | `flak` | Flak Cannon | side, shoulder | proximity-fused shell | 6 (strike only) | 1.5 /s | 140 m/s | 220 m (no falloff; air burst at range) | 0.4° fixed | 0.4 (splash 0.4) | 16 dmg / 8 m; **fuse 6 m**, arms at 12 m | **160** | 7 | 0.5 | 2.2 / shell | 3.3 | 32 direct (59 % of the autocannon); 6–24 on a near miss; **vs armour × 0.35**: 11.3 direct (7.56 a shell) | 2.5 m |
@@ -209,7 +209,20 @@ slowly on its own and is sustainable with the radiator; running while firing is 
   trail. A **ground ring marker** appears at the landing point at launch and closes as the shell falls (everyone sees
   it: that is the telegraph, always ≥ 2 s). Impact: 6 m fireball, a tall faceted column, 9 m ground ring, big shards.
 - **Limits:** **30 m minimum range**; long flight makes moving targets escape; ceiling and overhangs block the arc
-  (the shell detonates on whatever it meets); 18 heat a shell.
+  (the shell detonates on whatever it meets); 18 heat a shell; **6 shells** a mission (user 2026-11-25: "3 shots is just
+  too few", doubled for everyone; the ammo bin's +50 % makes 9; 6 held shells take 17.5 s).
+- **On a ring deck** (code-audit-2026-11; `MortarShell` CURVED DECKS): "up" is the local up, never world +Y. The shot
+  lives in the arc coordinates (x, s, h) of the deck under the aim point (`CombatWorld.ring_at`; all decks share the
+  axis): the range gate, `range_m`, flight time and scatter use the distance along the deck, sqrt(dx² + ds²) with ds
+  on that deck's floor and height ignored (`MortarShell.deck_distance`; a flat floor: the horizontal distance, as
+  before); scatter is an (x, s) offset at the aim point's height; the arc is x and s linear in time with height
+  h = lerp(h0, h1) + 4·apex·u(1-u) above the floor. So the apex is apex(range) above the chord along the local up, the
+  shell never dips under the curved floor and clears the 40 m ceiling exactly as on a flat floor (a 250 m shot from a
+  4 m muzzle peaks 30.0 m above the deck), and flight time is the flat floor's for the same deck distance. Direct-hit
+  knockback is radial in the target's own ground plane + lift along its `up`, as the splash. `WeaponRack`'s
+  `in_range` and the gate use the same distance. Every input is the fire record + the stack's fixed geometry: no new
+  fields on the wire. As built 2026-11-25 (`tests/test_weapon_mortar_curved.gd`: a deck-0 ring, 400 m, shooter 70°
+  round from world-top, targets 150-250 m either way).
 
 ### 3.8 Coil Railgun (`railgun`)
 - **Role:** the one big shot. Oversized: takes a shoulder, **one per mech** (`max_per_mech`, enforced by
@@ -450,6 +463,13 @@ pilot head reactions and the mech snapshots' component fractions follow; a puppe
 Landing thrusters avoid it whenever they can fire; overheat / shutdown means no cushion (and an emergency burn that
 overheats mid-fall stops, so the landing hurts by whatever speed is left). `tests/test_fall_damage.gd`.
 
+**Per chassis (2026-11-25, audit).** The numbers above are the Strider's. Another chassis loses the **same share** of its
+own component HP for the same impact (`PlayerTarget.fall_damage(speed, chassis_id)`, `component_hp(chassis)`): the
+Bulwark (legs 420, torso 900 since its armour, 2026-11-25) takes 2.1x the leg damage and 2.25x the torso damage, capped
+at 90 % of its own leg (378). Legs each at 20 / 25 / 30 / 36 / 60 m/s: Strider 0 / 15 / 30 / 48 / 120; Bulwark 0 / 31.5 /
+63 / 100.8 / 252 (torso at 60 m/s: Strider 30, Bulwark 67.5). The same share of the leg either way (before: the
+Strider's numbers and its 180 cap for every chassis).
+
 ## 5. Networking
 
 Shapes from the net contract (rule 6):
@@ -473,6 +493,12 @@ Shapes from the net contract (rule 6):
   machine decided has hit is removed there by the hit event; otherwise it flies on to its local visual impact.
 - **Verbs** (applied only by the target's owner): `apply_damage(amount, component, src)`, `apply_impulse(dv, src)`,
   `apply_heat(amount, src)`. A hit carries all three in one `Hit` record.
+  `damaged(amount, component, src)` reports the HP actually removed (clamped by the component's remaining HP; no event
+  when nothing was dealt; overkill never spills into another component) on CombatTarget and PlayerTarget (2026-11-25).
+  AssetTarget keeps its own contract (reports the amount, subtracts nothing); EnemyBase has its own override. A
+  player mech's **destroyed weapon hardpoint keeps its hit sphere** (the wrecked weapon stays on the model, and hit
+  spheres never change in play, so every machine agrees on what a shot struck): `PlayerTarget.apply_damage` sends
+  damage aimed at it to the torso it is mounted on. A rebuilt hardpoint (depot, revive, respawn) takes its own damage again.
 - **Missile divergence.** Machines see the shooter's aim point through interpolation, so a missile's path differs by a
   little between machines. That is fine: only the deciding machine's path counts, and its detonation is an event.
 - **Determinism test:** the same `fire` params and seed give the same trajectory, spread and impact point on any
@@ -509,11 +535,31 @@ lab and single-process tests are unchanged). It sends nothing itself: it uses Se
   flamer 10 (one per chunk; each remote chunk keeps that mount's `FlamerFx` lit), flak 1.5. Events per shooter: at most 30/s.
 - **Who decides** (unchanged `CombatWorld.decides`, now reachable): a mech hit is decided **only by its owner**, from
   the replicated shot simulated against its own mech (the victim's view; A and C show the impact on the puppet and
-  build no Hit), so no hit message crosses for mechs and double application is impossible (one simulation per shot
-  per machine, duplicate shot keys dropped). Host-owned targets (`owner_peer` 0: enemies, dummies) are decided by the
+  build no Hit), so no Hit crosses for mechs and the same Hit is never applied twice (one simulation per shot per
+  machine, duplicate shot keys dropped); one shot landing on two different deciders is handled by shot drops (below). Host-owned targets (`owner_peer` 0: enemies, dummies) are decided by the
   shooter's machine; a client's `remote_hit` goes to the host as `combat.hit {id, dmg, imp, heat, pt, n, comp, w, sh,
   shot}`; the host checks `sh` is the sender, drops a repeat of (shot, target) and applies it to the target it owns by
   id. Props and ambient life keep their own host paths (`prop.req`, `life.req`).
+- **Shot drops** (as built 2026-11-25; code audit #4). Each machine runs its own copy of a shot and positions differ a
+  little, so a copy could miss here what the deciding machine saw it stop at and fly on into something this machine
+  decides (A's shell stops in an enemy on A, B's copy flies on into B: one shot, two hits). Rule: when a projectile's
+  sweep STOPS on something this machine decides (`CombatWorld.shot_stopped` -> signal `shot_decided`: a target it
+  `decides`, i.e. a host-owned target hit by its own shot or its own mech hit by anyone's, or a prop when it
+  `decides_shot`), CombatNet tells the crew on the existing `combat.hit` kind: a client's hit that stopped the shot
+  carries it as `end: [pt, n(, color)]` (no extra event), any other stop goes to the host as `{drop: [[shot, pt, n(,
+  color)], ...]}`; the host applies it and relays every drop (its own too) to every client but the origin, batched once
+  per `post_step`. Each receiver calls `CombatWorld.drop_shot(key, pt, n)` (one dictionary lookup, `_shots`): a copy
+  still flying ends at `pt` through its own `on_hit` with no target (`Projectile.drop_at`: the normal impact look once;
+  splash, prop blast and ambient life only where that machine decides them, exactly as for any hit, so a victim near the
+  point still takes its splash once and nothing is applied twice); a copy that already ended keeps its own result (the
+  drop is ignored); a drop for a shot whose record hasn't arrived yet waits `EARLY_DROP_LIFE` (2 s, 256 max) and ends
+  the copy at spawn; repeats and drops for shots already finished are ignored. Not dropped: world-geometry stops (the
+  same everywhere), range ends, a railgun pierce (only its last, stopping target is announced), lasers (resolved at once
+  everywhere), flame chunks (not projectiles), the flak proximity fuse and the mortar's landing probe (stops outside the
+  sweep). **Real conflicts still land twice:** if my copy hits my own mech before another machine's drop arrives (the
+  window is the drop's trip, ~latency, minus the flight time between the two contact points), both hits stand; there is
+  no rollback. Tests: `test_shot_drop` (one world), `test_net_shot_drop` (3 peers, both directions; before the fix the
+  shell hit both T and B).
 - **The deck stack** (integration W3, 2026-11-22). In the mission city (`CityStack`, one `CityProps` per deck, prop ids
   per deck) `TestDriveCombat.rebuild_encounters` sets `world.stack = td.stack` (null in district mode; a scene with a
   node in group `city_stack` and no injection has it adopted by the props scan). `first_hit` asks the props of every
@@ -571,8 +617,9 @@ lab and single-process tests are unchanged). It sends nothing itself: it uses Se
 - **Not covered yet:** a remote shot starts
   at the shooter's true muzzle while its puppet is drawn ~100-200 ms behind; no muzzle flash for a remote record
   arriving later than `MuzzleFlash.LIFE`; remote weapon models are not turned (`aim_yaw` / `aim_pitch` not streamed);
-  mech HP / components are not streamed (crew panel hp stays 1); a missile's detonation is not an event (each machine
-  shows its own copy's); the laser's charge glow is not shown remotely.
+  mech HP / components are not streamed (crew panel hp stays 1); a missile's detonation is an event only when it stops
+  on something its machine decides (shot drops, above), otherwise each machine shows its own copy's; the laser's charge
+  glow is not shown remotely.
 
 ## 6. Code map
 

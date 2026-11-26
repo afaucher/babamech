@@ -1,5 +1,7 @@
 # Hangar: inside the assault boarding vessel
 
+> **Superseded in part (2026-11-25):** the egress is now hangar v2, alcove airlocks: [hangar-v2/README.md](hangar-v2/README.md) (stored mechs are clamped; Launch opens the clamps and each mech walks out through its alcove's airlock).
+
 The pre-mission screen (FrontEnd's hangar) is the vehicle bay of a **military assault boat clamped to the habitat's
 hull**, about to force its way aboard. The crew's mechs stand in recessed alcoves side by side along one wall of the bay,
 facing the aisle and the camera; on the end wall a heavy breaching door is pressed against the station hull.
@@ -55,6 +57,17 @@ camera but out of their bays, clamps through the mechs and seat 2 cut off at the
   shoulder clamp's far corners sweep a circle that just reaches that line, so it never cuts in mid-swing. Measured by
   `tests/test_menu.gd` on a crew of four with the widest weapons, chicken and forward legs alike: closest approach 0.51 m
   in prep, 0.10 m mid-swing, 0.06 m in alert; farthest closed pad 0.11 m.
+- **Hold-down clamps for a mech that fills its alcove** (2026-11-25, playtest backlog 6). The Bulwark's hip pods stand
+  0.07 m inside the clamp's hinge line, so the side clamp shrank to a 0.3 m stub (an 8 cm arm and its pad) swinging down
+  in the air beside the pod, and the hip brace moved 2 cm: "tiny little arms come down". Where the room is under
+  `HOLD_ROOM` (0.4 m) the clamp is hinged higher and long enough to swing down level over the hip pod (mesh `Pod_l` /
+  `Pod_r`): its yellow pad, with a dark rubber shoe, comes to rest 3.5 cm (`HOLD_GAP`, more than the idle bob) over the
+  pod's top, centred on it: the boat holds the mech down by its pods for the breach. That side gets no hip brace. The
+  Strider keeps its side clamps and braces. The brace pads also stood exactly in their sleeves' mouth plane when open
+  (z-fighting in every alcove): they now stop 2 cm proud (`BRACE_PROUD`). `tests/test_geometry_audit.gd`
+  (`_audit_hangar_clamps`) checks a Bulwark and a Strider open, mid-swing and closed: no coplanar faces (clamp / clamp,
+  clamp / mech), no mech vertex inside a clamp, every closed clamp at least 0.6 m past its post, the shoes over the pods.
+  Shots: `chassis-concepts/hangar/before_*` and `after_*`.
 - Lab subject `hangar`: crew of four by default, focus on the occupied alcoves' centre, the preset views turned to face
   the wall (`lab_view_yaw` = PI), starting at the hangar screen's distance.
 

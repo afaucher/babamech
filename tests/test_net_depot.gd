@@ -27,7 +27,6 @@ func run_host() -> void:
 		return
 	var bot_id := Session.add_bot()
 	check(bot_id < 0, "a hangar bot joins the crew (pilot %d)" % bot_id)
-	Session.objectives = true
 	check(Session.start_mission(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
@@ -179,7 +178,6 @@ func run_host() -> void:
 	for p in cl:
 		command(p, "finish", {})
 	check(await wait_done(peers - 1, 20.0), "every client is done")
-	Session.objectives = false
 	MissionFlow.test_plan = {}
 
 
@@ -309,7 +307,7 @@ func _load_and_go() -> bool:
 	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	add_child(td)
 	await frames(2)
-	if not check(td.crewed and td.objectives and td.mission != null and td.mission.depots != null, "the crew mission has depots"):
+	if not check(td.crewed and td.mission != null and td.mission.depots != null, "the crew mission has depots"):
 		return false
 	td.drive_override = true
 	td.mech.move_input = Vector2.ZERO

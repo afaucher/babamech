@@ -69,6 +69,10 @@ func _fire_one_round(st: Dictionary) -> void:
 	_barrel_side = -_barrel_side
 
 
+func _max_aim_pitch() -> float:
+	return deg_to_rad(62.0)
+
+
 func _track_aim(target_pos: Vector3, dt: float) -> float:
 	if _turret_pivot == null or not is_inside_tree():
 		return 0.0
@@ -76,7 +80,8 @@ func _track_aim(target_pos: Vector3, dt: float) -> float:
 	var rel := local_t - _turret_pivot.position - Vector3(0.0, 1.05, 0.0)
 	var want_yaw := atan2(-rel.x, -rel.z)
 	var horiz := maxf(Vector2(rel.x, rel.z).length(), 0.01)
-	var want_pitch := clampf(atan2(rel.y, horiz), deg_to_rad(-38.0), deg_to_rad(45.0))
+	var raw_pitch := atan2(rel.y, horiz)
+	var want_pitch := clampf(raw_pitch, deg_to_rad(-38.0), _max_aim_pitch())
 	var slew := float(_cfg.get("slew_rate", 2.4)) * dt
 	var dy := wrapf(want_yaw - _yaw, -PI, PI)
 	var step_y := clampf(dy, -slew, slew)
@@ -86,7 +91,7 @@ func _track_aim(target_pos: Vector3, dt: float) -> float:
 	_pitch += step_p
 	turret_slew_speed = (absf(step_y) + absf(step_p)) / maxf(dt, 1e-4)
 	_apply_turret_pose()
-	return absf(wrapf(want_yaw - _yaw, -PI, PI)) + absf(want_pitch - _pitch)
+	return absf(wrapf(want_yaw - _yaw, -PI, PI)) + absf(raw_pitch - _pitch)
 
 
 func _sensor_yaw() -> float:   # perception: the forward cone follows the gun, which glances round while idle

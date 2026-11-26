@@ -11,7 +11,7 @@ extends RefCounted
 ##   facts (every key optional; missing = empty / 0 / no information):
 ##     "alive":        [enemies alive per deck] (garrison + waves, staged units included)
 ##     "active":       [enemies IN PLAY per deck]: wave units (staged included: they exist) + garrison units that are
-##                     alerted or within IN_PLAY_RANGE of a standing mech (MissionFlow / PacingFacts). DECK_CAP and
+##                     alerted or within IN_PLAY_RANGE of a standing mech (MissionFlow / PacingFacts). deck_cap and
 ##                     SECTION_CAP count these; idle garrison far from the crew does not starve reinforcements. Missing:
 ##                     "alive" is used.
 ##     "engaging":     [enemies engaging the crew per deck] (fired at a pilot or awake within 60 m with one as target, last 4 s)
@@ -25,7 +25,7 @@ extends RefCounted
 ##                     "shutdown": bool, "engaged": bool}} (host side, from replicated pilot state: spec 1.2)
 ##     "kills":        [{deck, x, s}] host-owned enemies killed since the last tick
 ##     "objectives":   MissionRules.state() (reads "objs": {id: [state, progress, total]})
-##     "closed":       [source ids]
+##     "source_route": {source id: walk-route metres from the standing crew's centre on its deck} (-1: none found)
 ##   orders = [{"wave", "deck", "source", "open_at", "max_units", "reason": build | cap | objective | scout | patrol}]
 ##            open_at = t + TELEGRAPH[kind] (>= MIN_LEAD): for a gate the moment its leaves start to move (siren); the
 ##            units are staged in the bay at the order and roll out once the door is passable (MissionFlow).
@@ -41,16 +41,16 @@ extends RefCounted
 ##            "left": [waves_left per deck], "pace": {"<deck>": [state, s in state, quiet s, last reason]},
 ##            "intensity": {"<peer>": I}}   JSON-safe; small ints.
 
-const DECK_CAP := 24            ## enemies in play on one deck (active + in flight), 4 pilots; by crew size:
-## (2026-11-24: a 2-bot crew's flag deck reached 28 alive, garrison + groups + dropship troops + wave units walking down,
+## Enemies in play on one deck (active + in flight) by crew size (index = pilots - 1; was 24 for everyone until
+## 2026-11-24: a 2-bot crew's flag deck reached 28 alive, garrison + groups + dropship troops + wave units walking down,
 ## and stayed at crew intensity 100 for 200 s): the director releases nothing more while a deck holds this many in play.
+## The default of make()'s "deck_cap" option; an override (a number for every crew size, or a 4-entry array) wins.
 const DECK_CAP_BY_CREW := [14, 16, 20, 24]
 const SECTION_CAP := 40         ## ... over the whole section
 const DECK_ALIVE_MAX := 36      ## hard ceiling: everything alive on one deck (idle garrison included) + in flight
 const SECTION_ALIVE_MAX := 60   ## hard ceiling over the section
 const WAVE_MAX := 12            ## most units in one group (EnemySpawner.plan_wave caps at it)
 const TELEGRAPH := {"gate": 2.0, "lift": 5.0, "ramp": 3.0, "shaft": 3.0}   ## order -> open_at (gate: leaves start, siren)
-const REVEAL := {"gate": 3.0, "lift": 1.5, "ramp": 0.0, "shaft": 0.0}      ## open_at -> passable (MissionWorld.passable_after)
 ## Order -> first contact budget per source kind (s): the cap orders this long before QUIET_CAP so contact lands by it.
 ## Measured (810 groups, 2026-11-23: order -> first shot p90 ~17-24 s for doors within 200 m by route, ramps 18 s at any
 ## distance): the cap orders at 20 s of quiet from a source within QUICK_MAX m (25 s lead), at 10 s when the best is
@@ -88,9 +88,12 @@ const RESERVE_SCALE := 1.5
 const CREW_SCALE := [1.0, 1.0, 1.6, 2.2]   ## index = pilots - 1: reserve size and ENGAGE_TARGET
 const PATROLS := 3              ## patrol allowance per deck, solo (+1 per extra pilot)
 const PATROL_UNITS := 2         ## units in one patrol
-const DEFEND_EVERY := 30.0      ## s between a defend's groups (the asset is the clock): 3-4 pilots ...
-## ... by crew size (index = pilots - 1; defend balance 2026-11-24: a lone veteran bot lost the seed-7 defend):
+## s between a defend's groups (the asset is the clock) by crew size (index = pilots - 1; was 30 for everyone until the
+## defend balance 2026-11-24: a lone veteran bot lost the seed-7 defend). The default of make()'s "defend_every" option;
+## an override (a number for every crew size, or a 4-entry array) wins.
 const DEFEND_EVERY_BY_CREW := [45.0, 38.0, 30.0, 30.0]
+## make()'s options whose default depends on the crew size: option -> its table (index = pilots - 1).
+const BY_CREW := {"deck_cap": DECK_CAP_BY_CREW, "defend_every": DEFEND_EVERY_BY_CREW}
 ## Most units in one defend group by crew size (0 = no cap: the group's planned size).
 const DEFEND_UNITS_MAX := [4, 5, 0, 0]
 ## A defend's groups come in lighter themes solo (the first light, the rest mixed); 2+ pilots keep the plan's.
@@ -107,6 +110,10 @@ const SCOUT_EVERY := 45.0       ## one call per scout per this
 ## Scout-call releases per deck at most (+1 per extra pilot), and none while the crew's deck already has ENGAGE_TARGET
 ## enemies engaging it (bounded fields, 2026-11-24: scouts now complete beacons often, 0 -> 16 in one probe).
 const SCOUT_RELEASES := 2
+## A completed scout call that could not be served yet (no room under the caps, no source) waits at most this long, then
+## lapses: it never fires minutes later out of context (audit 2026-11). A call also lapses when nobody stands on its deck.
+const SCOUT_CALL_TTL := 20.0
+const SCOUT_CALL_MAX := 8       ## pending calls at most (the oldest lapses first)
 ## Extra patrols the extraction hold may add beyond the deck's allowance (+1 per extra pilot); like every hold clock
 ## release they wait while the crew is already at ENGAGE_TARGET.
 const HOLD_PATROLS := 3
@@ -115,14 +122,14 @@ const GRACE := 10.0             ## a released group the spawner never reports co
 const FOLLOW_GAP := 8.0         ## a follow-up order waits this long after the previous load's door opened (bay cleared)
 const MIN_SOURCE_DIST := 60.0   ## a source at least this far from every standing mech on the deck (if any is)
 const MAX_SOURCE_DIST := 300.0  ## sources within this of the target point are preferred over farther ones
-const STATES: Array[String] = ["rest", "build", "peak", "fade"]
 
 var options: Dictionary = {}
 var plan: MissionPlan
-var crew_n := 1                      ## pilots at mission start (co-op scaling)
+var crew_n := 1                      ## the crew scale in force (MissionFlow.crew_scale(): the host's; rescale() changes it)
+var _by_crew_src: Dictionary = {}    ## BY_CREW option -> its source (make()'s override or the table), re-read by rescale()
 var _groups: Array[Dictionary] = []  ## {id, deck, share, theme, for, kind: reserve | patrol, units, orig, source, status
-									 ##  (queued | due | released | cancelled), open_at, max_units, reserve, dropped,
-									 ##  reason, order_t}
+									 ##  (queued | due | released | cancelled), open_at, max_units, reserve, reason, order_t,
+									 ##  crew_at: the scale it was released at (set at release)}
 var _t := 0.0
 var _wave_alive: Dictionary = {}
 var _pending: Dictionary = {}
@@ -166,7 +173,8 @@ var _intensity: Dictionary = {}      ## "<peer>" -> int: the host's values (host
 
 func net_fields() -> Dictionary:
 	return {
-		"options": Net.SPAWN, "crew_n": Net.SPAWN,
+		"options": Net.SPAWN, "_by_crew_src": Net.SPAWN,
+		"crew_n": Net.OWNER,         # the host's crew scale: mission.launch, then mission.scale at its `at` (MissionFlow)
 		"plan": Net.LOCAL,           # derived from the seed on every machine
 		# the host's decisions: never sent as such
 		"_groups": Net.PRIVATE, "_t": Net.PRIVATE, "_wave_alive": Net.PRIVATE, "_pending": Net.PRIVATE,
@@ -185,26 +193,30 @@ func net_fields() -> Dictionary:
 	}
 
 
-## `crew`: pilots in the crew at mission start (1..4): CREW_SCALE, patrol allowance.
+## `crew`: the crew scale (1..4, MissionFlow.crew_scale(): the host's value): CREW_SCALE, ENGAGE_TARGET, the by-crew
+## tables (BY_CREW), defend caps, patrol / scout / hold allowances. rescale() changes it mid-mission (a pilot left).
+## `overrides`: any key of `options` (unknown keys are ignored). A BY_CREW option takes a number (the same for every crew
+## size) or an array indexed by pilots - 1; either replaces its table. telegraph / order_lead merge per kind.
 static func make(p: MissionPlan, overrides: Dictionary = {}, crew: int = 1) -> PacingDirector:
 	var d := PacingDirector.new()
 	d.plan = p
 	d.crew_n = clampi(crew, 1, 4)
-	d.options = {"deck_cap": DECK_CAP, "section_cap": SECTION_CAP, "deck_alive_max": DECK_ALIVE_MAX,
+	d.options = {"deck_cap": 0, "section_cap": SECTION_CAP, "deck_alive_max": DECK_ALIVE_MAX,
 			"section_alive_max": SECTION_ALIVE_MAX, "wave_max": WAVE_MAX, "telegraph": TELEGRAPH.duplicate(),
 			"order_lead": ORDER_LEAD.duplicate(), "quiet_cap": QUIET_CAP, "arrival_rest": ARRIVAL_REST,
 			"rest_first": REST_FIRST, "rest_last": REST_LAST, "peak_i": PEAK_I, "build_max": BUILD_MAX,
 			"peak_hold": PEAK_HOLD, "fade_i": FADE_I, "fade_quiet": FADE_QUIET, "fade_max": FADE_MAX, "build_gap": BUILD_GAP,
 			"beaten": BEATEN, "engage_target": ENGAGE_TARGET, "patrols": PATROLS, "patrol_units": PATROL_UNITS,
-			"defend_every": DEFEND_EVERY, "defend_rest": DEFEND_REST, "hold_every": HOLD_EVERY,
+			"defend_every": 0.0, "defend_rest": DEFEND_REST, "hold_every": HOLD_EVERY,
 			"scout_every": SCOUT_EVERY, "call_every": CALL_EVERY, "grace": GRACE, "follow_gap": FOLLOW_GAP,
 			"order_lead_far": ORDER_LEAD_FAR, "order_lead_farthest": ORDER_LEAD_FARTHEST, "hunt_units": HUNT_UNITS,
-			"min_source_dist": MIN_SOURCE_DIST, "max_source_dist": MAX_SOURCE_DIST}
-	d.options["defend_every"] = float(DEFEND_EVERY_BY_CREW[d.crew_n - 1])
-	d.options["deck_cap"] = int(DECK_CAP_BY_CREW[d.crew_n - 1])
+			"min_source_dist": MIN_SOURCE_DIST, "max_source_dist": MAX_SOURCE_DIST, "scout_call_ttl": SCOUT_CALL_TTL}
 	for id: String in overrides:
 		if d.options.has(id):
 			d.options[id] = overrides[id]
+	for id: String in BY_CREW:
+		d._by_crew_src[id] = d.options[id] if overrides.has(id) else BY_CREW[id]
+	d._resolve_by_crew()
 	for key: String in ["telegraph", "order_lead"]:
 		var base: Dictionary = (TELEGRAPH if key == "telegraph" else ORDER_LEAD).duplicate()
 		if d.options[key] is Dictionary:
@@ -242,7 +254,69 @@ static func _record(g: Dictionary, k: int, kind: String) -> Dictionary:
 	return {"id": str(g["id"]), "deck": k, "share": float(g.get("share", 0.0)), "theme": str(g.get("theme", "light")),
 			"for": str(g.get("for", "")), "kind": kind, "units": int(g.get("units", 0)), "orig": str(g.get("source", "")),
 			"source": str(g.get("source", "")), "status": "queued", "open_at": 0.0, "max_units": 0, "reserve": 0,
-			"dropped": false, "reason": "", "order_t": -INF}
+			"reason": "", "order_t": -INF}
+
+
+## The BY_CREW options for crew_n from their sources (a number for every crew size, or an array by pilots - 1).
+func _resolve_by_crew() -> void:
+	for id: String in BY_CREW:
+		var v: Variant = _by_crew_src.get(id, BY_CREW[id])
+		if v is Array:
+			var a: Array = v
+			v = a[clampi(crew_n - 1, 0, a.size() - 1)] if not a.is_empty() else (BY_CREW[id] as Array)[crew_n - 1]
+		options[id] = int(v) if id == "deck_cap" else float(v)
+
+
+## The crew scale changes mid-mission (MissionFlow, at the host's `mission.scale` time on every machine; pacing-director.md
+## 1.7 "A pilot leaves"). Returns the old scale. From now on everything read through crew_n follows: CREW_SCALE,
+## ENGAGE_TARGET, the BY_CREW options (deck_cap, defend_every: a defend in progress orders its next group on the new cadence,
+## counted from its last group), DEFEND_UNITS_MAX and the solo defend themes for groups not released yet,
+## DEFEND_BUILD_MIN_CREW, the 3+ two-direction rule, BUILD_GAP / CREW_SCALE, the scout and hold allowances (their used
+## counts stay counted: remaining = max(0, new allowance - used)). The patrol allowance left per deck becomes max(0, new
+## allowance - patrols already taken). Unreleased reserve groups resize through MissionFlow.wave_sizes (sized at crew_n);
+## released / staged / in-flight groups keep the scale they were released at (release_crew): nobody is despawned. Pure.
+## A scale going UP is applied the same way (MissionFlow warns: no mid-mission join exists).
+func rescale(n: int) -> int:
+	var old := crew_n
+	n = clampi(n, 1, 4)
+	if n == old:
+		return old
+	var used: Array[int] = []
+	for k in _patrols.size():
+		used.append(maxi(patrol_allowance() - _patrols[k], 0))
+	crew_n = n
+	_resolve_by_crew()
+	for k in _patrols.size():
+		_patrols[k] = maxi(patrol_allowance() - used[k], 0)
+	return old
+
+
+## Host: pilot `peer` left the crew (MissionFlow.on_member_retired): drop its per-pilot bookkeeping (engagement, intensity,
+## components, disabled) so no stale entry stays in the state's `intensity`.
+func forget_pilot(peer: Variant) -> void:
+	var key := str(peer)
+	_eng_t.erase(key)
+	_int.erase(key)
+	_dest.erase(key)
+	_dis.erase(key)
+	_intensity.erase(key)
+
+
+## The crew scale group `id` was released at (its spawn ctx and size keep it); crew_n for a group not released yet.
+func release_crew(id: String) -> int:
+	for g: Dictionary in _groups:
+		if g["id"] == id:
+			return int(g.get("crew_at", crew_n))
+	return crew_n
+
+
+## {group id: crew scale at release} for every released group (MissionFlow.wave_sizes).
+func release_crews() -> Dictionary:
+	var out := {}
+	for g: Dictionary in _groups:
+		if g.has("crew_at"):
+			out[g["id"]] = int(g["crew_at"])
+	return out
 
 
 ## Co-op factor (1.7) for this crew.
@@ -279,7 +353,7 @@ func deck_ceiling(k: int, sizes: Dictionary) -> int:
 
 
 func patrol_allowance() -> int:
-	return int(options["patrols"]) + clampi(crew_n, 1, 4) - 1 if options.has("patrols") else PATROLS + crew_n - 1
+	return int(options["patrols"]) + clampi(crew_n, 1, 4) - 1
 
 
 ## The unit budget a deck's reserve groups are sized from (EnemySpawner.plan_wave's `budget`): the SOLO deck budget times
@@ -312,11 +386,12 @@ func group_def(id: String) -> Dictionary:
 		if g["id"] == id:
 			var units := int(g["units"])
 			var theme := str(g["theme"])
+			var cn := clampi(int(g.get("crew_at", crew_n)), 1, 4)   # a released group keeps its release's scale
 			if _is_defend_group(g):
-				var cap := int(DEFEND_UNITS_MAX[crew_n - 1])
+				var cap := int(DEFEND_UNITS_MAX[cn - 1])
 				if cap > 0:
 					units = mini(int(_size.get(g["id"], cap)), cap) if units <= 0 else mini(units, cap)
-				if crew_n == 1:
+				if cn == 1:
 					theme = str(DEFEND_SOLO_THEMES[mini(_defend_index(g), DEFEND_SOLO_THEMES.size() - 1)])
 			return {"id": g["id"], "share": g["share"], "theme": theme, "source": g["source"], "for": g["for"],
 					"units": units, "kind": g["kind"]}
@@ -345,9 +420,18 @@ func _defend_index(g: Dictionary) -> int:
 	return i
 
 
-## Host: a scout drone completed its beacon on `deck` at arc (x, s) (spec 1.6). Queued; tick() applies the limits.
+## Host: a scout drone completed its beacon on `deck` at arc (x, s) (spec 1.6). Queued; tick() applies the limits. A call
+## held for lack of room lapses after SCOUT_CALL_TTL s or once nobody stands on its deck; at most SCOUT_CALL_MAX wait.
 func scout_call(deck: int, x: float, s: float, scout_id: String, t: float) -> void:
 	_calls.append({"deck": deck, "x": x, "s": s, "id": scout_id, "t": t})
+	while _calls.size() > SCOUT_CALL_MAX:
+		var c: Dictionary = _calls.pop_front()
+		_events.append({"tag": "scout", "ev": "expired", "drone": str(c["id"]), "deck": int(c["deck"])})
+
+
+## Scout calls waiting (host): [{deck, x, s, id, t}] (tests).
+func pending_calls() -> Array:
+	return _calls.duplicate(true)
 
 
 ## Log events since the last call: [{tag: release | pace | quiet | scout, ...}] (MissionFlow prints / CombatLog).
@@ -371,9 +455,6 @@ func tick(t: float, facts: Dictionary) -> Array:
 	_pending = facts.get("wave_pending", {}) if facts.get("wave_pending", {}) is Dictionary else {}
 	_size = facts.get("wave_size", {}) if facts.get("wave_size", {}) is Dictionary else {}
 	_route = facts.get("source_route", {}) if facts.get("source_route", {}) is Dictionary else {}
-	var closed := {}
-	for id: Variant in facts.get("closed", []):
-		closed[str(id)] = true
 	var objs: Dictionary = {}
 	var ob: Variant = facts.get("objectives", {})
 	if ob is Dictionary and (ob as Dictionary).get("objs", null) is Dictionary:
@@ -425,17 +506,12 @@ func tick(t: float, facts: Dictionary) -> Array:
 	_intensity.clear()
 	for peer: String in _int:
 		_intensity[peer] = roundi((_int[peer] as PilotIntensity).value)
-	# Released groups: re-route / drop on closed sources; cancel objective groups whose objective ended unreleased.
+	# Cancel objective groups whose objective ended unreleased.
 	for g: Dictionary in _groups:
 		var st: String = g["status"]
-		if st == "cancelled":
-			continue
 		if (st == "queued" or st == "due") and g["for"] != "" and not _is_flag_group(g) \
 				and _obj_state(objs, g["for"]) in ["done", "failed"] and _type_of(g["for"]) != "hold":
 			g["status"] = "cancelled"
-			continue
-		if st == "released" and _pending_of(g) > 0 and closed.has(g["source"]) and not g["dropped"]:
-			g["dropped"] = true
 	# Room.
 	var inflight: Array[int] = []
 	inflight.resize(n)
@@ -447,7 +523,7 @@ func tick(t: float, facts: Dictionary) -> Array:
 	var orders: Array = []
 	# Follow-up loads of partial releases (no half rule: the rest of an order already made).
 	for g: Dictionary in _groups:
-		if g["status"] != "released" or g["dropped"] or _pending_of(g) <= 0:
+		if g["status"] != "released" or _pending_of(g) <= 0:
 			continue
 		if t < float(g["open_at"]) + float(options["follow_gap"]):
 			continue
@@ -460,12 +536,16 @@ func tick(t: float, facts: Dictionary) -> Array:
 		inflight[k] += mu
 	# Objectives.
 	for o: Dictionary in plan.objectives:
-		_objective_step(o, objs, t, room, closed, pts, orders)
+		_objective_step(o, objs, t, room, pts, orders)
 	# Scout calls.
 	var keep: Array = []
 	for c: Dictionary in _calls:
 		var k := int(c["deck"])
 		var sid := str(c["id"])
+		# Lapsed: held too long (it would land out of context), or nobody stands on its deck any more.
+		if t - float(c["t"]) > float(options["scout_call_ttl"]) or (k >= 0 and k < n and not pts.has(k)):
+			_events.append({"tag": "scout", "ev": "expired", "drone": sid, "deck": k})
+			continue
 		if k < 0 or k >= n or t - float(_scout_t.get(sid, -INF)) < float(options["scout_every"]) \
 				or t - _call_t[k] < float(options["call_every"]):
 			_events.append({"tag": "scout", "ev": "ignored", "drone": sid, "deck": k})
@@ -483,7 +563,7 @@ func tick(t: float, facts: Dictionary) -> Array:
 			_events.append({"tag": "scout", "ev": "empty", "drone": sid, "deck": k})
 			continue
 		var target := Vector2(float(c["x"]), float(c["s"]))
-		var o := _try_release(g, t, room, closed, pts.get(k, []), target, why)
+		var o := _try_release(g, t, room, {}, pts.get(k, []), target, why)
 		if o.is_empty():
 			if g["kind"] == "patrol":
 				_unmake_patrol(g)
@@ -541,7 +621,7 @@ func tick(t: float, facts: Dictionary) -> Array:
 						_rest_len[k] = minf(rest_length(k), float(options["defend_rest"])) if defend else rest_length(k)
 		# Quiet cap: order early enough (the lead of the source it would use) that contact lands by QUIET_CAP.
 		var centre := _crew_centre(pts[k])
-		var src := _pick_source_at(k, centre, closed, pts[k], true, "", true)
+		var src := _pick_source_at(k, centre, {}, pts[k], true, "", true)
 		var lead := lead_for(src, centre)
 		# Once per quiet stretch (no cap release since the last engagement), again only if a whole cap passed without contact.
 		if q >= float(options["quiet_cap"]) - lead \
@@ -554,7 +634,7 @@ func tick(t: float, facts: Dictionary) -> Array:
 				g = _new_patrol(k)
 				why = "patrol"
 			if not g.is_empty():
-				var o := _try_release(g, t, room, closed, pts[k], Vector2.INF, why)
+				var o := _try_release(g, t, room, {}, pts[k], Vector2.INF, why)
 				if o.is_empty():
 					if g["kind"] == "patrol":
 						_unmake_patrol(g)
@@ -583,7 +663,7 @@ func tick(t: float, facts: Dictionary) -> Array:
 		var nxt := _next_free(k, _after_rest[k])
 		if nxt.is_empty():
 			continue
-		var bo := _try_release(nxt, t, room, closed, pts[k], Vector2.INF, "build")
+		var bo := _try_release(nxt, t, room, {}, pts[k], Vector2.INF, "build")
 		if not bo.is_empty():
 			orders.append(bo)
 	_summarise()
@@ -591,8 +671,7 @@ func tick(t: float, facts: Dictionary) -> Array:
 
 
 ## One objective's spike rules (spec 1.5).
-func _objective_step(o: Dictionary, objs: Dictionary, t: float, room: Dictionary, closed: Dictionary, pts: Dictionary,
-		orders: Array) -> void:
+func _objective_step(o: Dictionary, objs: Dictionary, t: float, room: Dictionary, pts: Dictionary, orders: Array) -> void:
 	var id: String = o["id"]
 	var k := int(o["deck"])
 	var ty := str(o["type"])
@@ -678,19 +757,18 @@ func _objective_step(o: Dictionary, objs: Dictionary, t: float, room: Dictionary
 			continue
 		var skip := {}
 		if (bool(g.get("second", false)) or ty == "hold") and first_src != "":
-			skip = closed.duplicate()
-			skip[first_src] = true
+			skip[first_src] = true   # the hold's second group comes from another source
 		var target := _site(o)
 		var why := "objective"
-		var oo := _try_release(g, t, room, skip if not skip.is_empty() else closed, mine, target, why,
-				ty == "flag" or str(g.get("flag_for", "")) != "")
+		var oo := _try_release(g, t, room, skip, mine, target, why, ty == "flag" or str(g.get("flag_for", "")) != "")
 		if not oo.is_empty():
 			orders.append(oo)
 			first_src = str(oo["source"])
 
 
 ## Release `g` now if the caps allow (half rule); {} when held. `target`: Vector2.INF = the crew's centre on the deck.
-func _try_release(g: Dictionary, t: float, room: Dictionary, closed: Dictionary, mine: Array, target: Vector2,
+## `skip`: source ids not to use (the hold's second group: the first group's source).
+func _try_release(g: Dictionary, t: float, room: Dictionary, skip: Dictionary, mine: Array, target: Vector2,
 		why: String, flag_rule: bool = false) -> Dictionary:
 	var k := int(g["deck"])
 	if not _fits(g, k, room):
@@ -700,7 +778,7 @@ func _try_release(g: Dictionary, t: float, room: Dictionary, closed: Dictionary,
 	if flag_rule:
 		var fo := plan.objective(str(g.get("flag_for", g["for"])))
 		if not fo.is_empty():
-			src = _pick_flag_source(k, _site(fo), closed, mine)
+			src = _pick_flag_source(k, _site(fo), skip, mine)
 	if src == "":
 		var at := target
 		var from_crew := at == Vector2.INF
@@ -708,13 +786,14 @@ func _try_release(g: Dictionary, t: float, room: Dictionary, closed: Dictionary,
 			at = _crew_centre(mine) if not mine.is_empty() else _source_pos(g["orig"])
 		var quick := why != "objective"
 		var avoid := _last_src[k] if quick and crew_n >= 3 else ""
-		src = _pick_source_at(k, at, closed, mine, quick, avoid, from_crew and not mine.is_empty())
+		src = _pick_source_at(k, at, skip, mine, quick, avoid, from_crew and not mine.is_empty())
 	if src == "":
 		return {}
 	g["source"] = src
 	g["status"] = "released"
 	g["reason"] = why
 	g["order_t"] = t
+	g["crew_at"] = crew_n   # the scale it was released at: a later rescale leaves it as it is
 	var size := _size_of(g)
 	var o := _order(g, t, mini(r, size), why)
 	(room["inflight"] as Array)[k] += int(g["reserve"])
@@ -738,8 +817,9 @@ func _size_of(g: Dictionary) -> int:
 	if g["kind"] == "patrol":
 		return maxi(int(g["units"]), 1)
 	var n := clampi(int(_size.get(g["id"], options["wave_max"])), 1, int(options["wave_max"]))
-	if _is_defend_group(g) and int(DEFEND_UNITS_MAX[crew_n - 1]) > 0:
-		n = mini(n, int(DEFEND_UNITS_MAX[crew_n - 1]))
+	var cn := clampi(int(g.get("crew_at", crew_n)), 1, 4)
+	if _is_defend_group(g) and int(DEFEND_UNITS_MAX[cn - 1]) > 0:
+		n = mini(n, int(DEFEND_UNITS_MAX[cn - 1]))
 	return n
 
 
@@ -804,7 +884,8 @@ func _borrowable(g: Dictionary) -> bool:
 	if g["for"] == "":
 		return false
 	var o := plan.objective(str(g["for"]))
-	return str(o.get("type", "")) == "flag" and str(o.get("role", "")) == "bonus" 			and not (_obj_state(_objs, str(g["for"])) in ["active", "done", "failed"])
+	return str(o.get("type", "")) == "flag" and str(o.get("role", "")) == "bonus" \
+			and not (_obj_state(_objs, str(g["for"])) in ["active", "done", "failed"])
 
 
 ## A patrol for deck k from its allowance ({} when spent; `free`: the extraction hold, not counted).
@@ -912,17 +993,17 @@ func lead_for(src: String, centre: Vector2) -> float:
 	return float(options["order_lead_far"]) if d <= FAR_ROUTE else float(options["order_lead_farthest"])
 
 
-## The deck's open source for a release toward `target` ("" when the deck has none open). Every source is >= MIN_SOURCE_DIST
+## The deck's source for a release toward `target`, `skip` left out ("" when none is left). Every source is >= MIN_SOURCE_DIST
 ## from every standing mech where possible. `quick` (build, cap, scout, patrol): quick-response sources first (is_quick),
-## nearest by route; `avoid` (3+ pilots: the previous quick source) only when no other quick one is open. Otherwise (and
-## when nothing quick is open) the nearest within MAX_SOURCE_DIST, then farther.
-func _pick_source_at(k: int, target: Vector2, closed: Dictionary, mine: Array, quick: bool = false, avoid: String = "",
+## nearest by route; `avoid` (3+ pilots: the previous quick source) only when no other quick one is left. Otherwise (and
+## when nothing quick is left) the nearest within MAX_SOURCE_DIST, then farther.
+func _pick_source_at(k: int, target: Vector2, skip: Dictionary, mine: Array, quick: bool = false, avoid: String = "",
 		route: bool = false) -> String:
 	var best := ""
 	var best_rank := 99
 	var best_d := INF
 	for s: Dictionary in plan.deck_sources(k):
-		if closed.has(s["id"]):
+		if skip.has(s["id"]):
 			continue
 		var id := str(s["id"])
 		var at := Vector2(float(s["x"]), float(s["s"]))
@@ -945,11 +1026,11 @@ func _pick_source_at(k: int, target: Vector2, closed: Dictionary, mine: Array, q
 
 
 ## A flag's groups measure from the (snapped) flag site: MissionPlan.flag_source_rank (80-200 m preferred).
-func _pick_flag_source(k: int, at: Vector2, closed: Dictionary, mine: Array) -> String:
+func _pick_flag_source(k: int, at: Vector2, skip: Dictionary, mine: Array) -> String:
 	var best := ""
 	var best_key := Vector3(INF, INF, INF)
 	for s: Dictionary in plan.deck_sources(k):
-		if closed.has(s["id"]):
+		if skip.has(s["id"]):
 			continue
 		var p := Vector2(float(s["x"]), float(s["s"]))
 		var near_crew := 0.0
@@ -973,8 +1054,6 @@ func _per_deck(a: Variant) -> Array[int]:
 
 
 func _pending_of(g: Dictionary) -> int:
-	if g["dropped"]:
-		return 0
 	return maxi(int(_pending.get(g["id"], 0)), 0)
 
 
@@ -1078,9 +1157,11 @@ func objective_waves() -> Dictionary:
 		var wa: Variant = _wave_alive.get(g["id"], null)
 		if _reported(g):
 			var al := maxi(int(wa.get("alive", 0)), 0)
-			# A defend group mostly beaten (<= BEATEN of it, or <= DEFEND_STRAGGLERS units, alive) DEFEND_STRAGGLE s after its door no longer holds the defend
-			# open: its last stragglers (a drone circling, a trooper in cover) fight on, the relay is safe.
-			if _type_of(id) == "defend" and _pending_of(g) == 0 and _t >= float(g["open_at"]) + DEFEND_STRAGGLE 					and float(al) <= maxf(float(options["beaten"]) * float(maxi(int(wa.get("total", 0)), 1)), DEFEND_STRAGGLERS):
+			# A defend group mostly beaten (<= BEATEN of it, or <= DEFEND_STRAGGLERS units, alive) DEFEND_STRAGGLE s after
+			# its door no longer holds the defend open: its last stragglers (a drone circling, a trooper in cover) fight on,
+			# the relay is safe.
+			if _type_of(id) == "defend" and _pending_of(g) == 0 and _t >= float(g["open_at"]) + DEFEND_STRAGGLE \
+					and float(al) <= maxf(float(options["beaten"]) * float(maxi(int(wa.get("total", 0)), 1)), DEFEND_STRAGGLERS):
 				al = 0
 			e["alive"] += al
 		elif _t < float(g["open_at"]) + float(options["grace"]):
@@ -1094,13 +1175,6 @@ func status(id: String) -> String:
 	for g: Dictionary in _groups:
 		if g["id"] == id:
 			return g["status"]
-	return ""
-
-
-func source_of(id: String) -> String:
-	for g: Dictionary in _groups:
-		if g["id"] == id:
-			return g["source"]
 	return ""
 
 

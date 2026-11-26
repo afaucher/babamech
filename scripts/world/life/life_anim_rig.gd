@@ -91,13 +91,6 @@ static func build_mesh() -> ArrayMesh:
 	return mesh
 
 
-## The same figure standing still in clothes v, as plain geometry (CityPalette.surface_material(); e.g. a scale figure).
-static func static_figure(geo: CityGeo, v: int = 0) -> void:
-	var uv := PackedVector2Array()
-	_parts(geo, uv, CityPalette.C[LifeFigures.SHIRTS[v % LifeFigures.SHIRTS.size()]],
-			CityPalette.C[LifeFigures.TROUSERS[v % LifeFigures.TROUSERS.size()]], false)
-
-
 static func _parts(geo: CityGeo, uv: PackedVector2Array, shirt: Color, legs: Color, slots: bool = true) -> void:
 	var skin: Color = CityPalette.C[LifeFigures.SKIN]
 	var hair: Color = CityPalette.C[LifeFigures.HAIR]

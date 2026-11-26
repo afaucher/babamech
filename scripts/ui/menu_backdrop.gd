@@ -1,15 +1,16 @@
 class_name MenuBackdrop
 extends Node3D
 ## The main menu's backdrop (concept: docs/design/menu-bg/5_hull_window_s22.png): the observation deck of our own
-## assault boat, approaching the habitat. The mech stands on a low orange-edged plinth in front of a huge octagonal
-## hull window divided by pressure ribs; around it a tactical table with a faint orange holo of the ring, pilot seats,
-## benches, lockers, cable runs, hazard stripes, status pedestals with blinking LEDs, dust in the window light.
+## assault boat, approaching the habitat. The mech stands on the deck (no pedestal: user, 2026-11-25) in front of a huge
+## octagonal hull window divided by pressure ribs; around it a tactical table (docs/design/menu-bg/placement/, render
+## C s11: bevelled slab, dark display with glowing rings, an orange holo gimbal over it), pilot seats, benches,
+## lockers, cable runs, hazard stripes, status pedestals with blinking LEDs.
 ## Outside, black space full of stars and the whole ring habitat (docs/design/mission-section.md): two deep counter-
 ## rotating drums lit by rows of deck windows and light strips, spokes with lift tubes and cables (lights riding them),
 ## a long fixed axial spine (docking collars and ports, a cargo lattice, radiator fins, a power section with nozzles,
 ## an angled sun mirror), invader wedge ships clamped on (charcoal, dull red), blinking nav lights, shuttles on loops.
 ## Cosmetic only (no gameplay state, no network): its own clock, every random pattern from a seeded generator.
-## Flat-colour low-poly merged into a few meshes (hall, spine, two rings, stars, holo, dust) plus three MultiMeshes for
+## Flat-colour low-poly merged into a few meshes (hall, spine, two rings, stars, holo) plus three MultiMeshes for
 ## the blinking/moving lights and two shuttle nodes. Used by MechStage in turntable mode (main menu, settings; hidden
 ## in the hangar bay) and as the lab subject `menu_bg`.
 ##
@@ -24,8 +25,8 @@ const STEEL := Color(0.3, 0.32, 0.36)
 const STEEL_LIGHT := Color(0.5, 0.53, 0.58)
 const SEAL := Color(0.06, 0.065, 0.07)
 const FLOOR := Color(0.24, 0.25, 0.27)
-const PLINTH := Color(0.19, 0.2, 0.22)
-const PLINTH_RIM := Color(0.9, 0.48, 0.12)
+const TABLE_TOP := Color(0.34, 0.36, 0.41)
+const ORANGE_TRIM := Color(0.9, 0.48, 0.12)
 const HAZARD_Y := Color(0.85, 0.66, 0.1)
 const HAZARD_K := Color(0.07, 0.07, 0.08)
 const SEAT := Color(0.16, 0.15, 0.15)
@@ -76,7 +77,6 @@ const SPINE_Z0 := -150.0                ## the power section's end
 const SPINE_Z1 := 118.0                 ## the docking end
 const WINDOW_ROWS := 5                  ## rows of deck windows on a drum face
 const STARS := [700, 1200, 1800]        ## by quality level (LOW, MEDIUM, HIGH)
-const DUST := [30, 70, 120]
 const STAR_SEED := 22
 const STAR_SHELL := 1500.0
 
@@ -97,7 +97,6 @@ var _t := 0.0
 var _quality := CityQuality.HIGH
 var _hall: MeshInstance3D
 var _holo: MeshInstance3D
-var _dust: MeshInstance3D
 var _leds: MultiMeshInstance3D
 var _led_data: Array = []
 var _habitat: Node3D
@@ -136,8 +135,6 @@ func _ready() -> void:
 	_hall = _mesh_node("Hall")
 	_holo = _mesh_node("Holo")
 	_holo.material_override = _mat("add")
-	_dust = _mesh_node("Dust")
-	_dust.material_override = _mat("add")
 	_leds = _light_node("Leds", 0.07)
 	add_child(_leds)
 	_stars = _mesh_node("Stars")
@@ -172,7 +169,6 @@ func _ready() -> void:
 	add_child(_star_light)
 	_rebuild_hall()
 	_rebuild_stars()
-	_rebuild_dust()
 	_apply_lights()
 
 
@@ -182,7 +178,6 @@ func _process(delta: float) -> void:
 	_ring_a.rotation.z = spin
 	_ring_b.rotation.z = -spin
 	_holo.rotation.y = fmod(_t * 0.25, TAU)
-	_dust.position = Vector3(sin(_t * 0.07) * 0.35, sin(_t * 0.05 + 1.0) * 0.25, cos(_t * 0.06) * 0.2)
 	for g in _lights.size():
 		_update_lights(_lights[g].multimesh, _light_data[g])
 	_update_lights(_leds.multimesh, _led_data)
@@ -190,11 +185,10 @@ func _process(delta: float) -> void:
 		_move_shuttle(_shuttles[i], _shuttle_paths[i])
 
 
-## GraphicsQuality.notify: fewer stars and motes, no key-light shadow at LOW.
+## GraphicsQuality.notify: fewer stars, no key-light shadow at LOW.
 func _on_graphics_quality(level: int) -> void:
 	_quality = CityQuality.clamp_level(level)
 	_rebuild_stars()
-	_rebuild_dust()
 	_apply_lights()
 
 
@@ -213,16 +207,12 @@ func _rebuild_hall() -> void:
 	_hall.set_surface_override_material(1, _mat("floor"))
 	_hall.set_surface_override_material(2, _mat("glow"))
 	_holo.mesh = _holo_mesh()
-	_holo.position = Vector3(3.4, 1.55, wall_z - 2.4)
+	_holo.position = table_pos() + Vector3(0, TABLE_H + 0.72, 0)
 
 
 func _rebuild_stars() -> void:
 	var n := star_count if star_count >= 0 else int(STARS[_quality])
 	_stars.mesh = _star_mesh(n)
-
-
-func _rebuild_dust() -> void:
-	_dust.mesh = _dust_mesh(int(DUST[_quality]))
 
 
 # --- Nodes and materials ----------------------------------------------------------------------------------------------
@@ -749,9 +739,6 @@ func _hall_mesh() -> ArrayMesh:
 			Vector3(hx + 0.6, y, wall_z - 1.05), Vector3.UP, HAZARD_Y if hi % 2 == 0 else HAZARD_K)
 		hx += 0.6
 		hi += 1
-	# The plinth: a low disc with an orange edge (the turntable).
-	_prism(st, Transform3D(Basis(), Vector3(0, 0.03, 0)), 2.9, 0.06, 40, PLINTH_RIM)
-	_prism(st, Transform3D(Basis(), Vector3(0, 0.045, 0)), 2.8, 0.09, 40, PLINTH)
 	_props(st, gs, rng)
 	# Surface 0: the room; surface 1: the floor, faceted triangles in slightly different greys; surface 2: glow.
 	var mesh := st.commit()
@@ -791,22 +778,14 @@ func _hall_mesh() -> ArrayMesh:
 ## table (screen left), two pilot seats (screen right), status pedestals, lockers, benches, cable runs.
 func _props(st: SurfaceTool, gs: SurfaceTool, rng: RandomNumberGenerator) -> void:
 	var led_cols := [Color(0.3, 1.0, 0.4), Color(1.0, 0.65, 0.15), Color(1.0, 0.2, 0.15), Color(0.4, 0.75, 1.0)]
-	# Tactical table: pedestal, slab, a dim orange plate under the holo, LEDs along its front edge.
-	var tp := Vector3(3.4, 0, wall_z - 2.4)
-	_box(st, Transform3D(Basis(), tp + Vector3(0, 0.45, 0)), Vector3(0.9, 0.9, 0.7), STEEL.darkened(0.2))
-	_box(st, Transform3D(Basis(), tp + Vector3(0, 0.96, 0)), Vector3(2.3, 0.12, 1.5), STEEL)
-	_box(st, Transform3D(Basis(), tp + Vector3(0, 1.04, 0)), Vector3(2.0, 0.05, 1.2), SEAL)
-	_glow_quad(gs, tp + Vector3(0, 1.075, 0), Vector3(0.8, 0, 0), Vector3(0, 0, 0.5), Color(0.35, 0.16, 0.05))
-	for q in 7:
-		_led_data.append(_blink(tp + Vector3(-0.9 + 0.3 * float(q), 0.96, -0.77), led_cols[rng.randi_range(0, 3)],
-			rng.randf_range(0.3, 2.0), rng.randf(), rng.randf_range(0.3, 0.8)))
+	_table(st, gs, rng)
 	# Two pilot seats facing the window.
 	for sp: Vector3 in [Vector3(-5.2, 0, wall_z - 2.3), Vector3(-7.4, 0, wall_z - 2.6)]:
 		_prism(st, Transform3D(Basis(), sp + Vector3(0, 0.25, 0)), 0.18, 0.5, 6, STEEL.darkened(0.2))
 		_box(st, Transform3D(Basis(), sp + Vector3(0, 0.55, 0)), Vector3(0.75, 0.16, 0.75), SEAT)
 		var bb := Basis(Vector3.RIGHT, -0.25)
 		_box(st, Transform3D(bb, sp + Vector3(0, 1.05, -0.42)), Vector3(0.72, 0.95, 0.14), SEAT)
-		_box(st, Transform3D(bb, sp + Vector3(0, 1.05, -0.5)), Vector3(0.16, 0.8, 0.02), PLINTH_RIM.darkened(0.3))
+		_box(st, Transform3D(bb, sp + Vector3(0, 1.05, -0.5)), Vector3(0.16, 0.8, 0.02), ORANGE_TRIM.darkened(0.3))
 		for s: float in [-1.0, 1.0]:
 			_box(st, Transform3D(Basis(), sp + Vector3(s * 0.43, 0.78, 0.0)), Vector3(0.1, 0.1, 0.6), STEEL)
 	# Status pedestals with a screen and a block of blinking LEDs.
@@ -846,40 +825,106 @@ func _props(st: SurfaceTool, gs: SurfaceTool, rng: RandomNumberGenerator) -> voi
 			_box(st, Transform3D(Basis(), bp + Vector3(s * 0.7, 0.2, 0)), Vector3(0.08, 0.4, 0.4), STEEL)
 
 
-## The holo over the tactical table: a tiny ring habitat (two rings, a spine), additive orange, turning slowly.
+## The tactical table (concept: docs/design/menu-bg/placement/renders/C_holo_s11.png): a six-sided column on a foot
+## plate, a thick slab with bevelled edges (pale top, darker skirt), a dark recessed display carrying concentric glowing
+## rings and small data glyphs, two cyan lamps on the front edge. The holo gimbal above it is _holo_mesh.
+const TABLE_H := 1.06                    ## the slab's top
+const TABLE_SIZE := Vector2(2.5, 1.6)    ## the slab (x, z)
+
+func table_pos() -> Vector3:
+	return Vector3(3.4, 0, wall_z - 2.4)
+
+
+func _table(st: SurfaceTool, gs: SurfaceTool, rng: RandomNumberGenerator) -> void:
+	var tp := table_pos()
+	var hx := TABLE_SIZE.x * 0.5
+	var hz := TABLE_SIZE.y * 0.5
+	var top := TABLE_H
+	# Foot plate and a six-sided column, a collar under the slab.
+	_prism(st, Transform3D(Basis(), tp + Vector3(0, 0.05, 0)), 0.75, 0.1, 6, STEEL.darkened(0.25))
+	_prism(st, Transform3D(Basis(), tp + Vector3(0, 0.5, 0)), 0.32, 0.8, 6, STEEL.darkened(0.15), 0.42)
+	_box(st, Transform3D(Basis(), tp + Vector3(0, top - 0.24, 0)), Vector3(1.3, 0.12, 0.9), STEEL.darkened(0.2))
+	# The slab: a darker skirt, then a pale top with bevelled edges sloping down to the skirt.
+	_box(st, Transform3D(Basis(), tp + Vector3(0, top - 0.12, 0)), Vector3(TABLE_SIZE.x, 0.14, TABLE_SIZE.y), STEEL.darkened(0.1))
+	var bw := 0.14                                    # bevel width
+	var y0 := top - 0.05
+	var o: Array[Vector3] = [Vector3(-hx, y0, -hz), Vector3(hx, y0, -hz), Vector3(hx, y0, hz), Vector3(-hx, y0, hz)]
+	var inn: Array[Vector3] = [Vector3(-hx + bw, top, -hz + bw), Vector3(hx - bw, top, -hz + bw), Vector3(hx - bw, top, hz - bw),
+		Vector3(-hx + bw, top, hz - bw)]
+	for k in 4:
+		var j := (k + 1) % 4
+		var out := (o[k] + o[j]) * 0.5
+		var n := (Vector3(out.x, 0, out.z).normalized() + Vector3.UP).normalized()
+		_quad(st, tp + o[k], tp + o[j], tp + inn[j], tp + inn[k], n, TABLE_TOP.lightened(0.06) if k % 2 == 0 else TABLE_TOP)
+	_quad(st, tp + inn[0], tp + inn[1], tp + inn[2], tp + inn[3], Vector3.UP, TABLE_TOP)
+	# The display: a dark glass panel in a thin dark frame, just over the top.
+	var dx := hx - 0.32
+	var dz := hz - 0.28
+	_box(st, Transform3D(Basis(), tp + Vector3(0, top + 0.012, 0)), Vector3(dx * 2.0 + 0.08, 0.024, dz * 2.0 + 0.08), STEEL.darkened(0.35))
+	_box(st, Transform3D(Basis(), tp + Vector3(0, top + 0.02, 0)), Vector3(dx * 2.0, 0.03, dz * 2.0), SEAL)
+	# Glowing rings on the display (the gimbal's footprint) and small data glyphs.
+	var dy := top + 0.037
+	var c := tp + Vector3(0, dy, 0)
+	_glow_ring(gs, c, 0.62, 0.045, 40, HOLO.darkened(0.35))
+	_glow_ring(gs, c, 0.5, 0.02, 40, HOLO.darkened(0.6))
+	_glow_ring(gs, c, 0.3, 0.03, 28, HOLO.darkened(0.5))
+	for q in 14:
+		var gx := rng.randf_range(-dx + 0.08, dx - 0.08)
+		var gz := rng.randf_range(-dz + 0.08, dz - 0.08)
+		var w := rng.randf_range(0.03, 0.07)
+		var h := w * rng.randf_range(0.4, 1.0)
+		var shade := rng.randf_range(0.4, 0.7)
+		if Vector2(gx, gz).length() < 0.7:
+			continue
+		_glow_quad(gs, tp + Vector3(gx, dy, gz), Vector3(w, 0, 0), Vector3(0, 0, h), HOLO.darkened(shade))
+	# Two small readout dials in the display's far corners.
+	for s: float in [-1.0, 1.0]:
+		_glow_ring(gs, tp + Vector3(s * (dx - 0.25), dy, dz - 0.25), 0.16, 0.018, 20, HOLO.darkened(0.55))
+	# Two cyan lamps on the front edge (the camera side), blinking slowly.
+	for s: float in [-1.0, 1.0]:
+		_led_data.append(_blink(tp + Vector3(s * 0.22, top - 0.1, -hz - 0.01), Color(0.4, 0.85, 1.0),
+			rng.randf_range(0.2, 0.5), rng.randf(), 0.85))
+
+
+## A flat glowing ring (radius r, width w, n segments) lying in the XZ plane at c, facing up.
+func _glow_ring(st: SurfaceTool, c: Vector3, r: float, w: float, n: int, col: Color) -> void:
+	for k in n:
+		var a0 := TAU * float(k) / float(n)
+		var a1 := TAU * float(k + 1) / float(n)
+		var d0 := Vector3(cos(a0), 0, sin(a0))
+		var d1 := Vector3(cos(a1), 0, sin(a1))
+		_quad(st, c + d0 * (r - w * 0.5), c + d1 * (r - w * 0.5), c + d1 * (r + w * 0.5), c + d0 * (r + w * 0.5), Vector3.UP, col)
+
+
+## The holo over the tactical table (render C s11): an armillary gimbal of three crossing rings, a flat ring at its
+## foot, two thin rings floating at angles round it and three small readout discs, additive orange, turning slowly.
 func _holo_mesh() -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var tilt := Basis(Vector3.RIGHT, 1.1)
-	for rz: float in [-0.1, 0.1]:
-		for i in 24:
-			var a0 := TAU * float(i) / 24.0
-			var a1 := a0 + TAU / 24.0
-			var p0 := tilt * Vector3(cos(a0) * 0.42, sin(a0) * 0.42, rz)
-			var p1 := tilt * Vector3(cos(a1) * 0.42, sin(a1) * 0.42, rz)
-			_beam(st, p0, p1, 0.035, HOLO.darkened(0.55))
-		for k in 4:
-			var a := TAU * float(k) / 4.0
-			_beam(st, tilt * Vector3(0, 0, rz), tilt * Vector3(cos(a) * 0.42, sin(a) * 0.42, rz), 0.012, HOLO.darkened(0.7))
-	_beam(st, tilt * Vector3(0, 0, -0.5), tilt * Vector3(0, 0, 0.45), 0.025, HOLO.darkened(0.55))
+	var r := 0.5
+	var gimbal: Array = [[Basis(Vector3.RIGHT, PI * 0.5), 0.045],
+		[Basis(Vector3.FORWARD, PI * 0.5) * Basis(Vector3.RIGHT, PI * 0.5), 0.04],
+		[Basis(Vector3.RIGHT, 0.5) * Basis(Vector3.FORWARD, 0.6), 0.03]]
+	for g: Array in gimbal:
+		_holo_ring(st, g[0] as Basis, Vector3.ZERO, r, float(g[1]), 32, HOLO.darkened(0.45))
+	_holo_ring(st, Basis(Vector3.RIGHT, PI * 0.5), Vector3(0, -0.6, 0), 0.62, 0.05, 36, HOLO.darkened(0.4))
+	_holo_ring(st, Basis(Vector3.RIGHT, PI * 0.5 + 0.25), Vector3(0, 0.25, 0), 0.78, 0.025, 40, HOLO.darkened(0.6))
+	_holo_ring(st, Basis(Vector3.RIGHT, PI * 0.5 - 0.3), Vector3(0, -0.15, 0), 0.9, 0.018, 44, HOLO.darkened(0.7))
+	_beam(st, Vector3(0, -0.6, 0), Vector3(0, 0.55, 0), 0.02, HOLO.darkened(0.6))
+	for k in 3:
+		var a := TAU * float(k) / 3.0 + 0.4
+		var p := Vector3(cos(a) * 0.95, -0.35 + 0.12 * float(k), sin(a) * 0.95)
+		_holo_ring(st, Basis(Vector3.RIGHT, PI * 0.5), p, 0.13, 0.02, 16, HOLO.darkened(0.5))
+		_holo_ring(st, Basis(Vector3.RIGHT, PI * 0.5), p, 0.05, 0.03, 10, HOLO.darkened(0.55))
 	return st.commit()
 
 
-## Dust motes drifting in the window light between the mech and the glass: tiny additive specks.
-func _dust_mesh(n: int) -> ArrayMesh:
-	var mesh := ArrayMesh.new()
-	if n <= 0:
-		return mesh
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var rng := RandomNumberGenerator.new()
-	rng.seed = STAR_SEED + 3
+## A ring of square beams (radius r, thickness t, n segments) in the XY plane of basis b, centred on c.
+func _holo_ring(st: SurfaceTool, b: Basis, c: Vector3, r: float, t: float, n: int, col: Color) -> void:
 	for i in n:
-		var p := Vector3(rng.randf_range(-8.0, 5.0), rng.randf_range(0.3, 7.5), rng.randf_range(1.2, wall_z - 0.2))
-		var s := rng.randf_range(0.012, 0.03)
-		var k := rng.randf_range(0.08, 0.22)
-		_glow_quad(st, p, Vector3(s, 0, 0), Vector3(0, s, 0), Color(0.6 * k, 0.75 * k, 1.0 * k))
-	return st.commit(mesh)
+		var a0 := TAU * float(i) / float(n)
+		var a1 := TAU * float(i + 1) / float(n)
+		_beam(st, c + b * Vector3(cos(a0) * r, sin(a0) * r, 0), c + b * Vector3(cos(a1) * r, sin(a1) * r, 0), t, col)
 
 
 ## Stars: small quads on a far shell, facing the centre, mostly on the window's side (+Z). One mesh, unshaded.
@@ -1036,7 +1081,6 @@ func set_lab_param(id: String, value: float) -> void:
 		"wall_z":
 			wall_z = value
 			_rebuild_hall()
-			_rebuild_dust()
 		"key": key_energy = value
 		"window": window_energy = value
 		"glow": glow_energy = value

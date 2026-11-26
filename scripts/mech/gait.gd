@@ -5,7 +5,17 @@ extends RefCounted
 ## half a step later. Stride and cadence scale with speed (the step time follows the square root of the speed share, so
 ## slow walks take unhurried steps and the cadence quickens toward the run), so the same rules cover a slow walk, a run
 ## and every speed change in between; turning moves the homes, so turning in place steps too. At most one foot steps at a time at a
-## walk; at a run the next step may start once the other foot is halfway down.
+## walk; at a run the next step may start just before the other foot is down (a short flight, still left / right).
+##
+## Phase (moving, two feet): each foot's place in its cycle, from its state and where it is under the hip: 0 lifting
+## off, `duty` (swing share of the cycle, from the step time and the stance length) landing, 1 at its trigger. The two
+## feet are kept half a cycle apart (playtest: in sync they hopped): a foot lifts at its trigger, or as soon as the
+## other one is half a cycle on (when it is the foot further on, so of two in step together after a start or a landing
+## one goes early and they come out alternating within a step; of two equal, the one that did not lead last time);
+## never while the other swings unless the cycle has a flight (duty >= 0.5, a run, overlap_k) and that one is nearly
+## down, or a foot crowding the other while the hips swivel (or the feet are close in a flight / shuffle), or the
+## emergency: a foot past reach_err steps whatever the other does (marked "forced" on the foot). Walking
+## while turning, each foot leads by its own hip's travel, so the outer foot's stance outlasts the inner one's swing.
 ##
 ## Sideways (strafe): the legs abduct less than they swing, and the feet must not land on each other. The sideways
 ## lead of a step is limited to half of (stance - foot_clearance); when the speed asks for more, the steps get
@@ -48,7 +58,8 @@ var foot_clearance := 1.3    ## least sideways gap between the two feet (m, cent
 var step_clearance := 0.25   ## how far a swinging foot clears the ground under its path (m)
 var max_step := 1.3          ## highest ledge above / below the body's floor a foot may stand on (m)
 var max_lift := 1.45         ## highest a swinging foot may rise above the line from its start to its target (m)
-var overlap_k := 0.6         ## share of run_speed from which the next step may start before the other foot lands (once it
+var overlap_k := 0.6         ## share of run_speed from which the next step may start before the other foot lands (moving:
+                             ## only in a cycle with a flight, once the other is nearly down, see "Phase"; standing: once it
                              ## is halfway down); below it, at a walk, one foot steps at a time. 0 = always (long legs at a
                              ## speed that is a jog for their size: the Bulwark)
 var reach_err := INF         ## m: a planted foot this far from its home steps at once, whatever the other foot does (the
@@ -57,11 +68,19 @@ var reach_err := INF         ## m: a planted foot this far from its home steps a
 
 signal stepped(foot: int, info: Dictionary)
 
-## Per foot: {pos, stepping, from, to, t, dur, lift, dir, kind, length, last}
+## Per foot: {pos, stepping, from, to, t, dur, lift, dir, kind, length, last, forced (this step is a reach emergency)}
 var feet: Array = []
 var facing := Vector3.ZERO   ## where the legs point (world, horizontal); zero = feet are not turned
 var _still := 0.0
 var _airborne := false       ## the last update was airborne: the next grounded one re-plants every foot
+var _last_lift := -1         ## the foot that lifted last (of two in step together, the other one leads)
+var _prev_homes: Array = []  ## last update's homes (each hip's own travel: turning, the outer foot leads further)
+
+const PHASE_MIN_PROGRESS := 0.1   ## a foot whose turn it is waits until it is this far through its stance (no shuffles)
+const FLIGHT_EARLY := 0.1         ## in a flight (run), a foot may lift this much of a cycle before the other is half on
+const CROWD_GAP := 1.5            ## a foot crowding the other may lift while that one swings only this close (x clearance)
+const CROWD_SWIVEL := 2.0         ## ...or while the hips swivel faster than this (rad/s: the Strider's twist swinging round)
+const TURN_LEAD_MAX := 0.5        ## a hip's own travel beyond the body's counts for its lead up to this share of the speed
 
 
 ## Authority (scripts/net/net.gd): presentation only, recomputed on every machine from the mech's motion (own mech or
@@ -71,13 +90,14 @@ func net_fields() -> Dictionary:
 		"min_step_time": Net.SPAWN, "step_height": Net.SPAWN, "run_speed": Net.SPAWN, "land_time": Net.SPAWN,
 		"settle_time": Net.SPAWN, "settle_error": Net.SPAWN, "foot_clearance": Net.SPAWN, "step_clearance": Net.SPAWN,
 		"max_step": Net.SPAWN, "max_lift": Net.SPAWN, "overlap_k": Net.SPAWN, "reach_err": Net.SPAWN, "feet": Net.LOCAL, "facing": Net.LOCAL, "_still": Net.LOCAL,
-		"_airborne": Net.LOCAL}
+		"_airborne": Net.LOCAL, "_last_lift": Net.LOCAL, "_prev_homes": Net.LOCAL}
 
 
 ## Plant every foot at its home.
 func reset(homes: Array) -> void:
 	feet.clear()
 	_airborne = false
+	_prev_homes = []
 	for h: Vector3 in homes:
 		feet.append({"pos": h, "stepping": false, "from": h, "to": h, "t": 0.0, "dur": step_time, "lift": 0.0,
 				"dir": facing, "dir_from": facing, "kind": "settle", "length": 0.0, "last": {}})
@@ -117,6 +137,8 @@ func update(delta: float, homes: Array, up: Vector3, vel: Vector3, ground: Calla
 		floor_ref: Variant = null) -> void:
 	if feet.size() != homes.size():
 		reset(homes)
+	var prev_homes := _prev_homes
+	_prev_homes = homes.duplicate()
 	var flat := vel - up * vel.dot(up)
 	var speed := flat.length()
 	var k := clampf(speed / run_speed, 0.0, 1.0)
@@ -173,19 +195,54 @@ func update(delta: float, homes: Array, up: Vector3, vel: Vector3, ground: Calla
 			f["to"] = _target(i, homes[i], lead, up, ground, right, floor_ref)
 			f["lift"] = 0.0
 			f["tight"] = 0.0
+			f["forced"] = false
 			_lift_off(f, "land", up)
+	# Phase (see the header, "Phase"): where each foot is in its cycle, 0 = lifting off, duty = landing, 1 = due again.
+	var dir := flat / speed if speed > 1e-4 else Vector3.ZERO
+	var lead_u := lead.dot(dir)
+	var stance_len := maxf(lead_u + trigger, 0.05)   # how far a planted foot travels back under the hip
+	var duty := dur / (dur + stance_len / maxf(speed, 0.01))   # share of a cycle in swing
+	var phased := moving and feet.size() == 2
+	# Walking while turning, the outer hip travels faster than the body and the inner one slower: each foot leads by
+	# its own hip's travel (along the body's), so the outer foot's stance still outlasts the inner foot's swing.
+	var swivel := 0.0   # rad/s the line between the hips turns (a hip twist swinging round, a turn)
+	if phased and prev_homes.size() == 2 and delta > 0.0 and right != Vector3.ZERO:
+		var was: Vector3 = (prev_homes[1] as Vector3) - (prev_homes[0] as Vector3)
+		was -= up * was.dot(up)
+		if was.length() > 1e-4:
+			swivel = was.angle_to(right) / delta
+	var leads: Array = []
+	var lead_us: Array = []
+	var stance_lens: Array = []
+	for i in feet.size():
+		var extra := 0.0
+		if phased and prev_homes.size() == homes.size() and delta > 0.0:
+			var hv: Vector3 = ((homes[i] as Vector3) - (prev_homes[i] as Vector3)) / delta
+			extra = clampf((hv - flat).dot(dir), -speed * TURN_LEAD_MAX, speed * TURN_LEAD_MAX) * dur * 0.5
+		leads.append(lead + dir * extra)
+		lead_us.append(lead_u + extra)
+		stance_lens.append(maxf(lead_u + extra + trigger, 0.05))
+	var phase := func(j: int) -> float:
+		var fj: Dictionary = feet[j]
+		if fj["stepping"]:
+			return duty * float(fj["t"])
+		return duty + (1.0 - duty) * maxf(_progress(j, homes, up, dir, lead_us[j], stance_lens[j]), 0.0)
 	# Feet furthest from home get first pick of the step. Moving sideways, the foot on the side the body is moving
-	# toward goes first: the body is closing on it, while the other one is only left behind.
+	# toward goes first: the body is closing on it, while the other one is only left behind. In a phased walk the foot
+	# further on in its cycle goes first, and of two in step together the one that did not lead last time.
 	var centre := Vector3.ZERO
 	for h: Vector3 in homes:
 		centre += h / float(homes.size())
 	var urgency := func(i: int) -> float:
-		return _err(i, homes, up) + (0.5 if ((homes[i] as Vector3) - centre).dot(lead) > 0.05 else 0.0)
+		var side_first := ((homes[i] as Vector3) - centre).dot(lead) > 0.05
+		if phased:
+			return float(phase.call(i)) + (0.02 if side_first else 0.0) + (0.01 if i != _last_lift else 0.0)
+		return _err(i, homes, up) + (0.5 if side_first else 0.0)
 	var order: Array = range(feet.size())
 	order.sort_custom(func(a: int, b: int) -> bool: return urgency.call(a) > urgency.call(b))
 	for i: int in order:
 		var f: Dictionary = feet[i]
-		var target := _target(i, homes[i], lead, up, ground, right, floor_ref)
+		var target := _target(i, homes[i], leads[i], up, ground, right, floor_ref)
 		if f["stepping"]:
 			f["t"] = float(f["t"]) + delta / float(f["dur"])
 			if absf((target - (f["to"] as Vector3)).dot(up)) > 0.1:   # the target changed level mid-step: redo the arc
@@ -213,7 +270,26 @@ func update(delta: float, homes: Array, up: Vector3, vel: Vector3, ground: Calla
 			want = want or absf(side) > side_trigger
 			crowding = side * (1.0 if i == 0 else -1.0) > side_trigger * 0.5
 			want = want or crowding
-		if want and (_may_step(i, k, shuffle, crowding) or err > reach_err):
+		var go := false
+		if phased:
+			# Phase lock: the other foot half a cycle on (or past) = this foot's turn, even a little before its own
+			# trigger; it never lifts while the other one swings, except in a flight (run) when that one is nearly down.
+			var j := 1 - i
+			var pj: float = phase.call(j)
+			var due := pj >= 0.5 and float(phase.call(i)) >= pj \
+					and _progress(i, homes, up, dir, lead_us[i], stance_lens[i]) >= PHASE_MIN_PROGRESS
+			var free: bool = not feet[j]["stepping"]
+			if not free:
+				free = (k >= overlap_k or shuffle) and duty >= 0.5 and pj >= 0.5 - FLIGHT_EARLY
+				free = free or (crowding and float(feet[j]["t"]) >= 0.25 and (swivel > CROWD_SWIVEL \
+						or ((k >= overlap_k or shuffle) and _gap(i, right) < foot_clearance * CROWD_GAP)))
+			go = (want or due) and free
+		else:
+			go = want and _may_step(i, k, shuffle, crowding)
+		var forced := not go and want and err > reach_err   # the emergency: about to leave the leg's reach
+		if go or forced:
+			_last_lift = i
+			f["forced"] = forced
 			f["stepping"] = true
 			f["t"] = 0.0
 			f["dur"] = dur
@@ -341,6 +417,28 @@ func _lift_for(from: Vector3, to: Vector3, up: Vector3, ground: Callable) -> Vec
 		var t := m + (1.0 - 2.0 * m) * (0.5 - sin(asin(1.0 - 2.0 * us[i]) / 3.0))   # when the foot is at us[i]
 		lift = maxf(lift, (need - dh * _level(dh, t)) / sin(PI * t))
 	return Vector2(minf(lift, max_lift), 1.0)
+
+
+## How far planted foot i is through its stance: 0 where it lands (lead_u ahead of its home along the travel `dir`),
+## 1 where it is due to lift (the trigger behind), beyond 1 when overdue, below 0 when ahead of its landing spot.
+## Behind its home the whole distance counts (the trigger is a distance: turning or drifting sideways brings it sooner).
+func _progress(i: int, homes: Array, up: Vector3, dir: Vector3, lead_u: float, stance_len: float) -> float:
+	var u := ((feet[i]["pos"] as Vector3) - (homes[i] as Vector3)).dot(dir)
+	if u < 0.0:
+		u = -_err(i, homes, up)
+	return (lead_u - u) / stance_len
+
+
+## Sideways gap (along `right`, toward foot i's own side) between foot i and the other foot, where it is and, if it is
+## swinging, where it is going.
+func _gap(i: int, right: Vector3) -> float:
+	var other: Dictionary = feet[1 - i]
+	var sgn := -1.0 if i == 0 else 1.0
+	var p: Vector3 = feet[i]["pos"]
+	var gap := (p - (other["pos"] as Vector3)).dot(right) * sgn
+	if other["stepping"]:
+		gap = minf(gap, (p - (other["to"] as Vector3)).dot(right) * sgn)
+	return gap
 
 
 ## Horizontal distance (along the local floor) of foot i from its home.

@@ -108,4 +108,9 @@ func setup() -> void:
 	GraphicsQuality.pretend_integrated = false
 	if not GraphicsQuality.integrated_here():
 		check(GraphicsQuality.relaunch_block("auto", none, none, true, false, false, "", fp) != "", "a dedicated GPU never relaunches")
+	# Settings > Restart keeps the user args after `--` (OS.get_cmdline_args() stops at it).
+	eq(GraphicsQuality.restart_args(PackedStringArray(["--path", "."]), PackedStringArray(["--settings", "a.cfg", "--net-name", "B"])),
+		PackedStringArray(["--path", ".", "--", "--settings", "a.cfg", "--net-name", "B"]), "restart keeps the user args after --")
+	eq(GraphicsQuality.restart_args(PackedStringArray(["--path", "."]), none), PackedStringArray(["--path", "."]),
+		"restart with no user args adds no --")
 	finish()

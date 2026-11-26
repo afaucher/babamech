@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Heat shutdown parks the weapons on every machine (weapons.md §4.7), over a crew of 2, once per link. Every machine aims
 ## its own mech's weapons off to the side (manual aim), overheats at SHUT_T while its aim point keeps sweeping, and is
 ## rebooted (test only) at REBOOT_T. Each machine records its own streamed mount aims (CrewSync.mount_aims) and what its

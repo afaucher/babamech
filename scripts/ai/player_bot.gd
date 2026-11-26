@@ -7,7 +7,7 @@ extends Node
 ## Never teleports, never writes transforms/velocity/heat directly, never wallhacks, and uses
 ## only its private seeded RandomNumberGenerator (zero global randomness).
 
-const HOP_ROOF_MARGIN := 0.3   ## m under a hop-only chassis' thrust_ceiling a roof must be to stay a vantage (bind)
+const HOP_ROOF_MARGIN := 0.3   ## m under a hop-only chassis' MechCatalog.bot_hop_height a roof must be to stay a vantage (bind)
 const STATE_EXPLORE := "explore"
 const STATE_ADVANCE := "advance"
 const STATE_ENGAGE := "engage"
@@ -23,6 +23,8 @@ const EYE_HEIGHT := 6.5
 const SPHERE_REACH := 30.0         ## m: no enemy hit sphere lies farther than this from the unit's origin (range prefilter)
 const LOS_REFRESH := 1.0 / 12.0    ## s between two sight casts to the same enemy (_los_refreshed)
 const WP_REFRESH := 0.2            ## s a weak point's "unoccluded" answer is reused (_wp_unoccluded)
+const TELEGRAPH_SAME_EPS := 0.15   ## s: a telegraph whose start moved more than this is a new instance (_telegraph_is_new)
+const SEEN_TTL := 10.0             ## s a telegraph record outlives its last sighting (longer than any telegraph)
 
 signal dodge_triggered(threat_kind: String, with_hop: bool)
 
@@ -56,8 +58,8 @@ var _memory: Dictionary = {}            ## enemy_id -> {enemy, pos, last_seen_t,
 var _los_cache: Dictionary = {}         ## enemy_id -> [next cast at _sim_t, last answer] (_los_refreshed)
 var _wp_cache: Dictionary = {}          ## "enemy_id|component" -> [valid until _sim_t, unoccluded] (_wp_unoccluded)
 var _threat_queue: Array[Dictionary] = []   ## [{key, trigger_t, kind, origin, landing, is_mortar}]
-var _seen_telegraphs: Dictionary = {}   ## "enemy_id:shot_index" -> true
-var _seen_mortars: Dictionary = {}      ## effect key -> true
+var _seen_telegraphs: Dictionary = {}   ## enemy_id -> {shot, start, tel_t, seen_t}: the telegraph instance last reacted to (_telegraph_is_new)
+var _seen_mortars: Dictionary = {}      ## effect key -> true, dropped once the shell leaves world.effects
 var _dodge_left := 0.0
 var _dodge_dir := Vector3.ZERO
 var _dodge_hop_left := 0.0
@@ -81,6 +83,10 @@ var dodges_attempted := 0
 var dodges_clean := 0
 var last_nav_goal := Vector3.ZERO
 var last_aim_world := Vector3.ZERO
+## The enemy the layer above wants dead first (MissionBot: a hunted blocker of a flag / hold zone), "" = none. Weighs in
+## _choose_target only while it is in sight (PRIORITY_BONUS), so the bot never fixates on what it cannot hit.
+var priority_id := ""
+const PRIORITY_BONUS := 70.0
 
 
 func net_fields() -> Dictionary:
@@ -99,8 +105,13 @@ func net_fields() -> Dictionary:
 		"_cover_left": Net.PRIVATE, "_cover_cd": Net.PRIVATE, "_last_damage_t": Net.PRIVATE,
 		"_last_damage_src": Net.PRIVATE, "_pending_dodge_checks": Net.PRIVATE, "_total_dmg_seen": Net.PRIVATE,
 		"dodges_attempted": Net.LOCAL, "dodges_clean": Net.LOCAL,
-		"last_nav_goal": Net.LOCAL, "last_aim_world": Net.LOCAL,
+		"last_nav_goal": Net.LOCAL, "last_aim_world": Net.LOCAL, "priority_id": Net.PRIVATE,
 	}
+
+
+## True when enemy `eid` is remembered and in line of sight now.
+func sees(eid: String) -> bool:
+	return _memory.has(eid) and bool((_memory[eid] as Dictionary).get("has_los", false))
 
 
 func configure(profile: String = "average", seed_val: int = 1, id: String = "bot1") -> void:
@@ -132,8 +143,8 @@ func bind(m: MechController, r: WeaponRack, pt: PlayerTarget, w: CombatWorld, sq
 		target.damaged.connect(_on_player_damaged)
 	_nav = BotNavigator.new()
 	_nav.setup(city_plan, ring, _rng)
-	if mech != null and mech.thrust_ceiling > 0.0:
-		_nav.drop_roofs_above(mech.thrust_ceiling - HOP_ROOF_MARGIN)   # a hop-only chassis: only the roofs it can hop onto
+	if mech != null and MechCatalog.bot_hop_height(mech.chassis_id) > 0.0:
+		_nav.drop_roofs_above(MechCatalog.bot_hop_height(mech.chassis_id) - HOP_ROOF_MARGIN)   # a hop-only chassis: only the roofs it can hop onto
 	_reset_runtime()
 
 
@@ -405,8 +416,7 @@ func _update_threats(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 		var e: EnemyBase = m["enemy"]
 		if e.ai_state == EnemyBase.STATE_TELEGRAPH:
 			var tkey := "%s:%d" % [eid, e._shot_index]
-			if not _seen_telegraphs.has(tkey):
-				_seen_telegraphs[tkey] = true
+			if _telegraph_is_new(eid, e):
 				_threat_queue.append({
 					"key": tkey,
 					"trigger_t": _sim_t + _sample_reaction(),
@@ -419,12 +429,14 @@ func _update_threats(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 	# Detect incoming enemy MortarShell ground-ring telegraphs (visible to any player on the ground).
 	if world != null:
 		var pos := mech.global_position
+		var live_mortars := {}
 		for eff: CombatEffect in world.effects:
 			if eff is MortarShell:
 				var ms := eff as MortarShell
 				if not bool(ms.record.get("enemy", false)):
 					continue
 				var mk := ms.key()
+				live_mortars[mk] = true
 				if _seen_mortars.has(mk):
 					continue
 				var rad := float(ms.stats.get("splash_radius", 6.5))
@@ -438,6 +450,11 @@ func _update_threats(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 						"landing": ms.landing,
 						"is_mortar": true,
 					})
+		# A landed shell never comes back: forget its key.
+		for mk: String in _seen_mortars.keys():
+			if not live_mortars.has(mk):
+				_seen_mortars.erase(mk)
+	_prune_seen_telegraphs()
 
 	# Process due threats once reaction delay elapses.
 	var keep: Array[Dictionary] = []
@@ -485,6 +502,26 @@ func _update_threats(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 	_threat_queue = keep
 
 
+## True once per telegraph instance of `e`. An enemy that cancels a telegraph (lost sight) and starts another keeps
+## its `_shot_index`, so the instance is told apart by its start (bot time minus the enemy's elapsed telegraph time):
+## a timer that went backwards or a start that moved more than TELEGRAPH_SAME_EPS is a new telegraph.
+func _telegraph_is_new(eid: String, e: EnemyBase) -> bool:
+	var tel_t := e._telegraph_t
+	var start := _sim_t - tel_t
+	var prev: Dictionary = _seen_telegraphs.get(eid, {})
+	var fresh := prev.is_empty() or int(prev["shot"]) != e._shot_index \
+			or tel_t < float(prev["tel_t"]) - 0.0001 or absf(start - float(prev["start"])) > TELEGRAPH_SAME_EPS
+	_seen_telegraphs[eid] = {"shot": e._shot_index, "start": start, "tel_t": tel_t, "seen_t": _sim_t}
+	return fresh
+
+
+## Drops telegraph records not refreshed for SEEN_TTL (dead, freed or long-unseen enemies).
+func _prune_seen_telegraphs() -> void:
+	for eid: String in _seen_telegraphs.keys():
+		if _sim_t - float(_seen_telegraphs[eid]["seen_t"]) > SEEN_TTL:
+			_seen_telegraphs.erase(eid)
+
+
 func _resolve_dodge_checks() -> void:
 	if _pending_dodge_checks.is_empty():
 		return
@@ -523,6 +560,8 @@ func _choose_target() -> EnemyBase:
 			score += 16.0   # close flanker pressure
 		if e == _current_enemy:
 			score += 18.0   # target hysteresis so bot finishes kills cleanly
+		if priority_id != "" and e.target_id == priority_id and bool(m["has_los"]):
+			score += PRIORITY_BONUS
 		if bot_squad != null and e.target_id == bot_squad.primary_target_id:
 			score += bot_squad.focus_fire_bias * 28.0
 		if score > best_score:

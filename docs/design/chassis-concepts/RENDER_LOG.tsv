@@ -66,3 +66,39 @@
 2026-11-23T17:50:08	bulwark2_c2_s11.png	flux3_klein_t2i	11	768x768			3.46	bulwark2_c2_prompt.txt
 2026-11-23T17:50:11	bulwark2_c3_s11.png	flux3_klein_t2i	11	768x768			3.29	bulwark2_c3_prompt.txt
 2026-11-23T18:54:04	bulwark2_a1_s11.png	flux3_klein_t2i	11	768x768			6.34	bulwark2_a1_prompt.txt
+2026-11-25T21:34:48	wasp2_a1_s11.png	flux3_klein_t2i	11	768x768			6.31	wasp2_a1_prompt.txt
+2026-11-25T21:34:52	wasp2_a2_s11.png	flux3_klein_t2i	11	768x768			3.73	wasp2_a2_prompt.txt
+2026-11-25T21:34:56	wasp2_a3_s11.png	flux3_klein_t2i	11	768x768			3.72	wasp2_a3_prompt.txt
+2026-11-25T21:35:00	wasp2_b1_s11.png	flux3_klein_t2i	11	768x768			3.72	wasp2_b1_prompt.txt
+2026-11-25T21:35:04	wasp2_b2_s11.png	flux3_klein_t2i	11	768x768			3.72	wasp2_b2_prompt.txt
+2026-11-25T21:35:08	wasp2_b3_s11.png	flux3_klein_t2i	11	768x768			3.73	wasp2_b3_prompt.txt
+2026-11-25T21:35:12	wasp2_c1_s11.png	flux3_klein_t2i	11	768x768			3.55	wasp2_c1_prompt.txt
+2026-11-25T21:35:16	wasp2_c2_s11.png	flux3_klein_t2i	11	768x768			3.71	wasp2_c2_prompt.txt
+2026-11-25T21:35:20	wasp2_c3_s11.png	flux3_klein_t2i	11	768x768			3.71	wasp2_c3_prompt.txt
+2026-11-25T21:37:47	wasp3_a1_s11.png	flux3_klein_refs	11	768x768	wasp2_b1_s11.png		12.26	wasp3_a1_prompt.txt
+2026-11-25T21:37:58	wasp3_a2_s11.png	flux3_klein_refs	11	768x768	wasp2_b1_s11.png		9.63	wasp3_a2_prompt.txt
+2026-11-25T21:38:08	wasp3_a3_s11.png	flux3_klein_refs	11	768x768	wasp2_b1_s11.png		9.93	wasp3_a3_prompt.txt
+2026-11-25T21:38:18	wasp3_b1_s11.png	flux3_klein_refs	11	768x768	wasp2_b1_s11.png		9.69	wasp3_b1_prompt.txt
+2026-11-25T21:38:28	wasp3_b2_s11.png	flux3_klein_refs	11	768x768	wasp2_b1_s11.png		9.71	wasp3_b2_prompt.txt
+2026-11-25T21:38:38	wasp3_b3_s11.png	flux3_klein_refs	11	768x768	wasp2_b1_s11.png		9.73	wasp3_b3_prompt.txt
+2026-11-25T21:38:48	wasp3_c1_s11.png	flux3_klein_refs	11	768x768	wasp2_b1_s11.png		9.7	wasp3_c1_prompt.txt
+2026-11-25T21:38:58	wasp3_c2_s11.png	flux3_klein_refs	11	768x768	wasp2_b1_s11.png		9.7	wasp3_c2_prompt.txt
+2026-11-25T21:39:08	wasp3_c3_s11.png	flux3_klein_refs	11	768x768	wasp2_b1_s11.png		9.72	wasp3_c3_prompt.txt
+2026-11-25T21:41:59	wasp4_a1_s11.png	flux3_klein_refs	11	768x768	pick_wasp_four_fans_pod.png		12.17	wasp4_a1_prompt.txt
+2026-11-25T21:42:10	wasp4_a2_s11.png	flux3_klein_refs	11	768x768	pick_wasp_four_fans_pod.png		9.63	wasp4_a2_prompt.txt
+2026-11-25T21:42:20	wasp4_a3_s11.png	flux3_klein_refs	11	768x768	pick_wasp_four_fans_pod.png		9.7	wasp4_a3_prompt.txt
+2026-11-25T21:42:30	wasp4_b1_s11.png	flux3_klein_refs	11	768x768	pick_wasp_four_fans_pod.png		9.73	wasp4_b1_prompt.txt
+2026-11-25T21:42:40	wasp4_b2_s11.png	flux3_klein_refs	11	768x768	pick_wasp_four_fans_pod.png		9.72	wasp4_b2_prompt.txt
+2026-11-25T21:42:50	wasp4_b3_s11.png	flux3_klein_refs	11	768x768	pick_wasp_four_fans_pod.png		9.67	wasp4_b3_prompt.txt
+2026-11-25T21:43:00	wasp4_c1_s11.png	flux3_klein_refs	11	768x768	pick_wasp_four_fans_pod.png		9.72	wasp4_c1_prompt.txt
+2026-11-25T21:43:10	wasp4_c2_s11.png	flux3_klein_refs	11	768x768	pick_wasp_four_fans_pod.png		9.49	wasp4_c2_prompt.txt
+2026-11-25T21:43:20	wasp4_c3_s11.png	flux3_klein_refs	11	768x768	pick_wasp_four_fans_pod.png		9.51	wasp4_c3_prompt.txt
+2026-11-25T21:44:21	wasp5_a1_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		12.01	wasp5_a1_prompt.txt
+2026-11-25T21:44:31	wasp5_a2_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.46	wasp5_a2_prompt.txt
+2026-11-25T21:44:42	wasp5_a3_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		10.81	wasp5_a3_prompt.txt
+2026-11-25T21:44:51	wasp5_b1_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.47	wasp5_b1_prompt.txt
+2026-11-25T21:45:01	wasp5_b2_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.51	wasp5_b2_prompt.txt
+2026-11-25T21:45:11	wasp5_b3_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.51	wasp5_b3_prompt.txt
+2026-11-25T21:45:21	wasp5_c1_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.53	wasp5_c1_prompt.txt
+2026-11-25T21:45:32	wasp5_c2_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.92	wasp5_c2_prompt.txt
+2026-11-25T21:45:42	wasp5_c3_s11.png	flux3_klein_refs	11	768x768	C:\Users\alexa\Documents\GitHub\babamech\art\picks\mech_base.png		9.87	wasp5_c3_prompt.txt

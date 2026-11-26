@@ -9,6 +9,13 @@ extends Node3D
 ## shoulders and the brace rams close on their hips). Cosmetic only (no gameplay state, no randomness). Used by
 ## MechStage for the hangar screen and as the lab subject `hangar`.
 ##
+## Hangar v2 (docs/design/hangar-v2/README.md: the shared bay airlock): one airlock in the left end wall (HangarAirlock,
+## replacing the old breaching door), inner door, chamber, outer door. Stored, a mech stands still with its clamps
+## closed. Launch (set_alert(true, seconds)) plays the egress (HangarEgress): clamps release, each mech steps out to its
+## lane, turns toward the airlock, walks down the aisle into the chamber; the inner door shuts, the chamber cycles, the
+## outer door opens and they go through; a crew too long for the chamber goes in several cycles. Sizes (lanes, doors,
+## chamber, turn line) come from the measured boxes of every chassis the catalog builds (chassis_envelope).
+##
 ## Axes: the wall runs along X; the alcoves are recessed into it toward -Z, their front (the wall face) is at FRONT_Z;
 ## the aisle and the camera are on +Z. Mechs face +Z (MECH_YAW = PI: MechModel faces -Z). The framing is computed from
 ## the viewport's aspect (camera_frame), so the occupied alcoves always fit the preview, whatever the window shape.
@@ -42,13 +49,25 @@ const ALERT_RAMP := 1.0                 ## seconds for the clamps to close and t
 
 ## Clamps. The shoulder clamp is a hinged arm on each post, stowed upright in prep, swung down level in alert so its
 ## pad stops CLAMP_GAP short of the mech's measured box (MechModel meshes, measured on show_crew). The brace arm is a
-## ram at hip height that slides out of a sleeve in the post to the same gap.
+## ram at hip height that slides out of a sleeve in the post to the same gap. A mech too wide for them gets hold-down
+## clamps instead (HOLD_ROOM).
 const CLAMP_GAP := 0.06
 const CLAMP_Y := 3.7                    ## above the mech's origin: the shoulder pods
 const BRACE_Y := 2.2                    ## above the mech's origin: the hips
 const CLAMP_Z := 0.1
 const HINGE_OUT := 0.25                 ## the hinge line stands this far out of the post face (the stowed arm clears the mech)
 const ARM_H := 0.5                      ## the hinged arm's thickness in its swing plane
+const BRACE_PROUD := 0.02             ## open, the brace pad stands this far proud of its sleeve's mouth (no shared face)
+## Hold-down clamps (docs/design/hangar.md): a mech that fills its alcove (the Bulwark's hip pods stand within HOLD_ROOM
+## of the hinge line) leaves no room for the side clamp to swing in, so it would shrink to a stub. Instead the clamp is
+## hinged higher and is long enough to swing down level over the hip pod (the mesh named HOLD_PART_*), its pad's dark shoe
+## coming to rest HOLD_GAP over the pod's top (more than the idle bob, so the frozen alert pose never cuts in); that
+## alcove side has no hip brace (it would travel only centimetres).
+const HOLD_ROOM := 0.4
+const HOLD_GAP := 0.035
+const HOLD_PAD := Vector3(0.42, 0.56, 0.7)  ## the hold-down pad: along the arm, thickness, depth
+const HOLD_SHOE := 0.06                 ## the rubber shoe under the pad (its height below the pad)
+const HOLD_PARTS := ["Pod_l", "Pod_r"]
 ## Box of every mech the catalog can build (all heads, loadouts, both leg bends, the idle bob), facing +Z: the
 ## clamps of an empty alcove are fitted to it, and it is the fallback before a mech has meshes.
 const MECH_ENVELOPE := AABB(Vector3(-1.7, -0.08, -1.32), Vector3(3.4, 6.0, 3.45))
@@ -81,10 +100,16 @@ var _strobes: Array[OmniLight3D] = []
 var _clamp_roots: Array[Node3D] = []   ## per alcove: every clamp and brace mesh (rebuilt by fit_clamps)
 var _clamps: Array[Dictionary] = []    ## {"node", "kind" ("clamp" | "brace"), "side", "travel"}
 var _countdown: MeshInstance3D
-var _door_lamps: Array[MeshInstance3D] = []
 var _crew_root: Node3D
 var _lab_crew := "4"
+var _lab_chassis := "strider"
 var _own_env: Environment
+var _airlock: HangarAirlock       ## the shared bay airlock in the left end wall
+var _egress: HangarEgress          ## the launch sequence while it plays (null when stored)
+var _egress_rate := 1.0            ## sequence seconds per second (FrontEnd fits it into the launch alert)
+var _egress_frame := 0.0           ## 0 .. 1: the framing widens to the turn spots while the egress plays
+var _clamp_base := 1.0             ## clamp closedness while no egress plays (1: stored, closed); set_clamps for tests
+var egress_pace := 1.0             ## lab: extra pace multiplier
 
 
 func _init() -> void:
@@ -108,7 +133,10 @@ func _ready() -> void:
 	_build_wall()
 	for i in ALCOVE_X.size():
 		_build_alcove(i)
-	_build_door()
+	_airlock = HangarAirlock.new()
+	add_child(_airlock)
+	_airlock.build()
+	_strobes.append_array(_airlock.strobes)
 	for x: float in [-15.6, 15.6]:
 		_build_rack(Vector3(x, 0, FRONT_Z + 0.75))
 	_build_lights()
@@ -140,7 +168,7 @@ func show_crew(entries: Array) -> Array[MechModel]:
 		MechAccent.apply(m, str(e.get("accent", MechAccent.DEFAULT)))
 		m.position = Vector3(float(ALCOVE_X[i]), PLATFORM_H, MECH_Z)
 		m.rotation.y = MECH_YAW
-		m.time_scale = 0.0 if state == "alert" else 1.0
+		m.time_scale = 0.0   # stored: clamped, standing still (the egress drives it on Launch)
 		_crew_root.add_child(m)
 		models.append(m)
 		if str(e.get("name", "")) != "":
@@ -156,6 +184,8 @@ func show_crew(entries: Array) -> Array[MechModel]:
 	if not _clamp_roots.is_empty():
 		fit_clamps()
 		_apply_lights()
+	if state == "alert":
+		set_alert(true)
 	return models
 
 
@@ -219,6 +249,166 @@ func mech_box(i: int) -> AABB:
 	return AABB(MECH_ENVELOPE.position + at, MECH_ENVELOPE.size)
 
 
+# --- Airlocks and the egress path (hangar v2) ---------------------------------------------------------
+
+## The shared bay airlock (HangarAirlock) in the left end wall: its inner door's plane is AIRLOCK_X (the wall's inner
+## face); mechs reach it along LANES lanes parallel to the alcove wall and park in the chamber nose to tail per lane.
+## Clearances (m): beside the widest mech in its lane, over the tallest, between mechs (and the walls) in a lane, around
+## the turning circle at the first lane.
+const LANES := 2
+const LANE_GAP := 0.25
+const DOOR_TOP_GAP := 0.35
+const SLOT_GAP := 0.5
+const TURN_GAP := 0.3
+const END_WALL := 0.6                  ## the end wall's thickness (the doors run in it)
+const AIRLOCK_X := -HALF_WIDTH
+## Launch plays the egress faster than natural (still reads as walking): EGRESS_RATE, or more for a long sequence
+## (a big crew, several airlock cycles) so it takes about EGRESS_TARGET s, never past EGRESS_MAX_RATE. It always plays
+## to the end, the mission loading behind it (HangarHandoff; TestDrive reports ready only when both are done).
+const EGRESS_RATE := 1.5
+const EGRESS_MAX_RATE := 3.0
+const EGRESS_TARGET := 16.0
+## The widest loadout (every hardpoint on its bulkiest weapon) used to size the door for any mech the hangar can hold.
+const WIDE_LOADOUT := {"side_l": "autocannon", "side_r": "gatling", "shoulder_l": "railgun", "shoulder_r": "missiles", "back": "mortar"}
+
+static var _envelopes := {}
+
+
+## The box of chassis `id` (bare and with WIDE_LOADOUT, both leg bends) as it stands in an alcove: origin at its feet,
+## facing +Z (MECH_YAW). Measured once from a real MechModel and cached.
+static func chassis_envelope(id: String) -> AABB:
+	if _envelopes.has(id):
+		return _envelopes[id]
+	var out := AABB()
+	var first := true
+	for lo: Dictionary in [{}, WIDE_LOADOUT]:
+		for bend: float in [-1.0, 1.0]:
+			var m := MechModel.new()
+			m.configure("chicken", id, lo)
+			m.leg_bend = bend
+			m.rebuild()
+			m.rotation.y = MECH_YAW
+			var holder := Node3D.new()
+			holder.add_child(m)
+			var b := mesh_box(m, holder)
+			holder.free()
+			if b.size.y > 0.5:
+				out = b if first else out.merge(b)
+				first = false
+	if first:
+		out = MECH_ENVELOPE
+	_envelopes[id] = out
+	return out
+
+
+## The box every chassis fits (chassis_envelope of each MechCatalog.CHASSIS entry, merged).
+static func fleet_envelope() -> AABB:
+	var out := AABB()
+	var first := true
+	for id: String in MechCatalog.CHASSIS:
+		var b := chassis_envelope(id)
+		out = b if first else out.merge(b)
+		first = false
+	return out
+
+
+## One lane's width: the fleet's widest mech (facing along the lane its width is across it) plus LANE_GAP a side.
+static func lane_width() -> float:
+	var e := fleet_envelope()
+	return maxf(absf(e.position.x), absf(e.end.x)) * 2.0 + LANE_GAP * 2.0
+
+
+## Lane k's centre line (z): lane 0 is the turn line (turn_z), the next ones a lane width further out.
+static func lane_z(k: int) -> float:
+	return turn_z() + float(k) * lane_width()
+
+
+## The inner and outer doors' clear opening along z (from, to): every lane.
+static func door_span() -> Vector2:
+	var hw := lane_width() * 0.5
+	return Vector2(lane_z(0) - hw, lane_z(LANES - 1) + hw)
+
+
+## The doors' clear height: the fleet's tallest mech plus DOOR_TOP_GAP, under the bay's ceiling girders.
+static func door_height() -> float:
+	return minf(fleet_envelope().end.y + DOOR_TOP_GAP, HEIGHT - 2.0)
+
+
+## A lane's length inside the chamber, from the catalog: the deepest chassis and the shallowest one nose to tail, with
+## SLOT_GAP before, between and after. So a lane takes two of the shallowest, or one deep and one shallow, but not two
+## of the deepest: 4 Striders or 2 Bulwarks + 2 Striders go in one cycle, 3 or 4 Bulwarks need two.
+static func lane_length() -> float:
+	var deep := 0.0
+	var shallow := INF
+	for id: String in MechCatalog.CHASSIS:
+		var d := chassis_envelope(id).size.z
+		deep = maxf(deep, d)
+		shallow = minf(shallow, d)
+	return deep + shallow + SLOT_GAP * 3.0
+
+
+## The chamber's far end (x of the outer door's inner face) and the corridor's end beyond the outer door.
+static func chamber_far_x() -> float:
+	return AIRLOCK_X - END_WALL - lane_length()
+
+
+static func corridor_end_x() -> float:
+	return chamber_far_x() - END_WALL - lane_length() - 1.0
+
+
+## Seat i's mech, stored (facing +Z): how far its box reaches ahead of its origin (front) and behind it (back).
+func mech_extent(i: int) -> Vector2:
+	var at := Vector3(float(ALCOVE_X[i]), PLATFORM_H, MECH_Z)
+	var b := mech_box(i)
+	return Vector2(b.end.z - at.z, at.z - b.position.z)
+
+
+## The turning radius (m) of a mech box about its origin (bay space box, origin at `at`): its farthest corner, flat.
+static func box_radius(b: AABB, at: Vector3) -> float:
+	var r := 0.0
+	for k in 8:
+		var p := b.get_endpoint(k) - at
+		r = maxf(r, Vector2(p.x, p.z).length())
+	return r
+
+
+## Seat i's mech: its turning radius (measured box; the fleet's for an empty seat).
+func turn_radius(i: int) -> float:
+	var at := Vector3(float(ALCOVE_X[i]), PLATFORM_H, MECH_Z)
+	if i < models.size():
+		return box_radius(mech_box(i), models[i].position)
+	return box_radius(AABB(fleet_envelope().position + at, fleet_envelope().size), at)
+
+
+## The turn spot's z (every seat turns on the same line): the fleet's largest turning circle clears the alcove posts'
+## faces by TURN_GAP.
+static func turn_z() -> float:
+	var e := fleet_envelope()
+	return FRONT_Z + box_radius(e, Vector3.ZERO) + TURN_GAP
+
+
+func airlock() -> HangarAirlock:
+	return _airlock
+
+
+## Clamp closedness when no egress plays (1 closed, 0 open): the stored pose is closed. Tests sweep it.
+func set_clamps(k: float) -> void:
+	_clamp_base = clampf(k, 0.0, 1.0)
+	_apply_lights()
+
+
+func egress() -> HangarEgress:
+	return _egress
+
+
+## Advance the egress by `dt` sequence seconds (tests and shots drive it frame by frame with the bay's time_scale 0).
+func egress_step(dt: float) -> void:
+	if _egress != null:
+		_egress.step(dt)
+		_airlock.apply(dt)
+		_apply_lights()
+
+
 # --- Framing ------------------------------------------------------------------------------------------
 
 ## The box the camera keeps in view: the occupied alcoves (posts, platforms and header included), at least seat 1's.
@@ -233,14 +423,37 @@ func frame_box() -> AABB:
 	return AABB(Vector3(lo - half, 0.0, WALL_Z), Vector3(hi - lo + half * 2.0, LINTEL_Y + 0.6, FRONT_Z - WALL_Z))
 
 
+## The egress view's box: the occupied alcoves, the lanes and the airlock (its door and the chamber's near half).
+func egress_box() -> AABB:
+	var b := frame_box()
+	var left := AIRLOCK_X - lane_length() * 0.5
+	return AABB(Vector3(left, 0.0, WALL_Z), Vector3(b.end.x - left, door_height() + 1.0, door_span().y - WALL_Z))
+
+
+## The egress camera looks down the aisle toward the airlock from the right-hand side of the bay (its door faces the
+## camera enough to see into the chamber), eased in over the launch (_egress_frame).
+const EGRESS_BACK := Vector3(0.55, 0.3, 0.78)
+
+
 ## Where the camera stands to frame the occupied alcoves in a view of this aspect (width / height, vertical FOV): it
 ## looks at the wall from the aisle, LOOK_DOWN below level, turned `orbit` about the frame's centre, and backs off
 ## exactly as far as the nearest-fitting corner needs, FRAME_MARGIN clear of every edge.
 func camera_frame(aspect: float, orbit: float = 0.0) -> Transform3D:
-	var box := frame_box()
-	var target := box.get_center()
 	var o := clampf(orbit, -ORBIT_MAX, ORBIT_MAX)
 	var back := Vector3(sin(o) * cos(LOOK_DOWN), sin(LOOK_DOWN), cos(o) * cos(LOOK_DOWN))
+	var stored := _fit(frame_box(), back, aspect)
+	if _egress_frame <= 0.0:
+		return stored
+	var view := _fit(egress_box(), EGRESS_BACK.normalized(), aspect, true)
+	var k := _egress_frame * _egress_frame * (3.0 - 2.0 * _egress_frame)
+	var q := stored.basis.get_rotation_quaternion().slerp(view.basis.get_rotation_quaternion(), k)
+	return Transform3D(Basis(q), stored.origin.lerp(view.origin, k))
+
+
+## The camera that fits `box` looking along -back, FRAME_MARGIN clear of every edge; `inside` keeps it inside the bay
+## (pulled in along the same line: the near bulkhead, the right end wall, the ceiling).
+func _fit(box: AABB, back: Vector3, aspect: float, inside: bool = false) -> Transform3D:
+	var target := box.get_center()
 	var look := Basis.looking_at(-back, Vector3.UP)
 	var tv := tan(deg_to_rad(FOV) * 0.5) * (1.0 - 2.0 * FRAME_MARGIN)
 	var th := tan(deg_to_rad(FOV) * 0.5) * maxf(aspect, 0.1) * (1.0 - 2.0 * FRAME_MARGIN)
@@ -250,6 +463,11 @@ func camera_frame(aspect: float, orbit: float = 0.0) -> Transform3D:
 		var along := v.dot(back)
 		d = maxf(d, absf(v.dot(look.x)) / th + along)
 		d = maxf(d, absf(v.dot(look.y)) / tv + along)
+	if inside:
+		for ax: Array in [[0, HALF_WIDTH - 1.0], [1, HEIGHT - 1.0], [2, NEAR_Z - 1.0]]:
+			var a := int(ax[0])
+			if back[a] > 0.001:
+				d = minf(d, (float(ax[1]) - target[a]) / back[a])
 	return Transform3D(look, target + back * d)
 
 
@@ -276,10 +494,44 @@ func alert_amount() -> float:
 	return _alert_k * _alert_k * (3.0 - 2.0 * _alert_k)
 
 
-func set_alert(on: bool) -> void:
+## Launch on / off. On: the alert lights and the egress (HangarEgress), paced to take `seconds` (FrontEnd's launch
+## alert: the mission load cuts it off there) or its natural pace when `seconds` <= 0 (the lab). Off: every mech back in
+## its alcove, clamps closed, doors shut.
+func set_alert(on: bool, seconds: float = -1.0) -> void:
 	state = "alert" if on else "prep"
-	for m in models:
-		m.time_scale = 0.0 if on else 1.0
+	_egress = null
+	_egress_rate = 1.0
+	_reset_crew()
+	if on and not models.is_empty():
+		_egress = HangarEgress.new()
+		_egress.plan(self)
+		if seconds > 0.0:
+			_egress_rate = clampf(_egress.duration(self) / EGRESS_TARGET, EGRESS_RATE, EGRESS_MAX_RATE)
+		for c in _crew_root.get_children():
+			if c is Label3D:
+				(c as Label3D).visible = false
+	_apply_lights()
+
+
+## Back to stored: mechs at their cradles facing the aisle, standing still, own pose; doors shut; tags shown.
+func _reset_crew() -> void:
+	for i in models.size():
+		var m := models[i]
+		m.clear_external_pose()
+		m.position = Vector3(float(ALCOVE_X[i]), PLATFORM_H, MECH_Z)
+		m.rotation.y = MECH_YAW
+		m.time_scale = 0.0
+		m.pose()
+	for c in _crew_root.get_children() if _crew_root != null else []:
+		(c as Node3D).visible = true
+	if _airlock != null:
+		_airlock.reset()
+	if _crew_root != null:
+		for c in _crew_root.get_children():
+			if c is Label3D:
+				(c as Label3D).visible = true
+	if state != "alert":
+		_egress_frame = 0.0
 
 
 func _process(delta: float) -> void:
@@ -287,8 +539,13 @@ func _process(delta: float) -> void:
 	_t += dt
 	var goal := 1.0 if state == "alert" else 0.0
 	_alert_k = move_toward(_alert_k, goal, dt / ALERT_RAMP)
+	_egress_frame = move_toward(_egress_frame, 1.0 if _egress != null else 0.0, dt / ALERT_RAMP)
 	for i in _beacons.size():
 		_beacons[i].rotation.y = _t * beacon_speed + float(i) * 1.3
+	if _egress != null and dt > 0.0:
+		_egress.step(dt * _egress_rate * egress_pace)
+	if _airlock != null:
+		_airlock.apply(dt)
 	_apply_lights()
 
 
@@ -315,21 +572,26 @@ func _apply_lights() -> void:
 	for c: Dictionary in _clamps:
 		var node: Node3D = c["node"]
 		var s: float = c["side"]
+		var ck := clamp_amount(_clamp_roots.find(node.get_parent()))
 		if c["kind"] == "clamp":
-			node.rotation.z = -s * (PI * 0.5) * (1.0 - k)   # upright in prep, level (closed) in alert
+			node.rotation.z = -s * (PI * 0.5) * (1.0 - ck)   # upright when open, level when closed
 		else:
-			node.position.x = float(c["closed_x"]) + s * float(c["travel"]) * (1.0 - k)
+			node.position.x = float(c["closed_x"]) + s * float(c["travel"]) * (1.0 - ck)
 	if _countdown != null:
 		var pulse := 0.6 + 0.4 * sin(_t * 6.0)
 		_countdown.material_override = MechParts.mat(STROBE_AMBER if k > 0.5 else Color(0.25, 0.17, 0.05), 1.0, k > 0.5)
 		_countdown.scale = Vector3(lerpf(1.0, maxf(0.05, 1.0 - fmod(_t, 3.0) / 3.0), k), 1.0 + 0.3 * pulse * k, 1.0)
 	for h in _beacon_housings:
 		h.material_override = MechParts.mat(ALERT_RED if k > 0.5 else Color(0.3, 0.06, 0.04), 1.0, k > 0.5)
-	for lamp in _door_lamps:
-		lamp.material_override = MechParts.mat(ALERT_RED if k > 0.5 and blink > 0.0 else Color(0.3, 0.06, 0.04), 1.0, k > 0.5)
 
 
 # --- Clamps -------------------------------------------------------------------------------------------
+
+## Alcove i's clamp closedness now (1 closed .. 0 open): stored mechs are clamped; the egress opens them (eased).
+func clamp_amount(i: int) -> float:
+	var k := _egress.clamp_k(i) if _egress != null else _clamp_base
+	return k * k * (3.0 - 2.0 * k)
+
 
 ## Fit every alcove's shoulder clamps and brace arms to the mech standing in it (its measured box; the envelope for
 ## an empty alcove): closed, each pad stops CLAMP_GAP short of the box. Call again after changing a mech's shape.
@@ -350,8 +612,13 @@ func fit_clamps() -> void:
 		for s: float in [1.0, -1.0]:
 			var face := cx + s * ALCOVE_HALF                       # the post's inner face
 			var reach := (box.end.x if s > 0.0 else box.position.x) + s * CLAMP_GAP
-			# Shoulder clamp: hinge half in the post; the arm's far corners sweep a circle that just reaches `reach`.
 			var hinge_x := face - s * HINGE_OUT
+			if s * (hinge_x - reach) < HOLD_ROOM:
+				var part := _hold_part(i, s)
+				if part.size != Vector3.ZERO:
+					_build_hold_down(root, part, face, hinge_x, s)
+				continue
+			# Shoulder clamp: hinge half in the post; the arm's far corners sweep a circle that just reaches `reach`.
 			var corner := absf(hinge_x - reach)
 			var arm_len := sqrt(maxf(corner * corner - (ARM_H * 0.5) * (ARM_H * 0.5), 0.09))
 			root.add_child(MechParts.box(Vector3(0.5, 0.7, 0.8), GUNMETAL_DARK,
@@ -373,9 +640,47 @@ func fit_clamps() -> void:
 			root.add_child(ram)
 			ram.add_child(MechParts.box(Vector3(rod_len - 0.12, 0.24, 0.24), GUNMETAL_LIGHT, Vector3(s * (rod_len - 0.12) * 0.5 + s * 0.12, 0, 0)))
 			ram.add_child(MechParts.box(Vector3(0.12, 0.46, 0.46), HAZARD_YELLOW, Vector3(s * 0.06, 0, 0)))
-			var travel := maxf(absf(face - reach) - 0.3, 0.0)        # open: the pad sits at the sleeve's mouth
+			var travel := maxf(absf(face - reach) - 0.3 - BRACE_PROUD, 0.0)   # open: the pad just proud of the sleeve's mouth
 			ram.position = Vector3(reach, by, MECH_Z + CLAMP_Z)
 			_clamps.append({"node": ram, "kind": "brace", "side": s, "travel": travel, "closed_x": reach})
+
+
+## The box (bay space) of the hold-down target on side s of alcove i's mech: its hip pod on that side; empty when the
+## mech has none.
+func _hold_part(i: int, s: float) -> AABB:
+	if i >= models.size():
+		return AABB()
+	var cx := float(ALCOVE_X[i])
+	var stack: Array[Node] = [models[i]]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		stack.append_array(n.get_children())
+		if n is MeshInstance3D and str(n.name) in HOLD_PARTS:
+			var b := mesh_box(n as Node3D, self)
+			if s * (b.get_center().x - cx) > 0.0:
+				return b
+	return AABB()
+
+
+## A hold-down clamp (see HOLD_ROOM) over `part`: the hinge block on the post face, the arm hinged so that level
+## (alert) its pad's shoe rests HOLD_GAP over the part's top with the pad centred over it; stowed upright in prep.
+func _build_hold_down(root: Node3D, part: AABB, face: float, hinge_x: float, s: float) -> void:
+	var y := part.end.y + HOLD_GAP + HOLD_SHOE + HOLD_PAD.y * 0.5
+	var z := part.get_center().z
+	var arm_len := absf(part.get_center().x - hinge_x) + HOLD_PAD.x * 0.5
+	root.add_child(MechParts.box(Vector3(0.5, 0.8, 0.9), GUNMETAL_DARK, Vector3(face - s * 0.05, y, z)))   # hinge block
+	var pivot := Node3D.new()
+	pivot.name = "Clamp%s" % ("R" if s > 0.0 else "L")
+	pivot.position = Vector3(hinge_x, y, z)
+	root.add_child(pivot)
+	var beam := arm_len - HOLD_PAD.x + 0.02          # the beam runs 2 cm into the pad (no shared face)
+	pivot.add_child(MechParts.box(Vector3(beam, ARM_H * 0.7, 0.46), GUNMETAL, Vector3(-s * beam * 0.5, 0, 0)))
+	var pad_x := -s * (arm_len - HOLD_PAD.x * 0.5)
+	pivot.add_child(MechParts.box(HOLD_PAD, HAZARD_YELLOW, Vector3(pad_x, 0, 0)))
+	# The shoe: dark, inset 3 cm round the pad, 1 cm up inside it, HOLD_SHOE below it.
+	pivot.add_child(MechParts.box(Vector3(HOLD_PAD.x - 0.06, HOLD_SHOE + 0.01, HOLD_PAD.z - 0.06), HAZARD_BLACK,
+		Vector3(pad_x, -HOLD_PAD.y * 0.5 - HOLD_SHOE * 0.5 + 0.005, 0)))
+	_clamps.append({"node": pivot, "kind": "clamp", "side": s, "travel": 0.0, "closed_x": 0.0})
 
 
 ## Every clamp and brace mesh of alcove i (the fixed hinge blocks and sleeves too), for the clearance check.
@@ -442,9 +747,9 @@ func _build_shell() -> void:
 	_stripes(Vector3(-HALF_WIDTH, 0.02, FRONT_Z + 0.9), Vector3(HALF_WIDTH, 0.02, FRONT_Z + 0.9), Vector3(0, 0.04, 0.35), 40)
 	add_child(MechParts.box(Vector3(width, 0.03, 0.25), HAZARD_YELLOW, Vector3(0, 0.015, FRONT_Z + 9.0)))
 	# End walls, ceiling, the near bulkhead behind the camera (closing the bay for the lab's 360-degree orbit).
-	for side: float in [1.0, -1.0]:
-		add_child(MechParts.box(Vector3(0.6, HEIGHT, length), GUNMETAL, Vector3(side * (HALF_WIDTH + 0.3), HEIGHT * 0.5, mid_z)))
-		add_child(MechParts.box(Vector3(0.25, 0.5, length), HAZARD_YELLOW, Vector3(side * (HALF_WIDTH - 0.12), 0.25, mid_z)))
+	# (The left end wall, with the airlock's door in it, is HangarAirlock's.)
+	add_child(MechParts.box(Vector3(0.6, HEIGHT, length), GUNMETAL, Vector3(HALF_WIDTH + 0.3, HEIGHT * 0.5, mid_z)))
+	add_child(MechParts.box(Vector3(0.25, 0.5, length), HAZARD_YELLOW, Vector3(HALF_WIDTH - 0.12, 0.25, mid_z)))
 	add_child(MechParts.box(Vector3(width + 1.2, 0.4, length + 1.2), GUNMETAL_DARK, Vector3(0, HEIGHT + 0.2, mid_z)))
 	add_child(MechParts.box(Vector3(width + 1.2, HEIGHT, 0.6), GUNMETAL, Vector3(0, HEIGHT * 0.5, NEAR_Z + 0.3)))
 	# Ceiling girders across the bay (wall to near bulkhead), light strips between them.
@@ -522,30 +827,6 @@ func _build_alcove(i: int) -> void:
 	_alcove_lights.append(l)
 
 
-## The breaching door on the left end wall: two armoured leaves in a striped frame, a red lamp and a strobe each side,
-## a hazard band on the deck before it.
-func _build_door() -> void:
-	var dx := -HALF_WIDTH
-	var dz := FRONT_Z + 9.0
-	for side: float in [1.0, -1.0]:
-		add_child(MechParts.box(Vector3(0.5, 7.8, 3.9), GUNMETAL_LIGHT, Vector3(dx + 0.25, 3.9, dz + side * 1.98)))
-		add_child(MechParts.box(Vector3(0.2, 0.5, 2.6), GUNMETAL_DARK, Vector3(dx + 0.55, 2.0, dz + side * 1.98)))
-		add_child(MechParts.box(Vector3(0.2, 0.5, 2.6), GUNMETAL_DARK, Vector3(dx + 0.55, 5.6, dz + side * 1.98)))
-		_stripes(Vector3(dx + 0.3, 0, dz + side * 4.35), Vector3(dx + 0.3, 8.6, dz + side * 4.35), Vector3(0.5, 0, 0.7), 8)
-		var lamp := MechParts.sphere(0.35, Color(0.3, 0.06, 0.04), Vector3(dx + 0.5, 7.0, dz + side * 5.4), 8)
-		add_child(lamp)
-		_door_lamps.append(lamp)
-		var strobe := OmniLight3D.new()
-		strobe.light_color = STROBE_AMBER
-		strobe.omni_range = 9.0
-		strobe.position = Vector3(dx + 1.2, 7.0, dz + side * 5.4)
-		add_child(strobe)
-		_strobes.append(strobe)
-	add_child(MechParts.box(Vector3(0.1, 7.8, 0.08), HAZARD_BLACK, Vector3(dx + 0.52, 3.9, dz)))
-	_stripes(Vector3(dx + 0.3, 8.95, dz - 4.7), Vector3(dx + 0.3, 8.95, dz + 4.7), Vector3(0.5, 0.7, 0), 10)
-	_stripes(Vector3(dx + 2.0, 0.02, dz - 5.0), Vector3(dx + 2.0, 0.02, dz + 5.0), Vector3(2.2, 0.04, 0), 12)
-
-
 ## An ammunition rack standing against the wall, facing the aisle.
 func _build_rack(at: Vector3) -> void:
 	add_child(MechParts.box(Vector3(3.0, 4.4, 0.9), GUNMETAL_DARK, at + Vector3(0, 2.2, 0)))
@@ -560,7 +841,7 @@ func _build_rack(at: Vector3) -> void:
 
 func _build_lights() -> void:
 	# Work lights over the aisle (the alcoves have their own), and a soft fill from the camera's side.
-	for p: Vector3 in [Vector3(-11.0, 9.5, 8.0), Vector3(0.0, 9.5, 8.0), Vector3(11.0, 9.5, 8.0), Vector3(-HALF_WIDTH + 3.0, 8.0, FRONT_Z + 9.0)]:
+	for p: Vector3 in [Vector3(-11.0, 9.5, 8.0), Vector3(0.0, 9.5, 8.0), Vector3(11.0, 9.5, 8.0), Vector3(-HALF_WIDTH + 3.0, 8.0, (door_span().x + door_span().y) * 0.5)]:
 		var l := OmniLight3D.new()
 		l.light_color = WORK_LIGHT
 		l.omni_range = 15.0
@@ -621,6 +902,7 @@ func lab_params() -> Array:
 		{"id": "beacon_speed", "label": "Beacon speed (rad/s)", "min": 0.5, "max": 6.0, "value": beacon_speed},
 		{"id": "work_light", "label": "Work light energy", "min": 0.0, "max": 5.0, "value": work_energy},
 		{"id": "alert_dim", "label": "Work light in alert (x)", "min": 0.0, "max": 1.0, "value": alert_dim},
+		{"id": "egress_pace", "label": "Launch egress pace (x)", "min": 0.25, "max": 4.0, "value": egress_pace},
 	]
 
 
@@ -629,6 +911,7 @@ func set_lab_param(id: String, value: float) -> void:
 		"beacon_speed": beacon_speed = value
 		"work_light": work_energy = value
 		"alert_dim": alert_dim = value
+		"egress_pace": egress_pace = value
 	_apply_lights()
 
 
@@ -636,6 +919,7 @@ func lab_options() -> Array:
 	return [
 		{"id": "state", "label": "State", "choices": ["prep", "alert"], "value": state},
 		{"id": "crew", "label": "Crew in the bay", "choices": ["1", "2", "3", "4"], "value": _lab_crew},
+		{"id": "chassis", "label": "Crew chassis", "choices": ["strider", "bulwark", "mixed"], "value": _lab_chassis},
 	]
 
 
@@ -645,13 +929,17 @@ func set_lab_option(id: String, value: String) -> void:
 		"crew":
 			_lab_crew = value
 			_show_lab_crew()
+		"chassis":
+			_lab_chassis = value
+			_show_lab_crew()
 
 
 func _show_lab_crew() -> void:
 	var heads := MechCatalog.HEAD_ORDER
 	var entries: Array = []
 	for i in clampi(int(_lab_crew), 1, 4):
-		entries.append({"head": heads[i % heads.size()], "chassis": "strider", "name": "Pilot %d" % (i + 1),
+		var ch := _lab_chassis if _lab_chassis != "mixed" else ("bulwark" if i % 2 == 1 else "strider")
+		entries.append({"head": heads[i % heads.size()], "chassis": ch, "name": "Pilot %d" % (i + 1),
 			"accent": MechAccent.ORDER[i % MechAccent.ORDER.size()]})
 	show_crew(entries)
 

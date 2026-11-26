@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## The host's crew option "Friendly fire" (docs/networking.md "Crew options") over a real 2-process crew, both running the
 ## front end:
 ## - the host turns it off in its hangar (FrontEnd.ff_check, saved in its settings); the client's hangar shows it off,
@@ -75,7 +76,7 @@ func run_host() -> void:
 	if not check(await wait_reports("closed", 1), "the client closes its menu"):
 		return
 	_close_menu()
-	check(Session.start_mission(SEED, NetMission.MODE_DISTRICT), "the host launches")
+	check(Session.start_mission(SEED), "the host launches")
 	eq(Session.mission_params().get("friendly_fire", null), false, "the launch carries friendly_fire false")
 	await _load()
 	if not check(await wait_reports("td", 1, 40.0), "the client loads the mission"):

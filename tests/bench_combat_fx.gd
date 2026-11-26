@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## NOT part of -TestAll (the name has no "test_" prefix): a repeatable headless micro-benchmark of CombatWorld's effects
 ## under test_perf's combat load. Same scene, same encounter, same inputs, same 240 frames as tests/test_perf.gd (the mech
 ## on the entry deck's road crossing ~70 m from its garrison, that deck alerted from the player target's id, aiming at the

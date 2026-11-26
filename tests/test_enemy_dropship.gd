@@ -18,6 +18,8 @@ const DT := 1.0 / 60.0
 const TEST_TIMEOUT := 900
 const ROUND_TRIP_SEEDS := [1, 4, 7, 403112]
 const ROUND_TRIP_LIMIT := 150.0   ## game s per flight
+const DOOR_SHUT_WITHIN := 13.0   ## mission-clock s from the ship leaving / entering a door until it is shut (hold <= 5 s after
+                                 ## the hull is clear + up to 3 s opening + 2 s closing + margin)
 
 
 func setup() -> void:
@@ -422,7 +424,6 @@ func _stack_round_trips_clear() -> void:
 		var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 		td.city_mode = TestDrive.MODE_STACK
 		td.seed_value = seed_n
-		td.objectives = true
 		add_child(td)
 		await frames(4)
 		td.drive_override = true
@@ -452,7 +453,11 @@ func _stack_round_trips_clear() -> void:
 					sq.remove_enemy(e)
 					e.queue_free()
 			sq._deck_drops.clear()
+			sq.drops_enabled = true
 			var ds := sq.request_dropship(td.stack.from_deck_arc(k, tn.x, tn.y, 1.0), k)
+			# No other call-ins meanwhile: with the per-deck cap lifted for this test, a scout's beacon would send a second
+			# ship through the same door during the door checks (what made "shut again" fail intermittently).
+			sq.drops_enabled = false
 			var tag := "seed %d deck %d%s" % [seed_n, k, "" if doors_on else " (doors off)"]
 			if not check(ds != null, tag + ": a dropship is called in"):
 				continue
@@ -482,6 +487,9 @@ func _stack_round_trips_clear() -> void:
 			var first_hit := ""
 			var last_pos := ds._world_pos()
 			var air_out := ""
+			var out_t := -1.0          # mission clock when the ship left the arrival door (its out point)
+			var late_open := 0         # frames the arrival door was still not shut DOOR_SHUT_WITHIN s after that
+			var clock_gap := td.combat.world.now - mw.now
 			while t < ROUND_TRIP_LIMIT and not removed[0]:
 				await get_tree().physics_frame
 				t += Engine.time_scale / float(Engine.physics_ticks_per_second)
@@ -493,6 +501,10 @@ func _stack_round_trips_clear() -> void:
 				var ph := ds._drop_phase
 				var in_door := ph == EnemyDropDrone.PHASE_DOOR_OUT or ph == EnemyDropDrone.PHASE_DOOR_IN
 				var a := ds._arc2(last_pos)
+				if out_t < 0.0 and air_in != "" and ph != EnemyDropDrone.PHASE_DOOR_OUT:
+					out_t = mw.now
+				if out_t >= 0.0 and air_in != air_out and mw.now > out_t + DOOR_SHUT_WITHIN 						and str(mw.source_state(air_in).get("state", "")) != "shut":
+					late_open += 1
 				if in_door and air_in != "":
 					var did := air_in if ph == EnemyDropDrone.PHASE_DOOR_OUT else air_out
 					var passable := bool(mw.source_state(did).get("passable", false))
@@ -512,8 +524,9 @@ func _stack_round_trips_clear() -> void:
 				if (not plan.extent.has_point(a) and not in_door) or ds.ring.height(last_pos) + EnemyDropDrone.HULL_SIZE.y * 0.5 > plan.p("ceiling"):
 					outside += 1
 			sq.enemy_removed.disconnect(on_removed)
-			print("[Test] round trip %s: %.1f s, doors %s>%s, hull contacts %d, outside %d, troops %d %s" % [tag, t, air_in, air_out,
-				hits, outside, (landed[0] as Array).size() if landed[0] is Array else -1, first_hit])
+			print("[Test] round trip %s: %.1f s, doors %s>%s, hull contacts %d, outside %d, troops %d, combat - mission clock %.1f s %s" % [
+				tag, t, air_in, air_out, hits, outside, (landed[0] as Array).size() if landed[0] is Array else -1, clock_gap, first_hit])
+			eq(late_open, 0, tag + ": the arrival door %s shut within %.0f s of the ship leaving it" % [air_in, DOOR_SHUT_WITHIN])
 			eq(hits, 0, tag + ": the hull never touches geometry (%s)" % first_hit)
 			eq(outside, 0, tag + ": never outside the walls (but in a door) or above the ceiling")
 			eq(early_hit, 0, tag + ": not hittable while hidden")
@@ -530,13 +543,29 @@ func _stack_round_trips_clear() -> void:
 						dd = cand
 				var off := last_pos.distance_to(dd["hide"] as Vector3) if not dd.is_empty() else -1.0
 				check(not dd.is_empty() and off < 2.0, tag + ": removed inside the recess of %s (%.1f m from its hide point)" % [air_out, off])
-				# The door shuts again after its hold.
-				var w := 0.0
-				while w < 20.0 and str(mw.source_state(air_out).get("state", "")) != "shut":
+				# The door shuts again: waited on its own schedule (close_at + CLOSE + 1 s, capped), never past
+				# DOOR_SHUT_WITHIN s of the ship being removed (mission clock), and nothing re-opens it.
+				var gone_t := mw.now
+				var st0 := mw.source_state(air_out)
+				var cap_t := minf(float(st0.get("close_at", gone_t)) + MissionWorld.CLOSE + 1.0, gone_t + DOOR_SHUT_WITHIN + 2.0)
+				while mw.now < cap_t and str(mw.source_state(air_out).get("state", "")) != "shut":
 					await get_tree().physics_frame
-					w += Engine.time_scale / float(Engine.physics_ticks_per_second)
-				eq(str(mw.source_state(air_out).get("state", "")), "shut", tag + ": %s shut again after the ship went in" % air_out)
+				var shut_after := mw.now - gone_t
+				eq(str(mw.source_state(air_out).get("state", "")), "shut", tag + ": %s shut again after the ship went in (%.1f s after, close_at %+.1f s)" % [
+					air_out, shut_after, float(st0.get("close_at", 0.0)) - gone_t])
+				check(shut_after <= DOOR_SHUT_WITHIN, tag + ": %s shut within %.0f s of the ship's removal (%.1f)" % [air_out,
+					DOOR_SHUT_WITHIN, shut_after])
+				var t2 := mw.now
+				while mw.now < t2 + 4.0:
+					await get_tree().physics_frame
+				eq(str(mw.source_state(air_out).get("state", "")), "shut", tag + ": %s stays shut (nothing re-opens it)" % air_out)
+			var others := 0
+			for e in sq.enemies:
+				if is_instance_valid(e) and e.enemy_type == "dropship" and e.target_id != ds_id:
+					others += 1
+			eq(others, 0, tag + ": no other dropship joined during the checks (call-ins off)")
 		sq.air_doors_enabled = true
+		sq.drops_enabled = true
 		td.queue_free()
 		await frames(2)
 	Engine.time_scale = 1.0

@@ -6,28 +6,76 @@ extends TestCase
 ##    mesh but no sphere within TOL m of it ("shots pass through the visible hull"), `over` = rays through the spheres'
 ##    silhouettes whose first sphere is not followed by the mesh within TOL m ("sticks out"), `comp` = the share of covered
 ##    rays whose first sphere is the mesh's own component. Printed for both chassis (body spheres alone and with the
-##    hardpoint spheres); the Bulwark's body is held to BODY_UNDER_MAX / BODY_OVER_MAX / COMP_MIN, each pilot head too.
-##    The Strider's spheres are pinned unchanged (STRIDER_GOLDEN), its numbers only printed (they predate this test).
+##    hardpoint spheres); both chassis' bodies are held to BODY_UNDER_MAX / BODY_OVER_MAX / COMP_MIN, each pilot head
+##    to HEAD_UNDER_MAX. The Strider's refit (2026-11-24, Strider hit volumes) is pinned by STRIDER_GOLDEN.
 ##  - the component map and HP per chassis, every id known to the codec; the wall probe from the catalog capsule.
 ##  - damage -> component routing through CombatWorld.first_hit from several sides, for both chassis.
 ##  - destroyed components: a core one downs the mech, a hardpoint does not (its slot reads destroyed).
 ##  - DownedCrew's reviver rule: a repair drone on the Strider's back or either Bulwark back mount, not once destroyed.
 ##  - the repair drone hovers over the Bulwark's back mounts (RepairDrone.back_height by chassis / hardpoint).
-##  - the enemy sight offsets: the Strider's are EnemyBase's old constants, the Bulwark's land on its head / a leg.
+##  - the enemy sight offsets land on each chassis' head / right leg.
 
 const Probe := preload("res://tests/chassis_body_probe.gd")
 const RAYS := 4000
-const BODY_UNDER_MAX := 0.03      ## Bulwark: visible body rays that miss every body sphere
-const BODY_OVER_MAX := 0.35       ## Bulwark: body-sphere rays with no mesh within TOL
-const COMP_MIN := 0.85            ## Bulwark: covered rays routed to the mesh's own component
-const HEAD_UNDER_MAX := 0.06      ## Bulwark: per pilot head, visible head rays missing every sphere
-## The Strider's body spheres and HP before this change (2026-11-24): must not move.
+const BODY_UNDER_MAX := 0.03      ## visible body rays that miss every body sphere
+const BODY_OVER_MAX := 0.35       ## body-sphere rays with no mesh within TOL
+const COMP_MIN := 0.85            ## covered rays routed to the mesh's own component
+const HEAD_UNDER_MAX := 0.06      ## per pilot head, visible head rays missing every sphere
+## The Strider's body spheres after the refit (2026-11-24, Strider hit volumes; 43, first = the aim centre) and its HP
+## (unchanged): pinned. Before: 4 spheres (torso (0, 4.4, 0) r 2.05, head (0, 7.1, -0.75) r 0.95, legs (+-1.35, 2, 0)
+## r 1.15): body under 72.5 %, over 42 %, own component 52 % (whole model), the pilot's head 100 % missed.
 const STRIDER_GOLDEN := [
-	{"component": "torso", "center": Vector3(0.0, 4.4, 0.0), "radius": 2.05},
-	{"component": "head", "center": Vector3(0.0, 7.1, -0.75), "radius": 0.95},
-	{"component": "leg_l", "center": Vector3(-1.35, 2.0, 0.0), "radius": 1.15},
-	{"component": "leg_r", "center": Vector3(1.35, 2.0, 0.0), "radius": 1.15},
+	{"component": "torso", "center": Vector3(0.0, 6.94, -0.29), "radius": 1.0},
+	{"component": "torso", "center": Vector3(0.47, 10.6, 0.4), "radius": 0.5},
+	{"component": "torso", "center": Vector3(-0.47, 10.6, 0.4), "radius": 0.5},
+	{"component": "torso", "center": Vector3(0.52, 9.76, 0.2), "radius": 0.5},
+	{"component": "torso", "center": Vector3(-0.52, 9.76, 0.2), "radius": 0.5},
+	{"component": "torso", "center": Vector3(0.42, 8.18, 0.2), "radius": 1.25},
+	{"component": "torso", "center": Vector3(-0.42, 8.18, 0.2), "radius": 1.25},
+	{"component": "torso", "center": Vector3(0.52, 7.17, -0.89), "radius": 1.85},
+	{"component": "torso", "center": Vector3(-0.52, 7.17, -0.89), "radius": 1.85},
+	{"component": "torso", "center": Vector3(0.41, 7.14, 0.89), "radius": 1.7},
+	{"component": "torso", "center": Vector3(-0.41, 7.14, 0.89), "radius": 1.7},
+	{"component": "torso", "center": Vector3(2.1, 7.2, 0.36), "radius": 0.9},
+	{"component": "torso", "center": Vector3(-2.1, 7.2, 0.36), "radius": 0.9},
+	{"component": "torso", "center": Vector3(0.0, 6.27, -2.38), "radius": 1.1},
+	{"component": "torso", "center": Vector3(1.58, 5.9, -0.37), "radius": 0.6},
+	{"component": "torso", "center": Vector3(-1.58, 5.9, -0.37), "radius": 0.6},
+	{"component": "torso", "center": Vector3(1.9, 5.86, -1.3), "radius": 0.4},
+	{"component": "torso", "center": Vector3(-1.9, 5.86, -1.3), "radius": 0.4},
+	{"component": "torso", "center": Vector3(0.0, 4.93, -0.47), "radius": 0.9},
+	{"component": "torso", "center": Vector3(0.0, 4.93, 0.58), "radius": 0.9},
+	{"component": "torso", "center": Vector3(0.42, 4.73, 0.11), "radius": 1.0},
+	{"component": "torso", "center": Vector3(-0.42, 4.73, 0.11), "radius": 1.0},
+	{"component": "torso", "center": Vector3(1.39, 4.64, -0.23), "radius": 0.7},
+	{"component": "torso", "center": Vector3(-1.39, 4.64, -0.23), "radius": 0.7},
+	{"component": "head", "center": Vector3(0.0, 10.1, -1.2), "radius": 1.25},
+	{"component": "head", "center": Vector3(0.0, 9.18, -1.18), "radius": 1.0},
+	{"component": "head", "center": Vector3(0.0, 9.87, -2.75), "radius": 0.5},
+	{"component": "leg_l", "center": Vector3(-1.51, 3.52, 0.67), "radius": 1.25},
+	{"component": "leg_l", "center": Vector3(-1.25, 2.34, 1.09), "radius": 0.7},
+	{"component": "leg_l", "center": Vector3(-1.31, 1.33, 0.1), "radius": 0.6},
+	{"component": "leg_l", "center": Vector3(-0.66, 1.24, -2.13), "radius": 1.4},
+	{"component": "leg_l", "center": Vector3(-1.38, 0.29, -0.46), "radius": 0.7},
+	{"component": "leg_l", "center": Vector3(-1.33, -0.03, 0.73), "radius": 0.7},
+	{"component": "leg_l", "center": Vector3(-2.36, 0.47, -1.34), "radius": 0.5},
+	{"component": "leg_l", "center": Vector3(-2.42, 0.11, -1.99), "radius": 0.3},
+	{"component": "leg_r", "center": Vector3(1.51, 3.52, 0.67), "radius": 1.25},
+	{"component": "leg_r", "center": Vector3(1.25, 2.34, 1.09), "radius": 0.7},
+	{"component": "leg_r", "center": Vector3(1.31, 1.33, 0.1), "radius": 0.6},
+	{"component": "leg_r", "center": Vector3(0.66, 1.24, -2.13), "radius": 1.4},
+	{"component": "leg_r", "center": Vector3(1.38, 0.29, -0.46), "radius": 0.7},
+	{"component": "leg_r", "center": Vector3(1.33, -0.03, 0.73), "radius": 0.7},
+	{"component": "leg_r", "center": Vector3(2.36, 0.47, -1.34), "radius": 0.5},
+	{"component": "leg_r", "center": Vector3(2.42, 0.11, -1.99), "radius": 0.3},
 ]
+const STRIDER_HARDPOINTS_GOLDEN := {
+	"side_l": {"center": Vector3(-2.79, 5.94, -0.64), "radius": 1.0},
+	"side_r": {"center": Vector3(2.79, 5.94, -0.64), "radius": 1.0},
+	"shoulder_l": {"center": Vector3(-2.15, 9.8, 0.62), "radius": 1.2},
+	"shoulder_r": {"center": Vector3(2.15, 9.8, 0.62), "radius": 1.2},
+	"back": {"center": Vector3(0.0, 10.39, 1.38), "radius": 1.0},
+}
 const STRIDER_HP := {"torso": 400.0, "leg_l": 200.0, "leg_r": 200.0, "head": 100.0}
 
 var _floor: StaticBody3D
@@ -47,11 +95,11 @@ func setup() -> void:
 	_floor.position = Vector3(0, -0.5, 0)
 	add_child(_floor)
 	_strider_golden()
-	await _coverage("strider", "chicken", true)
-	await _coverage("bulwark", "chicken", true)
-	for h: String in MechCatalog.HEAD_ORDER:
-		if h != "chicken":
-			await _coverage("bulwark", h, false)
+	for ch: String in ["strider", "bulwark"]:
+		await _coverage(ch, "chicken", true)
+		for h: String in MechCatalog.HEAD_ORDER:
+			if h != "chicken":
+				await _coverage(ch, h, false)
 	await _components()
 	await _routing("strider")
 	await _routing("bulwark")
@@ -64,21 +112,31 @@ func setup() -> void:
 
 
 func _strider_golden() -> void:
-	eq(str(PlayerTarget.BODY_SPHERES), str(STRIDER_GOLDEN), "the Strider's body spheres are unchanged")
+	eq(str(PlayerTarget.BODY_SPHERES), str(STRIDER_GOLDEN), "the Strider's body spheres (the 2026-11-24 refit)")
 	eq(str(PlayerTarget.body_spheres("strider")), str(STRIDER_GOLDEN), "body_spheres(strider) = BODY_SPHERES")
 	eq(str(PlayerTarget.COMPONENT_HP), str(STRIDER_HP), "the Strider's component HP is unchanged")
 	eq(str(PlayerTarget.component_hp("strider")), str(STRIDER_HP), "component_hp(strider) = COMPONENT_HP")
-	eq(str(PlayerTarget.hardpoint_spheres("strider")), str(PlayerTarget.HARDPOINT_SPHERES), "the Strider's hardpoint spheres")
+	eq(str(PlayerTarget.hardpoint_spheres("strider")), str(STRIDER_HARDPOINTS_GOLDEN), "the Strider's hardpoint spheres")
+	eq(str(PlayerTarget.HARDPOINT_SPHERES), str(STRIDER_HARDPOINTS_GOLDEN), "HARDPOINT_SPHERES are the Strider's")
+	for s: Dictionary in STRIDER_GOLDEN:   # symmetric: every sphere off the midline has its mirror on the other side
+		var c: Vector3 = s["center"]
+		var want := str(s["component"]).replace("_l", "_X").replace("_r", "_l").replace("_X", "_r")
+		var found := false
+		for t: Dictionary in STRIDER_GOLDEN:
+			if str(t["component"]) == want and (t["center"] as Vector3).is_equal_approx(Vector3(-c.x, c.y, c.z)) and \
+					is_equal_approx(float(t["radius"]), float(s["radius"])):
+				found = true
+		check(found, "Strider sphere %s %s has its mirror" % [s["component"], str(c)])
 	var pt := PlayerTarget.new()
 	near(pt.probe_height, 4.0, 1e-6, "the Strider's wall probe height is unchanged")
 	near(pt.body_radius, 2.2, 1e-6, "the Strider's body radius is unchanged")
-	eq(pt.hit_shapes.size(), 4, "a bare Strider: four body spheres")
+	eq(pt.hit_shapes.size(), STRIDER_GOLDEN.size(), "a bare Strider: its body spheres")
 	pt.free()
 
 
 ## Ray coverage of `chassis` with pilot `head` (full = also print / hold the whole-model numbers).
 func _coverage(chassis: String, head: String, full: bool) -> void:
-	var mech := Probe.spawn(self, chassis, head)
+	var mech := Probe.spawn(self, chassis, head, {})
 	await frames(60)
 	var pr := Probe.new()
 	pr.gather(mech)
@@ -93,8 +151,7 @@ func _coverage(chassis: String, head: String, full: bool) -> void:
 	for hp_id: String in hps:
 		if pr.comps.has(hp_id):
 			all.append({"component": hp_id, "center": hps[hp_id]["center"], "radius": hps[hp_id]["radius"]})
-	if chassis == "bulwark":
-		pr.debug_component = "head"
+	pr.debug_component = "head"
 	var cb := pr.coverage(space, body, RAYS, 11)
 	if pr.debug_points.size() > 0:
 		var bb := AABB(pr.debug_points[0], Vector3.ZERO)
@@ -108,17 +165,18 @@ func _coverage(chassis: String, head: String, full: bool) -> void:
 			chassis, body.size(), 100.0 * float(cb["body_under"]), 100.0 * float(cb["over"]), 100.0 * float(cb["comp"]), 100.0 * head_under])
 		print("  [coverage] %-8s + hardpoints (%d): whole-model under %.1f%%  over %.1f%%  own component %.1f%%  misses %s" % [
 			chassis, all.size(), 100.0 * float(ca["under"]), 100.0 * float(ca["over"]), 100.0 * float(ca["comp"]), str(ca["per_miss"])])
-		if chassis == "bulwark":
-			check(float(cb["body_under"]) <= BODY_UNDER_MAX, "Bulwark: shots at the visible hull / head / legs meet a sphere (%.1f%% miss, max %.0f%%)" % [
-				100.0 * float(cb["body_under"]), 100.0 * BODY_UNDER_MAX])
-			check(float(cb["over"]) <= BODY_OVER_MAX, "Bulwark: the body spheres do not stick out far past the meshes (%.1f%%, max %.0f%%)" % [
-				100.0 * float(cb["over"]), 100.0 * BODY_OVER_MAX])
-			check(float(ca["comp"]) >= COMP_MIN, "Bulwark: hits land on the part they strike (%.1f%%, min %.0f%%)" % [
-				100.0 * float(ca["comp"]), 100.0 * COMP_MIN])
+		check(float(cb["body_under"]) <= BODY_UNDER_MAX, "%s: shots at the visible hull / head / legs meet a sphere (%.1f%% miss, max %.0f%%)" % [
+			chassis, 100.0 * float(cb["body_under"]), 100.0 * BODY_UNDER_MAX])
+		check(float(cb["over"]) <= BODY_OVER_MAX, "%s: the body spheres do not stick out far past the meshes (%.1f%%, max %.0f%%)" % [
+			chassis, 100.0 * float(cb["over"]), 100.0 * BODY_OVER_MAX])
+		check(float(ca["comp"]) >= COMP_MIN, "%s: hits land on the part they strike (%.1f%%, min %.0f%%)" % [
+			chassis, 100.0 * float(ca["comp"]), 100.0 * COMP_MIN])
 	else:
-		print("  [coverage] bulwark head %-7s: head under %.1f%%" % [head, 100.0 * head_under])
-	if chassis == "bulwark":
-		check(head_under <= HEAD_UNDER_MAX, "Bulwark %s: shots at the pilot's head meet a sphere (%.1f%% miss)" % [head, 100.0 * head_under])
+		print("  [coverage] %-8s head %-7s: head under %.1f%%  body under %.1f%%  over %.1f%%" % [chassis, head, 100.0 * head_under,
+			100.0 * float(cb["body_under"]), 100.0 * float(cb["over"])])
+		check(float(cb["body_under"]) <= BODY_UNDER_MAX, "%s %s: shots at the visible body meet a sphere (%.1f%% miss)" % [chassis,
+			head, 100.0 * float(cb["body_under"])])
+	check(head_under <= HEAD_UNDER_MAX, "%s %s: shots at the pilot's head meet a sphere (%.1f%% miss)" % [chassis, head, 100.0 * head_under])
 	pr.free_bodies()
 	await frames(2)
 
@@ -147,15 +205,20 @@ func _components() -> void:
 	var r := await _bound("bulwark")
 	var pt: PlayerTarget = r["pt"]
 	eq(pt.chassis, "bulwark", "the target knows its chassis")
-	var want := {"torso": 600.0, "leg_l": 280.0, "leg_r": 280.0, "head": 100.0, "side_l": 80.0, "side_r": 80.0, "back_l": 80.0,
+	var want := {"torso": 900.0, "leg_l": 420.0, "leg_r": 420.0, "head": 150.0, "side_l": 80.0, "side_r": 80.0, "back_l": 80.0,
 		"back_r": 80.0}
+	var loaded := 0   # the default loadout's filled hardpoints (5 with the belly turret's gun)
+	for hp_id: String in MechCatalog.chassis("bulwark")["default_loadout"]:
+		if str(MechCatalog.chassis("bulwark")["default_loadout"][hp_id]) != "":
+			loaded += 1
+			want[hp_id] = want.get(hp_id, 80.0)
 	eq(pt.max_hp.size(), want.size(), "Bulwark components: %s" % str(pt.max_hp.keys()))
 	for k: String in want:
 		near(float(pt.max_hp.get(k, -1.0)), float(want[k]), 1e-6, "Bulwark %s HP" % k)
 		check(k in NetMechCodec.COMPONENTS, "%s is a codec component" % k)
 	near(pt.probe_height, 4.0, 1e-6, "Bulwark wall probe at its capsule's centre")
 	near(pt.body_radius, 3.6, 1e-6, "Bulwark body radius = its capsule")
-	eq(pt.hit_shapes.size(), PlayerTarget.body_spheres("bulwark").size() + 4, "body spheres + four loaded hardpoints")
+	eq(pt.hit_shapes.size(), PlayerTarget.body_spheres("bulwark").size() + loaded, "body spheres + one per loaded hardpoint (%d)" % loaded)
 	var first: Dictionary = pt.hit_shapes[0]
 	eq(str(first["component"]), "torso", "the first sphere (the enemies' aim centre) is the hull")
 	check((first["center"] as Vector3).y > 4.0 and (first["center"] as Vector3).y < 6.5, "the aim centre is in the hull's height band")
@@ -174,14 +237,17 @@ func _routing(chassis: String) -> void:
 	pt.tick(0.0)
 	var cases: Array = []
 	if chassis == "strider":
-		cases = [[Vector3(0, 4.4, -40), Vector3(0, 4.4, 0), "torso"], [Vector3(0, 7.1, -40), Vector3(0, 7.1, 0), "head"],
-			[Vector3(-40, 2.0, 0), Vector3(0, 2.0, 0), "leg_l"], [Vector3(40, 1.6, 0), Vector3(0, 1.6, 0), "leg_r"],
-			[Vector3(0, 5.8, 40), Vector3(0, 5.8, 0), "back"]]
+		cases = [[Vector3(0, 6.9, -40), Vector3(0, 6.9, 0), "torso"], [Vector3(0, 10.1, -40), Vector3(0, 10.1, 0), "head"],
+			[Vector3(-40, 2.3, 1.1), Vector3(0, 2.3, 1.1), "leg_l"], [Vector3(40, 1.3, 0.1), Vector3(0, 1.3, 0.1), "leg_r"],
+			[Vector3(0, 10.4, 40), Vector3(0, 10.4, 0), "back"], [Vector3(-40, 7.2, 0.36), Vector3(0, 7.2, 0.36), "torso"],
+			[Vector3(0, 40, 1.6), Vector3(0, 0, 1.6), "back"], [Vector3(2.79, 5.94, -40), Vector3(2.79, 5.94, 0), "side_r"]]
 	else:
 		cases = [[Vector3(0, 7.6, -40), Vector3(0, 7.6, 0), "head"], [Vector3(-40, 2.7, -1.58), Vector3(0, 2.7, -1.58), "leg_l"],
 			[Vector3(40, 1.0, -0.4), Vector3(0, 1.0, -0.4), "leg_r"], [Vector3(0, 5.3, 40), Vector3(0, 5.3, 0), "torso"],
 			[Vector3(-40, 6.2, 0.4), Vector3(0, 6.2, 0.4), "torso"], [Vector3(2.16, 40, 2.0), Vector3(2.16, 0, 2.0), "back_r"],
 			[Vector3(3.57, 6.3, -40), Vector3(3.57, 6.3, 0), "side_r"], [Vector3(-2.0, 1.5, -40), Vector3(-2.0, 1.5, 40), ""]]
+		if str(MechCatalog.chassis("bulwark")["default_loadout"].get("belly", "")) != "":   # the belly turret
+			cases.append([Vector3(0, 2.6, -40), Vector3(0, 2.6, 0), "belly"])
 	for c: Array in cases:
 		var h := world.first_hit(c[0] as Vector3, c[1] as Vector3, 0.1, "enemy_x")
 		var comp := str(h.get("component", "")) if not h.is_empty() else ""
@@ -194,16 +260,18 @@ func _destroyed() -> void:
 	var pt: PlayerTarget = r["pt"]
 	pt.apply_damage(81.0, "back_l", "test")
 	check(pt.is_slot_destroyed("back_l") and not pt.disabled, "a destroyed back mount: slot destroyed, the mech fights on")
-	pt.apply_damage(279.0, "leg_r", "test")
-	check(not pt.disabled, "279 of 280 leg HP: still up")
+	pt.apply_damage(419.0, "leg_r", "test")
+	check(not pt.disabled, "419 of 420 leg HP: still up")
 	pt.apply_damage(2.0, "leg_r", "test")
 	check(pt.disabled and pt.disable_cause == "leg_r", "a destroyed leg downs the Bulwark")
 	pt.revive("medic")
 	check(not pt.disabled, "revived")
-	near(float(pt.hp["torso"]), 600.0, 1e-3, "the untouched hull stays full")
+	near(float(pt.hp["torso"]), 900.0, 1e-3, "the untouched hull stays full")
 	pt.invuln_left = 0.0
-	pt.apply_damage(600.0, "torso", "test")
-	check(pt.disabled and pt.disable_cause == "torso", "600 hull damage downs it")
+	pt.apply_damage(899.0, "torso", "test")
+	check(not pt.disabled, "899 of 900 hull HP: still up (the armoured hull)")
+	pt.apply_damage(2.0, "torso", "test")
+	check(pt.disabled and pt.disable_cause == "torso", "900 hull damage downs it")
 	await _free(r)
 
 
@@ -228,7 +296,7 @@ func _reviver() -> void:
 
 ## The drone hovers `hover` m over the launcher's own back mount: the Bulwark's back_l / back_r, the Strider's back.
 func _drone_height() -> void:
-	near(RepairDrone.back_height(), 5.8, 1e-6, "the Strider's back mount height (unchanged)")
+	near(RepairDrone.back_height(), 10.39, 1e-6, "the Strider's back mount height (its back hardpoint sphere, 2026-11-24 refit)")
 	near(RepairDrone.back_height("bulwark", "back_l"), 7.6, 1e-6, "the Bulwark's back_l height")
 	near(RepairDrone.back_height("bulwark", "back"), 7.6, 1e-6, "an unknown back id on a Bulwark falls back to its back mount")
 	var r := await _bound("bulwark", {"side_l": "", "side_r": "", "back_l": "", "back_r": "repair_drone"})
@@ -263,18 +331,16 @@ func _audio_heft() -> void:
 
 func _sight() -> void:
 	var s := PlayerTarget.new()
-	var offs := s.sight_offsets()
-	check((offs[0] as Vector3).is_equal_approx(Vector3.UP * EnemyBase.LOS_HEAD_UP), "Strider head offset = EnemyBase.LOS_HEAD_UP")
-	check((offs[1] as Vector3).is_equal_approx(-Vector3.UP * EnemyBase.LOS_LEGS_DOWN), "Strider legs offset = EnemyBase.LOS_LEGS_DOWN")
-	s._setup_components({}, "bulwark")
-	offs = s.sight_offsets()
-	var centre: Vector3 = (s.hit_shapes[0] as Dictionary)["center"]
-	for k in 2:
-		var p: Vector3 = centre + (offs[k] as Vector3)
-		var want := "head" if k == 0 else "leg_r"
-		var inside := false
-		for hs: Dictionary in s.hit_shapes:
-			if str(hs["component"]) == want and p.distance_to(hs["center"] as Vector3) < float(hs["radius"]):
-				inside = true
-		check(inside, "Bulwark sight offset %d lands in its %s (%s)" % [k, want, str(p)])
+	for ch: String in ["strider", "bulwark"]:
+		s._setup_components({}, ch)
+		var offs := s.sight_offsets()
+		var centre: Vector3 = (s.hit_shapes[0] as Dictionary)["center"]
+		for k in 2:
+			var p: Vector3 = centre + (offs[k] as Vector3)
+			var want := "head" if k == 0 else "leg_r"
+			var inside := false
+			for hs: Dictionary in s.hit_shapes:
+				if str(hs["component"]) == want and p.distance_to(hs["center"] as Vector3) < float(hs["radius"]):
+					inside = true
+			check(inside, "%s sight offset %d lands in its %s (%s)" % [ch, k, want, str(p)])
 	s.free()

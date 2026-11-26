@@ -17,7 +17,6 @@ const MIN_MEMBER_SEP := 3.4       ## m soft separation distance between moving s
 const MAX_CONCURRENT_SHOOTERS := 2
 const FIRE_STAGGER_GAP := 0.35    ## s min stagger between squadmates starting telegraphs
 
-var squad_id := ""
 var deck := 0
 var anchor_pos := Vector3.ZERO
 var on_roof := false
@@ -31,15 +30,14 @@ var _last_fire_start := -INF
 
 func net_fields() -> Dictionary:
 	return {
-		"squad_id": Net.SPAWN, "deck": Net.SPAWN, "anchor_pos": Net.SPAWN, "on_roof": Net.SPAWN,
+		"deck": Net.SPAWN, "anchor_pos": Net.SPAWN, "on_roof": Net.SPAWN,
 		"members": Net.LOCAL, "claimed_covers": Net.PRIVATE, "morale_broken": Net.PRIVATE,
 		"_initial_size": Net.PRIVATE, "_fire_slots": Net.PRIVATE, "_last_fire_start": Net.PRIVATE,
 	}
 
 
-static func make(id: String, spawn_deck: int, anchor: Vector3, roof: bool = false) -> EnemyTroopSquad:
+static func make(_id: String, spawn_deck: int, anchor: Vector3, roof: bool = false) -> EnemyTroopSquad:
 	var s := EnemyTroopSquad.new()
-	s.squad_id = id
 	s.deck = spawn_deck
 	s.anchor_pos = anchor
 	s.on_roof = roof

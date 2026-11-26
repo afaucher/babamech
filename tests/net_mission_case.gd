@@ -17,7 +17,7 @@ const SEED := 7
 var crew_size := 2
 ## Index of the client that perturbs its checksum and must be sent out (-1 = none).
 var desync_index := -1
-## The city the host launches: the stack (the default) or one district (test_net_mission_desync keeps that path covered).
+## The city the host launches: the stack (the only one).
 var mission_mode := NetMission.MODE_STACK
 var td: TestDrive
 
@@ -33,7 +33,9 @@ func run_host() -> void:
 		return
 	var started := [false]
 	Session.mission_started.connect(func(_p: Dictionary) -> void: started[0] = true)
+	# The one mission mode (objectives).
 	check(Session.start_mission(SEED, mission_mode), "the host launches the mission (%s)" % mission_mode)
+	check(not Session.mission_params().has("objectives"), "the launch carries no mode switch (objectives are the only mode)")
 	check(started[0], "mission_started fires on the host too")
 	check(not Session.start_mission(SEED + 1), "a second launch while one is under way is refused")
 	eq(Session.crew_state, "mission", "the crew is on a mission")
@@ -126,11 +128,14 @@ func _load() -> void:
 	check(td.crewed, "the test drive runs the crew mission")
 
 
-## What this machine built: seed, checksum, crew state, and its mechs as one string (spawn order).
+## What this machine built: seed, checksum, crew state, and its mechs as one string (spawn order; a member sent out or
+## gone has no mech any more: CrewSync.retire, so spawn_order, the launch crew, lists it without one).
 func _summary() -> Dictionary:
 	var parts: PackedStringArray = []
 	for p: int in td.spawn_order:
 		var m := td.mech_of(p)
+		if m == null:
+			continue
 		var model := MechSpawn.rig_of(m).model
 		parts.append("%d:%d:%s:%s:%s" % [p, MechSpawn.owner_of(m), model.head_id, MechAccent.applied(model), loadout_signature(model.loadout)])
 	return {"seed": td.seed_value, "checksum": td.mission_checksum(), "mode": td.city_mode, "crew_state": Session.crew_state, "mechs": ";".join(parts),
@@ -138,12 +143,14 @@ func _summary() -> Dictionary:
 		"held": td._held, "friendly_fire": td.friendly_fire}
 
 
-## The mechs the launch's crew should give, in seat order.
+## The mechs the launch's crew should give, in seat order (members still in the crew: a leaver's mech is retired).
 func _expected_mechs() -> String:
 	var crew := (Session.mission_params()["crew"] as Array).duplicate()
 	crew.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a["seat"]) < int(b["seat"]))
 	var parts: PackedStringArray = []
 	for e: Dictionary in crew:
+		if not Session.has_member(int(e["peer"])):
+			continue
 		var l: Dictionary = WeaponRegistry.playable_loadout(str(e["chassis"]), e["loadout"] as Dictionary)["loadout"]
 		parts.append("%d:%d:%s:%s:%s" % [int(e["peer"]), int(e["peer"]), str(e["head"]), str(e["accent"]), loadout_signature(l)])
 	return ";".join(parts)

@@ -13,9 +13,9 @@ extends RefCounted
 ## Audio: master, music, sfx (0..1, linear).
 ## Crew: friendly_fire (default true): the crew option this machine sets when it hosts (or plays solo); remembered.
 ## Network: link_sim (off / coast / rough): the crew's simulated link when this machine hosts (NetSession).
-## Crew: objectives (default true, user 2026-11-23 "make the objectives the default"): play the mission plan (objectives,
-## the pacing director, depots, the extraction hold) instead of the old clear-and-extract, solo and in the crews this
-## machine hosts; the hangar's "Objectives" box. Flags override it: `--no-objectives` (old mission), `--objectives` (on).
+## There is no mission-mode setting (user 2026-11-25: "Cut the legacy modes."): objectives are the only mode. A settings
+## file from before still has crew/objectives: load_settings reads only DEFAULTS' keys, so it is ignored, and the next
+## save drops it.
 
 const DEFAULT_PATH := "user://settings.cfg"
 const DEFAULTS := {
@@ -35,7 +35,6 @@ const DEFAULTS := {
 	"sfx": 0.8,
 	"link_sim": "off",
 	"friendly_fire": true,
-	"objectives": true,
 }
 ## Which ConfigFile section each key lives in.
 const SECTIONS := {
@@ -45,7 +44,6 @@ const SECTIONS := {
 	"master": "audio", "music": "audio", "sfx": "audio",
 	"link_sim": "network",
 	"friendly_fire": "crew",
-	"objectives": "crew",
 }
 const BUSES := ["Music", "SFX"]
 

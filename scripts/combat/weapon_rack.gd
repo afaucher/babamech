@@ -39,7 +39,7 @@ extends Node
 ##     reloading: bool    (a salvo weapon between salvos)
 ##     heat_per_shot: float  (active heat per trigger cycle: per shot, per salvo for salvo weapons)
 ##     blocked: bool      (line of sight hardpoint -> aim point is obstructed; it still fires, into the obstacle)
-##     in_range: bool     (aim point within the weapon's range, and past its min_range if it has one)
+##     in_range: bool     (aim point within the weapon's range, and past its min_range if it has one; the mortar measures along the deck)
 ##     hold: String       (why the weapon holds fire right now, "" = it doesn't: e.g. the mortar's min range, "OUT OF ARC";
 ##                        "DESTROYED" = its hardpoint is destroyed, "EMPTY" = out of ammo; those two win; then
 ##                        "SHUTDOWN" while the mech is in heat shutdown: barrels parked, in_range / on_target false)
@@ -470,6 +470,8 @@ func step(dt: float) -> void:
 		var hp_node := _hp_node(i)
 		if hp_node != null:
 			m.set_body_basis(hp_node.global_basis)     # fire arcs (§4.4) follow the body's facing
+		if str(m.stats.get("kind", "")) == "arc":
+			m.frame = MortarShell.frame_at(world, aim_point)   # the mortar's range gate measures along the deck (§3.7)
 		var recs := m.update(dt, trigger and enabled[i] and intact, heat_bridge, world.now, rest, aim_point)
 		var p1 := Time.get_ticks_usec() if pf else 0
 		for rec in recs:
@@ -674,6 +676,8 @@ func _in_range(i: int, st: Dictionary) -> bool:
 	if st.is_empty():
 		return false
 	var d := muzzle(i + 1).distance_to(aim_point)
+	if str(st.get("kind", "")) == "arc":     # the mortar: the along-the-deck distance its range gate uses (Mortar.range_problem)
+		d = MortarShell.deck_distance(MortarShell.frame_at(world, aim_point), muzzle(i + 1), aim_point)
 	return d <= float(st.get("range", INF)) and d >= float(st.get("min_range", 0.0))
 
 

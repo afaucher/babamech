@@ -1,8 +1,9 @@
 extends TestCase
 ## Deck lettering (CitySigns, docs/design/city-signs.md) on every deck of sections 1, 4 and 403112: the number is the deck
-## index + 1 on every sign; every gate of a bulkhead / farm wall has a sign beside it, every freight lift one over its door,
-## every ramp one at both ends with the right arrow and destination; wall signs lie inside their wall, off every gate
-## opening and every other sign, above the floor and under the ceiling; every vertex of every sign (both looks) lies on or
+## index + 1 on every sign; every gate of a bulkhead / farm wall (portals too) has exactly one sign, the over-gate one, and
+## nothing beside it (user feedback 2026-11-25); every freight lift one over its door, every ramp one at both ends with
+## the right arrow and destination; no sign kind other than over_gate / lift / ramp, none over a shaft cut; signs off each
+## other, above the floor and under the ceiling; every vertex of every sign (both looks) lies on or
 ## in front of its surface within its panel and decal depth, inside its footprint. Both looks build, "off" builds nothing;
 ## the plan checksum, the collision and geometry_digest() are the same with lettering on and off; a district on its own
 ## has none.
@@ -30,39 +31,43 @@ func _deck(sec: SectionPlan, seed_: int, k: int) -> void:
 	var ring := RingFrame.new(plan.p("radius"))
 	var signs := CitySigns.layout(plan, ring)
 	var ceiling := plan.p("ceiling")
-	var counts := {"wall": 0, "over_gate": 0, "lift": 0, "ramp": 0, "shaft": 0}
+	var counts := {"over_gate": 0, "lift": 0, "ramp": 0}
 	var numbers_ok := true
+	var kinds_ok := true
 	for s: Dictionary in signs:
+		if not counts.has(s["kind"]):
+			kinds_ok = false
+			continue
 		counts[s["kind"]] += 1
-		if s["kind"] == "wall" or s["kind"] == "lift" or s["kind"] == "over_gate":
+		if s["kind"] == "lift" or s["kind"] == "over_gate":
 			numbers_ok = numbers_ok and int(s["number"]) == k + 1 and s["arrow"] == ""
 		else:
-			numbers_ok = numbers_ok and (s["back"] as Dictionary).has("number")
-			if s["kind"] == "ramp":
-				numbers_ok = numbers_ok and int(s["back"]["number"]) == k + 1
+			numbers_ok = numbers_ok and int(s["back"]["number"]) == k + 1
+	check(kinds_ok, "%s: only over-gate, lift and ramp signs (none beside a gate, none over a shaft)" % what)
 	check(numbers_ok, "%s: every sign shows deck %s (ramp backs too)" % [what, CitySigns.label(k + 1)])
-	# Every gate of a bulkhead / farm wall has a sign beside it.
+	# Exactly one sign per wall gate / portal: the over-gate one (user feedback 2026-11-25: one sign above each door).
 	var gi := 0
-	var missing := []
+	var per_gate := {}
+	for s: Dictionary in signs:
+		if int(s["gate"]) >= 0:
+			per_gate[int(s["gate"])] = int(per_gate.get(int(s["gate"]), 0)) + 1
+	var wrong := []
 	for w: Dictionary in plan.boundary():
 		for g: Dictionary in w["gates"]:
-			if w["kind"] == "bulkhead" or w["kind"] == "farm":
-				var found := false
-				for s: Dictionary in signs:
-					found = found or (s["kind"] == "wall" and int(s["gate"]) == gi)
-				if not found:
-					missing.append("%d:%s %.0f..%.0f" % [int(w["side"]), str(g["kind"]), float(g["a"]), float(g["b"])])
+			var want := 1 if (w["kind"] == "bulkhead" or w["kind"] == "farm") else 0
+			if int(per_gate.get(gi, 0)) != want:
+				wrong.append("%d:%s %.0f..%.0f has %d" % [int(w["side"]), str(g["kind"]), float(g["a"]), float(g["b"]), int(per_gate.get(gi, 0))])
 			gi += 1
-	check(missing.is_empty(), "%s: a sign beside every wall gate (missing %s)" % [what, str(missing)])
+	check(wrong.is_empty(), "%s: exactly one sign per wall gate / portal (%s)" % [what, str(wrong)])
 	_over_gates(plan, signs, what)
 	# Every freight lift door.
 	for i in plan.buildings.size():
 		var b: Dictionary = plan.buildings[i]
 		if b["pillar"] and str(b["core"]["kind"]) == "lift":
-			var found := false
+			var found := 0
 			for s: Dictionary in signs:
-				found = found or (s["kind"] == "lift" and int(s["pillar"]) == i)
-			check(found, "%s: lift %d has a sign" % [what, i])
+				found += 1 if (s["kind"] == "lift" and int(s["pillar"]) == i) else 0
+			eq(found, 1, "%s: lift %d has one sign" % [what, i])
 	# Both ends of every ramp: arrow and destination.
 	for ri in plan.ramps.size():
 		var r: Dictionary = plan.ramps[ri]
@@ -77,39 +82,35 @@ func _deck(sec: SectionPlan, seed_: int, k: int) -> void:
 		eq(found["arrow"], "down" if top else "up", "%s: ramp %d points %s" % [what, ri, "down" if top else "up"])
 		eq(int(found["dest"]), (int(cn["to"]) + 1) if top else (int(cn["from"]) + 1), "%s: ramp %d names its destination" % [what, ri])
 		eq(int(found["dest"]), k + 2 if top else k, "%s: ramp %d destination is the next deck" % [what, ri])
-	# Shafts: arrow down to the deck below.
-	for s: Dictionary in signs:
-		if s["kind"] == "shaft":
-			check(s["arrow"] == "down" and int(s["dest"]) == k + 2, "%s: shaft sign points down to %s" % [what, CitySigns.label(k + 2)])
-	# Wall signs: inside the wall, off the gates and each other; every sign above the floor and under the ceiling.
+	# No sign hangs over a shaft cut in this floor (or any floor cut that is not the ramp's own).
+	for ci in sec.connectors.size():
+		if sec.connectors[ci]["kind"] != "shaft" or not sec.is_hole(ci, k):
+			continue
+		var rect := sec.connector_rect(ci, k).grow(2.0)
+		for s: Dictionary in signs:
+			check(not rect.has_point(s["at"]), "%s: no %s sign over shaft %d" % [what, s["kind"], ci])
+	# Every sign above the floor and under the ceiling; signs on one wall do not overlap.
 	var place_ok := true
 	var notes := []
-	var e := plan.extent
 	for w: Dictionary in plan.boundary():
 		var side := int(w["side"])
-		var u0 := e.position.x if side >= 2 else e.position.y
-		var u1 := e.end.x if side >= 2 else e.end.y
-		var mine := signs.filter(func(s: Dictionary) -> bool: return s["kind"] == "wall" and int(s["side"]) == side)
+		var mine := signs.filter(func(s: Dictionary) -> bool: return s["kind"] == "over_gate" and int(s["side"]) == side)
 		for s: Dictionary in mine:
-			if float(s["u0"]) < u0 + 1.0 or float(s["u1"]) > u1 - 1.0:
-				place_ok = false
-				notes.append("side %d sign outside the wall" % side)
-			for g: Dictionary in w["gates"]:
-				if float(s["u1"]) > float(g["a"]) - CitySigns.GATE_CLEAR + 0.01 and float(s["u0"]) < float(g["b"]) + CitySigns.GATE_CLEAR - 0.01:
-					place_ok = false
-					notes.append("side %d sign within %.0f m of a gate" % [side, CitySigns.GATE_CLEAR])
-		var all_side := signs.filter(func(s: Dictionary) -> bool: return (s["kind"] == "wall" or s["kind"] == "over_gate") and int(s["side"]) == side)
-		for s: Dictionary in all_side:
-			for t: Dictionary in all_side:
-				if t != s and float(s["u1"]) > float(t["u0"]) and float(s["u0"]) < float(t["u1"]) \
-						and float(s["y1"]) > float(t["y0"]) and float(s["y0"]) < float(t["y1"]):
+			for t: Dictionary in mine:
+				if t != s and float(s["u1"]) > float(t["u0"]) and float(s["u0"]) < float(t["u1"]):
 					place_ok = false
 					notes.append("side %d signs overlap" % side)
 	for s: Dictionary in signs:
 		if float(s["y0"]) < 0.5 or float(s["y1"]) > ceiling - 2.0:
 			place_ok = false
 			notes.append("%s sign %.1f..%.1f m vs ceiling %.0f" % [s["kind"], float(s["y0"]), float(s["y1"]), ceiling])
-	check(place_ok, "%s: signs inside their walls, off gates and each other, floor to ceiling (%s)" % [what, str(notes.slice(0, 4))])
+	check(place_ok, "%s: signs off each other, floor to ceiling (%s)" % [what, str(notes.slice(0, 4))])
+	# Over-gate sizes (printed for the doc).
+	var over_txt := []
+	for s: Dictionary in signs:
+		if s["kind"] == "over_gate":
+			over_txt.append("%s u %.2f w %.1f y %.1f..%.1f (gate top %.0f)" % [s["surface"], float(s["u"]), float(s["w"]), float(s["y0"]), float(s["y1"]), float(s["gate_top"])])
+	print("[signs] %s over gates: %s" % [what, ", ".join(over_txt)])
 	# Every vertex on / in front of its surface, inside its footprint (both looks).
 	var tris := {}
 	for st: String in ["white", "dark"]:
@@ -138,8 +139,8 @@ func _deck(sec: SectionPlan, seed_: int, k: int) -> void:
 				break
 		tris[st] = total
 		check(geo_ok, "%s (%s): every vertex on its surface within the decal depth and inside its footprint %s" % [what, st, bad])
-	print("[signs] %s: %d signs (walls %d, over gates %d, lifts %d, ramps %d, shafts %d), triangles white %d / dark %d" % [what,
-			signs.size(), counts["wall"], counts["over_gate"], counts["lift"], counts["ramp"], counts["shaft"], tris["white"], tris["dark"]])
+	print("[signs] %s: %d signs (over gates %d, lifts %d, ramps %d), triangles white %d / dark %d" % [what,
+			signs.size(), counts["over_gate"], counts["lift"], counts["ramp"], tris["white"], tris["dark"]])
 
 
 ## Every gate of a bulkhead / farm wall (portals too) has a sign centred over it: inside the gate's width (so inside the

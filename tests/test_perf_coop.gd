@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## W9 perf budget: a full crew of 4 in the mission scene (the stack once W2 is in, else the district), measured in ONE
 ## process. The host opens a session alone and launches a real crew mission (Session.start_mission), so the test drive
 ## runs exactly as in co-op: CrewSync, CombatNet, the shared clock, Session.mechs streaming. Three more crew mechs are
@@ -189,12 +190,7 @@ func _add_puppets() -> Dictionary:
 		if ma != null:
 			ma.city = td.city
 		# Rows 10 / 10 / 20 m along the road from the local mech, columns 4 m either side (TestDrive's crew layout).
-		var xf: Transform3D
-		if td.get("stack") != null:
-			xf = TestDrive.entry_spawn(entry, td.city, i + 2, 6)
-		else:
-			var at := TestDrive.spawn_point(i + 2, 6)
-			xf = Transform3D(td.city.ring.basis_at_arc(at.y), td.city.ring.arc_to_world(at.x, at.y, CityPlan.CURB_H))
+		var xf := TestDrive.entry_spawn(entry, td.city, i + 2, 6)
 		m.global_transform = xf
 		td.mechs[peer] = m
 		seats[peer] = i + 2

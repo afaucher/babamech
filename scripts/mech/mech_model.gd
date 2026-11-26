@@ -10,7 +10,9 @@ extends Node3D
 ## angles and lab params all come from ChassisParts.of(chassis_id) (parts()). configure() with a different chassis also
 ## resets the leg params and leg_bend to that chassis' defaults. "strider" (default): the description above; "bulwark":
 ## the heavy gun platform (BulwarkMeshes: a low wide hull slung between two hip pods, the pilot in a well on its deck,
-## long forward-knee legs, two side guns, two back mounts).
+## long forward-knee legs, two side guns, two back mounts); "wasp" (a draft: built art, not playable, needs show_drafts):
+## the hover chassis (WaspMeshes: an egg pod, two tilting lift fans, stand-only mini legs; no gait rig, posed by the
+## cosmetic hooks in "Hover chassis" below).
 ##
 ## Legs are posed by forward kinematics from a crouch value (with the default `leg_bend` -1: thigh back to the knee,
 ## shin forward to the ankle, tarsus back to the foot; +1 is the same chain mirrored fore-aft), so the hip height
@@ -71,15 +73,31 @@ var _ext_body_offset := Vector3.ZERO
 var _ext_body_rot := Vector3.ZERO
 var _leg_yaw := 0.0                    ## hip twist (rad, + = legs turned toward the body's right), see set_external_pose()
 var _pelvis: Node3D                    ## the pelvis mesh (or the placeholder's pelvis box): turns with the legs
+## A draft chassis (MechCatalog.DRAFT_CHASSIS: built art, not playable, e.g. the Wasp) is accepted by configure() only
+## while this is true (the lab, the part gallery, the review shots set it); otherwise asking for one gives the Strider, so
+## nothing in the game (MechSpawn, the hangar, a crew entry) can build one.
+var show_drafts := false
+## Hover chassis (ChassisParts "move" "hover": the Wasp) only, cosmetic pose state set by the hooks below
+## (set_fan_spin / set_fan_tilt / set_legs_pose / set_bank) and recomputed on every machine from the owner's motion:
+var _hover: Dictionary = {}            ## its nodes: fan_l / fan_r, rotor_l / rotor_r, hip_l / knee_l / ankle_l, ... (empty on a biped)
+var _fan_spin := 0.0                   ## rotor speed, rev/s
+var _rotor_angle := 0.0                ## rad, advanced by step_fans
+var _fan_tilt_l := Vector2.ZERO        ## (forward, outward) tilt of each main fan, rad
+var _fan_tilt_r := Vector2.ZERO
+var _legs_t := 0.0                     ## 0 dangle (flying) .. 1 stand (landed)
+var _bank := Vector2.ZERO              ## (roll + = right side down, pitch + = nose up), rad
 
 
 ## Authority (scripts/net/net.gd): who it is (head, chassis, loadout, accent, leg shape) is fixed at spawn from the crew
-## entry; the pose is presentation, recomputed on every machine (MechRig drives it from the mech's motion).
+## entry; the pose is presentation, recomputed on every machine (MechRig drives it from the mech's motion; a hover
+## chassis' fans, legs and bank will be driven by its controller the same way).
 func net_fields() -> Dictionary:
 	return {"art": Net.LOCAL, "head_id": Net.SPAWN, "chassis_id": Net.SPAWN, "loadout": Net.SPAWN, "params": Net.SPAWN,
 		"time_scale": Net.LOCAL, "accent": Net.SPAWN, "pilot": Net.LOCAL, "pilot_seed": Net.LOCAL, "leg_bend": Net.SPAWN,
 		"_t": Net.LOCAL, "_body": Net.LOCAL, "_legs": Net.LOCAL, "_hip_height": Net.LOCAL, "_ext_legs": Net.LOCAL,
-		"_ext_body_offset": Net.LOCAL, "_ext_body_rot": Net.LOCAL, "_leg_yaw": Net.LOCAL, "_pelvis": Net.LOCAL}
+		"_ext_body_offset": Net.LOCAL, "_ext_body_rot": Net.LOCAL, "_leg_yaw": Net.LOCAL, "_pelvis": Net.LOCAL,
+		"show_drafts": Net.LOCAL, "_hover": Net.LOCAL, "_fan_spin": Net.LOCAL, "_rotor_angle": Net.LOCAL,
+		"_fan_tilt_l": Net.LOCAL, "_fan_tilt_r": Net.LOCAL, "_legs_t": Net.LOCAL, "_bank": Net.LOCAL}
 
 
 func _init() -> void:
@@ -96,10 +114,11 @@ func _ready() -> void:
 func configure(head: String, chassis: String, weapons: Dictionary) -> void:
 	head_id = head if MechCatalog.HEADS.has(head) else "chicken"
 	var prev := chassis_id
-	chassis_id = chassis if MechCatalog.CHASSIS.has(chassis) and ChassisParts.has(chassis) else "strider"
+	var known := MechCatalog.CHASSIS.has(chassis) or (show_drafts and MechCatalog.DRAFT_CHASSIS.has(chassis))
+	chassis_id = chassis if known and ChassisParts.has(chassis) else "strider"
 	if chassis_id != prev:
 		_apply_chassis_defaults()
-	loadout = MechCatalog.sanitize_loadout(chassis_id, weapons)
+	loadout = MechCatalog.sanitize_loadout(chassis_id, weapons, true)
 	rebuild()
 
 
@@ -119,6 +138,8 @@ func _apply_chassis_defaults() -> void:
 		if not str(p["id"]) in ["body", "head", "gait"]:
 			params[p["id"]] = p["value"]
 	leg_bend = float(parts()["bend"])
+	if is_hover():
+		_hover_from_params()
 
 
 func rebuild() -> void:
@@ -126,10 +147,11 @@ func rebuild() -> void:
 		remove_child(c)
 		c.queue_free()
 	_legs.clear()
+	_hover = {}
 	_pelvis = null
 	pilot = null
 	if loadout.is_empty():
-		loadout = MechCatalog.sanitize_loadout(chassis_id, {})
+		loadout = MechCatalog.sanitize_loadout(chassis_id, {}, true)
 	var s := float(params["body"])
 	_body = Node3D.new()
 	_body.name = "Body"
@@ -197,7 +219,7 @@ func _build_lowpoly(s: float) -> void:
 	# Hardpoints: the mount hardware (mirrored for the left) and the weapon.
 	var mounts: Dictionary = pa["mounts"]
 	var mount_hw: Dictionary = pa["mount_hw"]
-	for hp: Dictionary in MechCatalog.chassis(chassis_id)["hardpoints"]:
+	for hp: Dictionary in MechCatalog.entry(chassis_id)["hardpoints"]:
 		var id := str(hp["id"])
 		var node := Node3D.new()
 		node.name = "HP_" + id
@@ -214,6 +236,9 @@ func _build_lowpoly(s: float) -> void:
 		var w := str(loadout.get(id, ""))
 		if w != "":
 			node.add_child(MechParts.weapon(w))
+	if is_hover():
+		_build_hover(chassis, pa)
+		return
 	# Legs: segments, joint caps and the foot (hub or boot, toes, spur), posed every frame.
 	var lp: Dictionary = pa["legs"]
 	for side: float in [-1.0, 1.0]:
@@ -325,6 +350,8 @@ func _build_placeholder(s: float) -> void:
 func _process(delta: float) -> void:
 	_t += delta * time_scale
 	var pp0 := Time.get_ticks_usec() if PerfProbe.on else 0   # bench instrumentation (tests/bench_bot_perf.gd)
+	if not _hover.is_empty():
+		step_fans(delta * time_scale)
 	pose()
 	if PerfProbe.on:
 		PerfProbe.add("proc.model_pose", Time.get_ticks_usec() - pp0)
@@ -397,6 +424,9 @@ func clear_external_pose() -> void:
 ## Place the body and legs for the current time and params.
 func pose() -> void:
 	if _body == null:
+		return
+	if not _hover.is_empty():
+		_pose_hover()
 		return
 	var s := float(params["body"])
 	var c := float(params["crouch"])
@@ -548,6 +578,169 @@ func hip_height() -> float:
 	return _hip_height
 
 
+# --- Hover chassis (the Wasp) ---------------------------------------------------------------------------------
+# No gait rig (MechRig does not drive it: its _legs stay empty, so set_external_pose never applies). The hull hangs at
+# ChassisParts "body_y" over the model's origin, which is the ground point when the legs stand; in flight the (future)
+# hover controller moves the whole model and calls these cosmetic hooks every frame on every machine.
+
+## True for a hover chassis (ChassisParts "move" "hover").
+func is_hover() -> bool:
+	return str(parts().get("move", "biped")) == "hover"
+
+
+## The rotors' speed (rev/s; the fans spin in opposite directions). step_fans() turns them (the model's _process does,
+## scaled by time_scale).
+func set_fan_spin(rate: float) -> void:
+	_fan_spin = maxf(rate, 0.0)
+
+
+func step_fans(delta: float) -> void:
+	_rotor_angle = fposmod(_rotor_angle + _fan_spin * TAU * delta, TAU)
+
+
+## Tilt the main fans on their gimbals (rad): tilt.x forward (+ = the ring's front edge down: thrust forward; opposite
+## signs left / right yaw the chassis), tilt.y outward (+ = the ring's outer edge down; strafing right is the left fan +,
+## the right fan -). `side` -1 / +1 tilts one fan, 0 both. Clamped to the chassis' tilt ellipse (ChassisParts
+## fans.tilt_max: 20 deg forward / back, 15 deg sideways), which tests/test_clearance_wasp.gd sweeps.
+func set_fan_tilt(tilt: Vector2, side: int = 0) -> void:
+	var t := clamp_fan_tilt(tilt)
+	if side <= 0:
+		_fan_tilt_l = t
+	if side >= 0:
+		_fan_tilt_r = t
+	pose()
+
+
+## `tilt` limited to the fans' tilt ellipse.
+func clamp_fan_tilt(tilt: Vector2) -> Vector2:
+	var m: Vector2 = (parts().get("fans", {}) as Dictionary).get("tilt_max", Vector2.ZERO)
+	if m.x <= 0.0 or m.y <= 0.0:
+		return Vector2.ZERO
+	var e := Vector2(tilt.x / m.x, tilt.y / m.y).length()
+	return tilt / e if e > 1.0 else tilt
+
+
+func fan_tilt(side: int) -> Vector2:
+	return _fan_tilt_l if side < 0 else _fan_tilt_r
+
+
+## The legs: 0 dangling (flying, knees bent, toes drooping) .. 1 standing (landed, the soles on the ground under the
+## centre of mass).
+func set_legs_pose(t: float) -> void:
+	_legs_t = clampf(t, 0.0, 1.0)
+	pose()
+
+
+func legs_pose() -> float:
+	return _legs_t
+
+
+## Bank the body (rad): roll + = the right side down, pitch + = the nose up, about the hull's centre. Legs, fans and guns
+## bank with it.
+func set_bank(roll: float, pitch: float) -> void:
+	_bank = Vector2(roll, pitch)
+	pose()
+
+
+## The lab params into the hooks (a chassis switch, the lab's sliders).
+func _hover_from_params() -> void:
+	_fan_spin = float(params.get("fan_spin", 0.0))
+	var t := clamp_fan_tilt(Vector2(float(params.get("fan_tilt", 0.0)), float(params.get("fan_roll", 0.0))))
+	_fan_tilt_l = t
+	_fan_tilt_r = t
+	_legs_t = clampf(float(params.get("legs_pose", 0.0)), 0.0, 1.0)
+	_bank = Vector2(float(params.get("bank", 0.0)), float(params.get("pitch", 0.0)))
+
+
+## The fans (gimbal pivot fan_<side>: Ring mesh, rotor_<side> spinning node with its Rotor mesh) and the legs (fixed
+## socket_<side> clevis; hip_<side> pivot: HipCap, thigh_<side>; knee_<side>: KneeCap, shin_<side>; ankle_<side>:
+## AnkleCap; foot_<side>: Foot, toe_0..2, spur), under the Chassis node so they bank with the hull. The left side's
+## meshes are the right's mirrored (scale -1 in X on the mesh, never on a pivot, so the pivots turn the same way).
+func _build_hover(chassis: Node3D, pa: Dictionary) -> void:
+	var f: Dictionary = pa["fans"]
+	var lg: Dictionary = pa["hover_legs"]
+	for side: float in [-1.0, 1.0]:
+		var tag := "l" if side < 0.0 else "r"
+		var mir := Vector3(side, 1, 1)
+		var fan := Node3D.new()
+		fan.name = "fan_" + tag
+		fan.position = (f["pivot"] as Vector3) * mir
+		chassis.add_child(fan)
+		fan.add_child(_part(str(f["ring"]), "Ring", mir))
+		var rotor := Node3D.new()
+		rotor.name = "rotor_" + tag
+		rotor.position = f["rotor_at"]
+		fan.add_child(rotor)
+		rotor.add_child(_part(str(f["rotor"]), "Rotor", mir))
+		var hip_at: Vector3 = (lg["hip_at"] as Vector3) * mir
+		var socket := _part(str(lg["socket"]), "socket_" + tag, mir)
+		socket.position = hip_at
+		chassis.add_child(socket)
+		var hip := Node3D.new()
+		hip.name = "hip_" + tag
+		hip.position = hip_at
+		chassis.add_child(hip)
+		hip.add_child(_part(str(lg["hip"]), "HipCap", mir))
+		hip.add_child(_part(str(lg["thigh"]), "thigh_" + tag, mir))
+		var knee := Node3D.new()
+		knee.name = "knee_" + tag
+		knee.position = Vector3(0, -float(lg["thigh_l"]), 0)
+		hip.add_child(knee)
+		knee.add_child(_part(str(lg["knee"]), "KneeCap", mir))
+		knee.add_child(_part(str(lg["shin"]), "shin_" + tag, mir))
+		var ankle := Node3D.new()
+		ankle.name = "ankle_" + tag
+		ankle.position = Vector3(0, -float(lg["shin_l"]), 0)
+		knee.add_child(ankle)
+		ankle.add_child(_part(str(lg["ankle"]), "AnkleCap", mir))
+		var foot := Node3D.new()
+		foot.name = "foot_" + tag
+		foot.position = Vector3(0, -float(lg["foot_h"]), 0)
+		ankle.add_child(foot)
+		foot.add_child(_part(str(lg["foot"]), "Foot", mir))
+		var toes: Array = lg["toes"]
+		for i in toes.size():
+			var toe := _part(str(lg["toe"]), "toe_%d" % i, Vector3.ONE)
+			toe.position = (toes[i][0] as Vector3) * mir
+			toe.rotation_degrees = Vector3(0, float(toes[i][1]) * side, 0)
+			foot.add_child(toe)
+		var spur := _part(str(lg["spur"]), "spur", Vector3.ONE)
+		spur.position = lg["spur_at"]
+		foot.add_child(spur)
+		_hover["fan_" + tag] = fan
+		_hover["rotor_" + tag] = rotor
+		_hover["hip_" + tag] = hip
+		_hover["knee_" + tag] = knee
+		_hover["ankle_" + tag] = ankle
+
+
+func _part(part: String, node_name: String, scl: Vector3) -> MeshInstance3D:
+	var mi := ChassisParts.instance(part)
+	mi.name = node_name
+	mi.scale = scl
+	return mi
+
+
+## Pose the hover chassis from its hook state: the body at body_y (a slow hover bob while the legs dangle and the fans
+## turn), banked; each fan tilted on its gimbal and its rotor turned; the legs between dangle and stand
+## (WaspMeshes.leg_angles: thigh back, shin forward, the foot's pitch).
+func _pose_hover() -> void:
+	var s := float(params["body"])
+	_hip_height = float(parts()["body_y"]) * s
+	var bob := sin(_t * 1.3) * 0.02 * s * (1.0 - _legs_t) if _fan_spin > 0.0 else 0.0
+	_body.position = Vector3(0, _hip_height + bob, 0)
+	_body.rotation = Vector3(_bank.y, 0.0, -_bank.x)
+	var a := WaspMeshes.leg_angles(_legs_t)
+	for side: float in [-1.0, 1.0]:
+		var tag := "l" if side < 0.0 else "r"
+		var tilt := _fan_tilt_l if side < 0.0 else _fan_tilt_r
+		(_hover["fan_" + tag] as Node3D).rotation = Vector3(-tilt.x, 0.0, -tilt.y * side)
+		(_hover["rotor_" + tag] as Node3D).rotation = Vector3(0.0, _rotor_angle * side, 0.0)
+		(_hover["hip_" + tag] as Node3D).rotation = Vector3(-a.x, 0, 0)
+		(_hover["knee_" + tag] as Node3D).rotation = Vector3(a.x + a.y, 0, 0)
+		(_hover["ankle_" + tag] as Node3D).rotation = Vector3(a.z - a.y, 0, 0)
+
+
 # --- Lab subject --------------------------------------------------------------------------------------
 
 func lab_params() -> Array:
@@ -564,6 +757,8 @@ func set_lab_param(id: String, v: float) -> void:
 	if id in ["body", "head"]:
 		rebuild()
 	else:
+		if is_hover():
+			_hover_from_params()
 		pose()
 
 
@@ -571,11 +766,11 @@ func lab_options() -> Array:
 	var out: Array = [
 		{"id": "art", "label": "Art", "choices": ART_ORDER, "value": art},
 		{"id": "head", "label": "Head", "choices": MechCatalog.HEAD_ORDER, "value": head_id},
-		{"id": "chassis", "label": "Chassis", "choices": ChassisParts.ORDER, "value": chassis_id},   # the lab shows every built chassis
+		{"id": "chassis", "label": "Chassis", "choices": ChassisParts.ORDER + ChassisParts.DRAFTS, "value": chassis_id},   # every built chassis, drafts too
 		{"id": "accent", "label": "Accent", "choices": MechMeshes.ACCENT_ORDER, "value": _accent_id()},
 		{"id": "legs", "label": "Leg bend", "choices": BEND_ORDER, "value": bend_id()},
 	]
-	for hp: Dictionary in MechCatalog.chassis(chassis_id)["hardpoints"]:
+	for hp: Dictionary in MechCatalog.entry(chassis_id)["hardpoints"]:
 		var choices: Array = [""]
 		choices.append_array(MechCatalog.items_for(hp))   # weapons, then back equipment (repair_drone, radiator, ammo_bin)
 		out.append({"id": "hp:" + str(hp["id"]), "label": str(hp["label"]), "choices": choices, "value": str(loadout.get(hp["id"], ""))})
@@ -589,6 +784,7 @@ func set_lab_option(id: String, v: String) -> void:
 	elif id == "head":
 		configure(v, chassis_id, loadout)
 	elif id == "chassis":
+		show_drafts = true   # the lab shows the draft chassis (the Wasp) too
 		configure(head_id, v, loadout)
 	elif id == "accent":
 		set_accent(MechMeshes.ACCENTS.get(v, MechMeshes.ORANGE))

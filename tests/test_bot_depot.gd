@@ -16,7 +16,7 @@ func _init() -> void:
 
 
 func setup() -> void:
-	TestDrive.solo_launch = {"seed": SEED, "mode": TestDrive.MODE_STACK, "objectives": true}
+	TestDrive.solo_launch = {"seed": SEED, "mode": TestDrive.MODE_STACK}
 	TestDrive.bot_profile = "veteran"
 	TestDrive.dev_bot_travel = false
 	CombatWorld.dev_enemy_damage = 1.0

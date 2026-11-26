@@ -6,21 +6,39 @@ extends Node
 ## Use _physics_process / await for frame-based tests; the timeout is a Timer,
 ## so overriding _process is fine.
 
-var timeout_sec := 60.0
+## Game seconds before the test fails (the Timer runs on scaled game time, so a test that speeds the sim up with
+## Engine.time_scale gets more of it per wall second). Set it in _init() or in setup(): setting it while the timer runs
+## restarts the timer with the new value (code-audit-2026-11 #8: a value set in setup() used to be ignored and every
+## such test kept 60 s). Unset, a test's `const TEST_TIMEOUT := N` (test_runner's wall limit) is used when larger.
+## NetTest stops this timer and watches the wall clock (net_timeout) instead; setting timeout_sec doesn't revive it.
+var timeout_sec := 60.0:
+	set(v):
+		timeout_sec = v
+		_timeout_set = true
+		if _timer != null and not _timer.is_stopped():
+			_timer.start(v)
 var _failures := 0
 var _done := false
+var _timer: Timer = null
+var _timeout_set := false
 
 
 func _ready() -> void:
-	var t := Timer.new()
-	t.one_shot = true
-	t.wait_time = timeout_sec
-	t.timeout.connect(func():
-		_fail("timed out after %.0fs" % timeout_sec)
+	if not _timeout_set:
+		var consts: Dictionary = get_script().get_script_constant_map() if get_script() != null else {}
+		if consts.has("TEST_TIMEOUT") and float(consts["TEST_TIMEOUT"]) > timeout_sec:
+			timeout_sec = float(consts["TEST_TIMEOUT"])
+	_timer = Timer.new()
+	_timer.one_shot = true
+	_timer.wait_time = timeout_sec
+	_timer.timeout.connect(func():
+		_fail("timed out after %.0fs (game time)" % timeout_sec)
 		finish())
-	add_child(t)
-	t.start()
+	add_child(_timer)
+	_timer.start()
 	print("Running test: ", name)
+	if QuietSectionFixture.wanted(self):   # `const QUIET_SECTION := true`: no director, no objectives (docs/testing.md)
+		QuietSectionFixture.arm()
 	await setup()
 
 

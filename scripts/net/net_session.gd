@@ -37,11 +37,11 @@ extends Node
 ## chassis on receipt (clean_loadout: MechCatalog.sanitize_loadout), so every machine builds the same weapons.
 ##
 ## MISSION (co-op step 1, cast's M1): NetMission, child "Mission". The host's Launch is start_mission(seed, mode): one
-##   reliable mission.launch {seed, mode, start_t, crew, friendly_fire} to the crew (mode: "stack" or "district"); every machine (the host too) gets mission_started(params), plays
+##   reliable mission.launch {seed, mode, start_t, crew, friendly_fire, scale} to the crew (mode: always "stack"); every machine (the host too) gets mission_started(params), plays
 ##   the bay alert until start_t on the shared clock, then loads the mission. Each machine reports its city checksum
 ##   (report_mission_built), the host compares them behind a load barrier (a mismatch is sent out with DESYNC), then
 ##   mission.go {start_at}: mission_go(elapsed) fires on every machine at start_at. See net_mission.gd.
-##   Plan mode (DEV `objectives`, carried in mission.launch): the host's wave orders go out as reliable mission.wave
+##   The mission plan (the one mode): the host's wave orders go out as reliable mission.wave
 ##   {order} (send_mission_wave; mission_wave(order) on every client; mission.go carries the ones still to open).
 ##   Supply depots: depot.claim / depot.grant / depot.deny (claim_depot, send_depot_grant, send_depot_deny; signals
 ##   depot_claimed / depot_granted / depot_denied), see net_mission.gd "DEPOTS".
@@ -70,8 +70,10 @@ extends Node
 ##   GameSettings crew friendly_fire). set_friendly_fire on the host (or offline) sends sys.crew_opts; sys.welcome carries
 ##   the current value; crew_opts_changed fires on every machine. A client's own choice comes back when its session ends.
 ##   mission.launch carries it, so every machine plays the mission with the same rule (TestDrive.friendly_fire).
-## INVITES: Steam's join_requested (an overlay invite accepted while the game runs) becomes invite_received(lobby,
-##   inviter) when a screen listens (it asks, then accept_invite() / decline_invite()), else it joins at once.
+## INVITES: Steam's join_requested (an overlay invite accepted while the game runs) becomes `pending_invite` and
+##   invite_received(lobby, inviter). The menu (FrontEnd) asks first: Accept (accept_invite(): leave whatever this is and
+##   join) or Decline (decline_invite()). With no screen listening (in a mission) nothing is left or joined: the invite
+##   waits in pending_invite (it outlives a session ending) and the menu asks when it comes back.
 ##   `+connect_lobby <id>` (Steam launching the game for an invite) joins at start. invite_crew() opens the overlay.
 ##
 ## Dev flags (after `--`):
@@ -89,6 +91,8 @@ signal link_changed(preset: String)
 signal session_ended(reason: String)
 signal roster_changed()
 signal peer_joined(peer: int)
+## A crew member (player or bot) left the roster: on the host when it drops or is sent out (_drop), on a client when the
+## host's sys.roster no longer has it. The mission retires the leaver's mech on every machine (CrewSync.retire).
 signal peer_left(peer: int)
 signal status_changed(text: String)
 ## Host: a crew member was dropped or sent out, with the reason ("c1 dropped: went silent while loading"). The mission HUD
@@ -109,6 +113,9 @@ signal mission_state_changed(state: Dictionary)
 ## A client: the host ordered a reinforcement wave (mission.wave {order}: {wave, deck, source, open_at, max_units}, plan
 ## mode). Also fired for each order mission.go carries whose open_at has not passed.
 signal mission_wave(order: Dictionary)
+## A client: the host changed the crew scale (mission.scale {n, at, from, reason, pilot}: apply n at `at` on the shared
+## clock; MissionFlow). Also fired for each change mission.go carries.
+signal mission_scale(change: Dictionary)
 ## The host: a crew member asks for a supply depot's power core (depot.claim {depot, n}; NetMission "DEPOTS").
 signal depot_claimed(from: int, data: Dictionary)
 ## A client: the host granted a core (depot.grant {depot, peer, seq, cores_left}; to everyone, or a repeat to the asker).
@@ -214,10 +221,6 @@ var link_from_settings := false
 var friendly_fire := true
 ## Host: the skill new bots get (the hangar's picker; set_bot_skill also sets every seated bot's).
 var bot_skill := BOT_SKILL
-## DEV (docs/design/mission-objectives.md §7 phase 1): the host's next launches play the mission plan (objectives, waves,
-## the extraction hold) instead of clear + extract. Set by FrontEnd from `--objectives` / GameSettings dev objectives;
-## mission.launch carries it (params.objectives), so every machine agrees. Offline it is not used (solo_launch carries it).
-var objectives := false
 ## An overlay invite waiting for the player's answer: {lobby, inviter} ({} = none).
 var pending_invite: Dictionary = {}
 
@@ -606,8 +609,8 @@ func set_crew_state(s: String) -> void:
 
 # --- Mission (NetMission does the work; these are the calls game and UI code make) ------------------
 
-## Host: launch a mission for the crew on `seed`, built as `mode` (NetMission.MODE_STACK, the multi-deck section, or
-## MODE_DISTRICT) (mission.launch, then mission_started on every machine). False on a client, offline (solo play loads
+## Host: launch a mission for the crew on `seed`, built as `mode` (NetMission.MODE_STACK, the multi-deck section, the
+## only one) (mission.launch, then mission_started on every machine). False on a client, offline (solo play loads
 ## the test drive itself), or while a mission is already under way.
 func start_mission(seed_value: int, mode: String = NetMission.MODE_STACK) -> bool:
 	return mission.host_launch(seed_value, mode)
@@ -669,6 +672,17 @@ func mission_waves() -> Array:
 	return mission.waves
 
 
+## Host: the crew scale changes (MissionFlow.on_member_retired): {n, at, from, reason, pilot}, `at` on the shared clock;
+## sent to the crew as a reliable mission.scale and kept for mission.go. Ignored on a client or offline.
+func send_mission_scale(change: Dictionary) -> void:
+	mission.host_scale(change)
+
+
+## Every crew-scale change of the mission this machine has (host: sent; client: heard), in order.
+func mission_scales() -> Array:
+	return mission.scales
+
+
 ## The latest mission progress the host decided ({} before the first, or between missions).
 func mission_state() -> Dictionary:
 	return mission.state
@@ -689,18 +703,6 @@ func kick(peer: int, reason: String) -> void:
 	# landing in the same receive batch would discard it), or KICK_WAIT at the latest (a stalled client, say).
 	_refused[peer] = {"at": Time.get_ticks_usec(), "kick": true}
 	_drop(peer, "was sent out: %s" % reason)
-
-
-## Host: set fields on roster entries and send the roster to the crew. `peer` 0 = every member.
-func set_members(peer: int, fields: Dictionary) -> void:
-	if not hosting or state != State.ONLINE:
-		return
-	for p: int in roster:
-		if peer == 0 or p == peer:
-			for k: String in fields:
-				(roster[p] as Dictionary)[k] = fields[k]
-	_to_crew("sys.roster", {"entries": crew()})
-	roster_changed.emit()
 
 
 ## The crew's friendly fire option, set on the host (sent to the crew) or offline (solo, and kept for the next crew this
@@ -931,7 +933,6 @@ func _end(reason: String, close_now: bool = false, linger: bool = false) -> void
 	if _steam_link and SteamIdentity.steam() != null:
 		NetSteamLink.apply(SteamIdentity.steam(), "off")
 	_steam_link = false
-	pending_invite = {}
 	lobby.leave()
 	wire.reset()
 	if telemetry != null:
@@ -1064,14 +1065,29 @@ func _on_lobby_listed(lobbies: Array) -> void:
 	if not _find_first or state != State.OPENING:
 		return
 	_find_first = false
-	var version := SteamLobby.build_version()
+	var pick := pick_lobby(lobbies, func(lid: int, key: String) -> String: return lobby.get_data(lid, key),
+		SteamLobby.build_version())
+	if int(pick["id"]) != 0:
+		status_changed.emit("Found %s. Joining..." % lobby.get_data(int(pick["id"]), "name"))
+		lobby.join(int(pick["id"]))
+		return
+	_end(str(pick["reason"]))
+
+
+## Join's choice among listed lobbies: the first of this build with a free seat whose crew is in the hangar (lobby data
+## "state" != "mission": its host would refuse us ON_MISSION). `data` is (lobby id, key) -> lobby data. {id, reason}:
+## id 0 when none fits, reason ON_MISSION when every open crew of this build is on a mission, else NO_CREWS.
+static func pick_lobby(lobbies: Array, data: Callable, version: String) -> Dictionary:
+	var busy := 0
 	for id: Variant in lobbies:
 		var lid := int(id)
-		if lobby.get_data(lid, "version") == version and lobby.get_data(lid, "seats_free") != "0":
-			status_changed.emit("Found %s. Joining..." % lobby.get_data(lid, "name"))
-			lobby.join(lid)
-			return
-	_end(NO_CREWS)
+		if str(data.call(lid, "version")) != version or str(data.call(lid, "seats_free")) == "0":
+			continue
+		if str(data.call(lid, "state")) == "mission":
+			busy += 1
+			continue
+		return {"id": lid, "reason": ""}
+	return {"id": 0, "reason": ON_MISSION if busy > 0 else NO_CREWS}
 
 
 func _on_lobby_joined(_lobby_id: int) -> void:
@@ -1101,8 +1117,8 @@ func _on_lobby_failed(reason: String) -> void:
 		_end(reason)
 
 
-## An overlay invite accepted while the game runs. A listening screen asks first; with nobody listening it leaves whatever
-## this is, joins and shows the menu.
+## An overlay invite accepted while the game runs: kept in pending_invite, and the menu asks first (INVITES above). Never
+## joins on its own.
 func _on_invite(lobby_id: int, friend_id: int = 0) -> void:
 	if lobby_id != 0 and lobby_id == lobby.lobby_id and state != State.OFFLINE:
 		_log("invite to the lobby we are in: ignored")
@@ -1110,13 +1126,10 @@ func _on_invite(lobby_id: int, friend_id: int = 0) -> void:
 	var inviter := lobby.friend_name(friend_id)
 	print("[Net] invite accepted in the overlay: lobby %d from %s" % [lobby_id, inviter if inviter != "" else "?"])
 	pending_invite = {"lobby": lobby_id, "inviter": inviter}
-	if not get_signal_connection_list("invite_received").is_empty():
-		invite_received.emit(lobby_id, inviter)
-		return
-	accept_invite()
-	var scene := get_tree().current_scene
-	if scene != null and scene.scene_file_path != Boot.MENU_SCENE:
-		get_tree().change_scene_to_file.call_deferred(Boot.MENU_SCENE)
+	if get_signal_connection_list("invite_received").is_empty():
+		_log("invite kept for the menu to ask about (nothing is listening now)")
+		status_changed.emit("%s invited you to their crew: answer in the menu." % (inviter if inviter != "" else "A Steam friend"))
+	invite_received.emit(lobby_id, inviter)
 
 
 # --- Events ------------------------------------------------------------------------------------------
@@ -1293,6 +1306,7 @@ func _client_sys(from: int, kind: String, data: Dictionary) -> void:
 
 
 func _set_roster(entries: Array) -> void:
+	var before: Array = roster.keys() + bots.keys()
 	roster.clear()
 	bots.clear()
 	for e: Variant in entries:
@@ -1302,6 +1316,13 @@ func _set_roster(entries: Array) -> void:
 			bots[id] = d
 		elif id > 0:
 			roster[id] = d
+	# A client hears a leaver only through the roster (clients talk to the host alone): say so, as the host's _drop does.
+	# Players only: a bot taken off in the hangar is not a leaver (and bots never leave a mission on their own).
+	if not hosting and state == State.ONLINE:
+		for p: Variant in before:
+			if not is_bot_id(int(p)) and not has_member(int(p)):
+				_log("peer %d left the crew" % int(p))
+				peer_left.emit(int(p))
 
 
 # --- Packets -----------------------------------------------------------------------------------------

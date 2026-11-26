@@ -15,6 +15,24 @@ whose source declares `const SERIAL := true` runs last, one at a time, with no o
 wall-clock budgets: `tests/test_perf.gd` ("CombatWorld+AI under 4 ms/frame") measured 0.7 ms mean / 2.4 ms max alone but
 3.9-4.2 ms max inside the parallel batch.
 
+## Timeouts and audio
+
+Two limits apply to a single-process test. **The test's own**: `TestCase.timeout_sec` (default 60) is a Timer on
+**game time** (scaled by `Engine.time_scale`, so a bot test at 2x gets twice the game seconds per wall second). Set it
+in `_init()` or `setup()`: setting it restarts the timer with the new value (before 2026-11-25 a value set in `setup()`
+was ignored and the test kept 60 s; code-audit-2026-11 #8). Left unset, `const TEST_TIMEOUT := N` is used when larger.
+**The runner's**: a wall-clock kill at max(`-TimeoutSec` (120), 1.5 x D + 30 s), D = the larger of `TEST_TIMEOUT` and a
+literal `timeout_sec = N` in the test or the case file it `extends "res://tests/..."` (game time runs slower than the
+wall clock under load). A computed `timeout_sec` (`limit + 60.0`) isn't read: declare `TEST_TIMEOUT` then. Net tests
+(`NetTest`) stop the game-time timer and watch the wall clock (`net_timeout`); the runner gives a net run
+max(`-NetTimeoutSec` (90), `NET_TIMEOUT`, a literal `net_timeout` + 20 s).
+
+Tests make no sound: every test process gets `--audio-driver Dummy` (implied by `--headless` already), and on a headless
+run `AudioDirector.silent` skips cues entirely (no fetch, no synthesis, no `play()`; music and ambience beds never
+start; `CombatAudio` / `MechAudio` skip their per-frame step; the gate siren isn't played). A test that records cues
+(`record_events = true`, `test_audio`) keeps the bookkeeping, only `play()` is skipped; `test_perf` sets `silent = false`
+to time the live audio path.
+
 ## Ports
 
 Several sessions run tests at once, so fixed ports (the old `28000 + 10 * slot`, or a test's own `const PORT`) collided
@@ -30,7 +48,7 @@ free port as `--net-port P` too; a test that opens a crew reads it with `TestCas
 `tests/test_net_coop_e2e.gd` (2 processes, links off + coast) and `test_net_coop_e2e_4.gd` (a full crew, off), scenario
 `tests/net_coop_case.gd` (W9 of `docs/coordination/integration-plan.md`), play one crew mission from launch to end. At
 every step each machine reports what it has and the host asserts they all agree: (a) launch + barrier (seed, crew,
-build checksum), (b) the city (the stack's checksum, or the district's plan + geometry + props layout; every crew mech
+build checksum), (b) the city (the stack's checksum; every crew mech
 spawned, puppets with PlayerTargets), (c) everyone walks at one shared-clock moment and every puppet stands within
 0.5 m of its owner's stop, (d) everyone fires every weapon and every machine receives exactly every other machine's
 fire records (CombatNet), (e) with W4's host-owned enemies (AI idled by the host) a client fires at an enemy and
@@ -51,19 +69,38 @@ solo, then with the puppets: crew p95 under 11 ms and the 3 puppets under 4.5 ms
 the measured numbers and why).
 
 ## Test drive hooks (city mode, offline crew)
-- `td.city_mode = TestDrive.MODE_DISTRICT` (or `MODE_STACK`) on the instantiated scene, before `add_child`, forces the
-  city: the stack (multi-deck section, the default) or the single district. Tests whose numbers are tuned to the
-  district's avenue encounters (`test_enemy_effectiveness`, `test_weapon_rack`, `test_visual_enemies`) set district.
-  Command line: `--stack` / `--district`, `--seed N`.
+- The stack is the only city (the single-district mode was cut 2026-11-25); `td.city_mode` is always `MODE_STACK`
+  (a test may still set it; nothing else is built). Command line: `--seed N`; `--stack` and `--objectives` are
+  accepted and ignored. A test that needs a bare district builds a `CityDistrict` itself (`test_enemy_effectiveness`).
 - `TestDrive.offline_crew = N` (static, set before the scene enters the tree; reset it after) or `--offline-crew N`: a
   solo test drive with N mechs and no session, for headless perf runs. Mechs 2..N are idle puppets (`puppet` on, no
   MechPuppet, no input or physics) with fake owner peers `TestDrive.OFFLINE_PEER + seat`, placed in the crew slots
-  (`TestDrive.entry_spawn` / `spawn_point`); their rigs, gait, FX and audio run. `test_stack_drive` checks it.
+  (`TestDrive.entry_spawn`); their rigs, gait, FX and audio run. `test_stack_drive` checks it.
+
+## Fixtures (one mission mode; TEST-ONLY isolation)
+The game has one mission mode, the objectives (user 2026-11-25: "Cut the legacy modes."). Which mode a test runs depends
+on what it covers (user: "The unit tests can have their own mode if needed. That might be more robust." / "Depending
+what we are testing."):
+- **Integration** (mission flow, the pacing director, bots, co-op objectives, the mission start): the real objectives
+  mode, the only one (no switch to set). For a fast, predictable mission force the plan
+  on every machine with `MissionFlow.test_plan` (it joins the plan checksum), e.g. `{"primary": "sweep", "bonus_max": 0,
+  "waves_per_deck": 0, "hold": 3.0}`: every deck a sweep (the closest to the old "clear every deck"), no reserve waves,
+  a 3 s hold (`test_mission_flow`, `net_mission_flow_case`, `net_coop_case`).
+- **A narrow system** (a weapon, an enemy behaviour, net sync, city / stack layout, perf) that needs "a section with
+  enemies" and nothing of the mission: `QuietSectionFixture` (`scripts/test_support/quiet_section_fixture.gd`). Declare
+  `const QUIET_SECTION := true` in the test or in the shared case it extends; `TestCase._ready` arms it in every process
+  (net tests: host and clients) before `setup()`. It sets `MissionFlow.test_quiet`: MissionFlow builds no rules, plan or
+  director, so the stack, the crew and the FULL garrison stand, nothing is released, nothing is evaluated and the
+  mission never ends (`td.mission.rules == null`). TestDrive honours it too: no plan prebuild in the crew's stepped
+  load, the full garrison (share 1.0) in `spawn_enemies`, `mission_checksum()` the stack's alone.
+- **Never from the game**: nothing in `scripts/app`, `scripts/ui` or `scripts/game` references a test-support class
+  (PerfProbe, the bench timer, excepted), `MissionFlow.test_quiet` is written only by `scripts/test_support/` and
+  `tests/`, and no flag, setting or menu reaches it: `tests/test_objectives_only.gd` checks all of that.
 
 ## Combat log (damage in playtest logs)
 Every mission run (stack mode, solo or crew) prints `[Flow]` damage lines for THIS machine's player
 (`scripts/game/combat_log.gd`, `CombatLog`; attached by `TestDrive` once `MissionFlow` exists, starts when the mission is
-released). Off: `--no-combat-log`. Never in the lab or a district drive. Logging only (all LOCAL, no messages). Format:
+released). Off: `--no-combat-log`. Never in the lab. Logging only (all LOCAL, no messages). Format:
 `[Flow] t=<FlowLog clock> <tag> mt=<mission s> peer=<id> key=value ...`, fixed field order, values without spaces
 (`-` = empty), so `grep "\[Flow\]"` gives the whole run's flow and damage together.
 - `dmg_in src=<id>/<kind> wpn= comp= amt= n= dur= hp=<comp>:<cur>/<max>,... tot=<% total> core=<% weakest of torso / head
@@ -83,7 +120,16 @@ released). Off: `--no-combat-log`. Never in the lab or a district drive. Logging
   longest_quiet= longest_quiet_mt=` then the mission's pacing numbers `eng_s= eng_pct= quiet_max= quiet_max_mt= quiet30=
   peaks= peak_mt= kint_med= kint_p90= kint_max= in_pm= out_pm= core_min_c= est_eng=`: once, at won / lost, or `quit`
   when the scene goes first.
-`amt` includes overkill.
+`amt` is what the target's `damaged` signal reported. Players (`PlayerTarget`) and plain targets (`CombatTarget`,
+`DepotTarget`): the HP actually removed, no overkill (150 damage on a 100 HP head logs 100); a hit that removes nothing
+(an invulnerable mech, a wreck) emits no `damaged` and logs nothing (a heat-only hit still logs `amt=0.0` with its
+`heat_in`), and a hit on a player's destroyed hardpoint lands on the torso it hangs on (`comp=torso`). Enemies
+(`EnemyBase`): the hit after the component's weak-point multiplier, not clamped (overkill included; a hit on a broken
+non-core component reports its overflow share on the core). Assets (`AssetTarget`): the requested amount (they report,
+never subtract). So `in` / `taken_by` and the `summary` / `end` totals are true HP lost for the local mech; `out` /
+`dealt_by` are true HP for plain targets and raw (overkill included) for enemies. `kills` = the player's own hits that
+left a target destroyed, applied on this machine (`est=1` hits never count: the host decides); a shot into a wreck emits
+nothing, so it never counts a kill twice.
 
 Threat and pacing records (`docs/design/pacing-director.md` section 3; summaries per `pacing-research.md` 8.6):
 - `shot src=<id>/<kind> tgt=<id>/<kind>|- wpn= n= hits= hit=0|1 dist= est=0|1`: shots coalesced per shooter + weapon +
@@ -93,8 +139,9 @@ Threat and pacing records (`docs/design/pacing-director.md` section 3; summaries
   fired, dist = muzzle to pilot): hits exact on pilots it owns; on a client's pilot (the victim decides there)
   `hits=-1 hit=-1 est=1`.
 - `threat i= src=host|local eng= engaging= near= sees= seen_by= nearest= est= crew_i= crew_eng= deck= alive= tot= core=
-  heat= rays= pilot= bot=0|1` at 1 Hz for the local pilot (pilot = the line's peer) and, on the host, for each hangar bot
-  (host-owned pilots with negative ids: `bot=1 pilot=<id>`, own intensity and ray budget). `i` = intensity (`PilotIntensity`, `scripts/game/pilot_intensity.gd`, the
+  heat= shut=0|1 rays= pilot= bot=0|1` at 1 Hz for the local pilot (pilot = the line's peer) and, on the host, for each hangar bot
+  (host-owned pilots with negative ids: `bot=1 pilot=<id>`, own intensity and ray budget). `heat` / `shut` come from the
+  pilot's `MechController` (a bot's too: a bound `PlayerTarget`'s own heat gauge is never ticked). `i` = intensity (`PilotIntensity`, `scripts/game/pilot_intensity.gd`, the
   1.2 table): the host director's value from mission state `intensity` when present (`src=host`), else computed here.
   Engaged = an enemy fired at the pilot, or was awake within 60 m with it as target, in the last 4 s. `near` = live
   enemies within 200 m; `sees` = awake ones among the 12 nearest in line of sight (p>e rays); `seen_by` = enemies with
@@ -110,6 +157,10 @@ Threat and pacing records (`docs/design/pacing-director.md` section 3; summaries
 - `pace deck= from= to= i= reason=`, `release wave= deck= src= size= kinds=<kind>:<n>,... reason=`, `scout ev= drone=
   deck=`, `depot ev= depot= left=`: printed by `CombatLog.note_pace / note_release / note_scout / note_depot` (static,
   no-ops when no log runs); `pace` also from mission state key `pace` changes until `note_pace` is used.
+- `scale from= to= reason=leave|state pilot= at=`: the crew scale changed on this machine (`CombatLog.note_scale`, from
+  `MissionFlow._apply_scale`), printed on EVERY machine at the host's `at` (shared clock, 3 decimals: compare `at` across
+  machines' logs, it is the same); `pilot` = who left (negative for a hangar bot, 0 when learned from mission state). The
+  run log also has `[mission] scale a -> b (reason, pilot, at)` and, on the host, `[mission] scale decided ...`.
 Cost: one scan of `world.targets` every 0.25 s, the threat record at 1 Hz, at most 12 p>e rays a second (3 per physics
 step, `CombatWorld.shot_ray`), strings only when a line prints. `tests/test_combat_log.gd` checks the records (a staged
 physics scene with real turrets and a wall for the threat counts and the ray budget), `PilotIntensity` against the

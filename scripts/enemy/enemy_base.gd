@@ -100,6 +100,7 @@ var puppet := false
 
 # Owner gameplay state
 var ai_state := STATE_IDLE
+var _fight_state := ""             ## alerted state a stagger / overheat interrupted ("" = was not fighting; host-private)
 var _dead := false
 var _dead_time := 0.0
 var _primary_disabled := false
@@ -245,7 +246,7 @@ func net_fields() -> Dictionary:
 		"sight_range": Net.SPAWN, "auto_remove_wreck": Net.SPAWN,
 		"net_id": Net.SPAWN, "spawn_deck": Net.SPAWN, "wave": Net.SPAWN,
 		"defend_target_id": Net.PRIVATE, "puppet": Net.SPAWN,
-		"ai_state": Net.OWNER, "_dead": Net.OWNER, "_dead_time": Net.PRIVATE,
+		"ai_state": Net.OWNER, "_fight_state": Net.PRIVATE, "_dead": Net.OWNER, "_dead_time": Net.PRIVATE,
 		"_primary_disabled": Net.OWNER, "_speed_mult": Net.OWNER, "_shot_index": Net.OWNER,
 		"_target_id": Net.OWNER, "_aim_point": Net.OWNER, "_locked_aim": Net.OWNER,
 		"_active_weapon": Net.OWNER, "_telegraph_t": Net.OWNER, "_telegraph_dur": Net.OWNER,
@@ -390,10 +391,6 @@ func roll_out(path: Array[Vector3], wait: float = 0.0) -> void:
 	_exit_wait = maxf(wait, 0.0)
 
 
-func rolling_out() -> bool:
-	return not _exit_path.is_empty()
-
-
 ## One step of the roll-out (true while it runs: the AI waits). Kinematic: the path is clear by construction (the bay's
 ## formation lanes through the door opening), so no steering or physics.
 func _step_exit(dt: float) -> bool:
@@ -438,8 +435,42 @@ func core_hp_ratio() -> float:
 	return clampf(float(hp.get(c, 0.0)) / cap, 0.0, 1.0)
 
 
+## A staggered / overheated unit that was fighting is still alerted (its fight is held in _fight_state).
 func is_alerted() -> bool:
+	if ai_state == STATE_STAGGERED or ai_state == STATE_OVERHEATED:
+		return _fight_state != ""
 	return ai_state in [STATE_ALERT, STATE_ENGAGE, STATE_FLANK, STATE_TELEGRAPH, STATE_FIRE, STATE_COOLDOWN]
+
+
+## Stagger / overheat (every _step_ai copy calls this instead of writing ai_state): the AI is out for a moment but
+## remembers the fight it was in, so hits during it don't re-alert it and it resumes the fight afterwards.
+func _hold_disabled(state: String) -> void:
+	if ai_state != STATE_STAGGERED and ai_state != STATE_OVERHEATED:
+		_fight_state = ai_state if is_alerted() else ""
+	ai_state = state
+
+
+## First thing after the stagger / overheat checks: a unit coming out of one resumes the fight it held (ALERT keeps its
+## remaining reaction delay; a telegraph or burst the disable cancelled resumes as ENGAGE), or idles if it held none.
+func _resume_from_disabled() -> void:
+	if ai_state != STATE_STAGGERED and ai_state != STATE_OVERHEATED:
+		return
+	var s := _fight_state
+	_fight_state = ""
+	if s == "":
+		ai_state = STATE_IDLE
+	elif s in [STATE_ALERT, STATE_FLANK, STATE_COOLDOWN, STATE_ENGAGE]:
+		ai_state = s
+	else:
+		ai_state = STATE_ENGAGE
+
+
+## Enter STATE_ALERT, or, while staggered / overheated, hold it to resume when the unit recovers.
+func _set_alert_state() -> void:
+	if ai_state == STATE_STAGGERED or ai_state == STATE_OVERHEATED:
+		_fight_state = STATE_ALERT
+	else:
+		ai_state = STATE_ALERT
 
 
 func is_mobile() -> bool:
@@ -665,7 +696,10 @@ func apply_damage(amount: float, component: String, src: String) -> void:
 	note_combat_activity(true)
 	if squad != null and squad.has_method("note_deck_activity"):
 		squad.note_deck_activity(spawn_deck)
-	damaged.emit(eff, c, src)
+	# `damaged` reports the HP actually removed (CombatTarget's contract): no overkill, nothing when nothing was removed.
+	var dealt := before - float(hp[c])
+	if dealt > 0.0:
+		damaged.emit(dealt, c, src)
 	var ratio := float(hp[c]) / maxf(float(max_hp.get(c, 1.0)), 0.001)
 	component_damaged.emit(self, c, ratio, weak)
 	_emit_squad("component_damaged", {"id": target_id, "component": c, "hp_ratio": ratio, "weak_point": weak, "pos": _world_pos()})
@@ -681,7 +715,9 @@ func _damage_core_directly(amount: float, src: String) -> void:
 	var before := float(hp[core])
 	hp[core] = maxf(before - amount, 0.0)
 	_trigger_hit_flash(core)
-	damaged.emit(amount, core, src)
+	var dealt := before - float(hp[core])   # what the core actually lost (no overkill)
+	if dealt > 0.0:
+		damaged.emit(dealt, core, src)
 	var ratio := float(hp[core]) / maxf(float(max_hp.get(core, 1.0)), 0.001)
 	component_damaged.emit(self, core, ratio, false)
 	_emit_squad("component_damaged", {"id": target_id, "component": core, "hp_ratio": ratio, "weak_point": false, "pos": _world_pos()})
@@ -1470,63 +1506,147 @@ func _probe_ground_point(pos: Vector3, space: PhysicsDirectSpaceState3D) -> Vect
 
 
 # --- AI State Machine -------------------------------------------------------------------------------------
+# ONE state machine for every enemy (docs/design/enemy-ai-structure.md). _step_ai is the template: subclasses override
+# the hooks it calls, never _step_ai itself. Per tick:
+#   _ai_timers -> ai_mode idle (_ai_idle_pose) | overheat / shutdown / stagger (_hold_disabled, _on_ai_disabled) ->
+#   _resume_from_disabled -> _ai_live.
+# _ai_live (ground units and the gunship; the drone and the dropship replace it with their own live step):
+#   ramp transit -> _ai_perceive -> no target: _ai_no_target (_on_target_dropped, _ai_search | _ai_wander)
+#   -> _ai_note_target -> IDLE / PATROL: _enter_alert + _on_spotted | ALERT: delay + _track_aim
+#   | TELEGRAPH: _ai_telegraph | FIRE: _ai_fire | else _ai_engage.
 
 func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 	move_speed_ratio = 0.0
 	turret_slew_speed = 0.0
+	_ai_timers(dt)
+	if ai_mode == "idle":
+		ai_state = STATE_IDLE
+		_ai_idle_pose(dt)
+		_align_to_ring()
+		return
+	if ai_mode == "overheat" or heat.shutdown:
+		if ai_mode == "overheat" and not heat.shutdown:
+			heat.add(heat.cap)
+		_hold_disabled(STATE_OVERHEATED)
+		_on_ai_disabled("overheat")
+		_align_to_ring()
+		return
+	if knock.staggered():
+		_hold_disabled(STATE_STAGGERED)
+		_on_ai_disabled("stagger")
+		_align_to_ring()
+		return
+	_resume_from_disabled()
+	_ai_live(dt, space)
+
+
+## Hook: the per-tick timers, before anything else (default: the fire cooldown, then the squad relay).
+func _ai_timers(dt: float) -> void:
+	_tick_cooldown(dt)
+	_tick_relay(dt)
+
+
+func _tick_cooldown(dt: float) -> void:
 	if _cooldown > 0.0:
 		_cooldown = maxf(_cooldown - dt, 0.0)
+
+
+func _tick_relay(dt: float) -> void:
 	if _relay_timer >= 0.0:
 		_relay_timer -= dt
 		if _relay_timer <= 0.0:
 			_relay_timer = -1.0
 			_fire_comms_relay()
 
-	if ai_mode == "idle":
-		ai_state = STATE_IDLE
-		_align_to_ring()
-		return
-	if ai_mode == "overheat":
-		if not heat.shutdown:
-			heat.add(heat.cap)
-		ai_state = STATE_OVERHEATED
-		_align_to_ring()
-		return
-	if heat.shutdown:
-		ai_state = STATE_OVERHEATED
-		_align_to_ring()
-		return
-	if knock.staggered():
-		ai_state = STATE_STAGGERED
-		_align_to_ring()
-		return
+
+## Hook: ai_mode "idle" (after ai_state = IDLE, before the ring alignment): settle the pose.
+func _ai_idle_pose(_dt: float) -> void:
+	pass
+
+
+## Hook: overheated / staggered this tick (after _hold_disabled, before the ring alignment); reason "overheat" | "stagger".
+func _on_ai_disabled(_reason: String) -> void:
+	pass
+
+
+## Hook: the live AI step (not idle, not disabled). Ground units and the gunship use this one; the drone and the dropship
+## replace it.
+func _ai_live(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 	if _transit_ramp and _step_transit(dt, space):
 		return   # walking a ramp to the crew's deck: finish it before anything else
-
 	# Perception: check LOS to opposing targets (or shared squad target board).
-	var target := _acquire_target(space)
+	var target := _ai_perceive(space)
 	if target == null:
-		_has_los = false
-		_no_los_time = 0.0
-		_cover_mode = ""
-		_cancel_telegraph("lost_los")
-		_release_slot()
-		var board_entry: Dictionary = _board_entry() if is_alerted() else {}
-		if not board_entry.is_empty():
-			_step_search(dt, board_entry["pos"] as Vector3, space)
-		else:
-			if ai_state in [STATE_ALERT, STATE_ENGAGE, STATE_FLANK, STATE_COOLDOWN]:
-				_emit_squad("alerted", {"id": target_id, "state": "lost", "pos": _world_pos()})
-			if not _step_transit(dt, space):
-				_step_patrol(dt, space)
-			_idle_scan(dt)
+		_ai_no_target(dt, space)
 		return
+	var target_pos := _ai_note_target(target, dt)
+	# Alert reaction delay before engaging.
+	if ai_state in [STATE_IDLE, STATE_PATROL]:
+		_enter_alert(target, "spotted")
+		_on_spotted(target, target_pos)
+		return
+	if ai_state == STATE_ALERT:
+		_alert_timer -= dt
+		_track_aim(target_pos, dt)
+		if _alert_timer <= 0.0:
+			ai_state = STATE_ENGAGE
+		return
+	if ai_state == STATE_TELEGRAPH:
+		_ai_telegraph(dt, target, target_pos, space)
+		return
+	if ai_state == STATE_FIRE:
+		_ai_fire(dt, target_pos, space)
+		return
+	_ai_engage(dt, target, target_pos, space)
 
+
+## Hook: who this unit sees / tracks this tick (null: nobody). Default: the perception rules (_acquire_target).
+func _ai_perceive(space: PhysicsDirectSpaceState3D) -> CombatTarget:
+	return _acquire_target(space)
+
+
+## No target this tick: drop the line, the telegraph and the slot, then search the board's last known position or wander.
+func _ai_no_target(dt: float, space: PhysicsDirectSpaceState3D) -> void:
+	_has_los = false
+	_no_los_time = 0.0
+	_cover_mode = ""
+	_on_target_dropped(dt)
+	_cancel_telegraph("lost_los")
+	_release_slot()
+	var board_entry: Dictionary = _board_entry() if is_alerted() else {}
+	if not board_entry.is_empty():
+		_ai_search(dt, board_entry["pos"] as Vector3, space)
+	else:
+		if ai_state in [STATE_ALERT, STATE_ENGAGE, STATE_FLANK, STATE_COOLDOWN]:
+			_emit_squad("alerted", {"id": target_id, "state": "lost", "pos": _world_pos()})
+		_ai_wander(dt, space)
+
+
+## Hook: the target was just dropped (before the telegraph is cancelled).
+func _on_target_dropped(_dt: float) -> void:
+	pass
+
+
+## Hook: alerted, no target, the squad board knows where one was: go and look.
+func _ai_search(dt: float, lkp: Vector3, space: PhysicsDirectSpaceState3D) -> void:
+	_step_search(dt, lkp, space)
+
+
+## Hook: nothing known: a wave walks to the crew's deck, else patrol, and glance round.
+func _ai_wander(dt: float, space: PhysicsDirectSpaceState3D) -> void:
+	if not _step_transit(dt, space):
+		_step_patrol(dt, space)
+	_idle_scan(dt)
+
+
+## The target's bookkeeping for this tick (seen: its live position; else the last known one); returns where to aim.
+func _ai_note_target(target: CombatTarget, dt: float) -> Vector3:
 	_target_id = target.target_id
 	_last_target_ref = target
 	var target_pos := Vector3.ZERO
 	if _has_los:
-		target_pos = _target_aim_center(target) + _vis_off   # the part seen (head / legs over low cover)
+		# the part seen (head / legs over low cover)
+		target_pos = _target_aim_center(target) + _vis_off if _aims_at_seen_part() else _target_aim_center(target)
 		_last_seen_pos = target_pos
 		_update_target_velocity(target, target_pos, dt)
 		_no_los_time = 0.0
@@ -1551,28 +1671,31 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 		_has_prev_pos = false
 		_no_los_time += dt
 	_aim_point = target_pos
+	return target_pos
 
-	# Alert reaction delay before engaging.
-	if ai_state in [STATE_IDLE, STATE_PATROL]:
-		_enter_alert(target, "spotted")
-		return
-	if ai_state == STATE_ALERT:
-		_alert_timer -= dt
-		_track_aim(target_pos, dt)
-		if _alert_timer <= 0.0:
-			ai_state = STATE_ENGAGE
-		return
 
-	# Active telegraph wind-up.
-	if ai_state == STATE_TELEGRAPH:
-		_step_telegraph(dt, target, target_pos)
-		return
+## Hook: aim at the part of the target actually seen (head / legs over low cover), not only its centre.
+func _aims_at_seen_part() -> bool:
+	return true
 
-	# Active burst firing.
-	if ai_state == STATE_FIRE:
-		_step_firing(dt)
-		return
 
+## Hook: just alerted by seeing `target` (after _enter_alert).
+func _on_spotted(_target: CombatTarget, _target_pos: Vector3) -> void:
+	pass
+
+
+## Hook: one tick of a telegraph wind-up.
+func _ai_telegraph(dt: float, target: CombatTarget, target_pos: Vector3, _space: PhysicsDirectSpaceState3D) -> void:
+	_step_telegraph(dt, target, target_pos)
+
+
+## Hook: one tick of a burst.
+func _ai_fire(dt: float, _target_pos: Vector3, _space: PhysicsDirectSpaceState3D) -> void:
+	_step_firing(dt)
+
+
+## Hook: engaged, not telegraphing / firing: move, track and start a telegraph when the weapon, cooldown and slot allow.
+func _ai_engage(dt: float, target: CombatTarget, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
 	# Reposition / flank while tracking target & waiting for cooldown + attack slot.
 	_step_engage_movement(dt, target_pos, space)
 	var track_err := _track_aim(target_pos, dt)
@@ -1585,7 +1708,7 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 func _enter_alert(target: CombatTarget, reason_state: String) -> void:
 	if is_alerted():
 		return
-	ai_state = STATE_ALERT
+	_set_alert_state()
 	_target_id = target.target_id
 	_alert_timer = ALERT_DELAY
 	_on_alert_perception_hint(target)
@@ -1632,15 +1755,35 @@ func _fire_comms_relay() -> void:
 			squad.relay_alert_from(self, _target_id)
 
 
+## Upper elevation angle (rad) this chassis can aim above its local floor plane (docs/design/wasp-ai.md §1.2).
+func _max_aim_pitch() -> float:
+	return deg_to_rad(65.0)
+
+
+func _target_elevation(target_pos: Vector3) -> float:
+	var d := target_pos - eye_world()
+	var vert := d.dot(up)
+	var horiz := (d - up * vert).length()
+	return atan2(vert, maxf(horiz, 0.01))
+
+
+func _target_is_airborne(target_pos: Vector3) -> bool:
+	var h_deck := ring.height(target_pos) if ring != null else target_pos.y
+	var h_above_me := (target_pos - _world_pos()).dot(up)
+	return h_deck > 10.0 and h_above_me > 8.0
+
+
 func _choose_weapon(target_pos: Vector3) -> String:
 	var dist := _world_pos().distance_to(target_pos)
 	var prim := str(_cfg.get("primary_weapon", ""))
 	if prim != "" and not _primary_disabled and _has_los:
 		var pst := EnemyCatalog.weapon(prim)
-		if dist <= float(pst.get("range", 160.0)):
+		if dist <= float(pst.get("range", 160.0)) and _target_elevation(target_pos) <= _max_aim_pitch():
 			return prim
 	var sec := str(_cfg.get("secondary_weapon", ""))
 	if sec != "" and not _has_los and _no_los_time >= NO_LOS_MORTAR_TIME:
+		if sec == "enemy_mortar" and _target_is_airborne(target_pos):
+			return ""
 		var sst := EnemyCatalog.weapon(sec)
 		if dist >= float(sst.get("min_range", 30.0)) and dist <= float(sst.get("range", 175.0)):
 			return sec
@@ -1662,8 +1805,14 @@ func _begin_telegraph(weapon_id: String, target_pos: Vector3) -> void:
 	})
 
 
+## The line a direct-fire telegraph needs to keep going (default: the unit's own sight line). The trooper overrides it
+## to accept its peek line from cover, the same line it was allowed to start the telegraph on.
+func _telegraph_has_line(_live_pos: Vector3) -> bool:
+	return _has_los
+
+
 func _step_telegraph(dt: float, _target: CombatTarget, live_pos: Vector3) -> void:
-	if _active_weapon != "enemy_mortar" and not _has_los and ai_mode != "telegraph_loop":
+	if _active_weapon != "enemy_mortar" and ai_mode != "telegraph_loop" and not _telegraph_has_line(live_pos):
 		_cancel_telegraph("lost_los")
 		_release_slot()
 		ai_state = STATE_ENGAGE
@@ -1704,7 +1853,8 @@ func _update_target_velocity(target: CombatTarget, live_pos: Vector3, dt: float)
 	_has_prev_pos = true
 
 
-## Partial velocity lead in the local floor plane (never extrapolates an unseen LKP).
+## Partial 3D velocity lead for direct-fire weapons (damped vertical 0.65x for climbing/diving fliers),
+## floor-plane lead for arc mortars; never extrapolates an unseen LKP (docs/design/wasp-ai.md §1.1).
 func _lead_aim_point(weapon_id: String, base_pos: Vector3, rem_tele: float) -> Vector3:
 	if not _has_los:
 		return base_pos
@@ -1712,16 +1862,19 @@ func _lead_aim_point(weapon_id: String, base_pos: Vector3, rem_tele: float) -> V
 	var lf := float(st.get("lead_factor", 0.0))
 	if lf <= 0.0 or _target_vel.length_squared() < 0.04:
 		return base_pos
-	var flat_v := _target_vel - up * _target_vel.dot(up)
+	var v_up := _target_vel.dot(up)
+	var flat_v := _target_vel - up * v_up
+	var is_arc := str(st.get("kind", "")) == "arc"
+	var lead_v := flat_v if is_arc else (flat_v + up * (v_up * 0.65))
 	var muz := muzzle_world(weapon_id)
 	var dist := muz.distance_to(base_pos)
 	var flight_t := 0.0
-	if str(st.get("kind", "")) == "arc":
+	if is_arc:
 		flight_t = MortarShell.flight_time_for(st, dist)
 	else:
 		flight_t = dist / maxf(float(st.get("speed", 50.0)), 1.0)
 	var lead_t := minf(rem_tele + flight_t, MAX_LEAD_TIME) * lf
-	return base_pos + flat_v * lead_t
+	return base_pos + lead_v * lead_t
 
 
 func _step_firing(dt: float) -> void:
@@ -1730,11 +1883,34 @@ func _step_firing(dt: float) -> void:
 	if _burst_timer <= 0.0 and _burst_left > 0:
 		_fire_one_round(st)
 		_burst_left -= 1
-		_burst_timer = float(st.get("burst_interval", 0.15))
+		_burst_timer = _burst_interval(st)
 	if _burst_left <= 0:
-		_cooldown = float(st.get("burst_cooldown", 2.0))
+		_cooldown = _burst_cooldown(st)
 		_release_slot()
+		_on_burst_done()
 		ai_state = STATE_COOLDOWN if ai_mode == "live" else STATE_ENGAGE
+
+
+## Hooks for the burst: the gap between rounds, the cooldown after the burst, what to drop when it ends.
+func _burst_interval(st: Dictionary) -> float:
+	return float(st.get("burst_interval", 0.15))
+
+
+func _burst_cooldown(st: Dictionary) -> float:
+	return float(st.get("burst_cooldown", 2.0))
+
+
+func _on_burst_done() -> void:
+	pass
+
+
+## Hooks for a round: extra spread (deg) on top of the record's, and the pellet count (a fan when > 1).
+func _extra_spread(st: Dictionary) -> float:
+	return float(st.get("spread", 0.0)) + aim_kick   # static aim kick throws turret shots visibly off target
+
+
+func _pellets(st: Dictionary) -> int:
+	return maxi(int(st.get("pellets", 1)), 1)
 
 
 func _fire_one_round(st: Dictionary) -> void:
@@ -1742,9 +1918,8 @@ func _fire_one_round(st: Dictionary) -> void:
 		return
 	var muz := muzzle_world(_active_weapon)
 	var aim := _locked_aim
-	# Static aim kick throws turret shots visibly off target.
-	var extra_spread := float(st.get("spread", 0.0)) + aim_kick
-	var pellets := maxi(int(st.get("pellets", 1)), 1)
+	var extra_spread := _extra_spread(st)
+	var pellets := _pellets(st)
 	if pellets <= 1:
 		var rec := Combat.fire_record(target_id, 1, _active_weapon, _active_weapon, muz, aim, world.now, _shot_index, extra_spread)
 		rec["enemy"] = true
@@ -1793,6 +1968,14 @@ func _request_slot(tid: String) -> bool:
 	var prio := float(_cfg.get("slot_priority", 1.0))
 	_has_slot = bool(squad.request_attack_slot(target_id, tid, prio))
 	return _has_slot
+
+
+## EnemySquad took this unit's attack slot away (EnemySquad._revoke_slot: pruned or removed): it holds none now.
+func slot_revoked() -> void:
+	_has_slot = false
+	if ai_state == STATE_TELEGRAPH or ai_state == STATE_FIRE:   # no shot without a real slot
+		_cancel_telegraph("slot")
+		ai_state = STATE_ENGAGE
 
 
 func _release_slot() -> void:
@@ -2084,11 +2267,13 @@ func _step_engage_movement(dt: float, target_pos: Vector3, space: PhysicsDirectS
 	if dist > pref * 1.25:
 		ai_state = STATE_ENGAGE
 		_move_along_plan(target_pos, base_spd * speed_scale * _speed_mult, dt, space)
-	elif dist < min_r:
+	elif dist < min_r or _target_elevation(target_pos) > _max_aim_pitch() - deg_to_rad(5.0):
+		# Back away when too close OR when an airborne target hovers inside our overhead pitch dead zone.
 		ai_state = STATE_FLANK
 		var away := (pos - target_pos)
 		away -= up * away.dot(up)
-		var dest := pos + away.normalized() * 14.0
+		var back_dir := away.normalized() if away.length_squared() > 1e-4 else (global_basis.z if is_inside_tree() else Vector3.BACK)
+		var dest := pos + back_dir * 14.0
 		_steer_toward(dest, base_spd * 0.8 * speed_scale * _speed_mult, dt, space)
 	elif enemy_type.begins_with("strider"):
 		# Light skirmishers & breachers orbit/flank laterally instead of standing still in the street.

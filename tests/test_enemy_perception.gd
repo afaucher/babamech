@@ -3,7 +3,7 @@ extends TestCase
 ## notices a crew mech with a clear line to it inside its notice range in its forward cone (instantly close in, else
 ## after 0.5-1.5 s), in any direction inside NEAR_AWARE_R (wider while the mech walks, the whole notice range while it
 ## fires), and idle units glance round so a cone sweeps the block; it then alerts, telegraphs (>= 0.3 s) and fires.
-## Cover still works: behind a building or beyond range nothing notices. A trooper sees an 8 m mech's head over a low
+## Cover still works: behind a building or beyond range nothing notices. A trooper sees an 11.7 m mech's head over a low
 ## wall. The sight cost is bounded (rays per second). Headless, physics on (a floor, boxes), deterministic: combat clock
 ## only, no wall-clock timing.
 
@@ -180,9 +180,11 @@ func _beyond_range_never() -> void:
 		check(float(r["alert"]) < 0.0, "%s does not notice a still mech %.0f m away (notice range %.0f m)" % [ty, nr + 30.0, nr])
 
 
-## A 2.4 m wall 10 m in front of a trooper hides the mech's torso (the ray from its 1.85 m eye) but not its head.
+## A 2.65 m wall 10 m in front of a trooper hides the mech's torso (the ray from its 1.85 m eye to the aim centre 6.9 m
+## up: 2.48 m at the wall) but not its head (2.8 m at the wall). Was 2.4 m before the Strider's 2026-11-24 hit-volume
+## refit raised its aim centre from 4.4 m.
 func _trooper_over_low_wall() -> void:
-	var wall := _box(Vector3(30, 2.4, 0.6), Vector3(0, 1.2, -10))
+	var wall := _box(Vector3(30, 2.65, 0.6), Vector3(0, 1.325, -10))
 	await frames(2)
 	var w := CombatWorld.new()
 	w.use_physics = true
@@ -206,7 +208,7 @@ func _trooper_over_low_wall() -> void:
 		w.advance(DT)
 		if shot[0] >= 0.0:
 			break
-	check(e.is_alerted(), "the trooper sees the 8 m mech's head over the 2.4 m wall")
+	check(e.is_alerted(), "the trooper sees the 11.7 m mech's head over the 2.65 m wall")
 	check(shot[0] >= 0.0, "and fires at it (%.2f s)" % (shot[0] - t0 if shot[0] >= 0.0 else -1.0))
 	check(e._vis_off.length() > 1.0, "it aims at the part it sees (offset %.1f m)" % e._vis_off.length())
 	for n: Node in [p, e, sq, w, wall]:

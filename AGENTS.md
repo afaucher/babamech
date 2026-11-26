@@ -36,6 +36,9 @@ Every change has to keep co-op possible:
    then every machine computes it from params + start time on the shared clock), an owned actor, a host-arbitrated
    world object, or cosmetic. If it fits none, design its networking first.
 7. **Enemy telegraphs are at least 0.3 s** so a dodge works on every machine (cast lesson).
+8. **Crew scaling is the host's.** Values that scale with crew size come only from the host's scale
+   (`MissionFlow.crew_scale()`, decided in `host_crew_scale()` and replicated; it updates when a member leaves): never
+   count `Session.crew()`, the roster, `spawn_order`, `crew_members()` or `crew_bots` yourself to size gameplay.
 
 When the test fails, fix the code or the declaration. Don't widen an allowlist without a written reason, and treat adding
 one as a design decision to report.

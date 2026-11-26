@@ -16,11 +16,28 @@ extends Node
 ## HITS. The receiving machine simulates the shot like any local one, so CombatWorld.decides applies as built:
 ##   - a player's mech: ONLY its owner decides (victim decides). B simulates A's broadcast shot against B's own mech and
 ##     applies damage / impulse / heat through PlayerTarget's verbs once; A and C show the impact cosmetically (they
-##     never build a Hit on a puppet). No hit event crosses for mechs, so a hit can't be applied twice.
+##     never build a Hit on a puppet). No Hit crosses for mechs, so a Hit can't be applied twice (B's stop is announced
+##     as a drop: SHOT DROPS below).
 ##   - host-owned targets (enemies, dummies; owner_peer 0): the SHOOTER's machine decides. On a client, CombatWorld
 ##     emits remote_hit; this sends "combat.hit" {id, hit fields} to the host, which checks the hit's shooter is the
 ##     sender, drops a repeat of (shot, target), finds the target it owns by id and applies the Hit (hit_landed fires).
 ##     City props and ambient life have their own host-arbitrated paths (CityProps "prop.req", AmbientLife "life.req").
+##
+## SHOT DROPS (weapons.md §5.1): every machine runs its own copy of a shot, and positions differ a little between
+## machines, so a copy can miss here what the deciding machine saw it stop at and fly on into something this machine
+## decides (A's shell stops in an enemy on A, B's copy flies on into B's mech: one shot, two hits). So when a projectile
+## STOPS on something this machine decides (CombatWorld.shot_decided: a host-owned target hit by our shot, our own mech
+## hit by anyone's shot, a prop our shot hit), the crew is told, on the same "combat.hit" kind:
+##   - a client: a hit it sends to the host anyway carries the stop as "end": [pt, n(, color)] (merged, no extra event);
+##     any other stop goes to the host in {"drop": [[shot, pt, n(, color)], ...]}. Both wait for post_step (same frame).
+##   - the host: ends its own copy (drop_shot) and passes every drop on as {"drop": [...]} to every client but the one
+##     it came from, with its own drops, once per post_step.
+## Each receiver calls CombatWorld.drop_shot: a copy still flying ends at that point (its normal impact once, splash only
+## where that machine decides, as for any hit); a copy that already ended keeps its own result; a drop for a shot not
+## fired here yet (its record still on the way) waits EARLY_DROP_LIFE s for it; repeats are harmless. Not covered: a
+## real race (my copy already hit my mech before the drop arrives: both hits stand; the window is the drop's trip minus
+## the flight time between the two contact points), stops outside the projectile sweep (the flak fuse, the mortar's
+## landing probe), lasers (resolved at once everywhere) and flame chunks (not projectiles).
 ##
 ## GUIDED MISSILES: before each CombatWorld.advance, every puppet's guided track is mirrored into
 ## world.designators["player<peer>"] = {on, dot} from that owner's NEWEST mech snapshot (Session.mechs.newest: aim
@@ -60,7 +77,6 @@ extends Node
 ## + one per cancel), flamer 10. Batching caps one shooter at 30 "combat.fire" events a second whatever is held.
 
 signal remote_fired(record: Dictionary, effect: CombatEffect)
-signal host_hit_applied(target_id: String, hit: Hit)
 signal remote_drone(record: Dictionary, drone: RepairDrone)
 
 const FIRE := "combat.fire"
@@ -85,7 +101,9 @@ var local_shooter := ""
 var stats := {"sent_events": 0, "sent_records": 0, "recv_records": 0, "dup": 0, "refused": 0, "relayed": 0,
 	"hits_sent": 0, "hits_applied": 0, "hits_dup": 0, "hits_missing": 0, "charges_sent": 0, "charges_recv": 0,
 	"drones_sent": 0, "drones_recv": 0, "drones_dup": 0, "drones_expired": 0,
-	"enemy_dup": 0, "enemy_local_refused": 0}
+	"enemy_dup": 0, "enemy_local_refused": 0,
+	"drops_sent": 0, "drops_relayed": 0, "drops_recv": 0, "drops_applied": 0, "drops_late": 0, "drops_early": 0,
+	"drops_refused": 0}
 
 var _queue: Array = []
 var _next_flush := -INF
@@ -102,6 +120,9 @@ var _anchored: Dictionary = {}    ## puppet peer -> true once its CombatWorld an
 var _bots: Dictionary = {}        ## host: "player<bot id>" -> bot id (add_bot): this machine's bots' records go out too
 var _bot_queues: Dictionary = {}  ## host: bot id -> encoded records waiting for the next flush
 var _bot_charges: Dictionary = {} ## host: bot id -> {rack, prev: Array[float], fired: {slot index: true}} (charge events)
+var _hit_out: Array = []          ## client: "combat.hit" payloads for the host, sent at post_step (a stop merges in as "end")
+var _drop_out: Array = []         ## [[shot, pt, n(, color)], origin peer]: drops to send at post_step (client: to the host;
+                                  ## host: to every client but the origin)
 
 
 func net_fields() -> Dictionary:
@@ -110,7 +131,7 @@ func net_fields() -> Dictionary:
 		"_hits_seen": Net.LOCAL, "_hits_order": Net.LOCAL, "_charges": Net.LOCAL, "_prev_charge": Net.PRIVATE,
 		"_fired_slots": Net.PRIVATE, "_muzzled": Net.LOCAL, "_hp_nodes": Net.LOCAL,
 		"_anchored": Net.LOCAL, "_bots": Net.LOCAL, "_bot_queues": Net.PRIVATE,
-		"_bot_charges": Net.PRIVATE}
+		"_bot_charges": Net.PRIVATE, "_hit_out": Net.PRIVATE, "_drop_out": Net.PRIVATE}
 
 
 ## The shared clock for CombatWorld.set_clock: Session.host_time() in a session, -1 when there is none.
@@ -128,6 +149,7 @@ func bind(w: CombatWorld, r: WeaponRack, td: Node) -> void:
 	world.fired.connect(_on_fired)
 	world.remote_hit.connect(_on_remote_hit)
 	world.drone_launched.connect(_on_drone_launched)
+	world.shot_decided.connect(_on_shot_decided)
 	world.fire_gate = _gate
 	if rack != null:
 		rack.fired.connect(func(slot: int) -> void: _fired_slots[slot - 1] = true)
@@ -275,13 +297,65 @@ func _gate(rec: Dictionary) -> bool:
 	return true
 
 
-## A shot this machine decided on a target another machine owns: a host-owned target hit from a client goes to the host.
+## A shot this machine decided on a target another machine owns: a host-owned target hit from a client goes to the host
+## (queued until post_step, so the shot's stop can ride along as "end").
 func _on_remote_hit(target_id: String, h: Hit) -> void:
 	var s := Net.session()
 	if s == null or not s.online() or s.hosting:
 		return
-	s.send_event(1, HIT, encode_hit(target_id, h))
-	stats["hits_sent"] = int(stats["hits_sent"]) + 1
+	_hit_out.append(encode_hit(target_id, h))
+
+
+## A projectile stopped here on something this machine decides (CombatWorld.shot_decided): tell the crew (see SHOT DROPS).
+func _on_shot_decided(rec: Dictionary, pt: Vector3, n: Vector3, c: Color) -> void:
+	var s := Net.session()
+	if s == null or not s.online():
+		return
+	var k := Combat.shot_key(rec)
+	var end: Array = [pt, n]
+	if not c.is_equal_approx(MechMeshes.GREY):
+		end.append(c)
+	stats["drops_sent"] = int(stats["drops_sent"]) + 1
+	if not s.hosting and not _hit_out.is_empty():
+		var last: Dictionary = _hit_out.back()
+		if str(last.get("shot", "")) == k and not last.has("end"):
+			last["end"] = end              # the hit that stopped it, sent anyway: no extra event
+			return
+	_drop_out.append([[k] + end, local_peer])
+
+
+## Send the queued hits and drops (post_step: once a frame).
+func flush_hits() -> void:
+	if _hit_out.is_empty() and _drop_out.is_empty():
+		return
+	var s := Net.session()
+	if s == null or not s.online():
+		_hit_out.clear()
+		_drop_out.clear()
+		return
+	if not s.hosting:
+		for d: Dictionary in _hit_out:
+			s.send_event(1, HIT, d)
+			stats["hits_sent"] = int(stats["hits_sent"]) + 1
+		_send_drops(s, 1, _drop_out.map(func(x: Array) -> Array: return x[0]))
+	else:
+		for p: int in s.roster:
+			if p <= 1:
+				continue
+			var items: Array = []
+			for x: Array in _drop_out:
+				if int(x[1]) != p:
+					items.append(x[0])
+			_send_drops(s, p, items)
+	_hit_out = []
+	_drop_out = []
+
+
+func _send_drops(s: NetSession, to: int, items: Array) -> void:
+	var i := 0
+	while i < items.size():
+		s.send_event(to, HIT, {"drop": items.slice(i, i + MAX_RECORDS)})
+		i += MAX_RECORDS
 
 
 ## Send what is queued now (at most every FLUSH_INTERVAL unless `force`).
@@ -387,6 +461,7 @@ func post_step(dt: float) -> void:
 			_watch_charges(br as WeaponRack, c["prev"], c["fired"], b)
 		(c["fired"] as Dictionary).clear()
 	flush()
+	flush_hits()
 	_fired_slots.clear()
 	_draw_charges(dt)
 
@@ -451,11 +526,6 @@ func _drop_charge(k: String) -> void:
 	_charges.erase(k)
 
 
-## Remote charge glows in flight (tests).
-func remote_charges() -> Array:
-	return _charges.keys()
-
-
 # --- In ----------------------------------------------------------------------------------------------------
 
 func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void:
@@ -466,7 +536,12 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 		return
 	if kind == HIT:
 		if s.hosting:
-			_host_hit(from, data)
+			if data.has("drop"):
+				_recv_drops(from, data.get("drop"))
+			else:
+				_host_hit(from, data)
+		elif from == 1:
+			_recv_drops(0, data.get("drop"))
 		return
 	# The origin: a client's event reaches only the host (from = the client); the host's relay says who fired ("o").
 	var origin := from
@@ -586,14 +661,69 @@ func _host_hit(from: int, data: Dictionary) -> void:
 	_hits_order.append(k)
 	if _hits_order.size() > SEEN_MAX:
 		_hits_seen.erase(_hits_order.pop_front())
+	var applied := false
 	for t in world.targets:
 		if is_instance_valid(t) and t.target_id == id and t.owner_peer <= 0 and world.owns(t):
 			t.apply_hit(h)
 			world.hit_landed.emit(t, h)
 			stats["hits_applied"] = int(stats["hits_applied"]) + 1
-			host_hit_applied.emit(id, h)
-			return
-	stats["hits_missing"] = int(stats["hits_missing"]) + 1
+			applied = true
+			break
+	if not applied:
+		stats["hits_missing"] = int(stats["hits_missing"]) + 1
+	var end: Variant = data.get("end")
+	if end is Array:                      # the shot stopped there on the sender: its drop, for here and the other clients
+		_recv_drops(from, [[h.shot] + (end as Array)])
+
+
+## Drops (see SHOT DROPS) from `origin` (a client, on the host: applied here and passed on to the other clients) or from
+## the host (origin 0, on a client: applied). Malformed entries are refused one by one.
+func _recv_drops(origin: int, items: Variant) -> void:
+	if not (items is Array):
+		stats["drops_refused"] = int(stats["drops_refused"]) + 1
+		return
+	var host := origin > 0
+	var n := 0
+	for a: Variant in items:
+		n += 1
+		if n > MAX_RECORDS:
+			break
+		var d := decode_drop(a)
+		if d.is_empty():
+			stats["drops_refused"] = int(stats["drops_refused"]) + 1
+			continue
+		stats["drops_recv"] = int(stats["drops_recv"]) + 1
+		var key := str(d["shot"])
+		var remember := not _seen.has(key) and not _seen.has("e|" + key)
+		match world.drop_shot(key, d["pt"], d["n"], d["c"], remember):
+			1:
+				stats["drops_applied"] = int(stats["drops_applied"]) + 1
+			-1:
+				stats["drops_early"] = int(stats["drops_early"]) + 1
+			_:
+				stats["drops_late"] = int(stats["drops_late"]) + 1
+		if host:
+			_drop_out.append([a, origin])
+			stats["drops_relayed"] = int(stats["drops_relayed"]) + 1
+
+
+## A drop entry [shot, pt, n(, color)] as {shot, pt, n, c}, or {} when malformed.
+static func decode_drop(a: Variant) -> Dictionary:
+	if not (a is Array) or (a as Array).size() < 3 or (a as Array).size() > 4:
+		return {}
+	var v := a as Array
+	if not (v[0] is String and v[1] is Vector3 and v[2] is Vector3) or str(v[0]).length() > 96 or str(v[0]) == "":
+		return {}
+	var pt: Vector3 = v[1]
+	var n: Vector3 = v[2]
+	if not (pt.is_finite() and n.is_finite()):
+		return {}
+	var c: Color = MechMeshes.GREY
+	if v.size() == 4:
+		if not (v[3] is Color):
+			return {}
+		c = v[3]
+	return {"shot": str(v[0]), "pt": pt, "n": n, "c": c}
 
 
 func _mark_seen(key: String) -> void:

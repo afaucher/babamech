@@ -88,17 +88,57 @@ func setup() -> void:
 	impact = await _drop(mech, pt, PITCH, false)
 	print("[fall] one deck, thrusters live: impact %.1f m/s, hits %s" % [impact, str(hits)])
 	check(hits.is_empty(), "no fall damage on a one-deck drop with working thrusters (%s)" % str(hits))
+
+	# (e) Per chassis (2026-11-25): the Strider's numbers are unchanged, and a Bulwark loses the same SHARE of its own leg
+	# (420) and torso (900) HP for the same impact (armour x1.5, 2026-11-25); the cap is 90 % of its own leg (378).
+	var golden := {20.0: 0.0, 25.0: 15.0, 30.0: 30.0, 36.0: 48.0, 45.0: 75.0, 100.0: 180.0}
+	for v: float in golden:
+		near(float(PlayerTarget.fall_damage(v)["leg"]), float(golden[v]), 1e-6, "Strider fall at %.0f m/s unchanged" % v)
+		near(float(PlayerTarget.fall_damage(v, "strider")["leg"]), float(golden[v]), 1e-6, "Strider by id at %.0f m/s" % v)
+	var bcaps := PlayerTarget.component_hp("bulwark")
+	for v: float in [20.0, 25.0, 30.0, 36.0, 45.0, 60.0, 100.0]:
+		var sd := PlayerTarget.fall_damage(v, "strider")
+		var bd := PlayerTarget.fall_damage(v, "bulwark")
+		print("[fall] %.0f m/s: Strider legs %.1f torso %.1f | Bulwark legs %.1f torso %.1f" % [v, sd["leg"], sd["torso"], bd["leg"], bd["torso"]])
+		near(float(bd["leg"]) / float(bcaps["leg_l"]), float(sd["leg"]) / float(PlayerTarget.COMPONENT_HP["leg_l"]), 1e-6,
+			"Bulwark at %.0f m/s: the same share of its legs as the Strider" % v)
+		near(float(bd["torso"]) / float(bcaps["torso"]), float(sd["torso"]) / float(PlayerTarget.COMPONENT_HP["torso"]), 1e-6,
+			"Bulwark at %.0f m/s: the same share of its torso" % v)
+	near(float(PlayerTarget.fall_damage(200.0, "bulwark")["leg"]), float(bcaps["leg_l"]) * PlayerTarget.FALL_LEG_MAX, 1e-6,
+		"the Bulwark's cap is 90 % of its own leg (378), not the Strider's 180")
+	var bgolden := {25.0: [31.5, 0.0], 30.0: [63.0, 0.0], 36.0: [100.8, 0.0], 60.0: [252.0, 67.5], 200.0: [378.0, 540.0]}
+	for v: float in bgolden:
+		var bd := PlayerTarget.fall_damage(v, "bulwark")
+		near(float(bd["leg"]), float(bgolden[v][0]), 1e-6, "Bulwark fall at %.0f m/s: legs %.1f" % [v, bgolden[v][0]])
+		near(float(bd["torso"]), float(bgolden[v][1]), 1e-6, "Bulwark fall at %.0f m/s: torso %.1f" % [v, bgolden[v][1]])
+	# A real Bulwark falling two decks shut down: its own PlayerTarget applies the Bulwark's numbers.
+	var bmech := MechSpawn.make("chicken", "bulwark", {}, 3)
+	bmech.global_position = Vector3(60, 0, 60)
+	add_child(bmech)
+	var bpt := PlayerTarget.new()
+	bpt.auto_respawn_delay = -1.0
+	add_child(bpt)
+	bpt.bind(world, bmech, MechSpawn.rig_of(bmech).model, "player3", 3)
+	world.register(bpt)
+	eq(bpt.chassis, "bulwark", "the Bulwark's PlayerTarget took its chassis")
+	await frames(2)
+	var bimpact := await _drop(bmech, bpt, PITCH * 2.0, true, Vector3(60, 0, 60))
+	var want := PlayerTarget.fall_damage(bimpact, "bulwark")
+	print("[fall] Bulwark two decks shut down: impact %.1f m/s, legs %.0f / %.0f (want -%.1f), torso %.0f" % [bimpact,
+		float(bpt.hp["leg_l"]), float(bpt.hp["leg_r"]), want["leg"], float(bpt.hp["torso"])])
+	near(float(bpt.hp["leg_l"]), float(bcaps["leg_l"]) - float(want["leg"]), 1.0, "the Bulwark's left leg took its own fall damage")
+	near(float(bpt.hp["torso"]), float(bcaps["torso"]) - float(want["torso"]), 1.0, "the Bulwark's torso took its own fall damage")
+	check(not bpt.disabled, "a healthy Bulwark survives a two-deck fall")
 	finish()
 
 
 ## Place the mech `height` m above the floor at rest (cold, or overheated and shut down), let it fall; the impact speed.
-func _drop(mech: MechController, pt: PlayerTarget, height: float, shut: bool) -> float:
+func _drop(mech: MechController, pt: PlayerTarget, height: float, shut: bool, at: Vector3 = Vector3.ZERO) -> float:
 	mech.velocity = Vector3.ZERO
 	mech.move_input = Vector2.ZERO
 	mech.thrust_input = false
-	mech.heat = 0.0
-	mech.shutdown = false
-	mech.global_position = Vector3(0, height, 0)
+	mech.reset_heat()
+	mech.global_position = at + Vector3(0, height, 0)
 	if shut:
 		mech.add_heat(mech.heat_cap)
 	pt.global_position = mech.global_position

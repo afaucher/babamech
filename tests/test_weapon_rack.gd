@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## WeaponRack: slots follow the chassis hardpoint order, number presses toggle and a quick double press solos, the
 ## trigger fires every enabled weapon and only those, heat goes to the MechController (passive + active, shutdown stops
 ## fire), slots() reports ammo / ready / reloading / blocked, the guided track is automatic (on while an enabled guided

@@ -4,8 +4,9 @@ extends TestCase
 ## (1) Golden: the Strider's numbers are exactly today's (the controller's defaults, its capsule, its step-up, its rig and
 ##     gait numbers), and a bare MechController's defaults are the Strider's catalog block.
 ## (2) The Bulwark measured against its targets: walk / run / strafe top speeds, the side-step strafe (no hip twist),
-##     time to turn 180 deg (about 1 / 0.61 of the Strider's), time to walk speed, a thrust hop's height (the ceiling: a
-##     6 m ledge yes, a 12 m roof no), step-up (1.6 m climbs, 2.0 m does not), a 100 m drop under the fall-damage speed
+##     time to turn 180 deg (about 1 / 0.61 of the Strider's), time to walk speed, a climb from cold limited by heat alone
+##     (no hop ceiling since 2026-11-25: ~1.9 s of burn to shutdown, ~20 m peak; a 12 m roof yes with real heat, a 30 m
+##     roof no; the Strider climbs both), step-up (1.6 m climbs, 2.0 m does not), a 100 m drop under the fall-damage speed
 ##     (the full sweep: test_auto_land_bulwark), and the wedge (jammed between two blocks: bounded speed, nudged free).
 ## Prints a table of both chassis.
 
@@ -13,7 +14,7 @@ extends TestCase
 const GOLDEN := {"walk_speed": 12.0, "run_speed": 22.0, "strafe_scale": 1.0, "accel": 30.0, "turn_rate": 1.8, "gravity": 22.0,
 	"climb_speed": 10.0, "thrust_accel": 34.0, "air_control": 0.35, "thrust_heat": 24.0, "walk_heat": 2.5, "run_heat": 9.0,
 	"cooling": 9.0, "heat_cap": 100.0, "reboot_heat": 35.0, "reboot_time": 1.2, "auto_burn": true, "safe_land_speed": 10.0,
-	"hard_land_speed": 18.0, "auto_land_speed": 16.0, "thrust_ceiling": 0.0}
+	"hard_land_speed": 18.0, "auto_land_speed": 16.0, "auto_burn_heat": 24.0}
 const GOLDEN_CAPSULE := Vector2(2.2, 8.0)
 const GOLDEN_STEP_UP := 1.2464            ## m, the Strider's max_step_up (rig.max_step() of its legs), measured before
 ## The Strider's rig / gait numbers (MechRig / Gait initial values).
@@ -79,9 +80,15 @@ func setup() -> void:
 		r["walk_t"] = await _time_to(m, m.walk_speed * 0.95)
 		r["turn_t"] = await _turn_time(m)
 		r["hop"] = await _hop(m)
+		var c := await _climb_cold(m)
+		r["shut_t"] = c["shut_t"]
+		r["shut_h"] = c["shut_h"]
+		r["peak_cold"] = c["peak"]
 		_table[m.chassis_id] = r
 		print("[move] %-8s walk %.2f  run %.2f  strafe %.2f m/s  to walk %.2f s  turn 180 %.2f s  hop peak %.2f m" % [m.chassis_id,
 			r["walk"], r["run"], r["strafe"], r["walk_t"], r["turn_t"], r["hop"]])
+		print("[move] %-8s thrust heat %.0f /s (auto burn %.0f), cooling %.0f, cap %.0f: from cold, shutdown after %.2f s of burn at %.1f m, peak %.1f m" % [
+			m.chassis_id, m.thrust_heat, m.auto_burn_heat, m.cooling, m.heat_cap, c["shut_t"], c["shut_h"], c["peak"]])
 	var s: Dictionary = _table["strider"]
 	var b: Dictionary = _table["bulwark"]
 	near(float(s["walk"]), 12.0, 0.2, "Strider walks 12")
@@ -93,12 +100,24 @@ func setup() -> void:
 	near(turn_ratio, 0.61, 0.04, "the Bulwark turns at ~61 %% of the Strider's rate (%.2f)" % turn_ratio)
 	check(float(b["walk_t"]) > float(s["walk_t"]) * 1.3, "the Bulwark picks up speed slower than the Strider (%.2f vs %.2f s)" % [
 		b["walk_t"], s["walk_t"]])
-	check(float(b["hop"]) > 6.3 and float(b["hop"]) < 8.0, "the Bulwark's hop tops out at %.2f m (6.3..8: a 6 m ledge, no roof)" % b["hop"])
+	check(float(b["hop"]) > 20.0, "no hop ceiling: the Bulwark's thrust (heat held at 0) climbs freely (%.1f m in 3 s)" % b["hop"])
 	check(float(s["hop"]) > 20.0, "the Strider's thrust still climbs freely (%.1f m in the same burn)" % s["hop"])
+	# Heat is the limit: from cold the Bulwark burns ~1.9 s (heat 80 /s - cooling 12 into 130), the Strider ~6.7 s.
+	check(float(b["shut_t"]) > 1.7 and float(b["shut_t"]) < 2.2, "a cold Bulwark burns %.2f s before it shuts down (1.7..2.2)" % b["shut_t"])
+	check(float(b["peak_cold"]) > 16.0 and float(b["peak_cold"]) < 24.0, "a cold Bulwark's one-burn peak is %.1f m (16..24)" % b["peak_cold"])
+	check(float(s["shut_t"]) > 6.0, "a cold Strider burns %.2f s before it shuts down (unchanged ~6.7)" % s["shut_t"])
 
-	# Ledges for the hop: 6 m reachable, 12 m not.
-	check(await _hop_onto(bulwark, 6.0), "the Bulwark hops onto a 6 m ledge")
-	check(not await _hop_onto(bulwark, 12.0), "the Bulwark cannot hop onto a 12 m roof")
+	# Roofs from cold with real heat (thrust up a wall, then forward onto the top): 6 and 12 m yes, 30 m no.
+	var roof6 := await _climb_onto(bulwark, 6.0)
+	check(roof6["on_top"] and not roof6["shut"], "the Bulwark climbs onto a 6 m ledge (heat %.0f)" % roof6["heat"])
+	var roof12 := await _climb_onto(bulwark, 12.0)
+	check(roof12["on_top"] and not roof12["shut"], "the Bulwark climbs onto a 12 m roof, pushing its heat (heat %.0f of %.0f)" % [
+		roof12["heat"], bulwark.heat_cap])
+	check(float(roof12["heat"]) > float(roof6["heat"]), "the 12 m roof costs more heat than the 6 m ledge")
+	var roof30 := await _climb_onto(bulwark, 30.0)
+	check(not roof30["on_top"], "the Bulwark cannot reach a 30 m roof from cold (it overheats first: shut %s)" % roof30["shut"])
+	var s30 := await _climb_onto(strider, 30.0)
+	check(s30["on_top"] and not s30["shut"], "the Strider climbs onto a 30 m roof from cold (heat %.0f)" % s30["heat"])
 	# Step-up from the legs.
 	check(await _step_onto(bulwark, 1.6), "the Bulwark walks up a 1.6 m step")
 	check(not await _step_onto(bulwark, 2.0), "a 2.0 m step blocks the Bulwark")
@@ -233,26 +252,55 @@ func _hop(m: MechController) -> float:
 	return peak
 
 
-## Hop (thrust + forward, then forward alone) at a block `h` tall 12 m ahead; true when it ends standing on top.
-func _hop_onto(m: MechController, h: float) -> bool:
-	var base := Vector3(150, 0, -150)
-	_slab(base + Vector3(0, h * 0.5, -40), Vector3(60, h, 40))   # its near face at z = base.z - 20
-	await _place(m, base + Vector3(0, 0, -8))
+## From cold on the floor, thrust held until the heat cap shuts it down: {shut_t: s of burn, shut_h: m up then, peak m}.
+func _climb_cold(m: MechController) -> Dictionary:
+	await _place(m, _home_of(m))
+	m.thrust_input = true
+	var t := 0.0
+	var peak := 0.0
+	var shut_t := -1.0
+	var shut_h := 0.0
+	for f in 1200:
+		await get_tree().physics_frame
+		t += 1.0 / 60.0
+		peak = maxf(peak, m.global_position.y - _home_of(m).y)
+		if m.shutdown and shut_t < 0.0:
+			shut_t = t
+			shut_h = m.global_position.y - _home_of(m).y
+			m.thrust_input = false
+		if shut_t >= 0.0 and m.grounded():
+			break
+	_stop(m)
+	await frames(10)
+	return {"shut_t": shut_t, "shut_h": shut_h, "peak": peak}
+
+
+## From cold, the feet 1 m from a block `h` tall: forward held, thrust held until the feet clear the top by 1 m (or the
+## mech shuts down), then forward alone. {on_top, shut (it overheated on the way), heat at the end}.
+func _climb_onto(m: MechController, h: float) -> Dictionary:
+	var base := _home_of(m) + Vector3(0, 0, 60)
+	var r := _capsule(m).x
+	_slab(base + Vector3(0, h * 0.5, -20.0 - r - 1.0), Vector3(60, h, 40))   # its near face 1 m ahead of the capsule
+	await _place(m, base)
 	m.move_input = Vector2(0, 1)
 	var on_top := false
-	for f in 480:
-		m.thrust_input = f < 300
-		m.heat = 0.0
+	var shut := false
+	for f in 600:
+		m.thrust_input = not m.shutdown and m.global_position.y < base.y + h + 1.0
 		await get_tree().physics_frame
-		if m.grounded() and m.global_position.y > h - 0.3:
+		shut = shut or m.shutdown
+		if m.grounded() and m.global_position.y > base.y + h - 0.3:
 			on_top = true
 			break
-	print("[move] hop at a %.0f m block: ended at %s, on top %s" % [h, str(m.global_position - base), on_top])
+		if f > 30 and m.grounded() and m.global_position.y < base.y + 0.5:
+			break   # back on the floor
+	var heat := m.heat
+	print("[move] %s climbs at a %.0f m block from cold: on top %s, shut down %s, heat %.0f" % [m.chassis_id, h, on_top, shut, heat])
 	_stop(m)
 	var b: Node = _bodies.pop_back()
 	b.queue_free()
-	await _place(m, base)
-	return on_top
+	await _place(m, _home_of(m))
+	return {"on_top": on_top, "shut": shut, "heat": heat}
 
 
 ## Walk at a step `h` tall; true when it ends on top.

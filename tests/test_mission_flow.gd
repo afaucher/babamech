@@ -1,28 +1,116 @@
 extends TestCase
-## The mission's objective and end in a SOLO test drive (W6 win side; scripts/game/mission_flow.gd, MissionHud):
-## 1. The stack drive builds MissionFlow with MissionRules from its section; while the enemies live, their deck's clear
-##    objective is NOT done (evaluation gated until they spawned), the HUD's objective line shows rules.text().
+## The mission's objectives and end in a SOLO test drive, in the one mission mode (objectives: user 2026-11-25 "Cut the
+## legacy modes."; scripts/game/mission_flow.gd, MissionHud). A forced all-sweep plan without reserve waves (PLAN: the
+## closest to the old "clear every deck", fast) so the flow itself is what is tested:
+## 1. The stack drive builds MissionFlow with the plan's MissionRules (no legacy rules); while the enemies live, the
+##    current deck's sweep is NOT done (evaluation gated until they spawned), the HUD's objective panel shows its lines.
 ## 2. Downed in solo: no automatic respawn, no "lost" (wipe off); held SPACE respawns it (DownedRules).
-## 3. Killing every enemy turns the objective to "Reach the extraction portal" with an extraction waypoint on the HUD.
-## 4. The mech in the extraction zone: "won", the MISSION COMPLETE banner, and END_HOLD later the end flow finishes
-##    (MissionFlow.finished; a test's drive isn't the current scene, so no scene change happens here).
+## 3. Killing every enemy and standing on each deck finishes every sweep; the extraction hold becomes the objective,
+##    with an EXTRACT waypoint on the HUD.
+## 4. The mech in the hold zone for the hold: "won", the MISSION COMPLETE banner with the objectives' reason, and
+##    END_HOLD later the end flow finishes (MissionFlow.finished; a test's drive isn't the current scene: no scene change).
+
+const PLAN := {"primary": "sweep", "bonus_max": 0, "waves_per_deck": 0, "hold": 3.0}
 
 var finished_with := ""
 
 
+## The crew scale is the HOST's (AGENTS.md rule 8; user 2026-11-25 "Run it from the host, enforce this!"): the host derives
+## it (host_crew_scale: the launch crew with its hangar bots; on a retire the members still in the crew); every machine
+## reads crew_scale(), which a client takes from the launch params' `scale`, never from its own crew list (here: a
+## launch crew of 3, its spawn_order 3 too, the host's scale 2 -> 2). Solo: 1. Changes are scheduled by `at`: a duplicate
+## or late copy is ignored, a state's "scale" schedules like the message.
+func _crew_scale() -> void:
+	eq(MissionFlow.host_crew_scale([{"peer": 1}, {"peer": -1, "bot": true}, {"peer": 2}]), 3, "host: the launch crew of 3 (a bot counts)")
+	eq(MissionFlow.host_crew_scale([1, 2, 3, 4, 5]), 4, "host: at most 4")
+	eq(MissionFlow.host_crew_scale([]), 1, "host: at least 1")
+	var crew3 := [{"peer": 1}, {"peer": 2}, {"peer": 3}]
+	eq(MissionFlow.launch_scale({"crew": crew3, "scale": 2}), 2, "a launch's scale is the host's value, not its crew list's size")
+	eq(MissionFlow.launch_scale({}), 1, "no launch (solo): 1")
+	eq(NetMission.launch_scale(crew3), 3, "the host's launch asks MissionFlow.host_crew_scale (the one rule)")
+	var td := TestDrive.new()
+	td.crewed = true
+	td.spawn_order = [1, 2, 3] as Array[int]   # this client's own view of the launch: 3 pilots
+	var mf := MissionFlow.new()
+	mf.drive = td
+	mf.crew = true
+	mf.init_scale({"crew": crew3, "scale": 2})
+	eq(mf.crew_scale(), 2, "client: crew_scale() is the host's 2 (its spawn_order and crew list say 3)")
+	near(mf.asset_max_hp(), MissionFlow.ASSET_MAX_HP * float(MissionFlow.ASSET_HP_SCALE[1]), 0.01, "the relay's HP reads it")
+	mf.on_member_retired(2)
+	eq(mf.crew_scale(), 2, "on_member_retired is a no-op off the host")
+	mf.crew = false
+	mf.init_scale({"crew": crew3, "scale": 2})
+	eq(mf.crew_scale(), 1, "solo: 1 whatever the params")
+	# The schedule (solo clock: now() = 0 until released).
+	mf.receive_scale({"n": 3, "at": 0.0, "reason": "leave", "pilot": 5})
+	eq(mf.crew_scale(), 1, "a change waits for _tick_scale")
+	mf._tick_scale()
+	eq(mf.crew_scale(), 3, "applied once its `at` has come (going up: accepted, warned)")
+	eq(mf.scale_log.size(), 1, "logged once")
+	if not mf.scale_log.is_empty():
+		eq([int(mf.scale_log[0]["from"]), int(mf.scale_log[0]["to"]), str(mf.scale_log[0]["reason"]), int(mf.scale_log[0]["pilot"])],
+			[1, 3, "leave", 5], "the log has from, to, reason, pilot")
+	mf.receive_scale({"n": 2, "at": 0.0})
+	mf.receive_scale({"n": 2, "at": -1.0})
+	mf._tick_scale()
+	eq(mf.crew_scale(), 3, "a duplicate (same at) and a late copy (older at) are ignored")
+	eq(mf.scale_dups, 2, "both counted")
+	mf.receive_scale({"n": 2, "at": 5.0})
+	mf._tick_scale()
+	eq(mf.crew_scale(), 3, "a change ahead on the clock waits")
+	eq(mf.scale_state(), [2, 5.0], "the state carries the newest decision [n, at]")
+	var wire: Variant = JSON.parse_string(JSON.stringify({"scale": mf.scale_state()}))
+	var c := MissionFlow.new()
+	c.drive = td
+	c.crew = false
+	c.init_scale({})
+	c.apply_scale_state(wire["scale"])
+	c._clock = 5.0
+	c._tick_scale()
+	eq(c.crew_scale(), 2, "a state's scale (through JSON) is applied at its `at`")
+	eq(c.scale_dups, 0, "the state's copy is never counted as a duplicate")
+	near(float(c.scale_at), 5.0, 1e-6, "applied at the host's at")
+	c.apply_scale_state(wire["scale"])
+	eq(c.scale_dups, 0, "the same state again: ignored silently")
+	c.free()
+	mf.free()
+	td.free()
+	# No reader left that sizes from a local count: the old launch-crew path is gone from MissionFlow and MissionDepots.
+	for path: String in ["res://scripts/game/mission_flow.gd", "res://scripts/game/mission_depots.gd"]:
+		var src := FileAccess.get_file_as_string(path)
+		check(not src.contains("crew_size(") and not src.contains("launch_crew(") and not src.contains("spawn_order.size()"),
+			"%s reads no local crew count (crew_size / launch_crew / spawn_order)" % path.get_file())
+
+
+
+
 func setup() -> void:
+	_crew_scale()
+	MissionFlow.test_plan = PLAN
+	await _flow()
+	MissionFlow.test_plan = {}
+	finish()
+
+
+func _flow() -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	add_child(td)
 	await frames(4)
 	var mf := td.mission
-	if not check(mf != null and mf.rules != null and not mf.crew, "the solo stack drive runs a MissionFlow with rules"):
-		finish()
+	if not check(mf != null and mf.rules != null and mf.plan != null and not mf.crew, "the solo stack drive runs the plan"):
 		return
+	check(mf.rules != null and mf.rules.plan != null, "the plan's rules")
 	mf.finished.connect(func(o: String) -> void: finished_with = o)
 	td.drive_override = true
 	td.mech.move_input = Vector2.ZERO
 	var rules := mf.rules
+	var types: Array = []
+	for k in mf.plan.deck_count:
+		types.append(str(mf.plan.primary(k)["type"]))
+	print("[Test] primaries %s" % str(types))
+	check(not types.has("defend"), "the forced plan has no defend primary (%s)" % str(types))
 	check(td.enemies_spawned, "the enemies spawned")
 	var decks: Dictionary = {}
 	for e in td.combat.squad.enemies:
@@ -31,16 +119,15 @@ func setup() -> void:
 	check(not decks.is_empty(), "there are enemies (%d)" % td.combat.squad.enemies.size())
 	await _seconds(0.8)
 	check(mf.evaluations >= 2, "solo evaluates locally (%d)" % mf.evaluations)
-	for k: int in decks:
-		check(not rules.is_done("clear_%d" % k), "deck %d is not cleared while its enemies live" % k)
-	check(rules.text().begins_with("Clear deck"), "the objective is a clear: %s" % rules.text())
+	var first: Dictionary = mf.plan.primary(0)
+	check(rules.obj_state(str(first["id"])) != "done", "deck 1's primary is not done while its enemies live")
 	eq(rules.outcome, "", "no outcome yet")
 	var hud := td.get_node_or_null("MechHud") as MechHud
 	if check(hud != null and hud.mission_hud != null, "the HUD has the mission layer"):
 		await frames(2)
-		eq(str(hud.mission_hud.state()["objective"]), rules.text(), "the HUD's objective line is rules.text()")
+		eq(str(hud.mission_hud.state()["objective"]), rules.text(), "the HUD's objective is rules.text()")
 		check(hud.mission_hud.list_panel.visible, "the objective panel (top right) shows")
-		eq(hud.mission_hud.shown_lines(), [rules.text()], "the objective panel shows rules.text()")
+		check(not hud.mission_hud.shown_lines().is_empty(), "the objective panel has lines (%s)" % str(hud.mission_hud.shown_lines()))
 		check(not hud.mission_hud.banner.visible, "no banner yet")
 
 	# 2. Downed (DownedRules, user decision 2026-11-24): no automatic respawn, no loss; holding the respawn key brings
@@ -52,38 +139,48 @@ func setup() -> void:
 	await _seconds(2.0)
 	check(pt.disabled, "still downed 2 s later")
 	eq(rules.outcome, "", "being downed loses nothing")
-	var was_override := td.drive_override
-	td.drive_override = true
 	pt.respawn_held = true
 	await _seconds(DownedRules.RESPAWN_HOLD + 0.2)
 	pt.respawn_held = false
 	await _seconds(DownedRules.RESPAWN_PENALTY + 0.3)
-	td.drive_override = was_override
 	check(not pt.disabled, "it respawned after the hold and the penalty")
 	eq(rules.outcome, "", "still nothing lost")
 
-	# 3. Every enemy down.
+	# 3. Every enemy down, then every deck's primary on its deck.
 	for e in td.combat.squad.enemies.duplicate():   # killing past MAX_WRECKS frees old wrecks from the list
 		if is_instance_valid(e) and not e.destroyed():
 			e.apply_damage(1.0e7, e.core_component(), "test")
-	await _seconds(0.8)
-	eq(rules.current(), "extract", "every deck cleared: extraction is the objective")
-	eq(rules.text(), "Reach the extraction portal", "the objective line says so")
+	for k in mf.plan.deck_count:
+		var o: Dictionary = mf.plan.primary(k)
+		var id := str(o["id"])
+		var t0 := mf.now()
+		while rules.obj_state(id) != "done" and mf.now() < t0 + 40.0:
+			_place(td, mf, o)
+			_kill_all(td)
+			await _seconds(0.1)
+		if not check(rules.obj_state(id) == "done", "%s (%s, deck %d) done (state %s)" % [id, o["type"], k + 1, rules.obj_state(id)]):
+			return
+	await _seconds(0.5)
+	eq(rules.current(), "hold", "every primary done: the extraction hold is the objective")
+	check(rules.text().begins_with("Hold the extraction portal"), "the objective line says so (%s)" % rules.text())
 	var mk := rules.marker()
-	if not check(not mk.is_empty(), "the rules give an extraction marker"):
-		finish()
+	if not check(not mk.is_empty(), "the rules give the hold's marker"):
 		return
 	if hud != null:
 		await frames(2)
-		check(not (hud.mission_hud.state()["waypoint"] as Dictionary).is_empty(), "the HUD has the extraction waypoint")
-		var ws := hud.mission_hud.waypoint_screen()
-		check(not ws.is_empty() and float(ws["dist"]) > 1.0, "the waypoint is placed on screen with a distance (%s)" % str(ws))
+		var wp: Dictionary = hud.mission_hud.state()["waypoint"]
+		eq(str(wp.get("label", "")), "EXTRACT", "the HUD has the EXTRACT waypoint")
 
-	# 4. Into the zone: won.
-	td.mech.global_position = td.stack.from_deck_arc(int(mk["deck"]), float(mk["x"]), float(mk["s"]), 0.5)
-	td.mech.velocity = Vector3.ZERO
-	await _seconds(0.8)
-	eq(rules.outcome, "won", "the mech in the extraction zone wins (%s)" % str(rules.state()))
+	# 4. Into the hold zone for the hold: won.
+	var hold: Dictionary = mf.plan.objective("hold")
+	var t1 := mf.now()
+	while rules.outcome == "" and mf.now() < t1 + float(PLAN["hold"]) + 10.0:
+		_place(td, mf, hold)
+		_kill_all(td)
+		await _seconds(0.1)
+	eq(rules.outcome, "won", "holding the portal wins (%s)" % str(rules.state()))
+	var hs := mf.hud_state()
+	eq(str((hs["banner"] as Dictionary).get("reason", "")), MissionFlow.REASONS["objectives"], "the objectives' reason")
 	if hud != null:
 		await frames(2)
 		check(hud.mission_hud.banner.visible, "the banner shows")
@@ -95,7 +192,28 @@ func setup() -> void:
 	eq(FrontEnd.next_screen, "", "a drive that isn't the current scene doesn't leave")
 	td.queue_free()
 	await frames(2)
-	finish()
+
+
+## Stand the mech on objective o (a sweep: its deck's arrival; a flag: its site; the hold: its zone's centre).
+func _place(td: TestDrive, mf: MissionFlow, o: Dictionary) -> void:
+	var k := int(o["deck"])
+	var ro := mf.rules.objective(o["id"])
+	var at := Vector2(float(ro["site"]["x"]), float(ro["site"]["s"]))
+	if str(o["type"]) == "hold":
+		at = (ro["zone"] as Rect2).get_center()
+	elif str(o["type"]) == "sweep":
+		var arr: Dictionary = td.stack.section.arrival(k)
+		at = Vector2(float(arr["x"]), float(arr["s"]))
+	var here := td.stack.to_deck_arc(td.mech.global_position)
+	if int(here["deck"]) != k or Vector2(float(here["x"]), float(here["s"])).distance_to(at) > 5.0:
+		td.mech.global_position = td.stack.from_deck_arc(k, at.x, at.y, 0.5)
+		td.mech.velocity = Vector3.ZERO
+
+
+func _kill_all(td: TestDrive) -> void:
+	for e in td.combat.squad.enemies.duplicate():
+		if is_instance_valid(e) and not e.destroyed():
+			e.apply_damage(1.0e7, e.core_component(), "test")
 
 
 func _seconds(s: float) -> void:

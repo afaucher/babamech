@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## The repair drone across machines (docs/design/back-equipment.md, scripts/combat/combat_net.gd "combat.drone") over a
 ## real crew mission of 2, once per link (off, coast). The host (A) launches a drone through CombatWorld.launch_drone (the
 ## call WeaponRack.activate makes; CombatNet sends the one event). Client c1 (B) has damaged its own mech beforehand.

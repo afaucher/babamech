@@ -103,8 +103,3 @@ func _behind_cover(h: Dictionary) -> bool:
 
 func finished() -> bool:
 	return end_time >= 0.0
-
-
-## Spent on something (not just out of reach).
-func hit_something() -> bool:
-	return end_time >= 0.0 and end_time < max_time - 1e-9

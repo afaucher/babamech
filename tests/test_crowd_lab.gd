@@ -9,7 +9,10 @@ extends TestCase
 ## hooks were added. If LifePlan / LifeCrowd behaviour is changed on purpose, re-capture (print hash(life.snapshot())).
 ## Re-captured 2026-11-23 for crowd spacing (standing slots, walking lanes, bench capacity, cowering spots, snapshot
 ## version 3): was 3903048191.
-const BASELINE_HASH := 3798602067
+## Re-captured 2026-11-25 for the FORMAT only: LifeFleet's snapshot went to version 3 (the pods' unloads, empty in this
+## run: the fleet part ends in one more u16 0, its version byte is 3). With that section stripped and the version put
+## back to 2 the bytes hash to the old 3798602067 exactly (same crowd, fleet, tally): was 3798602067.
+const BASELINE_HASH := 4092188914
 const BASELINE_DEAD := 2
 
 

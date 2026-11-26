@@ -1,7 +1,7 @@
 class_name WeaponBehaviour
 extends RefCounted
 ## How one weapon fires and what its shot is. One subclass per weapon in scripts/combat/weapons/<id>.gd, registered in
-## WeaponRegistry.BEHAVIOURS. STATELESS: one shared instance serves every mount; per-mount state lives on the
+## WeaponRegistry.BEHAVIOURS (a weapon that is only a look on a stock flight is a WeaponRegistry.LOOKS line). STATELESS: one shared instance serves every mount; per-mount state lives on the
 ## WeaponMount (cooldown, ammo, spin, bloom, charge, salvo_left), so it stays OWNER state of the shooter.
 ##
 ## The defaults are a plain automatic gun: fire while the trigger is held at stats.rate, stats.salvo shots per trigger

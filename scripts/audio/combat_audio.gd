@@ -149,7 +149,7 @@ func step(delta: float) -> void:
 	if delta <= 0.0:
 		return
 	var a := _audio()
-	if a == null:
+	if a == null or a.skip_cues():   # headless: no sound, so no scanning for cues either (AudioDirector.silent)
 		return
 	_flush_slot_audio(a)
 	_flush_hit_marks(a)

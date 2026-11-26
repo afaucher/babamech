@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## VISUAL: the test drive in first person (C), run with .\test_runner.ps1 -Visual -TestName test_visual_first_person.
 ## Walks a little, then grabs the view looking forward and pitched down at the legs / weapons. Look at
 ## test_logs/shots/first_person_forward.png and first_person_down.png (the pilot head must not show; no hull part should

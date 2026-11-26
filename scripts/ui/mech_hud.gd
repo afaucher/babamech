@@ -37,7 +37,7 @@ const ROW_SIZE := Vector2(400, 46)
 const ROW_GAP := 6.0
 const CREW_GAP := 8.0               ## between the crew panel's last card and the status panel
 const MOUNT_SHORT := {"side_l": "L SIDE", "side_r": "R SIDE", "shoulder_l": "L SHLDR", "shoulder_r": "R SHLDR", "back": "BACK",
-	"back_l": "L BACK", "back_r": "R BACK"}
+	"back_l": "L BACK", "back_r": "R BACK", "belly": "BELLY"}
 const PIPS := 4
 const DIAGRAM_VIEW := "front"       ## the damage diagram (docs/design/hud/grid_hud_diagram_r1.png, pick 3)
 const DIAGRAM_STYLE := "schematic"
@@ -607,7 +607,7 @@ const DEMO_SLOTS_BULWARK := [
 	{"slot": 2, "hardpoint": "side_r", "weapon": "rockets", "name": "Rocket Pod", "enabled": true, "ammo": 12, "ammo_max": 24,
 		"ready": 0.3, "reloading": true, "heat_per_shot": 10.0, "blocked": false, "in_range": true, "hold": "", "built": true,
 		"designating": false},
-	{"slot": 3, "hardpoint": "back_l", "weapon": "mortar", "name": "Mortar", "enabled": true, "ammo": 3, "ammo_max": 3,
+	{"slot": 3, "hardpoint": "back_l", "weapon": "mortar", "name": "Mortar", "enabled": true, "ammo": 6, "ammo_max": 6,
 		"ready": 1.0, "reloading": false, "heat_per_shot": 18.0, "blocked": false, "in_range": true, "hold": "", "built": true,
 		"designating": false},
 	{"slot": 4, "hardpoint": "back_r", "weapon": "repair_drone", "name": "Repair Drone", "enabled": false, "ammo": 2, "ammo_max": 2,

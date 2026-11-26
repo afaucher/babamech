@@ -417,7 +417,11 @@ func _draw(base: Vector3, now: float) -> void:
 		if i >= _beam_targets.size():
 			_show_scan(_beams[i] as Array, false)
 			continue
-		_place_scan(_beams[i] as Array, _beam_targets[i] as CombatTarget, now)
+		var bt: Variant = _beam_targets[i]
+		if bt == null or not is_instance_valid(bt):      # freed since the repair step: `as` on it would raise
+			_show_scan(_beams[i] as Array, false)
+			continue
+		_place_scan(_beams[i] as Array, bt as CombatTarget, now)
 
 
 func _build() -> void:

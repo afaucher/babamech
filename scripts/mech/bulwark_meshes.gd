@@ -22,7 +22,8 @@ extends RefCounted
 ## (tools/models/gen_mech_meshes.gd). Cosmetic only (no gameplay state).
 
 const PREFIX := "bulwark_"
-const BODY_PARTS := ["bulwark_torso", "bulwark_pod", "bulwark_pelvis", "bulwark_nose", "bulwark_side_mount"]
+const BODY_PARTS := ["bulwark_torso", "bulwark_pod", "bulwark_pelvis", "bulwark_nose", "bulwark_side_mount",
+	"bulwark_belly_mount"]
 const LEG_PARTS := ["bulwark_thigh", "bulwark_shin", "bulwark_ankle", "bulwark_hip_socket", "bulwark_hip_cap",
 	"bulwark_knee_cap", "bulwark_ankle_cap", "bulwark_boot", "bulwark_toe", "bulwark_spur"]
 
@@ -98,7 +99,20 @@ const SIDE_PAD := Vector2(0.23, 0.18)
 const MOUNTS := {
 	"side_l": Vector3(-SIDE_X, SIDE_Y, SIDE_FACE_Z - SIDE_LEN), "side_r": Vector3(SIDE_X, SIDE_Y, SIDE_FACE_Z - SIDE_LEN),
 	"back_l": Vector3(-0.9, DECK + 0.165, 0.9), "back_r": Vector3(0.9, DECK + 0.165, 0.9),
+	"belly": Vector3(0, KEEL_Y - 0.5, -0.525),   # = (0, BELLY_Y, BELLY_Z): the belly turret prototype below
 }
+## PROTOTYPE belly turret (docs/design/bulwark-effectiveness.md; MechCatalog "belly", the user picks before it is final):
+## a pintle turret under the keel's flat bottom between the two forward ribs, centred. Its base plate (BELLY_BASE across)
+## sits on the keel's underside (KEEL_Y) at BELLY_Z; a neck, a wide bearing ring with an orange rim and a bolt ring, then a
+## pintle post straight down into the weapon, whose origin (its pivot) hangs BELLY_DROP under the keel: low enough that
+## every side weapon pitched across the hardpoint's arc keeps its top off the bearing ring. The mount part's origin is on
+## the keel's underside; BELLY_REACH takes it to the weapon's origin (ChassisParts mount_hw "belly").
+const BELLY_Z := -0.525
+const BELLY_DROP := 0.5
+const BELLY_Y := KEEL_Y - BELLY_DROP
+const BELLY_REACH := Vector3(0, -BELLY_DROP, 0)
+const BELLY_BASE := 0.125      ## base plate radius: between the ribs at z -0.7 and -0.35 (their faces 0.14 off the centre)
+const BELLY_RING := 0.2        ## bearing ring radius (below the ribs, so it may be wider than the gap between them)
 ## The back plinths' half width (x) round each back mount.
 const PLINTH_HALF := 0.28
 
@@ -162,6 +176,7 @@ static func build(part: String) -> ArrayMesh:
 		"bulwark_pelvis": _pelvis(k)
 		"bulwark_nose": _nose(k)
 		"bulwark_side_mount": _side_mount(k)
+		"bulwark_belly_mount": _belly_mount(k)
 		"bulwark_thigh": _thigh(k)
 		"bulwark_shin": _shin(k)
 		"bulwark_ankle": _ankle(k)
@@ -635,6 +650,32 @@ static func _side_mount(k: MeshKit) -> void:
 	var hose := [Vector3(-0.17, 0.1, -0.06), Vector3(-0.17, 0.08, -0.25), Vector3(-0.15, 0.06, -0.42)]
 	for i in hose.size() - 1:
 		k.tube(hose[i], hose[i + 1], 0.03, 6, MechMeshes.BLACK)
+
+
+## PROTOTYPE: the belly turret's pintle mount (origin on the keel's flat underside at the turret's centre; the weapon's
+## origin BELLY_REACH straight below): a dark base plate sunk 5 mm into the keel with four bolts, a short neck, the
+## bearing ring (grey drum, orange rim, a ring of bolts on its underside), a steel pintle post down into the weapon with a
+## dark collar and an end cap (finished when the hardpoint is empty), a feed cable from the ring to the post.
+static func _belly_mount(k: MeshKit) -> void:
+	var b := BELLY_BASE
+	k.tube(Vector3(0, 0.005, 0), Vector3(0, -0.05, 0), b, 8, MechMeshes.DARK)
+	for i in 4:
+		var a := TAU * (float(i) + 0.5) / 4.0
+		k.box(Vector3(0.03, 0.02, 0.03), MechMeshes.STEEL, Vector3(sin(a) * (b - 0.03), -0.058, cos(a) * (b - 0.03)))
+	k.tube(Vector3(0, -0.05, 0), Vector3(0, -0.09, 0), 0.08, 8, MechMeshes.GREY)
+	var r := BELLY_RING
+	k.tube(Vector3(0, -0.09, 0), Vector3(0, -0.15, 0), r, 10, MechMeshes.GREY)
+	k.tube(Vector3(0, -0.1, 0), Vector3(0, -0.135, 0), r + 0.015, 10, MechMeshes.ORANGE)
+	for i in 6:
+		var a := TAU * float(i) / 6.0
+		k.box(Vector3(0.03, 0.02, 0.03), MechMeshes.STEEL, Vector3(sin(a) * (r - 0.04), -0.158, cos(a) * (r - 0.04)))
+	var end := BELLY_REACH.y + 0.08
+	k.tube(Vector3(0, -0.15, 0), Vector3(0, end, 0), 0.055, 8, MechMeshes.STEEL)
+	k.tube(Vector3(0, -0.15, 0), Vector3(0, -0.2, 0), 0.085, 8, MechMeshes.DARK)
+	k.tube(Vector3(0, end + 0.02, 0), Vector3(0, end, 0), 0.075, 8, MechMeshes.DARK)
+	var hose := [Vector3(-0.15, -0.13, 0.08), Vector3(-0.12, -0.24, 0.1), Vector3(-0.06, -0.32, 0.07)]
+	for i in hose.size() - 1:
+		k.tube(hose[i], hose[i + 1], 0.025, 6, MechMeshes.BLACK)
 
 
 # --- Legs ---------------------------------------------------------------------------------------------------

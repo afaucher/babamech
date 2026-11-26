@@ -94,7 +94,7 @@ func set_mode(mode: String) -> void:
 
 
 func _try_start_music() -> void:
-	if _director == null:
+	if _director == null or _director.silent:   # headless: no music bed at all (AudioDirector.silent)
 		return
 	match music_mode:
 		"hangar":
@@ -135,7 +135,7 @@ func set_ambience(mode: String) -> void:
 
 
 func _try_start_ambience() -> void:
-	if _director == null or _amb_player == null:
+	if _director == null or _amb_player == null or _director.silent:   # headless: no ambience bed
 		return
 	var cid := "amb.city.bed" if ambience_mode == "city" else ("amb.hangar.bed" if ambience_mode == "hangar" else "")
 	if cid == "":

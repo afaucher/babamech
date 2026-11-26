@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Multi-process co-op verification of playtest enemy upgrades over ENet localhost (host + 1 client):
 ##   (a) When host reveals an enemy (`set_revealed(true)`), EnemySync's existing reliable "alert" event replicates
 ##       `revealed == true` and emits `stragglers_revealed` on the client puppet with ZERO wire-format changes.

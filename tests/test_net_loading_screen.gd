@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## The mission loading screen in a crew of 2 with the game's stepped load (LoadingScreen, docs/design/hud.md "Loading
 ## screen"; NetMission's mission.wait for the ready ticks). On each machine:
 ## - the screen is up and opaque in the very frame the mission scene is added, and every frame until mission_go, with

@@ -18,8 +18,9 @@ extends NetTest
 ##              The host decides the kill; every machine shows the same enemies (ids, core HP, dead flags), the target
 ##              dead as a burning wreck, and the same alive count per deck
 ##   g revive   deferred by the user's decision (2026-11-22): always skipped
-##   x win      W6 win side (MissionFlow): the crew kills every remaining enemy (round robin, real attacker-decided hits),
-##              the last client's mech goes into the extraction zone, the host decides won; every machine went through the
+##   x win      MissionFlow, objectives (PLAN: every deck a sweep, no reserve waves): the crew kills every remaining enemy
+##              (round robin, real attacker-decided hits), the host's mech stands on every deck (each sweep done), the last
+##              client's mech holds the extraction portal (PLAN.hold s), the host decides won; every machine went through the
 ##              same mission.state sequence and shows MISSION COMPLETE. When it runs, h is the mission end it causes
 ##   f prop     a client asks for a lamp on the entry deck to topple (CityProps.request, the host decides): every machine
 ##              ends with the same props snapshot on EVERY deck (skipped, with what the run saw, while CityProps events
@@ -34,6 +35,9 @@ extends NetTest
 ## The scenario for test_net_coop_e2e (2, off + coast) and test_net_coop_e2e_4 (a full crew). Not a test itself.
 
 const SEED := 11
+## The one mission mode (objectives) with a forced all-sweep plan without reserve waves (MissionFlow.test_plan, the same on
+## every machine): step x clears with real kills, stands on every deck, holds the portal (PLAN.hold s).
+const PLAN := {"primary": "sweep", "bonus_max": 0, "waves_per_deck": 0, "hold": 3.0}
 const WALK_T := 2.5                ## s of walking forward
 const SETTLE_T := 1.5              ## s standing still before reporting (the puppets catch up: delay 100-400 ms)
 const WALK_MIN := 8.0              ## m each mech must have moved
@@ -60,12 +64,14 @@ var _ended_mission := false
 var _ended_reason := ""
 var _flow_seq: PackedStringArray = []
 var _flow_rec := false
+var _spot := 0                     ## host, _stand_on: the next spot to try
 
 
 # --- Host -------------------------------------------------------------------------------------------------------
 
 func run_host() -> void:
-	net_timeout = 85.0
+	net_timeout = 100.0
+	MissionFlow.test_plan = PLAN
 	Session.mission_ended.connect(func(r: String) -> void:
 		_ended_mission = true
 		_ended_reason = r)
@@ -123,7 +129,7 @@ func run_host() -> void:
 	await _host_prop()
 	# g. down and revive
 	_skip("g down + revive", "deferred by user decision (2026-11-22: \"don't do revive yet\"; W6 revive parked)", "user decision")
-	# x. clear + extract + win (MissionFlow, W6 win side); when it ran, the host's MissionFlow ends the mission (h)
+	# x. clear + every deck + hold + win (MissionFlow, objectives); when it ran, the host's MissionFlow ends the mission (h)
 	var won := await _host_win()
 	# h. end
 	for p in _clients():
@@ -327,7 +333,7 @@ func _enemy_diffs(mine: Dictionary, k: String, wreck_id: String) -> PackedString
 
 ## Step x on the host (folds into h): the crew clears the decks with real kills (every live enemy, shared round robin
 ## among the machines, each a lethal hit its attacker decides: CombatWorld.resolve_hit, CombatNet carries a client's to
-## the host), the last client's mech goes into the extraction zone (an owner move of its own mech, as
+## the host), the host's mech stands on every deck for its sweep, the last client's mech holds the extraction zone (owner moves of their own mechs, as
 ## test_net_mission_flow does: no path-finding walk), and the host's MissionFlow decides won. Every machine records its
 ## mission.state sequence (host: its rules each frame; clients: every mission_state_changed) from the step's start;
 ## they must all be the same and end won, with the MISSION COMPLETE banner. The host's MissionFlow then ends the mission
@@ -335,10 +341,10 @@ func _enemy_diffs(mine: Dictionary, k: String, wreck_id: String) -> PackedString
 func _host_win() -> bool:
 	var mf: Node = td.get("mission") if "mission" in td else null
 	if mf == null or mf.get("rules") == null:
-		_skip("x clear + extract + win", "no MissionFlow with rules in the crew mission (TestDrive.mission)", "Engine")
+		_skip("x clear + hold + win", "no MissionFlow with rules in the crew mission (TestDrive.mission)", "Engine")
 		return false
 	if _enemy_sync() == null:
-		_skip("x clear + extract + win", "no host-owned enemies to clear (EnemySync)", "Engine")
+		_skip("x clear + hold + win", "no host-owned enemies to clear (EnemySync)", "Engine")
 		return false
 	var rules: MissionRules = mf.get("rules")
 	_flow_start()
@@ -366,14 +372,28 @@ func _host_win() -> bool:
 	for id in share.get(Session.local_id(), []):
 		_kill_hit(str(id))
 	check(await wait_reports("kill_all", peers - 1, 15.0), "every client sends its kills")
-	if not check(await until(func() -> bool: return rules.current() == "extract", 10.0),
-			"the host's objective turns to extraction once the decks are clear (%s, %d alive)" % [rules.text(), _alive()]):
+	check(await until(func() -> bool: return _alive() == 0, 10.0), "every enemy is down (%d alive)" % _alive())
+	# Every deck's sweep: the host's own mech stands on each deck (an owner move, no path-finding walk).
+	var plan: MissionPlan = mf.get("plan")
+	for k in plan.deck_count:
+		var id := str(plan.primary(k)["id"])
+		var t0 := wall()
+		while rules.obj_state(id) != "done" and wall() < t0 + 20.0:
+			_stand_on(k)
+			await sleep(0.1)
+		if not check(rules.obj_state(id) == "done", "deck %d's sweep %s is done (%s)" % [k + 1, id, rules.obj_state(id)]):
+			return false
+	if not check(await until(func() -> bool: return rules.current() == "hold", 10.0),
+			"the host's objective turns to the hold once the decks are swept (%s, %d alive)" % [rules.text(), _alive()]):
 		return false
 	print("[W9] clear (link %s): %d enemies killed by %d machines, objective: %s" % [link, live.size(), share.size(), rules.text()])
-	# Extract: the last client's own mech into the zone.
+	td.mech.global_position = td.stack.from_deck_arc(int(td.stack.section.entry["deck"]), 0.0, 0.0, 0.5)   # out of the zone
+	td.mech.velocity = Vector3.ZERO
+	# Hold: the last client's own mech in the zone for the hold.
 	var runner := _clients()[_clients().size() - 1]
 	command(runner, "extract")
-	if not check(await until(func() -> bool: return rules.outcome == "won", 10.0), "the host decides won from peer %d's mech" % runner):
+	if not check(await until(func() -> bool: return rules.outcome == "won", float(PLAN["hold"]) + 15.0),
+			"the host decides won from peer %d's mech" % runner):
 		return false
 	await sleep(0.6)
 	var mine := _flow_report()
@@ -390,7 +410,7 @@ func _host_win() -> bool:
 		ok = eq(str(r["outcome"]), "won", "peer %d ends won" % p) and ok
 		ok = eq(str(r["banner"]), MissionFlow.TITLES["won"], "peer %d shows the MISSION COMPLETE banner" % p) and ok
 	if ok:
-		done_steps.append("x clear + extract + win")
+		done_steps.append("x clear + hold + win")
 	return true
 
 
@@ -449,7 +469,8 @@ func _judge_fire(fires: Dictionary) -> bool:
 # --- Client -----------------------------------------------------------------------------------------------------
 
 func run_client() -> void:
-	net_timeout = 85.0
+	net_timeout = 100.0
+	MissionFlow.test_plan = PLAN
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
@@ -489,7 +510,7 @@ func run_client() -> void:
 				_flow_start()
 				report("flow_start", _flow_seq[0] if not _flow_seq.is_empty() else "")
 			"extract":
-				report("extract", _extract())
+				report("extract", await _extract())
 			"flow_end":
 				report("flow_end", _flow_report())
 			"end":
@@ -727,14 +748,36 @@ func _flow_report() -> Dictionary:
 		"banner": str((hs.get("banner", {}) as Dictionary).get("title", ""))}
 
 
-## Client: put its own mech into the extraction zone (the marker's spot on its deck).
+## Client: keep its own mech in the extraction hold's zone (the marker's spot on its deck) until the host's won arrives.
 func _extract() -> bool:
 	var mk := td.mission.rules.marker()
 	if not check(not mk.is_empty(), "the extraction marker is here"):
 		return false
-	td.mech.global_position = td.stack.from_deck_arc(int(mk["deck"]), float(mk["x"]), float(mk["s"]), 0.5)
+	var t0 := wall()
+	while td.mission.rules.outcome == "" and wall() < t0 + float(PLAN["hold"]) + 12.0:
+		var here := td.stack.to_deck_arc(td.mech.global_position)
+		if int(here["deck"]) != int(mk["deck"]) or Vector2(float(here["x"]), float(here["s"])).distance_to(
+				Vector2(float(mk["x"]), float(mk["s"]))) > 5.0:
+			td.mech.global_position = td.stack.from_deck_arc(int(mk["deck"]), float(mk["x"]), float(mk["s"]), 0.5)
+			td.mech.velocity = Vector3.ZERO
+		await sleep(0.1)
+	return td.mission.rules.outcome == "won"
+
+
+## Host: stand its own mech on deck k: the deck's arrival, else spine points (the next spot when one drops the mech off
+## the deck, e.g. inside a building).
+func _stand_on(k: int) -> void:
+	var here := td.stack.to_deck_arc(td.mech.global_position)
+	if int(here["deck"]) == k and absf(float(here["h"])) < 3.0:
+		return
+	var arr: Dictionary = td.stack.section.arrival(k)
+	var sx: float = td.stack.section.col_x[td.stack.section.spine_line]
+	var cands := [Vector2(float(arr["x"]), float(arr["s"])), Vector2(sx, 0.0), Vector2(sx, 60.0), Vector2(sx, -60.0),
+		Vector2(sx, 120.0), Vector2(sx, -120.0)]
+	var at: Vector2 = cands[_spot % cands.size()]
+	_spot += 1
+	td.mech.global_position = td.stack.from_deck_arc(k, at.x, at.y, 0.5)
 	td.mech.velocity = Vector3.ZERO
-	return true
 
 
 func _alive() -> int:

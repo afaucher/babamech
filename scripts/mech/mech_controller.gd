@@ -14,19 +14,21 @@ extends CharacterBody3D
 ## PlayerTarget's fall-damage speed (20). The touchdown point is swept with the capsule's bottom under the feet and ahead
 ## along the ground-plane velocity (landing_distance), so roof edges and lower roofs count. Shut down (or overheating
 ## mid-burn) = no burn: the fall is uncushioned (leg damage, docs/design/weapons.md "Fall damage"). Heat is the primary limit: thrust, walking and running heat, the frame cools; at `heat_cap` the mech
-## SHUTS DOWN (no move, no thrust), cools to `reboot_heat`, then reboots after `reboot_time`.
+## SHUTS DOWN (no move, no thrust), cools to `reboot_heat`, then reboots after `reboot_time` spent at or under it (heat
+## climbing back over `reboot_heat` while shut down, from add_heat or anything else, restarts that countdown).
 ##
 ## Blocked motion: vertical velocity is reconciled with the motion move_and_slide achieved (_reconcile), a body jammed in
 ## the air is zeroed and nudged free (_unstick), and speed is capped at MAX_SPEED, so gravity never piles up while the
 ## mech cannot move (no fling, no false hard landing).
 ##
 ## Per chassis (apply_chassis, from MechCatalog's "movement" block; MechSpawn applies it on every machine): speeds, turn,
-## accel, thrust, heat, landing thresholds and the capsule. The Bulwark's thrust only hops and brakes: `thrust_ceiling`
-## (m above the ground under the feet) throttles the pilot's thrust so it settles there; falling, it brakes at full
-## strength (the automatic burn ignores the ceiling). The Strider has none (0).
+## accel, thrust, heat, landing thresholds and the capsule. Height is limited by heat alone: the Bulwark's pilot thrust
+## heats much faster (`thrust_heat`) than its automatic landing burn (`auto_burn_heat`), so it can push a climb but
+## pays for it, and the safety burn is not starved (user playtest 2026-11-25: no artificial hop ceiling).
 ##
 ## Input comes from whoever drives it (player, lab bot, later the network for puppets): set `move_input`, `turn_input`,
-## `running` and `thrust_input`. Weapons add heat through `add_heat()` (S4).
+## `running` and `thrust_input`. Heat from outside goes through the verbs `add_heat()` and `reset_heat()` (the controller
+## is the only writer of heat / shutdown on the owner's machine).
 ##
 ## Networking: the owner's machine runs this; position, velocity and facing (engine properties) will be streamed by the
 ## mech codec in S7. Remote copies will be interpolated puppets, not simulated.
@@ -42,7 +44,8 @@ var max_step_up := 0.0               ## highest ledge (m above the feet) the leg
 var climb_speed := 10.0              ## m/s the body rises while stepping up (keeps pace with the walk)
 var thrust_accel := 34.0             ## m/s^2 along local up while thrusting (gravity is subtracted)
 var air_control := 0.35              ## share of `accel` available while airborne
-var thrust_heat := 24.0              ## heat per second of thrust
+var thrust_heat := 24.0              ## heat per second of the pilot's thrust
+var auto_burn_heat := 24.0           ## heat per second of the automatic landing burn at full throttle
 var walk_heat := 2.5                 ## heat/s walking at walk_speed (scales with ground speed; docs/design/weapons.md)
 var run_heat := 9.0                  ## heat/s running at run_speed (lerps from walk_heat above walk_speed)
 var cooling := 9.0                   ## heat shed per second
@@ -54,8 +57,6 @@ var safe_land_speed := 10.0          ## m/s down: landings at or below this are 
 var hard_land_speed := 18.0          ## m/s down: landings at this or more are the worst hard landing
 var auto_land_speed := 16.0          ## m/s down: the automatic burn brakes a fall only to this (a heavy landing, below
                                      ## PlayerTarget.FALL_DAMAGE_SPEED 20 with headroom: tests/test_auto_land.gd)
-var thrust_ceiling := 0.0            ## m above the ground under the feet where the pilot's thrust stops lifting (it then
-                                     ## hovers there and still brakes a fall at full strength); 0 = no ceiling (Strider)
 var chassis_id := "strider"          ## the MechCatalog chassis whose movement block was applied (apply_chassis)
 
 signal hard_landing(speed: float, severity: float)   ## severity 0..1 above safe_land_speed
@@ -88,7 +89,6 @@ var _fall_speed := 0.0               ## m/s down, last airborne step
 var _wedge_t := 0.0                  ## s of consecutive wedged steps (see _unstick)
 var _wedge_nudge := 0.0              ## m nudged free in this wedge episode
 var _burn_throttle := 1.0            ## share of thrust_accel the automatic burn uses this step (heat scales with it)
-var _thrust_share := 1.0             ## share of thrust_accel the pilot's thrust uses this step (thrust_ceiling; heat scales)
 var _probe: SphereShape3D            ## the landing probe: the capsule's bottom (radius x PROBE_SHRINK); null = a ray
 
 const MAX_SPEED := 150.0             ## m/s backstop (a 3-deck free fall is ~80, a long thrust climb less)
@@ -107,23 +107,18 @@ const AUTO_LAND_OFF := 0.5
 const PROBE_SHRINK := 0.9            ## landing probe radius / capsule radius (a narrower graze slides off, no floor)
 const PROBE_AHEAD_PAD := 0.3         ## s added to the burn time when looking ahead along the ground-plane velocity
 const PROBE_AHEAD_MAX := 3.0         ## s, cap of the look-ahead time
-## Thrust ceiling (thrust_ceiling > 0): the pilot's thrust is throttled so the body rises no faster than it could coast up
-## to the ceiling, settles there (CEILING_GAIN: 1/s, how hard it holds the allowed vertical speed) and above it sinks back
-## at CEILING_SINK m/s at most; falling faster than that, the thrust brakes at full strength.
-const CEILING_GAIN := 6.0
-const CEILING_SINK := 1.0
-const CEILING_PROBE := 4.0           ## m probed past the ceiling (beyond it the ground counts as far away)
 
 
 func net_fields() -> Dictionary:
 	return {
 		"ring": Net.SPAWN, "walk_speed": Net.SPAWN, "run_speed": Net.SPAWN, "strafe_scale": Net.SPAWN, "accel": Net.SPAWN,
 		"turn_rate": Net.SPAWN, "gravity": Net.SPAWN, "max_step_up": Net.SPAWN, "climb_speed": Net.SPAWN,
-		"thrust_accel": Net.SPAWN, "air_control": Net.SPAWN, "thrust_heat": Net.SPAWN, "cooling": Net.SPAWN,
+		"thrust_accel": Net.SPAWN, "air_control": Net.SPAWN, "thrust_heat": Net.SPAWN, "auto_burn_heat": Net.SPAWN,
+		"cooling": Net.SPAWN,
 		"walk_heat": Net.SPAWN, "run_heat": Net.SPAWN,
 		"heat_cap": Net.SPAWN, "reboot_heat": Net.SPAWN, "reboot_time": Net.SPAWN, "auto_burn": Net.SPAWN,
 		"safe_land_speed": Net.SPAWN, "hard_land_speed": Net.SPAWN, "auto_land_speed": Net.SPAWN,
-		"thrust_ceiling": Net.SPAWN, "chassis_id": Net.SPAWN, "_thrust_share": Net.PRIVATE,
+		"chassis_id": Net.SPAWN,
 		"move_input": Net.PRIVATE, "turn_input": Net.PRIVATE, "running": Net.PRIVATE, "thrust_input": Net.PRIVATE,
 		"heat": Net.OWNER, "shutdown": Net.OWNER, "thrusting": Net.OWNER, "emergency": Net.OWNER,
 		"last_impact": Net.OWNER, "puppet_grounded": Net.OWNER,
@@ -232,15 +227,8 @@ func step(delta: float) -> void:
 			emergency = true
 			_burn_throttle = clampf((need + gravity) / maxf(thrust_accel, 0.1), 0.0, 1.0)
 	thrusting = live and (thrust_input or emergency)
-	_thrust_share = 1.0
-	if thrusting and not emergency and thrust_ceiling > 0.0:
-		# The hop ceiling: rise no faster than a coast up to thrust_ceiling allows, hold it there, sink back above it;
-		# a fall faster than CEILING_SINK gets the full thrust (it brakes).
-		var h := ground_distance(thrust_ceiling + CEILING_PROBE)
-		var allow := sqrt(2.0 * gravity * maxf(thrust_ceiling - h, 0.0)) - minf(maxf(h - thrust_ceiling, 0.0), CEILING_SINK)
-		_thrust_share = clampf((gravity + CEILING_GAIN * (allow - vs)) / maxf(thrust_accel, 0.1), 0.0, 1.0)
 	if thrusting:
-		vert += u * thrust_accel * (_burn_throttle if emergency else _thrust_share) * delta
+		vert += u * thrust_accel * (_burn_throttle if emergency else 1.0) * delta
 		if on_ground:
 			_climbing = false   # lift off: leave the floor this step
 	if on_ground and not thrusting:
@@ -308,27 +296,49 @@ func _unstick(u: Vector3, vs0: float, moved: Vector3, delta: float) -> void:
 	_wedge_nudge += stepd
 
 
-## Heat from outside (weapons fire, flamers): pushes toward shutdown.
+## VERB: heat from outside (weapons fire, flamers, a radiator's negative heat): pushes toward shutdown at heat_cap. Shut
+## down, heat that lifts it over reboot_heat restarts the reboot countdown. Owner's machine only (the victim decides).
 func add_heat(amount: float) -> void:
 	heat = clampf(heat + amount, 0.0, heat_cap)
 	if heat >= heat_cap and not shutdown:
 		_overheat()
+	elif shutdown and heat > reboot_heat:
+		_reboot_t = 0.0
 
 
+## VERB: back to cold (redeploy, revive, reset): heat 0; an active shutdown ends at once (its reboot countdown cleared)
+## and `rebooted` fires for it. Owner's machine only.
+func reset_heat() -> void:
+	heat = 0.0
+	_reboot_t = 0.0
+	if shutdown:
+		_reboot()
+
+
+## Reboot rule: shut down at heat_cap; the countdown runs only while heat is at or under reboot_heat, and any step over it
+## restarts it, so control returns after reboot_time spent cool enough (never early, never at once when heat drops).
 func _update_heat(delta: float) -> void:
 	if thrusting:
-		heat += thrust_heat * (_burn_throttle if emergency else _thrust_share) * delta
+		heat += (auto_burn_heat * _burn_throttle if emergency else thrust_heat) * delta
 	heat += move_heat_rate() * delta
 	heat = maxf(heat - cooling * delta, 0.0)
 	if heat >= heat_cap and not shutdown:
 		heat = heat_cap
 		_overheat()
-	elif shutdown and heat <= reboot_heat:
-		_reboot_t += delta
-		if _reboot_t >= reboot_time:
-			shutdown = false
-			rebooted.emit()
+	elif shutdown:
+		if heat <= reboot_heat:
+			_reboot_t += delta
+			if _reboot_t >= reboot_time:
+				_reboot()
+		else:
+			_reboot_t = 0.0
 	heat = minf(heat, heat_cap)
+
+
+func _reboot() -> void:
+	shutdown = false
+	_reboot_t = 0.0
+	rebooted.emit()
 
 
 ## Heat/s from walking / running now: from the actual ground speed, only on the ground, live, not thrusting and with

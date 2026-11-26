@@ -1,9 +1,10 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## A Strider and a Bulwark damage, down and revive each other across machines (docs/networking.md: the victim decides
 ## hits on its own mech; component HP rides the mech snapshot as fractions of the owner's per-chassis max), a real crew
 ## mission of 2, once per link. Host A flies a Strider with a repair drone on its back, client B a Bulwark with one on
 ## back_r. World geometry off (shots meet hit spheres only).
-## 1. B stands beside A. A fires autocannon shells at B's hull: B (the victim) applies them to its own Bulwark (600 HP
+## 1. B stands beside A. A fires autocannon shells at B's hull: B (the victim) applies them to its own Bulwark (900 HP
 ##    hull), A builds no Hit on B's puppet; after the snapshots A's puppet of B shows B's own component fractions.
 ## 2. B fires at A: A applies them to its own Strider, B builds none; B's puppet of A agrees with A.
 ## 3. B goes down (Bulwark as victim): A sees it downed and can revive; A's drone revives B on B's own machine once,
@@ -45,7 +46,7 @@ func run_host() -> void:
 		return
 	eq(td.rig.model.chassis_id, "strider", "A flies a Strider")
 	eq(tb.chassis, "bulwark", "A's copy of B's target is a Bulwark")
-	near(float(tb.max_hp.get("torso", 0.0)), 600.0, 1e-6, "with the Bulwark's 600 HP hull")
+	near(float(tb.max_hp.get("torso", 0.0)), 900.0, 1e-6, "with the Bulwark's 900 HP hull")
 	check(tb.max_hp.has("back_r") and not tb.max_hp.has("back"), "and its back_r component")
 	# 1. A shoots B's hull.
 	command(b, "near", {"to": td.mech.global_position + td.mech.global_basis.x * SIDE})

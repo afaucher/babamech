@@ -23,8 +23,10 @@ every machine shows the same progress. A player's interaction (stand in a zone, 
 reads or a request the host grants; no machine completes an objective on its own.
 
 One record per objective: `{id, type, deck, role: primary | bonus, state: hidden | known | active | done | failed,
-progress, total, site: {x, s}, needs: [ids]}`. `MissionRules` grows from "clear + extract" into the evaluator of this
-list; objectives are placed by the section planner from the mission seed, so every machine derives the same list and
+progress, total, site: {x, s}, needs: [ids]}`. `MissionRules` grew from "clear + extract" into the evaluator of this
+list, and since 2026-11-25 it is only that (user: "Cut the legacy modes."; a section always has a mission plan, no flag
+or setting selects anything else; the old clear-and-extract evaluator and the game's single-district mode were deleted
+on 2026-11-26); objectives are placed by the section planner from the mission seed, so every machine derives the same list and
 only the state is sent.
 
 ## 2. Objective types
@@ -458,43 +460,75 @@ zone and no enemy is. Defend: done when its waves are released and beaten, faile
 primary sets the outcome to lost. `state()` adds `objs: {id: [state, progress, total]}` and `reached` (the deepest deck a
 standing mech has been on, latched). HUD text (built here so host and clients read the same from the replicated state):
 an undiscovered bonus is not listed; the flag reads "Raise the flag: 40%"; once a deck's primary is done its list starts
-with "Proceed to the next floor" (the extraction deck: the hold's line, or "Return to deck n: objective unfinished"),
-and `text()` reads "Proceed to the next floor" until a standing mech reaches the next primary's deck. The HUD has one
-objective panel, top right (the top-centre strip was removed, playtest 2026-11-23).
+with "Proceed to deck n" (the extraction deck: the hold's line, or "Return to deck n: objective unfinished"), and
+`text()` reads "Proceed to deck n" until a standing mech reaches the next primary's deck. The HUD has one objective
+panel, top right (the top-centre strip was removed, playtest 2026-11-23).
 
-**Objective panel** (2026-11-24, user: "no indication of what level you are on", "^ for levels above, V for below, -
-for here"). `MissionRules.panel(viewer_deck, viewer_pos, ascii)` builds it from the replicated state plus two local facts
-of the viewing pilot (their deck and (x, s) on it, never sent); `MissionHud` only lays it out. Nothing new on the wire.
+**Objective panel** (2026-11-24, user: "no indication of what level you are on"; reworked 2026-11-25, playtest backlog
+#3: "'v1' and 'v2' aren't clear. Maybe the deck objectives for decks you haven't visited yet read 'Proceed to deck 2',
+and once you get there the other objectives open up"). `MissionRules.panel(viewer_deck, viewer_pos)` builds it from
+the replicated state plus two local facts of the viewing pilot (their deck and (x, s) on it, never sent); `MissionHud`
+only lays it out (`panel_rows`). Nothing new on the wire: `reached` was already in `state()`.
 
 ```
-DECK 2 OF 3                     WAVES 1 / 3     header: the pilot's deck (index + 1, top deck = 1, as painted "01"
-V1  PROCEED TO THE NEXT FLOOR                   beside every gate / ramp), held on a ramp / in a shaft (more than
--   RAISE THE FLAG: 100% (DONE)                 2.5 m off the floor) until they stand on the next deck
--   RAISE THE FLAG: 40% (OPTIONAL)              this deck: every known objective, done / failed too
--   TAKING POWER CORE: 60%                      the depot line (MissionDepots), under this deck's lines
-V1  DECK 3                                      the decks below, nearest first (the way the crew travels), then
-V1  DEFEND THE POSITION: WAVE 1 / 2             the decks above, nearest first; another deck lists only what is
-       V SHAFT 90 M                             left to do; the route line under the first deck each way
-^1  DECK 1: DONE                                a finished deck: one line
+DECK 1 OF 3                                     at the start
+RAISE THE FLAG: 0%                              this deck's list (white primary)
+PROCEED TO DECK 2                               dim, last: this deck's primary is still to do
+   SHAFT DOWN 135 M                             route hint (dim under a dim line)
+
+DECK 1 OF 3                                     deck 1's primary done
+PROCEED TO DECK 2                               amber, first; the waypoint diamond points at the way
+   SHAFT DOWN 135 M                             (amber under an amber line)
+RAISE THE FLAG: 100% (DONE)
+RAISE THE FLAG: 0% (OPTIONAL)
+
+DECK 2 OF 3                                     just arrived: deck 2's objectives open up
+CLEAR DECK 2: 6 HOSTILES
+DEFEND THE POSITION: WAVE 1 / 3 (OPTIONAL)      dimmer cyan
+TAKING POWER CORE: 60%                          the depot line, under this deck's lines
+PROCEED TO DECK 3
+   SHAFT DOWN 175 M
+DECK 1: 2 OPTIONAL LEFT                         a visited deck with found bonuses left: one dim line
+   RAMP UP 120 M                                the way up (a ramp's foot; shafts are one way)
+
+DECK 3 OF 3                                     deck 3's primary done, deck 2's not
+RETURN TO DECK 2: OBJECTIVE UNFINISHED          amber, leads (route hint when a ramp up exists)
+DEFEND THE POSITION: WAVE 2 / 2 (DONE)
 ```
 
-- **Prefix** on every line and sub-header: – (this deck), ▲n (n decks above), ▼n (below), from `MissionRules.arrow`. The HUD font
-  (Godot's fallback) has the en dash but not ▲ / ▼, so `MissionHud.ascii_arrows()` (picked once, `font_has_arrows`)
-  uses the user's ASCII set "-", "^n", "Vn" for all three; the Unicode set is used if the font ever gains the arrows.
-- **Primary vs optional**: a primary line has no tag, white; a bonus ends in "(optional)", dimmer cyan; done green,
-  failed red; the next-floor / "Return to deck n" line amber. Hidden bonuses stay unlisted. `lines(deck)` is unchanged
-  for older callers ("Bonus: " prefix).
-- **Route line**: the nearest way off the pilot's deck in that direction, straight-line distance along the deck rounded
-  to 5 m: down, a ramp's mouth or a shaft (a drop through a real opening, as the bot takes them); up, a ramp's foot only
-  (shafts are one way). Lifts are left out while they don't carry mechs (`MissionRules.LIFTS_RIDE`, BotRoutePlanner
-  skips them too); locked connectors never count. No way in that direction: no route line.
-- **Waypoint**: while "Proceed to the next floor" (or "Return to deck n") leads the list and there is no extraction
-  waypoint, the HUD's waypoint diamond points at that route ("RAMP DOWN 120m", "SHAFT DOWN"); `marker()` is untouched
-  (the bot reads it).
-- **Height**: the panel never passes 40 % of the screen height (`MissionHud.PANEL_FRAC`, rows of 19 px): too long, the
-  other decks collapse to one line each, the last group first ("V1 DECK 3: 1 objective, 2 optional", their route line
-  kept), then finished decks drop, then the end is cut. Finished decks show as one line ("DECK 1: done") while there is
-  room. Plain clear-and-extract mode (no plan) keeps the old "OBJECTIVE" + text panel.
+- **Open decks**: a deck is open up to `max(reached, viewer deck)`: `reached` is the crew's latched deepest deck
+  (replicated), the viewer's own deck is always open (no empty panel in the moment between standing on a new deck and
+  the host's next state). This deck's list: every known objective, done / failed too, the extraction hold first once it
+  shows; a primary has no tag, white; a bonus ends in "(optional)", dimmer cyan; done green, failed red. Hidden bonuses
+  stay unlisted.
+- **Unvisited decks**: none of their objectives are listed. One line, "Proceed to deck n" (n = the first unopened deck,
+  numbered as painted on the walls), only when no opened deck below the viewer still has a primary left; decks further
+  on are not mentioned. While this deck's primary is to do it is the last line of the deck's block, dim; once it is done
+  (or the deck has none) it is the first line, amber, and the waypoint points at its route.
+- **Visited decks** (other than the viewer's, open): a deck below with a primary left reads "Deck 2: 1 objective,
+  1 optional left" with the proceed line's role and placement (it replaces it); a deck above with its primary not done
+  reads "Return to deck 1: objective unfinished", amber (leads once this deck's primary is done, else trails); a deck
+  with only found bonuses left reads "Deck 1: 2 optional left", dim, always trailing; a finished deck: no line.
+- **Co-op**: a pilot still on deck 1 while a crewmate has reached deck 2 sees "Deck 2: 1 objective, 1 optional left"
+  (not "Proceed to deck 3") with the way down, amber and first once deck 1's primary is done; on arrival the full list.
+  If deck 2's primary is done too, "Deck 2: 1 optional left" plus "Proceed to deck 3". Host and clients compute the same
+  panel from the same state; only the viewer's deck / position differ.
+- **Route hint**: under the first line each way (down first, then up), only when a walkable way exists: the nearest way
+  off the pilot's deck in that direction, straight-line along the deck rounded to 5 m, plain words ("ramp down 120 m",
+  "shaft down 90 m", "ramp up 85 m"): down, a ramp's mouth or a shaft whose drop lands on the next deck (never a stacked
+  atrium); up, a ramp's foot only. Lifts are left out while they don't carry mechs (`MissionRules.LIFTS_RIDE`,
+  BotRoutePlanner skips them too); locked connectors never count.
+- **Waypoint**: while a lead line shows ("Proceed to deck n", "Deck n: ... left", "Return to deck n") and there is no
+  extraction waypoint, the HUD's waypoint diamond points at its route (`route_at`: "RAMP DOWN 120m", "SHAFT DOWN");
+  `marker()` is untouched (the bot reads it).
+- **No prefixes**: the "-" / "^1" / "V1" direction column and its glyph fallback (`MissionRules.ARROWS`, `arrow()`,
+  `font_has_arrows`, `MissionHud.ascii_arrows`) are gone; every text is plain ASCII the HUD font draws, upper-cased.
+  `lines(deck)` stays for the flat no-panel list ("Bonus: " prefix).
+- **Height**: the panel never passes 40 % of the screen height (`MissionHud.PANEL_FRAC`, rows of 19 px). With one line
+  per deck it rarely fills (5 decks, all visited, every deck unfinished: 10 rows); too long, the trailing route hints
+  drop (the last first), then the trailing "Deck n: ... optional left" lines, then this deck's done / failed lines, then
+  the end is cut. Lead lines and the depot line stay; the downed-crew lines are never cut. The flat "OBJECTIVE" + text
+  panel of the old clear-and-extract mode was removed with that mode (2026-11-26): this panel is the only one.
 
 
 **Who wires what**

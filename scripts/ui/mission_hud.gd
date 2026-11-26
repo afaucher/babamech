@@ -1,19 +1,19 @@
 class_name MissionHud
 extends Control
 ## The mission layer of the HUD (W6, docs/design/hud.md "Mission objective"): a child of MechHud's root, same holo style.
-##   top right    the objective panel (`list_panel`, the HUD's only objective panel): "OBJECTIVE" + MissionRules.text()
-##                ("Clear deck 1: 5 hostiles left", "Reach the extraction portal") outside plan mode
+##   top right    the objective panel (`list_panel`, the HUD's only objective panel; see PLAN MODE below)
 ##   anywhere     the extraction waypoint (MissionRules.marker() as a world point): a diamond with "EXTRACT" and the
 ##                distance, drawn over everything (it shows through decks); off screen or behind the camera it sticks
 ##                to the screen edge with an arrow pointing toward it (`markers`)
 ##   centre       the end banner, "MISSION COMPLETE" + the reason, for the hold before the mission ends (`banner`)
-## PLAN MODE (the state has plan: true; docs/design/mission-objectives.md phase 1), also:
+## PLAN MODE (the state has plan: true: every mission, the one mode; docs/design/mission-objectives.md phase 1), also:
 ##   top right    the same panel, structured (`panel`, MissionRules.panel() via MissionFlow, docs/design/
 ##                mission-objectives.md §9 "Objective panel"): "DECK 2 OF 3" + "WAVES 2 / 3", this deck's lines, the depot
-##                line, then each other deck under a sub-header, every row with its direction ("-" here, "^1" / "V2" in
-##                ASCII when the font lacks ▲ ▼ –: ascii_arrows(), picked once) and a route line under the first deck
-##                each way ("V RAMP 120 M"); fitted to PANEL_FRAC of the screen height (panel_rows: other decks collapse
-##                to one line first). Without a panel: the flat MissionRules.lines(deck); no lines: the objective text
+##                line, "PROCEED TO DECK 3" (amber and first once this deck's primary is done, else dim and last), one
+##                line per visited deck with something left ("DECK 1: 1 OPTIONAL LEFT", "RETURN TO DECK 1: OBJECTIVE
+##                UNFINISHED"), a route hint under the first line each way ("RAMP DOWN 120 M"); fitted to PANEL_FRAC of
+##                the screen height (panel_rows). Without a panel: the flat MissionRules.lines(deck); no lines: the
+##                objective text
 ##   anywhere     objective markers (flag / defend; a found bonus reads "FLAG" / "DEFEND" like a primary) like the waypoint, and a
 ##                ring projected on the floor round each defend site (the world draws the flag rings and the hold zone)
 ##   top centre   "Reinforcements, east gate" with the seconds to the door (`alert_panel`),
@@ -38,16 +38,18 @@ extends Control
 const OBJ_TOP := 40.0             ## the objective panel's top: below the test drive's help line (top 12)
 const BANNER_SIZE := Vector2(640, 120)
 const EDGE_PAD := 48.0            ## an off-screen waypoint sticks this far inside the screen edge
-const DEMO_STATE := {"objective": "Clear deck 2: 5 hostiles left", "banner": {}}
+## The plain demo: one primary line in the flat plan list (no panel); demo_plan adds the structured panel and the rest.
+const DEMO_STATE := {"objective": "Raise the flag: 60%", "plan": true, "deck": 0, "lines": ["Raise the flag: 60%"],
+	"banner": {}}
 const DEMO_WAYPOINT_AT := Vector2(0.76, 0.2)    ## viewport fraction where the demo draws its waypoint
-const DEMO_BANNER := {"title": "MISSION COMPLETE", "reason": "Every deck cleared, the crew reached extraction", "won": true}
+const DEMO_BANNER := {"title": "MISSION COMPLETE", "reason": "Every primary done, the crew held the extraction portal", "won": true}
 const LIST_W := 340.0
 const LIST_HEAD := 30.0           ## px of the list's header (deck, waves)
 const LIST_LINE := 20.0           ## px per objective line (the flat list: no panel)
 const LIST_MAX := 7               ## most lines shown (the flat list)
-const ROW := 19.0                 ## px per row of the structured panel (lines, deck sub-headers, route lines)
+const ROW := 19.0                 ## px per row of the structured panel (lines, route hints)
 const PANEL_FRAC := 0.4           ## the panel never grows past this fraction of the screen height
-const PREFIX_W := 30.0            ## px of the direction column ("–", "▲1", "▼2")
+const ROUTE_INDENT := 14.0        ## px a route hint is indented under its line
 const PAD := 8.0                  ## px under the last row
 const ALERT_SIZE := Vector2(420, 28)
 const ALERT_TOP := 118.0          ## the reinforcement line's top (82..110 is kept free)
@@ -60,18 +62,14 @@ const DEMO_PLAN := {"objective": "Raise the flag: 60%", "plan": true, "deck": 0,
 	"lines": ["Raise the flag: 60%", "Bonus: Defend the position: wave 1 / 2", "Bonus: Raise the flag: 100% (done)"],
 	"waves": [1, 3], "zone": {"label": "RAISING THE FLAG", "progress": 12.0, "total": 20.0, "contested": false,
 		"countdown": false, "percent": true},
-	# The structured panel (MissionRules.panel() shape): deck 1 of 3, its flag and two bonuses, deck 2 below with the way.
-	"panel": {"header": "DECK 1 of 3", "deck": 0, "decks": 3, "route_at": {}, "extra": [], "groups": [
-		{"deck": 0, "rel": 0, "here": true, "title": "DECK 1", "prefix": "-", "done": false, "summary": "", "route": {},
-			"lines": [{"text": "Raise the flag: 60%", "role": "primary", "state": "active", "rel": 0},
-				{"text": "Defend the position: wave 1 / 2 (optional)", "role": "bonus", "state": "known", "rel": 0},
-				{"text": "Raise the flag: 100% (done)", "role": "bonus", "state": "done", "rel": 0}]},
-		{"deck": 1, "rel": 1, "here": false, "title": "DECK 2", "prefix": "V1", "done": false,
-			"summary": "DECK 2: 1 objective", "route": {"text": "V ramp 120 m", "kind": "ramp", "dist": 120, "dir": 1},
-			"lines": [{"text": "Clear deck 2: 6 hostiles", "role": "primary", "state": "known", "rel": 1}]},
-		{"deck": 2, "rel": 2, "here": false, "title": "DECK 3", "prefix": "V2", "done": false,
-			"summary": "DECK 3: 1 objective", "route": {},
-			"lines": [{"text": "Defend the position: wave 1 / 2", "role": "primary", "state": "known", "rel": 2}]}]}}
+	# The panel (MissionRules.panel() shape): deck 1 of 3, its flag and two bonuses, then the way on to deck 2.
+	"panel": {"header": "DECK 1 of 3", "deck": 0, "decks": 3, "route_at": {}, "extra": [], "lines": [
+		{"text": "Raise the flag: 60%", "role": "primary", "state": "active", "deck": 0, "dir": 0, "part": "here"},
+		{"text": "Defend the position: wave 1 / 2 (optional)", "role": "bonus", "state": "known", "deck": 0, "dir": 0,
+			"part": "here"},
+		{"text": "Raise the flag: 100% (done)", "role": "bonus", "state": "done", "deck": 0, "dir": 0, "part": "here"},
+		{"text": "Proceed to deck 2", "role": "next", "state": "", "deck": 1, "dir": 1, "part": "tail"},
+		{"text": "ramp down 120 m", "role": "route", "state": "", "deck": 1, "dir": 1, "part": "tail"}]}}
 const DEMO_MARK_AT := Vector2(0.3, 0.42)            ## viewport fraction of the demo's objective marker
 const DEMO_RING := Rect2(0.42, 0.62, 0.16, 0.08)    ## viewport fraction of the demo's projected ring (an ellipse)
 const DEMO_ALERT_DIR := Vector2(-1, 0.25)           ## the demo's reinforcement arrow sticks to the left edge
@@ -100,7 +98,6 @@ var alert_panel: Control
 var zone_panel: Control
 var _font: Font
 var _state: Dictionary = {}
-static var _ascii_pick := -1      ## ascii_arrows(): -1 not picked yet, 0 the font has ▲ ▼ –, 1 it lacks one
 
 
 func _init() -> void:
@@ -144,73 +141,48 @@ func _ready() -> void:
 	_refresh()
 
 
-## True when the HUD font lacks one of MissionRules.ARROWS (▲ ▼ –): the panel then uses the ASCII "^", "V", "-".
-## Picked once (the first call), the same for every panel of the session.
-static func ascii_arrows() -> bool:
-	if _ascii_pick < 0:
-		_ascii_pick = 0 if MissionRules.font_has_arrows(ThemeDB.fallback_font) else 1
-	return _ascii_pick == 1
-
-
 ## The most structured-panel rows that fit a screen `height` px tall within PANEL_FRAC (header and padding included).
 static func max_rows(height: float) -> int:
 	return maxi(int(floor((height * PANEL_FRAC - LIST_HEAD - PAD) / ROW)), 3)
 
 
-## The structured panel's rows, fitted to `limit` rows: [{kind: line | extra | group | route, text, prefix, role,
-## state}]. This deck's lines first, then the depot line (`extra`), then every other deck's group (a sub-header with its
-## direction, its lines, the route line). Too long: other decks collapse to one line each ("▼1 DECK 3: 2 objectives",
-## the route line kept), the last group first; then finished decks ("DECK 1: done") drop, the last first; anything
-## still past the limit is cut off at the end. Prefixes are rebuilt from rel with `ascii`.
-static func panel_rows(pn: Dictionary, limit: int, ascii: bool) -> Array:
-	var groups: Array = pn.get("groups", [])
-	if groups.is_empty():
+## The panel's rows, fitted to `limit` rows: [{kind: line | route | extra, text, role, state, part}]: the lead lines
+## (MissionRules.panel part "lead": "Proceed to deck 3" / "Return to deck 1" once this deck's primary is done, with their
+## route hints), this deck's lines, the depot line (`extra`), then the trailing lines. Too long: the trailing route hints
+## drop (the last first), then the trailing "Deck n: ... left" lines, then this deck's done / failed lines; anything still
+## past the limit is cut off at the end.
+static func panel_rows(pn: Dictionary, limit: int) -> Array:
+	var ls: Array = pn.get("lines", [])
+	if ls.is_empty() and (pn.get("extra", []) as Array).is_empty():
 		return []
-	var head: Array = []
-	for l: Dictionary in groups[0].get("lines", []):
-		head.append(_row("line", str(l["text"]), MissionRules.arrow(int(l.get("rel", 0)), ascii), str(l["role"]),
-			str(l.get("state", ""))))
+	var rows: Array = []
+	for part: String in ["lead", "here"]:
+		for l: Dictionary in ls:
+			if str(l.get("part", "here")) == part:
+				rows.append(_row("route" if l["role"] == "route" else "line", str(l["text"]), str(l["role"]),
+					str(l.get("state", "")), part))
 	for e: Variant in pn.get("extra", []):
-		head.append(_row("extra", str(e), "", "extra", ""))
-	var others: Array = []
-	for i in range(1, groups.size()):
-		var g: Dictionary = groups[i]
-		var pre := MissionRules.arrow(int(g["rel"]), ascii)
-		var route: Dictionary = g.get("route", {})
-		var short: Array = [_row("group", str(g["summary"]), pre, "done" if bool(g["done"]) else "group", "")]
-		var full: Array = short.duplicate()
-		if not bool(g["done"]):
-			full = [_row("group", str(g["title"]), pre, "group", "")]
-			for l: Dictionary in g.get("lines", []):
-				full.append(_row("line", str(l["text"]), MissionRules.arrow(int(l.get("rel", 0)), ascii), str(l["role"]),
-					str(l.get("state", ""))))
-		if not route.is_empty():
-			var rr := _row("route", str(route.get("text", "")), "", "route", "")
-			short.append(rr)
-			full.append(rr)
-		others.append({"rows": full, "short": short, "done": bool(g["done"])})
-	var count := head.size()
-	for o: Dictionary in others:
-		count += (o["rows"] as Array).size()
-	for i in range(others.size() - 1, -1, -1):
-		if count <= limit:
-			break
-		count -= (others[i]["rows"] as Array).size() - (others[i]["short"] as Array).size()
-		others[i]["rows"] = others[i]["short"]
-	for i in range(others.size() - 1, -1, -1):
-		if count <= limit:
-			break
-		if bool(others[i]["done"]):
-			count -= (others[i]["rows"] as Array).size()
-			others[i]["rows"] = []
-	var out: Array = head
-	for o: Dictionary in others:
-		out.append_array(o["rows"])
-	return out.slice(0, maxi(limit, 0))
+		rows.append(_row("extra", str(e), "extra", "", "here"))
+	for l: Dictionary in ls:
+		if str(l.get("part", "")) == "tail":
+			rows.append(_row("route" if l["role"] == "route" else "line", str(l["text"]), str(l["role"]),
+				str(l.get("state", "")), "tail"))
+	var drops: Array[Callable] = [
+		func(r: Dictionary) -> bool: return r["part"] == "tail" and r["kind"] == "route",
+		func(r: Dictionary) -> bool: return r["part"] == "tail" and r["role"] == "deck",
+		func(r: Dictionary) -> bool: return r["part"] == "here" and (r["state"] == "done" or r["state"] == "failed"),
+	]
+	for drop: Callable in drops:
+		for i in range(rows.size() - 1, -1, -1):
+			if rows.size() <= limit:
+				break
+			if drop.call(rows[i]):
+				rows.remove_at(i)
+	return rows.slice(0, maxi(limit, 0))
 
 
-static func _row(kind: String, text: String, prefix: String, role: String, st: String) -> Dictionary:
-	return {"kind": kind, "text": text, "prefix": prefix, "role": role, "state": st}
+static func _row(kind: String, text: String, role: String, st: String, part: String) -> Dictionary:
+	return {"kind": kind, "text": text, "role": role, "state": st, "part": part}
 
 
 ## The structured panel now (plan mode, MissionFlow's `panel`), {} when there is none (the flat list is drawn then).
@@ -258,7 +230,7 @@ func _refresh() -> void:
 	banner.visible = not (_state.get("banner", {}) as Dictionary).is_empty()
 	var planned := bool(_state.get("plan", false))
 	var lines := shown_lines()
-	list_panel.visible = planned or not lines.is_empty()
+	list_panel.visible = not lines.is_empty()
 	list_panel.offset_top = list_top(get_viewport_rect().size.x)
 	if not panel().is_empty():
 		list_panel.offset_bottom = list_panel.offset_top + LIST_HEAD + ROW * float(maxi(lines.size(), 1)) + PAD
@@ -367,20 +339,20 @@ static func screen_point(cam: Camera3D, p: Vector3, vs: Vector2, pad: float) -> 
 	return {"at": c + dir * k, "on_screen": false, "dir": dir.normalized()}
 
 
-## The objective panel's lines now: plan mode with a panel, its fitted rows as "prefix text" (panel_rows); plan mode
-## without one, MissionRules.lines(your deck); else (or when that is empty) the objective text alone; [] when there is
-## nothing to show.
+## The objective panel's lines now: with a panel, the text of its fitted rows (panel_rows); without one,
+## MissionRules.lines(your deck), else the objective text alone; then the crew lines; [] when there is nothing to show
+## (no plan: TEST-ONLY quiet fixture, only crew lines).
 func shown_lines() -> Array:
 	var lines: Array = []
 	var pn := panel()
 	if not pn.is_empty():
 		for r: Dictionary in shown_rows():
-			lines.append(("%s %s" % [r["prefix"], r["text"]]).strip_edges())
+			lines.append(str(r["text"]))
 		return lines
 	if bool(_state.get("plan", false)):
 		lines = (_state.get("lines", []) as Array).duplicate()
-	if lines.is_empty() and str(_state.get("objective", "")) != "":
-		lines = [str(_state.get("objective", ""))]
+		if lines.is_empty() and str(_state.get("objective", "")) != "":
+			lines = [str(_state.get("objective", ""))]
 	var crew := crew_lines()
 	if not crew.is_empty():   # the crew lines are never cut: the objective lines make room
 		lines = lines.slice(0, maxi(LIST_MAX - crew.size(), 0)) + crew
@@ -394,11 +366,11 @@ func shown_rows() -> Array:
 	if pn.is_empty():
 		return []
 	var crew := crew_lines()
-	var rows := panel_rows(pn, max_rows(get_viewport_rect().size.y) - crew.size(), ascii_arrows())
+	var rows := panel_rows(pn, max_rows(get_viewport_rect().size.y) - crew.size())
 	if rows.is_empty() and str(_state.get("objective", "")) != "":
-		rows = [_row("line", str(_state.get("objective", "")), MissionRules.arrow(0, ascii_arrows()), "primary", "")]
+		rows = [_row("line", str(_state.get("objective", "")), "primary", "", "here")]
 	for l: Variant in crew:
-		rows.append(_row("extra", str(l), "", "crew", ""))
+		rows.append(_row("extra", str(l), "crew", "", "here"))
 	return rows
 
 
@@ -607,43 +579,43 @@ func _label(c: Control, at: Vector2, r: float, text: String, col: Color) -> void
 	c.draw_string(_font, Vector2(x, ty), text, HORIZONTAL_ALIGNMENT_CENTER, tw, 13, col)
 
 
-## One row of the structured panel at baseline y: the direction column, then the text, styled by kind / role / state:
-## the primary white, a bonus dimmer cyan with "(optional)", done green, failed red, the next-floor line amber; a deck
-## sub-header small and dim with an amber direction, a route line amber, indented under its group.
+## One row of the panel at baseline y, styled by role / state / part: the primary white, a bonus dimmer cyan with
+## "(optional)", done green, failed red, "Return to deck n" amber, "Proceed to deck n" (and a visited deck below with a
+## primary left) amber when it leads and dim while it trails, a visited deck's "... optional left" dim; a route hint
+## small and indented, amber under a lead line, dim otherwise.
 func _draw_row(c: Control, r: Dictionary, y: float) -> void:
 	var w := c.size.x - 24.0
-	var kind := str(r["kind"])
 	var role := str(r["role"])
 	var st := str(r["state"])
+	var lead := str(r.get("part", "")) == "lead"
 	var col := MechHud.WHITE
 	var fs := 12
-	match kind:
-		"group":
-			col = Color(MechHud.GREEN, 0.7) if role == "done" else MechHud.DIM
-			fs = 11
+	var x := 12.0
+	match role:
 		"route":
-			col = MechHud.AMBER
+			col = MechHud.AMBER if lead else MechHud.DIM
 			fs = 11
+			x += ROUTE_INDENT
+		"crew":
+			col = MechHud.RED
+		"return":
+			col = MechHud.AMBER
+		"next":
+			col = MechHud.AMBER if lead else MechHud.DIM
+		"deck":
+			col = MechHud.DIM
 		_:
-			if role == "crew":
-				col = MechHud.RED
-			elif st == "done":
+			if st == "done":
 				col = MechHud.GREEN if role != "bonus" else Color(MechHud.GREEN, 0.7)
 			elif st == "failed":
 				col = MechHud.RED
-			elif role == "next":
-				col = MechHud.AMBER
 			elif role == "bonus":
 				col = Color(MechHud.CYAN, 0.72)
-	var pre := str(r["prefix"])
-	if pre != "":
-		var pc := MechHud.DIM if pre == MissionRules.arrow(0, ascii_arrows()) else MechHud.AMBER
-		c.draw_string(_font, Vector2(12, y), pre, HORIZONTAL_ALIGNMENT_LEFT, PREFIX_W, 12, pc)
-	var x := 12.0 + PREFIX_W
 	var t := str(r["text"]).to_upper()
-	while fs > 9 and _font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x > w - PREFIX_W:
+	var room := w - (x - 12.0)
+	while fs > 9 and _font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x > room:
 		fs -= 1   # a long line shrinks a little rather than run past the panel
-	c.draw_string(_font, Vector2(x, y), t, HORIZONTAL_ALIGNMENT_LEFT, w - PREFIX_W, fs, col)
+	c.draw_string(_font, Vector2(x, y), t, HORIZONTAL_ALIGNMENT_LEFT, room, fs, col)
 
 
 func _draw_list(c: Control) -> void:
@@ -664,13 +636,12 @@ func _draw_list(c: Control) -> void:
 			ry += ROW
 		return
 	var lines := shown_lines()
-	var planned := bool(_state.get("plan", false))
-	if lines.is_empty() and not planned:
+	if lines.is_empty():
 		return
 	var r := Rect2(Vector2.ZERO, c.size)
 	MechHud.draw_glass(c, r)
 	c.draw_rect(Rect2(Vector2(r.size.x - 4, 0), Vector2(4, r.size.y)), MechHud.AMBER, true)
-	var head := "DECK %d OBJECTIVES" % (int(_state.get("deck", 0)) + 1) if planned else "OBJECTIVE"
+	var head := "DECK %d OBJECTIVES" % (int(_state.get("deck", 0)) + 1)
 	c.draw_string(_font, Vector2(12, 20), head, HORIZONTAL_ALIGNMENT_LEFT, 200, 11, MechHud.DIM)
 	var wv: Array = _state.get("waves", [])
 	if wv.size() > 1 and int(wv[1]) > 0:

@@ -425,7 +425,7 @@ static func _walk(n: Node, xf: Transform3D, comp: String, group: String, out: Ar
 	elif nm.begins_with("HP_"):
 		comp = nm.substr(3)
 		group = comp
-	elif comp.begins_with("side_") or comp.begins_with("shoulder_") or comp.begins_with("back"):   # back, back_l, back_r
+	elif comp.begins_with("side_") or comp.begins_with("shoulder_") or comp.begins_with("back") or comp == "belly":   # back, back_l, back_r; the Bulwark's belly turret
 		if group == comp:
 			group = comp + (":mount" if nm == "Mount" else ":weapon")
 	elif comp != "head":

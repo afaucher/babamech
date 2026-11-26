@@ -42,6 +42,8 @@ func rebuild() -> void:
 	var groups: Array = [MechMeshes.BODY_PARTS, MechMeshes.LEG_PARTS, [], [], []]
 	if chassis == "bulwark":
 		groups = [BulwarkMeshes.BODY_PARTS, BulwarkMeshes.LEG_PARTS, [], [], []]
+	elif chassis == "wasp":
+		groups = [WaspMeshes.BODY_PARTS, WaspMeshes.LEG_PARTS, [], [], []]
 	for w: String in MechMeshes.WEAPONS:
 		(groups[2] as Array).append("weapon_" + w)
 	for e: String in MechMeshes.EQUIPMENT:
@@ -99,13 +101,14 @@ func lab_options() -> Array:
 	var choices: Array = ["all"]
 	choices.append_array(MechMeshes.all_parts())
 	choices.append_array(BulwarkMeshes.all_parts())
-	return [{"id": "chassis", "label": "Chassis", "choices": ChassisParts.ORDER, "value": chassis},
+	choices.append_array(WaspMeshes.all_parts())
+	return [{"id": "chassis", "label": "Chassis", "choices": ChassisParts.ORDER + ChassisParts.DRAFTS, "value": chassis},
 		{"id": "part", "label": "Part", "choices": choices, "value": part}]
 
 
 func set_lab_option(id: String, v: String) -> void:
 	if id == "part":
-		part = v if MechMeshes.has_part(v) or BulwarkMeshes.has_part(v) else "all"
+		part = v if MechMeshes.has_part(v) or BulwarkMeshes.has_part(v) or WaspMeshes.has_part(v) else "all"
 		rebuild()
 	elif id == "chassis":
 		chassis = v if ChassisParts.has(v) else "strider"

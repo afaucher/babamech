@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Enemies in co-op (W4, cast's M3: the host-owned world; scripts/game/enemy_sync.gd, scripts/net/net_enemy_stream.gd)
 ## over a real crew mission in the stack, once per link (off, coast). Only the host spawns enemies and runs their AI;
 ## clients show puppets. At load the host turns every enemy's AI to "idle" so nothing shoots during the measured steps,

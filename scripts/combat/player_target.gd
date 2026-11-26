@@ -7,6 +7,9 @@ extends CombatTarget
 ##   - Owner-authoritative (owner_peer = local_peer()): the victim's machine decides hits on its own mech.
 ##   - Bridges knockback impulse onto MechController.velocity, target heat onto MechController.add_heat(),
 ##     and exposes `component_fractions()` for MechHud + `is_slot_destroyed(hp)` for WeaponRack.
+##   - A DESTROYED hardpoint keeps its hit sphere (its wrecked weapon stays on the model, the hit spheres never change in
+##     play, so every machine agrees on what a shot struck); damage to it goes to the torso it is mounted on. `damaged`
+##     reports the HP removed (no event when nothing was dealt; overkill does not spill).
 ##   - DOWNED / REVIVE / RESPAWN (docs/design/pacing-director.md "Downed, revive, respawn", numbers in DownedRules; user
 ##     decision 2026-11-24): torso / head / leg_l / leg_r at 0 HP downs the mech (`disabled`, `player_disabled(cause)`).
 ##     It stays where it fell, takes no damage and is not hittable (enemies drop it); the owner's input layer stops its
@@ -32,7 +35,6 @@ extends CombatTarget
 signal player_component_destroyed(component: String)
 signal player_disabled(cause: String)
 signal player_revived(by: String, time_down: float)
-signal redeploy_started(time_down: float)
 signal player_respawned(time_down: float, held: bool)
 
 const CORE_COMPONENTS := ["torso", "head", "leg_l", "leg_r"]
@@ -43,19 +45,68 @@ const FALL_LEG_PER_MS := 3.0      ## HP to EACH leg per m/s above FALL_DAMAGE_SP
 const FALL_LEG_MAX := 0.9         ## one fall takes at most this share of a leg's max HP (a healthy mech survives it)
 const FALL_TORSO_SPEED := 40.0    ## m/s: extreme falls also hit the torso above this
 const FALL_TORSO_PER_MS := 1.5    ## torso HP per m/s above FALL_TORSO_SPEED
-## Local-space hit spheres for an 8 m Strider mech (mech_scale = 2.0, origin at feet).
+## Local-space hit spheres of the Strider (origin at its feet, -z forward; the 11.7 m model at game scale). Refitted
+## 2026-11-24 (Strider hit volumes) like the Bulwark's: a greedy cover of its visible meshes in the standing rest pose,
+## symmetric, the pilot heads' samples of every catalog head overlaid (one head set fits all five; only the dog's ears
+## are CHASSIS_HEAD_EXTRA), numbers in tests/test_chassis_body.gd. The FIRST sphere is the aim centre
+## (enemies aim at it), inside the egg hull. Then the hull, back plate, shoulder pods, nose and pelvis (torso, one hull: no
+## new component id), the pilot (head), and each reverse-knee leg's thigh / knee, shin, tarsus, heel and toes. The old
+## four spheres (torso 4.4 m up r 2.05, head 7.1 m, legs 2.0 m) were sized for an ~8 m model: the upper hull, back plate
+## and pilot sat above them (72 % of shots at the visible body passed through).
 const BODY_SPHERES := [
-	{"component": "torso", "center": Vector3(0.0, 4.4, 0.0), "radius": 2.05},
-	{"component": "head", "center": Vector3(0.0, 7.1, -0.75), "radius": 0.95},
-	{"component": "leg_l", "center": Vector3(-1.35, 2.0, 0.0), "radius": 1.15},
-	{"component": "leg_r", "center": Vector3(1.35, 2.0, 0.0), "radius": 1.15},
+	{"component": "torso", "center": Vector3(0.0, 6.94, -0.29), "radius": 1.0},     # the aim centre (inside the hull)
+	{"component": "torso", "center": Vector3(0.47, 10.6, 0.4), "radius": 0.5},      # back plate
+	{"component": "torso", "center": Vector3(-0.47, 10.6, 0.4), "radius": 0.5},
+	{"component": "torso", "center": Vector3(0.52, 9.76, 0.2), "radius": 0.5},
+	{"component": "torso", "center": Vector3(-0.52, 9.76, 0.2), "radius": 0.5},
+	{"component": "torso", "center": Vector3(0.42, 8.18, 0.2), "radius": 1.25},     # egg hull
+	{"component": "torso", "center": Vector3(-0.42, 8.18, 0.2), "radius": 1.25},
+	{"component": "torso", "center": Vector3(0.52, 7.17, -0.89), "radius": 1.85},
+	{"component": "torso", "center": Vector3(-0.52, 7.17, -0.89), "radius": 1.85},
+	{"component": "torso", "center": Vector3(0.41, 7.14, 0.89), "radius": 1.7},
+	{"component": "torso", "center": Vector3(-0.41, 7.14, 0.89), "radius": 1.7},
+	{"component": "torso", "center": Vector3(2.1, 7.2, 0.36), "radius": 0.9},       # shoulder pods
+	{"component": "torso", "center": Vector3(-2.1, 7.2, 0.36), "radius": 0.9},
+	{"component": "torso", "center": Vector3(0.0, 6.27, -2.38), "radius": 1.1},     # nose
+	{"component": "torso", "center": Vector3(1.58, 5.9, -0.37), "radius": 0.6},     # under the pods
+	{"component": "torso", "center": Vector3(-1.58, 5.9, -0.37), "radius": 0.6},
+	{"component": "torso", "center": Vector3(1.9, 5.86, -1.3), "radius": 0.4},
+	{"component": "torso", "center": Vector3(-1.9, 5.86, -1.3), "radius": 0.4},
+	{"component": "torso", "center": Vector3(0.0, 4.93, -0.47), "radius": 0.9},     # pelvis
+	{"component": "torso", "center": Vector3(0.0, 4.93, 0.58), "radius": 0.9},
+	{"component": "torso", "center": Vector3(0.42, 4.73, 0.11), "radius": 1.0},
+	{"component": "torso", "center": Vector3(-0.42, 4.73, 0.11), "radius": 1.0},
+	{"component": "torso", "center": Vector3(1.39, 4.64, -0.23), "radius": 0.7},    # hip sockets
+	{"component": "torso", "center": Vector3(-1.39, 4.64, -0.23), "radius": 0.7},
+	{"component": "head", "center": Vector3(0.0, 10.1, -1.2), "radius": 1.25},      # the pilot on the nose
+	{"component": "head", "center": Vector3(0.0, 9.18, -1.18), "radius": 1.0},
+	{"component": "head", "center": Vector3(0.0, 9.87, -2.75), "radius": 0.5},      # beak / bill / snout
+	{"component": "leg_l", "center": Vector3(-1.51, 3.52, 0.67), "radius": 1.25},   # thigh / knee
+	{"component": "leg_l", "center": Vector3(-1.25, 2.34, 1.09), "radius": 0.7},
+	{"component": "leg_l", "center": Vector3(-1.31, 1.33, 0.1), "radius": 0.6},     # shin
+	{"component": "leg_l", "center": Vector3(-0.66, 1.24, -2.13), "radius": 1.4},   # tarsus / foot
+	{"component": "leg_l", "center": Vector3(-1.38, 0.29, -0.46), "radius": 0.7},
+	{"component": "leg_l", "center": Vector3(-1.33, -0.03, 0.73), "radius": 0.7},   # heel / spur
+	{"component": "leg_l", "center": Vector3(-2.36, 0.47, -1.34), "radius": 0.5},   # outer toe
+	{"component": "leg_l", "center": Vector3(-2.42, 0.11, -1.99), "radius": 0.3},
+	{"component": "leg_r", "center": Vector3(1.51, 3.52, 0.67), "radius": 1.25},
+	{"component": "leg_r", "center": Vector3(1.25, 2.34, 1.09), "radius": 0.7},
+	{"component": "leg_r", "center": Vector3(1.31, 1.33, 0.1), "radius": 0.6},
+	{"component": "leg_r", "center": Vector3(0.66, 1.24, -2.13), "radius": 1.4},
+	{"component": "leg_r", "center": Vector3(1.38, 0.29, -0.46), "radius": 0.7},
+	{"component": "leg_r", "center": Vector3(1.33, -0.03, 0.73), "radius": 0.7},
+	{"component": "leg_r", "center": Vector3(2.36, 0.47, -1.34), "radius": 0.5},
+	{"component": "leg_r", "center": Vector3(2.42, 0.11, -1.99), "radius": 0.3},
 ]
+## The Strider's weapon hardpoint spheres (2026-11-24 refit, one per hardpoint, symmetric; fitted to the default loadout's
+## weapons on their mounts: the side guns hang 2.8 m out, 5.9 m up beside the hips, the shoulder pylons carry their
+## weapon 9.8 m up, the back mount's equipment rises from 8.2 m behind the back plate).
 const HARDPOINT_SPHERES := {
-	"side_l": {"center": Vector3(-2.8, 4.2, -0.6), "radius": 0.85},
-	"side_r": {"center": Vector3(2.8, 4.2, -0.6), "radius": 0.85},
-	"shoulder_l": {"center": Vector3(-1.9, 6.8, 0.4), "radius": 0.85},
-	"shoulder_r": {"center": Vector3(1.9, 6.8, 0.4), "radius": 0.85},
-	"back": {"center": Vector3(0.0, 5.8, 1.8), "radius": 0.95},
+	"side_l": {"center": Vector3(-2.79, 5.94, -0.64), "radius": 1.0},
+	"side_r": {"center": Vector3(2.79, 5.94, -0.64), "radius": 1.0},
+	"shoulder_l": {"center": Vector3(-2.15, 9.8, 0.62), "radius": 1.2},
+	"shoulder_r": {"center": Vector3(2.15, 9.8, 0.62), "radius": 1.2},
+	"back": {"center": Vector3(0.0, 10.39, 1.38), "radius": 1.0},
 }
 ## Other chassis' weapon hardpoint spheres (same frame; a chassis not listed uses HARDPOINT_SPHERES). The Bulwark
 ## (2026-11-24, Bulwark weapons): its side guns pivot 3.57 m out, 6.4 m up, 2.9 m ahead of the origin and reach ~1.5 m
@@ -66,6 +117,9 @@ const CHASSIS_HARDPOINT_SPHERES := {
 		"side_r": {"center": Vector3(3.57, 6.3, -3.7), "radius": 0.9},
 		"back_l": {"center": Vector3(-2.16, 7.6, 2.0), "radius": 0.95},
 		"back_r": {"center": Vector3(2.16, 7.6, 2.0), "radius": 0.95},
+		# PROTOTYPE belly turret (2026-11-25, docs/design/bulwark-effectiveness.md): its gun pivots 2.6 m up, 1.26 m ahead
+		# under the keel and reaches ~3 m further forward; the sphere sits on the gun's front half.
+		"belly": {"center": Vector3(0.0, 2.6, -2.2), "radius": 0.9},
 	},
 }
 ## Other chassis' body spheres (same frame; a chassis not listed uses BODY_SPHERES). The FIRST sphere of a list is the
@@ -124,8 +178,16 @@ const CHASSIS_BODY_SPHERES := {
 ## head id is spawn data like the chassis). The Bulwark's head spheres fit the chicken / pickle / corn; the duck's bill
 ## and the dog's snout and ears reach further.
 const CHASSIS_HEAD_EXTRA := {
+	"strider": {   # the Strider's head spheres hold every pilot but the dog, whose ears stick out sideways
+		"dog": [{"component": "head", "center": Vector3(-1.34, 10.25, -1.12), "radius": 0.5},
+			{"component": "head", "center": Vector3(1.34, 10.25, -1.12), "radius": 0.5}],
+	},
 	"bulwark": {
 		"duck": [{"component": "head", "center": Vector3(0.0, 7.35, -1.85), "radius": 0.6}],
+		# the corn's leaves stand out sideways past the head spheres (2026-11-25: 6.8 % of head shots missed with the belly
+		# gun mounted, which shadows the rays from below and leaves mostly the side shots in the sample)
+		"corn": [{"component": "head", "center": Vector3(-1.1, 7.15, -0.25), "radius": 0.6},
+			{"component": "head", "center": Vector3(1.1, 7.15, -0.25), "radius": 0.6}],
 		"dog": [{"component": "head", "center": Vector3(0.0, 7.35, -1.85), "radius": 0.6},
 			{"component": "head", "center": Vector3(-1.15, 7.75, -0.25), "radius": 0.6},
 			{"component": "head", "center": Vector3(1.15, 7.75, -0.25), "radius": 0.6}],
@@ -133,16 +195,18 @@ const CHASSIS_HEAD_EXTRA := {
 }
 ## Other chassis' component HP (a chassis not listed uses COMPONENT_HP). Same component ids on every chassis (the codec,
 ## the HUD, the revive / repair logic know them); hardpoints are WEAPON_HP on every chassis. The Bulwark (heavy, 55 t
-## vs 38 t): +40 % core HP (1260 vs 900) for a hull and legs that present about twice the Strider's area; the pilot's
-## head stays 100 (same pilot, sunk in a well: a smaller target than the Strider's).
+## vs 38 t): armoured, 2.1x the Strider's core HP (1890 vs 900): the 1.4x it had (torso 600, legs 280, head 100) times
+## the 1.5 armour the user picked on 2026-11-25 (docs/design/bulwark-effectiveness.md option C4, measured as every core
+## component x1.5, the head included) for a hull and legs that present about twice the Strider's area and are hit 2.5-5x
+## as often.
 const CHASSIS_COMPONENT_HP := {
-	"bulwark": {"torso": 600.0, "leg_l": 280.0, "leg_r": 280.0, "head": 100.0},
+	"bulwark": {"torso": 900.0, "leg_l": 420.0, "leg_r": 420.0, "head": 150.0},
 }
 ## Where an enemy looks when a low wall hides a mech's torso (EnemyBase._sight_offset): m from the aim centre (the first
 ## body sphere) up to the head and down to the legs along the mech's up, and `legs_side` m along its right (the
 ## Bulwark's legs hang 3.4 m out under its pods: straight down from the hull's centre is the gap between them).
 const CHASSIS_SIGHT := {
-	"strider": {"head_up": 2.6, "legs_down": 2.3, "legs_side": 0.0},
+	"strider": {"head_up": 3.1, "legs_down": 3.4, "legs_side": 1.5},   # head 10 m up; a thigh / knee 3.5 m up, 1.5 m out
 	"bulwark": {"head_up": 2.4, "legs_down": 3.8, "legs_side": 3.4},   # head 7.4 m up; a shin 1.2 m up, 3.4 m out
 }
 
@@ -165,9 +229,9 @@ var revived_by := ""              ## the shooter whose drone beam is reviving / 
 var auto_respawn_delay := -1.0    ## TEST / LAB HOOK: >= 0 = the old instant respawn this many s after going down
 var on_respawn: Callable
 var chassis := "strider"          ## the bound mech's chassis (its hit spheres, component HP, sight offsets come from it)
-var sight_head_up := 2.6          ## CHASSIS_SIGHT of the chassis (EnemyBase._sight_offset)
-var sight_legs_down := 2.3
-var sight_legs_side := 0.0
+var sight_head_up := 3.1          ## CHASSIS_SIGHT of the chassis (EnemyBase._sight_offset)
+var sight_legs_down := 3.4
+var sight_legs_side := 1.5
 var _respawn_left := -1.0
 var _beamed := false              ## a drone beam reached it since the last tick (one beam per step counts)
 
@@ -238,7 +302,7 @@ static func sight(chassis_id: String) -> Dictionary:
 
 
 ## The vertical capsule round a chassis' body spheres: {r: the farthest sphere edge from the up axis, hi: the highest
-## sphere top} (m). BotFireGuard's crew capsule for a chassis other than the Strider (whose guard numbers predate this).
+## sphere top} (m). BotFireGuard's crew capsule for every chassis (the Strider: r 3.6, top 11.35 m).
 static func body_extent(chassis_id: String) -> Dictionary:
 	var r := 0.0
 	var hi := 0.0
@@ -247,12 +311,6 @@ static func body_extent(chassis_id: String) -> Dictionary:
 		r = maxf(r, Vector2(c.x, c.z).length() + float(s["radius"]))
 		hi = maxf(hi, c.y + float(s["radius"]))
 	return {"r": r, "hi": hi}
-
-
-## The local centre of a hardpoint's hit sphere on a chassis (Vector3.ZERO for a hardpoint it does not have).
-static func hardpoint_center(chassis_id: String, hp_id: String) -> Vector3:
-	var s: Dictionary = hardpoint_spheres(chassis_id).get(hp_id, {})
-	return s.get("center", Vector3.ZERO)
 
 
 ## The hardpoint ids of a chassis that carry back equipment (MechCatalog mount "back": the Strider's "back", the
@@ -290,7 +348,8 @@ func _setup_components(loadout: Dictionary, chassis_id: String = "strider", head
 
 
 ## The world-space offsets from the aim centre an enemy tries when low cover hides the torso: [head, legs]. The Strider:
-## [up * 2.6, -up * 2.3] (EnemyBase's old constants).
+## [up * 3.1, -up * 3.4 + right * 1.5] (its pilot's head, its right thigh; EnemyBase's LOS_* constants were the old
+## ~8 m Strider's and now only serve targets that are no PlayerTarget).
 func sight_offsets() -> Array:
 	var right := global_basis.x.normalized() if is_inside_tree() else transform.basis.x.normalized()
 	return [up * sight_head_up, -up * sight_legs_down + right * sight_legs_side]
@@ -321,10 +380,15 @@ func apply_damage(amount: float, component: String, src: String) -> void:
 	if amount <= 0.0 or hp.is_empty() or disabled or invuln_left > 0.0:
 		return
 	var c := component if hp.has(component) else "torso"
+	if not c in CORE_COMPONENTS and float(hp[c]) <= 0.0:
+		c = "torso"      # a destroyed hardpoint: its wreck stays on the model (and its sphere), the hull it hangs on takes it
 	var before := float(hp[c])
-	hp[c] = maxf(before - amount, 0.0)
-	damaged.emit(amount, c, src)
-	if before > 0.0 and float(hp[c]) <= 0.0:
+	var dealt := minf(amount, before)   # `damaged` reports the HP removed; overkill does not spill
+	if dealt <= 0.0:
+		return
+	hp[c] = before - dealt
+	damaged.emit(dealt, c, src)
+	if float(hp[c]) <= 0.0:
 		player_component_destroyed.emit(c)
 		if c in CORE_COMPONENTS and not disabled:
 			_clear_down()
@@ -335,9 +399,15 @@ func apply_damage(amount: float, component: String, src: String) -> void:
 
 
 ## Damage from a touchdown at `speed` m/s down: {"leg": HP to each leg, "torso": HP} (zeros at or below the threshold).
-static func fall_damage(speed: float) -> Dictionary:
-	var leg := minf(maxf(speed - FALL_DAMAGE_SPEED, 0.0) * FALL_LEG_PER_MS, float(COMPONENT_HP["leg_l"]) * FALL_LEG_MAX)
-	var torso := maxf(speed - FALL_TORSO_SPEED, 0.0) * FALL_TORSO_PER_MS
+## The FALL_* rates are the Strider's (legs 200, torso 400); another chassis loses the same SHARE of its own component HP
+## (component_hp(chassis_id)) for the same impact speed, capped at FALL_LEG_MAX of its own leg.
+static func fall_damage(speed: float, chassis_id: String = "strider") -> Dictionary:
+	var caps := component_hp(chassis_id)
+	var leg_max := float(caps["leg_l"])
+	var leg_k := leg_max / float(COMPONENT_HP["leg_l"])
+	var torso_k := float(caps["torso"]) / float(COMPONENT_HP["torso"])
+	var leg := minf(maxf(speed - FALL_DAMAGE_SPEED, 0.0) * FALL_LEG_PER_MS * leg_k, leg_max * FALL_LEG_MAX)
+	var torso := maxf(speed - FALL_TORSO_SPEED, 0.0) * FALL_TORSO_PER_MS * torso_k
 	return {"leg": leg, "torso": torso}
 
 
@@ -345,7 +415,7 @@ static func fall_damage(speed: float) -> Dictionary:
 func _on_hard_landing(speed: float, _severity: float) -> void:
 	if mech == null or mech.puppet or disabled:
 		return
-	var d := fall_damage(speed)
+	var d := fall_damage(speed, chassis)
 	if float(d["leg"]) <= 0.0:
 		return
 	apply_damage(float(d["leg"]), "leg_l", "fall")
@@ -394,9 +464,7 @@ func tick(dt: float, _space: PhysicsDirectSpaceState3D = null) -> void:
 		if _respawn_left <= 0.0:
 			var t := down_time
 			repair_all()
-			if mech != null:
-				mech.heat = 0.0
-				mech.shutdown = false
+			vent_heat()
 			if on_respawn.is_valid():
 				on_respawn.call()
 			player_respawned.emit(t, false)
@@ -458,7 +526,6 @@ func start_redeploy() -> void:
 	redeploy_left = DownedRules.RESPAWN_PENALTY
 	respawn_hold = 0.0
 	revive_progress = 0.0
-	redeploy_started.emit(down_time)
 
 
 ## The penalty is over: every component at RESPAWN_STRUCTURE, heat 0, placed by on_respawn. Ammo unchanged. A death.
@@ -533,9 +600,9 @@ func rebuild_destroyed(fraction: float, src: String) -> Array[String]:
 	return out
 
 
-## Heat to zero and any heat shutdown cleared, on the bound mech's gauge (and this target's own).
+## Heat to zero and any heat shutdown cleared, on the bound mech's gauge (and this target's own). Through the mech's verb
+## MechController.reset_heat (ends a shutdown with `rebooted`, so the HUD / audio / bot see the reboot).
 func vent_heat() -> void:
 	heat.reset()
 	if mech != null and is_instance_valid(mech):
-		mech.heat = 0.0
-		mech.shutdown = false
+		mech.reset_heat()

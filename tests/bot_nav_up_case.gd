@@ -1,6 +1,7 @@
 extends TestCase
-## Shared body of test_bot_nav_up*: the mission bot gets back UP a deck. Solo stack mission, `--dev-fast-clear`; deck
-## 0's enemies are killed outright so the objective is "clear deck 1"; the bot's mech is then put on deck 2 (as after an
+## Shared body of test_bot_nav_up*: the mission bot gets back UP a deck. Solo stack mission in the real objectives mode
+## with the forced all-sweep plan (bot_nav_case.gd PLAN), `--dev-fast-clear`; deck 0's enemies are killed outright so
+## the objective is deck 1's sweep; the bot's mech is then put on deck 2 (as after an
 ## unplanned drop). Checked within LIMIT s: it goes 2 -> 1 the expected way: by ramp (BotRoutePlanner ramp legs walked
 ## foot to top; no DEV travel, no jump), or on a lift-only seed by DEV travel (no ramp up; lifts don't move yet), with no
 ## unplanned deck change.
@@ -20,12 +21,14 @@ func setup() -> void:
 	TestDrive.solo_launch = {"seed": seed_n, "mode": TestDrive.MODE_STACK}
 	TestDrive.bot_profile = "veteran"
 	TestDrive.dev_bot_travel = dev
+	MissionFlow.test_plan = load("res://tests/bot_nav_case.gd").get_script_constant_map()["PLAN"]
 	CombatWorld.dev_enemy_damage = TestDrive.DEV_FAST_CLEAR
 	Engine.time_scale = float(load("res://tests/bot_nav_case.gd").call("speed"))   # the same test speed (2x)
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	add_child(td)
 	await frames(4)
-	if not check(td.bot != null and td.stack != null and td.mission != null, "the solo stack drive runs the mission bot"):
+	if not check(td.bot != null and td.stack != null and td.mission != null and td.mission.plan != null,
+			"the solo stack drive runs the mission bot on the plan"):
 		_restore()
 		finish()
 		return
@@ -36,11 +39,13 @@ func setup() -> void:
 					break
 				e.apply_damage(1.0e7, e.core_component(), "test")
 	var rules := td.mission.rules
+	var deck1 := str(td.mission.plan.primary(1)["id"])
+	eq(str(td.mission.plan.primary(0)["type"]), "sweep", "deck 0's primary is the forced sweep")
 	var waited := 0
-	while rules.current() != "clear_1" and waited < 120:
+	while rules.current() != deck1 and waited < 120:
 		await get_tree().physics_frame
 		waited += 1
-	eq(rules.current(), "clear_1", "deck 0 is cleared, the objective is deck 1")
+	eq(rules.current(), deck1, "deck 0 is cleared, the objective is deck 1's sweep")
 	# Onto deck 2's arterial, standing.
 	var st := td.stack
 	var p := st.from_deck_arc(2, -45.0, 0.0, CityPlan.CURB_H + 0.3)
@@ -79,3 +84,4 @@ func _restore() -> void:
 	TestDrive.bot_profile = ""
 	TestDrive.dev_bot_travel = false
 	CombatWorld.dev_enemy_damage = 1.0
+	MissionFlow.test_plan = {}

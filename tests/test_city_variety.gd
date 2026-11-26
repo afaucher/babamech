@@ -26,13 +26,16 @@ const OLD_SECTION := {"1/0": "b56cf7ca1dc507da", "1/1": "5623a329a48debcb", "1/2
 ## Recaptured 2026-11-23 (map sealed: a portal's recess gets a back plate, CityDistrict._col_walls): section 4 deck 0 has
 ## a portal, so one shape more; with the plates left out it is exactly the old capture (PRE_PLATE_4_0, asserted in part A).
 ## Was "4/0": [1431, 214513608]; LIVE_COLLISION_4_0 was [1439, 2766744305].
-const OLD_COLLISION := {"alone/1": [420, 3589553106], "4/0": [1432, 4221422576]}
-const PRE_PLATE_4_0 := [1431, 214513608]
+## Recaptured 2026-11-26 (ramp-end collision, tests/test_ramp_stuck.gd: parapets as prisms ending square to the deck, end
+## blocks CityDistrict.END_GUARD tall; same shape count). Was "4/0" [1432, 4221422576], PRE_PLATE_4_0 [1431, 214513608],
+## LIVE_COLLISION_4_0 [1440, 1007613211].
+const OLD_COLLISION := {"alone/1": [420, 3589553106], "4/0": [1432, 488446493]}
+const PRE_PLATE_4_0 := [1431, 3909610205]
 ## The same decks with the section's DEFAULT road forms (live), alleys off: captured 2026-11-23 (forms live).
 const LIVE_SECTION := {"1/0": "05a41d02d7e663dc", "1/1": "f94db9991bff3b73", "1/2": "66e58606d4bbe979",
 		"4/0": "93d0af293cbfd45c", "4/1": "531d6817a20610db", "4/2": "7122f53dca9b5d32"}
 ## Section 4 deck 0, alleys off, forms live: 8 more boxes than OLD_COLLISION["4/0"] (its courts' / bands' raised ground).
-const LIVE_COLLISION_4_0 := [1440, 1007613211]
+const LIVE_COLLISION_4_0 := [1440, 3940746585]
 
 
 ## Section seed s with its road forms explicitly off (every segment a street: the plan before part C).

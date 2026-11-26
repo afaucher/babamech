@@ -26,6 +26,7 @@ func setup() -> void:
 	_flee_check()
 	_rider_check()
 	_wreck_checks()
+	_wreck_riders_check()
 	_queue_check()
 	_two_instances()
 	_snapshot_check()
@@ -569,5 +570,111 @@ func _snapshot_check() -> void:
 		if _signature(a, a.now + dt) != _signature(b, a.now + dt):
 			diff += 1
 	eq(diff, 0, "a restored fleet moves exactly like the original")
+	# A peer's malformed buffer (2026-11-25, audit): the broken part is cleared, nothing is read past the end, no loop or
+	# allocation by its counts. Stand-alone layout: [u32 crowd length][crowd][fleet].
+	check(not a.fleet.wrecks.is_empty(), "malformed: the busy snapshot has wrecks")
+	var cn := bytes.decode_u32(0)
+	var bad := {}
+	var huge := bytes.duplicate()
+	huge.encode_u32(0, 0xFFFFFFFF)
+	bad["an oversized crowd length"] = [huge, "fleet"]
+	bad["a truncated buffer"] = [bytes.slice(0, bytes.size() - 5), "fleet"]
+	var crowd_count := bytes.duplicate()
+	crowd_count.encode_u16(4 + 1 + 8, 0xFFFF)       # the crowd's first count (by_src)
+	bad["an oversized crowd count"] = [crowd_count, "crowd"]
+	var fleet_count := bytes.duplicate()
+	fleet_count.encode_u16(4 + cn + 1, 0xFFFF)      # the fleet's first count (locks)
+	bad["an oversized fleet count"] = [fleet_count, "fleet"]
+	for what: String in bad:
+		b.restore(bytes)
+		b.restore(bad[what][0])
+		if bad[what][1] == "fleet":
+			check(b.fleet.wrecks.is_empty() and b.fleet.unloads.is_empty() and b.fleet.episodes.is_empty(), "malformed: %s clears the fleet" % what)
+		else:
+			check(b.crowd.dead.is_empty() and b.crowd.recs.is_empty(), "malformed: %s clears the crowd" % what)
+	b.restore(bytes)
+	eq(b.snapshot().hex_encode(), bytes.hex_encode(), "malformed: a good snapshot after them restores as before")
+	var tram := LifeTram.new()
+	tram.restore(PackedByteArray([LifeTram.SNAP_VERSION, 0xFF, 0xFF]))
+	eq(tram.episodes.size(), 0, "malformed: a tram snapshot claiming 65535 episodes with none in it is ignored")
 	a.queue_free()
 	b.queue_free()
+
+
+## A pod wrecked while its passengers are still getting out (2026-11-25, audit: life_fleet.gd wreck / _episode): the one
+## already out lives on, the one still aboard dies inside (counted once, never seen), and a pod that let its passengers
+## out never lets anyone out again (a later threat on the same lap took the timetable's riders out a second time).
+func _wreck_riders_check() -> void:
+	var life := _life()
+	var v := -1
+	var t := 1800.0
+	while t < 2600.0 and v < 0:
+		life.advance_to(t)
+		for k in life.vehicle_count():
+			if life.vehicle_kind(k) == "pod" and life.vehicle_state(k) == "driving" and life.traffic.riders(k, t) == 2 \
+					and float(life.fleet.pose(k, t)["v"]) > 3.0:
+				v = k
+				break
+		t += 1.0
+	if not check(v >= 0, "riders: a pod with two passengers driving"):
+		life.queue_free()
+		return
+	var T := life.now
+	var q0 := life.fleet.pose(v, T)
+	life.raise_threat(_world(float(q0["x"]), float(q0["s"]), 1.0), 15.0, 2)
+	var a := _anchor(life, v)
+	if not check(int(a.get("riders", 0)) == 2 and float(a.get("doors", -1.0)) > T, "riders: both get a rider slot (%d)" % int(a.get("riders", 0))):
+		life.queue_free()
+		return
+	var doors := float(a["doors"])
+	var r0 := int(a["rider0"])
+	eq(int(life.fleet.unloads.get(v, {}).get("riders", -1)), 2, "riders: the unload is kept beside the episode")
+	life.advance_to(doors + 0.2)             # the first is out, the second still aboard (out at doors + 0.4)
+	var killed0 := int(life.tally()["occupants_killed"])
+	life._decide_wreck(v, Vector2(0.0, 1.0), 4, 0, 0.5)
+	eq(life.vehicle_state(v), "wreck", "riders: the pod is a wreck")
+	eq(int(life.tally()["occupants_killed"]) - killed0, 1, "riders: the one still aboard dies inside, the one out does not")
+	var seen0 := false
+	var seen1 := false
+	var tt := doors + 0.2
+	while tt < doors + 8.0:
+		life.advance_to(tt)
+		seen0 = seen0 or life.visible_now(r0)
+		seen1 = seen1 or life.visible_now(r0 + 1)
+		tt += 0.1
+	check(seen0, "riders: the first passenger is outside")
+	check(not seen1, "riders: the one killed inside never steps out of the wreck")
+	# A second pod unloads, drives on after the restart, and is threatened again on the same lap: nobody gets out.
+	var w := -1
+	t = life.now + 5.0
+	while t < life.now + 700.0 and w < 0:
+		life.advance_to(t)
+		for k in life.vehicle_count():
+			if k != v and life.vehicle_kind(k) == "pod" and life.vehicle_state(k) == "driving" and life.traffic.riders(k, t) > 0 \
+					and float(life.fleet.pose(k, t)["v"]) > 3.0 and not life.fleet.unloads.has(k):
+				w = k
+				break
+		t += 1.0
+	if not check(w >= 0, "riders: a second occupied pod"):
+		life.queue_free()
+		return
+	var q1 := life.fleet.pose(w, life.now)
+	life.raise_threat(_world(float(q1["x"]), float(q1["s"]), 1.0), 15.0, 2)
+	check(life.fleet.unloads.has(w), "riders: the second pod unloads")
+	var used := life.crowd.riders_used
+	var lap := life.traffic.lap_index(w, life.now)
+	var again := -1.0
+	t = life.now + LifeFleet.RESTART + 2.0
+	while t < life.now + 200.0:
+		life.advance_to(t)
+		var q := life.fleet.pose(w, t)
+		if q["state"] == "driving" and not q["held"] and float(q["v"]) > 3.0:
+			again = t
+			break
+		t += 0.5
+	if check(again > 0.0, "riders: the second pod drives on after the restart"):
+		var q2 := life.fleet.pose(w, again)
+		var same_lap := life.traffic.lap_index(w, again) == lap and life.traffic.riders(w, again) > 0
+		life.raise_threat(_world(float(q2["x"]), float(q2["s"]), 1.0), 15.0, 2)
+		eq(life.crowd.riders_used, used, "riders: threatened again it lets nobody out (timetable lap %s)" % ("the same, still with riders" if same_lap else "moved on"))
+	life.queue_free()

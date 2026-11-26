@@ -24,6 +24,7 @@ func setup() -> void:
 	_audit_city_props()
 	_audit_city_districts()
 	_audit_hangar_bay()
+	await _audit_hangar_clamps()
 	finish()
 
 
@@ -141,6 +142,29 @@ func _audit_mech_meshes() -> void:
 	for part: String in BulwarkMeshes.all_parts():
 		var bst := _check_mesh_winding(BulwarkMeshes.mesh(part), "BulwarkMeshes.%s" % part)
 		eq(int(bst["open_edges"]), 0, "BulwarkMeshes.%s: watertight (0 open edges)" % part)
+	_audit_wasp_meshes()
+
+
+## The Wasp's parts (WaspMeshes): every one closed and outward-facing (chassis-rules 2.1, 9.1); it is seen from below (the
+## belly, the fan undersides, the legs) and from behind, so the underside facets exist: the hull has downward faces under
+## the belly, the fan ring under its duct; and no two different parts share a face plane where they meet (5.3: the
+## coaming's top over the hatch collar's foot, the pads' faces under their mounts are offset, not coplanar).
+func _audit_wasp_meshes() -> void:
+	for part: String in WaspMeshes.all_parts():
+		var st := _check_mesh_winding(WaspMeshes.mesh(part), "WaspMeshes.%s" % part)
+		eq(int(st["open_edges"]), 0, "WaspMeshes.%s: watertight (0 open edges)" % part)
+	for pair: Array in [["wasp_hull", -0.55], ["wasp_fan_ring", 0.11]]:
+		var down := 0
+		for tri: Dictionary in _triangles(WaspMeshes.mesh(pair[0])):
+			if (tri["n"] as Vector3).y < -0.7 and (tri["c"] as Vector3).y < float(pair[1]):
+				down += 1
+		check(down >= 8, "WaspMeshes.%s: has underside faces seen from below (%d)" % [pair[0], down])
+	# Coplanar checks at the seams that sit flush by design: the hatch collar's foot is 4 cm under the coaming's top; each
+	# mount's base is sunk 5-10 mm into its pad.
+	check(WaspMeshes.COAM_TOP - (WaspMeshes.HATCH_Y - 0.1) >= 0.004, "the hatch collar's foot is sunk into the coaming, not flush")
+	check(absf(WaspMeshes.COAM_TOP - (WaspMeshes.HATCH_Y + 0.1)) >= 0.004, "the coaming's top is not the hatch rim's plane")
+	var hull_top := (WaspMeshes.hull_at(WaspMeshes.HATCH_Z, 0.0)[0] as Vector3).y
+	check(WaspMeshes.HATCH_Y - 0.04 - hull_top >= 0.004, "the hatch's lid sits over the hull's top inside the coaming (%.3f)" % (WaspMeshes.HATCH_Y - 0.04 - hull_top))
 
 
 func _audit_enemy_meshes() -> void:
@@ -445,3 +469,150 @@ func _audit_hangar_bay() -> void:
 				near_wall = true
 	check(near_wall, "HangarBay: near bulkhead wall encloses z = NEAR_Z")
 	bay.queue_free()
+
+
+## The bay's clamps and brace arms with a Bulwark and a Strider in their alcoves (playtest backlog 6: the Bulwark's
+## clamps were 0.3 m stubs, and the brace pads shared a face with their sleeves), open, mid-swing and closed:
+##   - no clamp face is coplanar (within 1 mm, same facing, overlapping) with another clamp face or with a mech triangle
+##     (chassis rules 5.3: no z-fighting);
+##   - no mech vertex is inside a clamp box (the clamps never cut into a mech);
+##   - closed, every swinging clamp reaches at least ARM_MIN past its post face (no stubs), and the Bulwark's hold-down
+##     shoes rest just over its hip pods (HangarBay.HOLD_GAP).
+const ARM_MIN := 0.6
+const COPLANAR := 0.001
+
+func _audit_hangar_clamps() -> void:
+	var bay := HangarBay.new()
+	bay.own_environment = false
+	add_child(bay)
+	await get_tree().process_frame
+	bay.show_crew([{"head": "chicken", "chassis": "bulwark", "loadout": {}}, {"head": "dog", "chassis": "strider", "loadout": {}}])
+	await get_tree().process_frame
+	for m in bay.models:
+		m.time_scale = 0.0   # the pose fit_clamps measured (rest, no idle bob)
+	var mech_tris: Array = []   # per alcove: triangles in bay space
+	for i in 2:
+		var tris: Array = []
+		var stack: Array[Node] = [bay.models[i]]
+		while not stack.is_empty():
+			var n: Node = stack.pop_back()
+			stack.append_array(n.get_children())
+			var mi := n as MeshInstance3D
+			if mi == null or not (mi.mesh is ArrayMesh) or not mi.is_visible_in_tree():
+				continue
+			var t := HangarBay._to_space(mi, bay)
+			var flip := t.basis.determinant() < 0.0   # a mirrored part: keep the drawn facing
+			for tri: Dictionary in _triangles(mi.mesh as ArrayMesh):
+				var a := t * (tri["v0"] as Vector3)
+				var b := t * (tri["v1"] as Vector3)
+				var c := t * (tri["v2"] as Vector3)
+				tris.append([a, c, b] if flip else [a, b, c])
+		mech_tris.append(tris)
+	for phase: float in [0.0, 0.5, 1.0]:
+		bay.set_clamps(phase)   # clamp closedness (hangar v2: stored = closed, Launch opens them)
+		for i in 2:
+			var tag := "hangar clamps %s k=%.1f" % [bay.models[i].chassis_id, phase]
+			var boxes: Array = []   # [transform (bay space, unit box scaled to size), size, node]
+			for mi in bay.clamp_meshes(i):
+				boxes.append([HangarBay._to_space(mi, bay), (mi.mesh as BoxMesh).size, mi])
+			var region := AABB()
+			for b: Array in boxes:
+				var bb := (b[0] as Transform3D) * AABB(-(b[1] as Vector3) * 0.5, b[1] as Vector3)
+				region = bb if region.size == Vector3.ZERO else region.merge(bb)
+			region = region.grow(0.05)
+			var near: Array = []
+			for tri: Array in mech_tris[i]:
+				if region.has_point(tri[0]) or region.has_point(tri[1]) or region.has_point(tri[2]):
+					near.append(tri)
+			var coplanar := 0
+			var inside := 0
+			for a in boxes.size():
+				var fa := _box_faces(boxes[a][0], boxes[a][1])
+				for b in range(a + 1, boxes.size()):
+					for f: Dictionary in fa:
+						for g: Dictionary in _box_faces(boxes[b][0], boxes[b][1]):
+							if _faces_coplanar(f, g):
+								coplanar += 1
+								print("%s: coplanar %s / %s" % [tag, (boxes[a][2] as Node).get_path(), (boxes[b][2] as Node).get_path()])
+				var inv := (boxes[a][0] as Transform3D).affine_inverse()
+				var half := (boxes[a][1] as Vector3) * 0.5 - Vector3.ONE * 0.002
+				for tri: Array in near:
+					for f: Dictionary in fa:
+						if _tri_on_face(tri, f):
+							coplanar += 1
+					for v: Vector3 in tri:
+						var l := inv * v
+						if absf(l.x) < half.x and absf(l.y) < half.y and absf(l.z) < half.z:
+							inside += 1
+			eq(coplanar, 0, "%s: no coplanar clamp faces (z-fighting)" % tag)
+			eq(inside, 0, "%s: no mech vertex inside a clamp" % tag)
+	# Closed: every swinging clamp reaches ARM_MIN past its post; the Bulwark's shoes rest over its hip pods.
+	for i in 2:
+		var tag := "hangar clamps %s closed" % bay.models[i].chassis_id
+		var cx := float(HangarBay.ALCOVE_X[i])
+		for c: Dictionary in bay._clamps:
+			var node: Node3D = c["node"]
+			if node.get_parent() != bay._clamp_roots[i] or c["kind"] != "clamp":
+				continue
+			var s: float = c["side"]
+			var box := HangarBay.mesh_box(node, bay)
+			var tip := -s * ((box.position.x if s > 0.0 else box.end.x) - (cx + s * HangarBay.ALCOVE_HALF))
+			check(tip >= ARM_MIN, "%s: the %s clamp reaches %.2f m past its post (at least %.2f)" % [tag, "right" if s > 0.0 else "left", tip, ARM_MIN])
+			if bay.models[i].chassis_id == "bulwark":
+				var pod := bay._hold_part(i, s)
+				var gap := box.position.y - pod.end.y
+				check(gap > 0.004 and gap < 0.08, "%s: the hold-down shoe rests %.3f m over the hip pod" % [tag, gap])
+				check(box.position.x < pod.get_center().x and box.end.x > pod.get_center().x, "%s: the pad is over the pod's middle" % tag)
+	bay.queue_free()
+
+
+## The six faces of a box (bay-space transform, size): centre, unit normal, half-extent axes u and v.
+static func _box_faces(t: Transform3D, size: Vector3) -> Array:
+	var out := []
+	for ax in 3:
+		for sg: float in [-1.0, 1.0]:
+			var e := Vector3.ZERO
+			e[ax] = sg * size[ax] * 0.5
+			var u := Vector3.ZERO
+			var v := Vector3.ZERO
+			u[(ax + 1) % 3] = size[(ax + 1) % 3] * 0.5
+			v[(ax + 2) % 3] = size[(ax + 2) % 3] * 0.5
+			out.append({"c": t * e, "n": (t.basis * (e / maxf(absf(e[ax]), 1e-9))).normalized(), "u": t.basis * u, "v": t.basis * v})
+	return out
+
+
+## Two faces in one plane (within COPLANAR), facing the same way, with overlapping area.
+static func _faces_coplanar(f: Dictionary, g: Dictionary) -> bool:
+	var n: Vector3 = f["n"]
+	if n.dot(g["n"]) < 0.999 or absf(((g["c"] as Vector3) - (f["c"] as Vector3)).dot(n)) > COPLANAR:
+		return false
+	var u: Vector3 = f["u"]
+	var v: Vector3 = f["v"]
+	var hu := u.length()
+	var hv := v.length()
+	var lo := Vector2(INF, INF)
+	var hi := Vector2(-INF, -INF)
+	for su: float in [-1.0, 1.0]:
+		for sv: float in [-1.0, 1.0]:
+			var p: Vector3 = (g["c"] as Vector3) + (g["u"] as Vector3) * su + (g["v"] as Vector3) * sv - (f["c"] as Vector3)
+			var q := Vector2(p.dot(u) / hu, p.dot(v) / hv)
+			lo = Vector2(minf(lo.x, q.x), minf(lo.y, q.y))
+			hi = Vector2(maxf(hi.x, q.x), maxf(hi.y, q.y))
+	return minf(hi.x, hu) - maxf(lo.x, -hu) > 1e-4 and minf(hi.y, hv) - maxf(lo.y, -hv) > 1e-4
+
+
+## A triangle lying on a box face (all three vertices within COPLANAR of its plane, facing the same way, its centroid on
+## the face).
+static func _tri_on_face(tri: Array, f: Dictionary) -> bool:
+	var n: Vector3 = f["n"]
+	var c: Vector3 = f["c"]
+	var tn := ((tri[2] as Vector3) - (tri[0] as Vector3)).cross((tri[1] as Vector3) - (tri[0] as Vector3))
+	if tn.length_squared() < 1e-12 or tn.normalized().dot(n) < 0.999:
+		return false
+	for p: Vector3 in tri:
+		if absf((p - c).dot(n)) > COPLANAR:
+			return false
+	var m: Vector3 = ((tri[0] as Vector3) + (tri[1] as Vector3) + (tri[2] as Vector3)) / 3.0 - c
+	var u: Vector3 = f["u"]
+	var v: Vector3 = f["v"]
+	return absf(m.dot(u)) <= u.length_squared() and absf(m.dot(v)) <= v.length_squared()

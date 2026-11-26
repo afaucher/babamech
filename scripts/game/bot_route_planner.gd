@@ -438,7 +438,7 @@ func _attach(k: int, p: Vector2, reverse: bool) -> Array:
 ## its lane; up on the ramp itself it does not).
 func plan(k0: int, p0: Vector2, k1: int, p1: Vector2, end_on_road: bool = false, h0: float = 0.0, _depth: int = 0) -> Array:
 	last_error = ""
-	if body_r > 2.2 + 0.01 and _depth < 2 and h0 >= 2.0:
+	if _depth < 2 and h0 >= 2.0:   # every chassis (was wide only: a Strider re-planned from the slope too, hold seed 6)
 		var on_ramp := _ramp_start(k0, p0, k1, p1, end_on_road, _depth)
 		if not on_ramp.is_empty():
 			return on_ramp
@@ -573,8 +573,8 @@ func plan(k0: int, p0: Vector2, k1: int, p1: Vector2, end_on_road: bool = false,
 	return out
 
 
-## WIDE CHASSIS standing ON a ramp (h0 >= 2 m over deck k0, inside a ramp part standing on k0): it cannot step off over
-## a parapet the way a Strider hops, so the route first follows the ramp's lane to an end (up to its mouth on the upper
+## ANY CHASSIS standing ON a ramp (h0 >= 2 m over deck k0, inside a ramp part standing on k0): it doesn't step off over
+## a parapet (a wide body can't; a Strider's hop off the slope stuck it between the parapets, hold seed 6), so the route first follows the ramp's lane to an end (up to its mouth on the upper
 ## deck when the goal is on a deck above, else down to its exit past the foot), as a "ramp" leg, and plans on from
 ## there. [] when p0 is on no ramp of deck k0 (or the rest has no way).
 func _ramp_start(k0: int, p0: Vector2, k1: int, p1: Vector2, end_on_road: bool, depth: int) -> Array:
@@ -635,6 +635,33 @@ func block_near(leg: Dictionary, p: Vector2) -> bool:
 		if int(edges[eid]["b"]) == int(e2["a"]) and edges[eid]["kind"] == e2["kind"]:
 			blocked[eid] = true
 	return true
+
+
+## A WEDGE (MissionBot._wedge_watch: the mech pushed without getting anywhere through two escapes at one spot): block
+## every walk or ramp edge of deck k that passes within `radius` m of `p` ((x, s) on deck k), both ways, so the next
+## plan routes round the spot (ramp mouths and landings too: a ramp edge's ends count on the deck they are on).
+## Returns how many edges it blocked (0: none near, e.g. a direct walk leg in the open).
+func block_around(k: int, p: Vector2, radius: float) -> int:
+	var n := 0
+	for eid in edges.size():
+		var e: Dictionary = edges[eid]
+		if blocked.has(eid) or not (e["kind"] in ["walk", "ramp"]):
+			continue
+		if int(e["from"]) != k and int(e["to"]) != k:
+			continue
+		var pts: Array = e["pts"]
+		var best := INF
+		for i in pts.size():
+			var a := on_deck(k, pts[i])
+			if i == 0:
+				best = minf(best, a.distance_to(p))
+				continue
+			var b := on_deck(k, pts[i - 1])
+			best = minf(best, Geometry2D.get_closest_point_to_segment(p, b, a).distance_to(p))
+		if best <= radius:
+			blocked[eid] = true
+			n += 1
+	return n
 
 
 ## WIDE CHASSIS: probe every walk edge in the built world (BotFit.line_fit: the capsule of radius r, height h, every

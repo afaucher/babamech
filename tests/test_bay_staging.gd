@@ -133,7 +133,6 @@ func _real_bay() -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = 1
-	td.objectives = true
 	add_child(td)
 	await frames(6)
 	td.drive_override = true

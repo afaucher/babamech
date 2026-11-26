@@ -40,7 +40,14 @@ if (-not (Test-Path (Join-Path $dataDir $rel))) {
 if (-not (Test-Path (Join-Path $dataDir $rel))) { Write-Host "Missing export templates: $dataDir\$rel" -ForegroundColor Red; exit 1 }
 
 $outDir = Join-Path $PSScriptRoot "build\windows"
-Stop-Process -Name $GameName -ErrorAction SilentlyContinue
+# Never kill a running babamech: this script starts none, and other sessions' windows (or a playtest of the last
+# build) may be running. If something still runs from build\windows (the exe about to be replaced), stop and say so.
+$running = @(Get-Process -Name $GameName -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -and ([IO.Path]::GetFullPath($_.Path)).StartsWith([IO.Path]::GetFullPath($outDir) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) })
+if ($running.Count -gt 0) {
+    Write-Host ("BUILD ABORTED: {0} is running from {1} (pid {2}); close it and build again." -f $GameName, $outDir, (($running | ForEach-Object { $_.Id }) -join ", ")) -ForegroundColor Red
+    exit 1
+}
 if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $exe = Join-Path $outDir "$GameName.exe"

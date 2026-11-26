@@ -26,8 +26,12 @@ extends Node
 ##            every SUMMARY_EVERY s of mission time: in / out = damage in this window, near = live enemies within
 ##            NEAR_RANGE m (nearest m, -1 none), combat = shot / hit / took damage within COMBAT_HOLD s (env damage:
 ##            falls, slams, doesn't count).
-## amt is the damage the target's verb was given (after its multipliers; overkill included: a 150 hit on a 100 HP head
-## logs 150).
+## amt is what the target's `damaged` reported. PlayerTarget / CombatTarget (and DepotTarget): the HP actually removed,
+## no overkill (a 150 hit on a 100 HP head logs 100; a hit that removes nothing emits no `damaged` and logs nothing, or
+## amt=0 with its heat_in for a heat-only hit); a hit on a player's destroyed hardpoint lands on the torso (comp=torso).
+## EnemyBase: after its component multiplier (weak points), NOT clamped (overkill included; a hit on a broken non-core
+## component reports its overflow_to_core share on the core). AssetTarget: the requested amount (it reports, never
+## subtracts). So in / out / taken_by / dealt_by totals are true HP lost for players and plain targets, raw for enemies.
 ##   end      outcome= reason= in= out= kills= est= taken_by=<kind>:<amt>,... dealt_by=<wpn>:<amt>,... hp_min= hp_min_mt=
 ##            core_min= core_min_mt= deaths= death_mt=a;b respawns= respawn_mt= downs= revives= revives_given= down_s=
 ##            combat_s= quiet_s= longest_combat=
@@ -46,8 +50,9 @@ extends Node
 ##            target when it fired): hits exact for pilots the host owns; for a client's pilot (the victim decides there)
 ##            hits=-1 hit=-1 est=1. dist = muzzle to the pilot.
 ##   threat   i= src=host|local eng=0|1 engaging= near= sees= seen_by= nearest= est=0|1 crew_i= crew_eng=0|1 deck= alive=
-##            tot= core= heat= rays= pilot= bot=0|1      1 Hz for the local pilot, and on the host for each hangar bot
+##            tot= core= heat= shut=0|1 rays= pilot= bot=0|1      1 Hz for the local pilot, and on the host for each hangar bot
 ##            (CrewBot: host-owned pilots, negative pilot ids; bot=1, pilot = its id; the local pilot's pilot = the peer).
+##            heat / shut: the pilot's MechController gauge (a bot's too, PilotTrack.controller: not its target's gauge).
 ##            i = intensity (PilotIntensity, 1.2): the host director's value from mission state `intensity` when present (src=host), else computed here (src=local).
 ##            eng = engaged (an enemy fired at the pilot, or was awake within 60 m with it as target, in the last 4 s);
 ##            engaging = such enemies; near = live enemies within THREAT_RANGE m; sees = awake ones among the LOS_RAYS
@@ -65,6 +70,8 @@ extends Node
 ##   release  wave= deck= src= size= kinds=<kind>:<n>,... reason=      (note_release, host)
 ##   scout    ev=started|cancelled|completed drone= deck=             (note_scout, host)
 ##   depot    ev=claim|grant|deny|empty depot= left=                  (note_depot, every machine for its own pilot)
+##   scale    from= to= reason=leave|state pilot= at=<shared clock>    the crew scale changed here (note_scale, every machine,
+##                                                                     at the host's `at`; MissionFlow._apply_scale)
 ## Values never contain spaces ("-" = empty). "In combat" counts the player's own shots (CombatWorld.fired), damage taken
 ## and damage dealt; enemy shots that miss are not seen by it (the `shot` records see them on the host).
 ##
@@ -79,7 +86,7 @@ extends Node
 ## pacing stats. p>e line of sight: at most LOS_RAYS rays per second (the nearest awake enemies within THREAT_RANGE, chosen
 ## at each threat tick), RAYS_PER_FRAME per physics step, through CombatWorld.shot_ray (the weapons' sight: same query,
 ## mech capsules excluded), enemy eye to pilot centre with the AI's own 2.6 m slack. No other raycasts.
-## Other systems call note_release / note_scout / note_depot / note_pace (static, no-ops when no log is running).
+## Other systems call note_release / note_scout / note_depot / note_pace / note_scale (static, no-ops when no log is running).
 ## Attached by TestDrive once its MissionFlow exists (attach); off with `--no-combat-log` (or `enabled = false`); never in
 ## the lab or a district drive (no mission). Starts when the mission is released (solo at once, crew at mission_go).
 
@@ -1017,13 +1024,14 @@ func _threat_for(tr: PilotTrack) -> void:
 	var est := _eng_est or not host_ai
 	rays_max_sec = maxi(rays_max_sec, tr.rays_sec)
 	var p := tr.pt()
-	var heat := _heat() if not tr.bot else (p.heat.fraction() if p.heat != null else 0.0)
+	var heat := _heat() if not tr.bot else tr.heat_frac()   # a bot's heat lives on its MechController (PilotTrack)
+	var shut := _shut() if not tr.bot else tr.shutdown()
 	var pilot := _pilot_no(tr)
 	_say("threat", ("i=%d src=%s eng=%d engaging=%d near=%d sees=%d seen_by=%d nearest=%.1f est=%d crew_i=%d crew_eng=%d"
-		+ " deck=%d alive=%d tot=%d core=%d heat=%.2f rays=%d pilot=%d bot=%d") % [roundi(tr.shown_intensity()), tr.i_src,
+		+ " deck=%d alive=%d tot=%d core=%d heat=%.2f shut=%d rays=%d pilot=%d bot=%d") % [roundi(tr.shown_intensity()), tr.i_src,
 		1 if _engaged(tid) else 0, engaging, near, sees, seen_by, nearest, 1 if est else 0, roundi(_crew_i),
-		1 if _crew_engaged() else 0, deck, alive, roundi(_tot_pct_of(p)), roundi(_core_pct_of(p)), heat, tr.rays_sec, pilot,
-		1 if tr.bot else 0])
+		1 if _crew_engaged() else 0, deck, alive, roundi(_tot_pct_of(p)), roundi(_core_pct_of(p)), heat, 1 if shut else 0,
+		tr.rays_sec, pilot, 1 if tr.bot else 0])
 	if not tr.cands.is_empty():
 		var parts := PackedStringArray()
 		for c: Array in tr.cands:
@@ -1197,6 +1205,14 @@ static func note_pace(deck: int, from: String, to: String, crew_i: float, reason
 	if c != null:
 		c._pace_api = true
 		c._say("pace", "deck=%d from=%s to=%s i=%d reason=%s" % [deck, _v(from), _v(to), roundi(crew_i), _v(reason)])
+
+
+## The crew scale changed on this machine (MissionFlow._apply_scale, every machine at the host's `at`): from -> to, why
+## (leave: a pilot left; state: learned from mission.state), the pilot who left (0 none), the shared-clock `at`.
+static func note_scale(from: int, to: int, reason: String, pilot: int, at: float) -> void:
+	var c := _running()
+	if c != null:
+		c._say("scale", "from=%d to=%d reason=%s pilot=%d at=%.3f" % [from, to, _v(reason), pilot, at])
 
 
 ## "tank:2,drone:1" from an Array of kinds (counted, first-seen order), a Dictionary kind -> n, or a String.

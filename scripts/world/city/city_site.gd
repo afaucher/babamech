@@ -22,7 +22,6 @@ var openings: Array[Rect2] = []
 var keep_clear: Array[Rect2] = []
 var floor_holes: Array[Rect2] = []
 var slab := 8.0
-var fixed := false     ## true: positions are imposed (a section), so streets must dodge them. False: a stub made to fit.
 
 
 ## A stand-in structure for a district planned on its own: one pillar per structural bay of `plan.p("pillar_bay")`,
@@ -80,7 +79,6 @@ static func stub(plan: CityPlan, avoid: int, park: int) -> CitySite:
 ## `section` is a SectionPlan (untyped here so the city code has no hard dependency on the section code).
 static func from_section(section: Object, deck: int, origin: Vector2, reach: Vector2) -> CitySite:
 	var site := CitySite.new()
-	site.fixed = true
 	site.slab = float(section.p("slab"))
 	var area := Rect2(-reach, reach * 2.0)
 	for q: Dictionary in section.pillars:
@@ -113,7 +111,6 @@ static func from_section(section: Object, deck: int, origin: Vector2, reach: Vec
 ## raw connector rects: CityPlan.for_deck cuts the cross roads out of them (they bridge a ramp's cut).
 static func for_deck(section: SectionPlan, deck: int) -> CitySite:
 	var site := CitySite.new()
-	site.fixed = true
 	site.slab = section.p("slab")
 	for q: Dictionary in section.pillars:
 		var id := int(q["id"])

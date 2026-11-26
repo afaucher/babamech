@@ -123,6 +123,14 @@ func cosmetic_seed() -> int:
 	return int(p("seed")) * 7919 + 104729
 
 
+## The base of the street props' layout streams (CityProps.layout: +1 street props, +2 roof units). GAMEPLAY, unlike the
+## looks above: props are host-arbitrated by index and stop shots, so their layout joins the load checksum
+## (CityStack.checksum). The same value as cosmetic_seed() (2026-11-25: named apart so that intent is visible; changing
+## either alone would move every prop).
+func props_seed() -> int:
+	return int(p("seed")) * 7919 + 104729
+
+
 func generate(overrides: Dictionary = {}, given: CitySite = null) -> void:
 	params = DEFAULTS.duplicate()
 	for k: String in overrides:
@@ -2278,11 +2286,15 @@ func _plan_alleys(eligible: Array[bool], by_block: Dictionary = {}) -> Dictionar
 		if _alley_lined(rect, along, bi, out, at):
 			# Move it off the neighbour's line if the block allows, else keep it only as the deck's one corridor (seeded).
 			var moved := false
+			# A pillar block's moved alley must itself keep off the cores, with full rows either side (as _alley_beside asks).
+			# (Until 2026-11-25 this compared _alley_beside's 0.5 m grid answer with c2 by ==; c2 = the block's middle + a
+			# 0.5 m step, and the middles lie off that grid, so it never held: over section seeds 1-20 and 403112 it was
+			# reached 4 times in 63 decks, held 0 times; checking c2 itself moves one alley, seed 13 deck 1.)
 			for sgn: float in [1.0, -1.0]:
 				var c2 := mid + sgn * snappedf(minf(room, w + 4.0), 0.5)
 				var r2 := _alley_rect(z, along, c2, w)
-				if absf(c2 - mid) >= 0.5 and not _alley_lined(r2, along, bi, out, at) \
-						and (not by_block.has(bi) or float(_alley_beside(z, by_block[bi], along, c2, w).get("c", INF)) == c2):
+				var beside := not by_block.has(bi) or (absf(c2 - mid) <= room + 0.001 and _alley_clear_of(z, by_block[bi], along, r2))
+				if absf(c2 - mid) >= 0.5 and not _alley_lined(r2, along, bi, out, at) and beside:
 					rect = r2
 					moved = true
 					break
@@ -2310,21 +2322,24 @@ func _alley_beside(z: Rect2, pls: Array, along: int, c: float, w: float) -> Dict
 	var t := ceilf(lo * 2.0) / 2.0
 	while t <= hi + 0.001:
 		var rect := _alley_rect(z, along, t, w)
-		var ok := absf(t - c) < best_d
-		for q: Dictionary in pls:
-			if not ok:
-				break
-			var core := _dt_core(q).grow(ALLEY_PILLAR)
-			if core.intersects(rect):
-				ok = false
-			# The core's row (the side it stands on) holds it whole, its apron clipped at the alley.
-			elif core.position[across] < z.position[across] or core.end[across] > z.end[across]:
-				ok = false
-		if ok:
+		if absf(t - c) < best_d and _alley_clear_of(z, pls, along, rect):
 			best = {"c": t, "rect": rect}
 			best_d = absf(t - c)
 		t += 0.5
 	return best
+
+
+## Whether an alley at `rect` keeps ALLEY_PILLAR off every core of `pls` and leaves each core's row (the side it stands
+## on) holding it whole, its apron clipped at the alley.
+func _alley_clear_of(z: Rect2, pls: Array, along: int, rect: Rect2) -> bool:
+	var across := 1 - along
+	for q: Dictionary in pls:
+		var core := _dt_core(q).grow(ALLEY_PILLAR)
+		if core.intersects(rect):
+			return false
+		if core.position[across] < z.position[across] or core.end[across] > z.end[across]:
+			return false
+	return true
 
 
 static func _alley_rect(z: Rect2, along: int, c: float, w: float) -> Rect2:

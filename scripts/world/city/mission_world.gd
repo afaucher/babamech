@@ -25,7 +25,6 @@ signal portal_event(kind: String, world_pos: Vector3)                   ## start
 ## open_at + OPENING (passable_after) and stays open `hold` s, then closes over CLOSE s.
 const WARN := 5.0            ## s of the silent "warn" state before open_at (the "warn" signal; a lift counts it down on its lamps)
 const OPENING := 3.0         ## s a gate's leaves take to open, from open_at (the reveal; the siren runs exactly this long)
-const GATE_OPEN := OPENING   ## (old name)
 const LIFT_OPEN := 1.5       ## s the lift doors take, from open_at
 const CLOSE := 2.0           ## s either takes to close
 const ALARM_LEAD := 0.0      ## s of siren before the leaves start to move (0: the siren is the opening signal; an order given earlier starts it at most this long before open_at)
@@ -46,7 +45,6 @@ const AIR_MARGIN := 1.6      ## m either side of the opening in that corridor
 const AIR_TIER_MAX := 20.0   ## m: a building taller than this blocks the corridor
 const AIR_HIDE := 7.0        ## m behind the wall plane air_door().hide lies
 const AIR_OUT := 8.0         ## m in front of the opening air_door().out lies
-const LIFT_POINT := 4.0     ## m in front of the lift door source_point() gives
 const FLAG_CLEAR := 2.5      ## m clear round a flag mast (snap)
 const ASSET_CLEAR := 3.5     ## m clear round the relay (snap)
 const DEFAULT_SNAP := 45.0   ## m a site may move to clear ground when neither the record nor MissionPlan says
@@ -208,18 +206,14 @@ func _c_plan() -> void:
 					continue
 				used[[d, "lift", bi]] = true
 				_queue.append(["lift %s" % str(id), _c_lift.bind(id, d, bi)])
-	# Air doors: derived from the stack itself (not the plan), one per end wall where a spot passes air_spot().
+	# Air doors: derived from the stack's plans (not the mission plan), one per end wall where a spot passes air_spot().
 	var air_holes := {}       # district -> {side: [hole]}
 	for k in (stack.decks.size() if stack != null else 0):
 		var d := stack.decks[k]
-		var signs := CitySigns.layout(d.plan, d.ring)
 		var ids: Array = []
-		for w: Dictionary in d.plan.boundary():
-			if int(w["side"]) < 2:
-				continue
-			var c := air_spot(d, w, signs)
-			if is_nan(c):
-				continue
+		for ad: Dictionary in air_doors(d.plan):
+			var w: Dictionary = ad["wall"]
+			var c := float(ad["c"])
 			var id := "air_d%d_%d" % [k, ids.size()]
 			ids.append(id)
 			var side := int(w["side"])
@@ -317,18 +311,54 @@ static func air_hole(c: float) -> Dictionary:
 			"fy0": AIR_SILL - MissionProps.GateDoor.AIR_LEDGE_T - 0.3, "fy1": AIR_HEAD + 1.8 + 0.3}
 
 
-## THE AIR DOOR PLACEMENT RULE (plan data and the deck's sign layout only: the same on every machine). On end wall w
-## (side 2 / 3) of district d, the spot `c` (along the wall, arc x) nearest the avenue's centre line (0 without a
-## section; candidates every 0.5 m, + before -) such that:
+## Keep-outs that the deck's lettering must fit inside (CitySigns: looks), so that air doors never depend on it. The
+## dependency points from looks to gameplay: tests/test_air_doors.gd checks every sign against these and every door.
+const GATE_SIGN_HALF := 6.5    ## m either side of a gate's centre line, at any height over it: its over-gate deck sign
+const RAMP_SIGN_REACH := 5.0   ## m past each end of a ramp, along it, over its width + 2 m: its hung way-finding sign
+
+
+## Every air door of a deck from its plan alone: [{side, c, wall}] (wall: the plan.boundary() entry), one per end wall
+## (side 2, then 3) where air_spot finds a spot. The same on every machine; in the load checksum (air_checksum).
+static func air_doors(plan: CityPlan) -> Array:
+	var out := []
+	for w: Dictionary in plan.boundary():
+		if int(w["side"]) < 2:
+			continue
+		var c := air_spot(plan, w)
+		if not is_nan(c):
+			out.append({"side": int(w["side"]), "c": c, "wall": w})
+	return out
+
+
+## The air doors of a deck as a checksum (sides and positions to the millimetre): CityStack.checksum joins it.
+static func air_checksum(plan: CityPlan) -> String:
+	var buf := StreamPeerBuffer.new()
+	for ad: Dictionary in air_doors(plan):
+		buf.put_8(int(ad["side"]))
+		buf.put_32(int(round(float(ad["c"]) * 1000.0)))
+	return buf.data_array.hex_encode() if buf.data_array.size() > 0 else "-"
+
+
+## THE AIR DOOR PLACEMENT RULE (plan data only: the same on every machine, and in the load checksum). On end wall w
+## (side 2 / 3) of the deck planned by `plan`, the spot `c` (along the wall, arc x) nearest the avenue's centre line (0
+## without a section; candidates every 0.5 m, + before -) such that:
 ##   - the door's width (air_half() each side) stays 4 m inside the wall's ends;
 ##   - it stays 1 m clear of every gate's staging bay footprint (MissionWorld.bay_half + its plates) and any gate's span;
-##   - no deck sign on this wall (CitySigns.layout: over-gate and side signs) overlaps the frame's rect +- 1 m;
+##   - its frame's rect stays 1 m clear of the band kept over every gate for its deck sign (GATE_SIGN_HALF);
 ##   - the flight corridor (the opening +- AIR_MARGIN, AIR_CORRIDOR m straight into the deck) crosses no building taller
-##     than AIR_TIER_MAX, no pillar core, park column, ramp (+2 m), ceiling opening, nor a hung ramp / shaft sign;
+##     than AIR_TIER_MAX, no pillar core, park column, ramp (+2 m, and RAMP_SIGN_REACH past its ends for its hung sign),
+##     nor ceiling opening;
 ##   - the ceiling leaves 4 m over the lintel.
-## NAN when no spot passes.
-static func air_spot(d: CityDistrict, w: Dictionary, signs: Array) -> float:
-	var plan := d.plan
+## NAN when no spot passes. (Until 2026-11-25 the rule read the cosmetic CitySigns layout itself: side signs beside the
+## gates and hung ramp / shaft signs, so a sign constant moved wall cuts with no checksum change.)
+## A ramp's rect in the flight corridor rule: the ramp grown 2 m, and RAMP_SIGN_REACH past both ends for its hung sign.
+static func ramp_keep_out(rp: Dictionary) -> Rect2:
+	var a0 := minf(float(rp["s_top"]), float(rp["s_foot"]))
+	var a1 := maxf(float(rp["s_top"]), float(rp["s_foot"]))
+	return Rect2(float(rp["x0"]), a0, float(rp["x1"]) - float(rp["x0"]), a1 - a0).grow_individual(2.0, RAMP_SIGN_REACH, 2.0, RAMP_SIGN_REACH)
+
+
+static func air_spot(plan: CityPlan, w: Dictionary) -> float:
 	var hole := air_hole(0.0)
 	if plan.p("ceiling") < float(hole["fy1"]) + 4.0:
 		return NAN
@@ -342,14 +372,9 @@ static func air_spot(d: CityDistrict, w: Dictionary, signs: Array) -> float:
 	var blocked: Array = []       # [u0, u1] the door's centre may not fall in
 	for g: Dictionary in w["gates"]:
 		var mid := (float(g["a"]) + float(g["b"])) * 0.5
-		var r := maxf(bay_half(d, w, g), (float(g["b"]) - float(g["a"])) * 0.5) + MissionProps.GateDoor.PLATE + 1.0
+		var r := maxf(plan_bay_half(plan, w, g), (float(g["b"]) - float(g["a"])) * 0.5) + MissionProps.GateDoor.PLATE + 1.0
 		blocked.append([mid - r - hw, mid + r + hw])
-	for s: Dictionary in signs:
-		if int(s.get("side", -1)) != side:
-			continue
-		if float(s["y1"]) < float(hole["fy0"]) - 1.0 or float(s["y0"]) > float(hole["fy1"]) + 1.0:
-			continue
-		blocked.append([float(s["u0"]) - 1.0 + float(hole["fa"]), float(s["u1"]) + 1.0 + float(hole["fb"])])
+		blocked.append([mid - GATE_SIGN_HALF - 1.0 + float(hole["fa"]), mid + GATE_SIGN_HALF + 1.0 + float(hole["fb"])])
 	# The corridor's blockers, as arc rects.
 	var s0 := minf(at, at + inward * AIR_CORRIDOR)
 	var band := Rect2(e.position.x, s0, e.size.x, AIR_CORRIDOR)
@@ -366,16 +391,9 @@ static func air_spot(d: CityDistrict, w: Dictionary, signs: Array) -> float:
 		var hc := float(col["half"]) + 1.0
 		rects.append(Rect2(float(col["x"]) - hc, float(col["s"]) - hc, hc * 2.0, hc * 2.0))
 	for rp: Dictionary in plan.ramps:
-		var a0 := minf(float(rp["s_top"]), float(rp["s_foot"]))
-		var a1 := maxf(float(rp["s_top"]), float(rp["s_foot"]))
-		rects.append(Rect2(float(rp["x0"]), a0, float(rp["x1"]) - float(rp["x0"]), a1 - a0).grow(2.0))
+		rects.append(ramp_keep_out(rp))
 	for o: Rect2 in plan.site.openings:
 		rects.append(CityStreets.ceiling_opening(o))
-	for s: Dictionary in signs:
-		if str(s["kind"]) == "ramp" or str(s["kind"]) == "shaft":
-			var p: Vector2 = s.get("at", Vector2.ZERO)
-			var hs := maxf(float(s["w"]) * 0.5, 1.0)
-			rects.append(Rect2(p - Vector2(hs, hs), Vector2(hs, hs) * 2.0))
 	var near: Array[Rect2] = []
 	for r in rects:
 		if r.intersects(band):
@@ -627,13 +645,18 @@ func _cut_wall(d: CityDistrict, w: Dictionary, g: Dictionary, body: StaticBody3D
 ## GateDoor.BAY_MIN_W / 2, shrunk (symmetric) so the bay with its plates stays 0.5 m clear of a neighbouring gate's bay or
 ## a portal / collapsed gate's back plate on the same wall and 2 m inside the deck's corners; never below the gate's own.
 static func bay_half(d: CityDistrict, w: Dictionary, g: Dictionary) -> float:
+	return plan_bay_half(d.plan, w, g)
+
+
+## bay_half from the deck's plan alone (air_spot: plan data only).
+static func plan_bay_half(plan: CityPlan, w: Dictionary, g: Dictionary) -> float:
 	var ga := float(g["a"])
 	var gb := float(g["b"])
 	var mid := (ga + gb) * 0.5
 	var own := (gb - ga) * 0.5
 	var want := maxf(own, MissionProps.GateDoor.BAY_MIN_W * 0.5)
 	var plate := MissionProps.GateDoor.PLATE
-	var e := d.plan.extent
+	var e := plan.extent
 	var across := int(w["side"]) >= 2
 	var room := minf(mid - ((e.position.x if across else e.position.y) + 2.0), ((e.end.x if across else e.end.y) - 2.0) - mid) - plate
 	for g2: Dictionary in w["gates"]:
@@ -1415,12 +1438,14 @@ func snapshot() -> Dictionary:
 func restore(d: Dictionary) -> void:
 	if not setup_ready:
 		return
+	# From a peer (the host's mission.state): only the shapes snapshot() writes are believed; ids are bounded by this
+	# machine's own sources / flags / assets, so nothing loops or allocates by the peer's numbers.
 	now = float(d.get("now", now))
 	_sched.clear()
 	_fired.clear()
-	var doors: Dictionary = d.get("doors", {})
+	var doors: Dictionary = d.get("doors", {}) if d.get("doors", {}) is Dictionary else {}
 	for id: Variant in doors:
-		if _sources.has(id):
+		if _sources.has(id) and doors[id] is Array and (doors[id] as Array).size() in [3, 4]:
 			_sched[id] = (doors[id] as Array).duplicate()
 			var sc: Array = _sched[id]
 			if sc.size() == 3:              # a snapshot from before the gate alarm: the alarm starts ALARM_LEAD s before open_at
@@ -1435,7 +1460,7 @@ func restore(d: Dictionary) -> void:
 	var at_of := {}                  # {id: seal_at}; an older array of ids means sealed since forever
 	if sealed is Dictionary:
 		at_of = sealed
-	else:
+	elif sealed is Array:
 		for id: Variant in sealed:
 			at_of[id] = -INF
 	for id: Variant in at_of:
@@ -1444,14 +1469,14 @@ func restore(d: Dictionary) -> void:
 			if not _fired.has(id):
 				_fired[id] = {"warn": true, "open": true, "close": true}
 			(_fired[id] as Dictionary)["seal"] = now >= float(at_of[id])
-	var flags: Dictionary = d.get("flags", {})
+	var flags: Dictionary = d.get("flags", {}) if d.get("flags", {}) is Dictionary else {}
 	for id: Variant in flags:
-		if _flags.has(id):
+		if _flags.has(id) and flags[id] is Array and (flags[id] as Array).size() == 3:
 			_flag_state[id] = (flags[id] as Array).duplicate()
-	var zones: Dictionary = d.get("zones", {})
+	var zones: Dictionary = d.get("zones", {}) if d.get("zones", {}) is Dictionary else {}
 	for id: Variant in zones:
 		set_zone(id, str(zones[id]))
-	var assets: Dictionary = d.get("assets", {})
+	var assets: Dictionary = d.get("assets", {}) if d.get("assets", {}) is Dictionary else {}
 	for id: Variant in assets:
 		if _assets.has(id):
 			_asset_hp[id] = clampf(float(assets[id]), 0.0, 1.0)

@@ -15,6 +15,12 @@ extends TestCase
 ##    NetMechCodec.PARTIAL_FIELDS (PlayerTarget's damage state, WeaponMount's barrel pose) get only the first half: what
 ##    they carry must be OWNER; their other OWNER state stays with the owner (reasons written in the codec).
 ##    The same first half for the host's enemy stream (W4): every var NetEnemyCodec.ENEMY_FIELDS carries is OWNER.
+## 5. Crew scaling is the host's (AGENTS.md rule 8): gameplay code in SCALE_SCOPE never sizes anything from a crew count
+##    (Session.crew().size(), roster sizes, spawn_order.size(), crew_members().size(), crew_bots.size(), bot_ids().size(),
+##    or .size() on a local assigned from one of them in the same function). The one read is SCALE_PATH (the host decides
+##    in HOST_SCALE_PATH and replicates it); scripts/net/ is out of scope. SCALE_ALLOW lists the other functions that
+##    count the crew for something that is not a scaled gameplay value, each with its reason; entries marked
+##    SCALE_PENDING are scaling reads that move to SCALE_PATH (Missions), and come out of the list when they do.
 
 ## Gameplay classes that must declare net_fields() even before they define it (none yet: mechs, enemies and pickups go here
 ## when they exist, unless they define net_fields() themselves).
@@ -41,6 +47,38 @@ var NET_RULES := [
 		"send_bytes is for unreliable, sequence-numbered packets: name TRANSFER_MODE_UNRELIABLE (its default is reliable). Events use the reliable RPC."],
 	["rpc_reliable", "@rpc\\(", "\"reliable\"",
 		"An @rpc is a reliable event; motion goes through send_bytes (NetWire)."],
+]
+
+## 5. Crew scaling. Function names are constants so a rename is one edit.
+const SCALE_FILE := "res://scripts/game/mission_flow.gd"
+const SCALE_PATH := "crew_scale"              ## MissionFlow.crew_scale(): the one read of the crew scale
+const HOST_SCALE_PATH := "host_crew_scale"    ## MissionFlow.host_crew_scale(): the host's decision (recomputed on a retire)
+const SCALE_SCOPE := ["res://scripts/game/", "res://scripts/world/section/", "res://scripts/enemy/", "res://scripts/combat/"]
+const SCALE_PENDING := "pending Missions crew_scale"
+## Direct crew counts.
+const SCALE_COUNT := "\\.crew\\(\\)\\.size\\(\\)|\\broster\\.(size|keys|values)\\(|\\bspawn_order\\.size\\(\\)|crew_members\\(\\)\\.size\\(\\)|\\bcrew_bots\\.size\\(\\)|bot_ids\\(\\)\\.size\\(\\)"
+## A local assigned from a crew list (its .size() later in the same function counts too).
+const SCALE_SOURCE := "^\\s*var\\s+(\\w+)\\s*(?::[^=]*)?=.*(\\.crew\\(\\)|\\broster\\b|\\bspawn_order\\b|crew_members\\(\\)|\\bcrew_bots\\b|bot_ids\\(\\))"
+## "file:function" -> reason. Not scaling (counts for bookkeeping, spawn slots, logs) or SCALE_PENDING.
+const SCALE_ALLOW := {
+	"res://scripts/game/mission_flow.gd:_pacing_facts": "pairs each pilot with its facts by index (PacingFacts per-pilot intensity): no value is sized by the count",
+	"res://scripts/game/test_drive.gd:spawn_enemies": "the pre-play garrison, built from the seed + launch crew before play on the host and checksummed",
+	"res://scripts/game/test_drive.gd:build_city": "spawning the mechs: one entry slot per launch-crew mech (spawn layout, not a gameplay value)",
+	"res://scripts/game/test_drive.gd:_spawn_crew": "spawning the mechs: a seat fallback for a launch entry without one",
+	"res://scripts/game/mission_bot.gd:_dev_jump_arrival": "DEV jump to this mech's entry slot (spawn layout, dev only)",
+}
+## [code, function, expected hit?] for the scan's own regexes.
+const SCALE_SAMPLES := [
+	["var n := Session.crew().size()", true],
+	["hp *= sess.roster.size()", true],
+	["var k := drive.spawn_order.size()", true],
+	["for i in td.crew_members().size():", true],
+	["var b := crew_bots.size() * 2", true],
+	["var n := s.bot_ids().size()", true],
+	["for c in drive.crew_members():", false],
+	["var i := drive.spawn_order.find(me)", false],
+	["var n := bots.size()", false],
+	["var x := enemies.size()", false],
 ]
 
 const LINT_SAMPLES := [
@@ -72,6 +110,7 @@ func setup() -> void:
 	_check_lint(scripts)
 	_check_lint_samples()
 	_check_carriers()
+	_check_scale(scripts)
 	finish()
 
 
@@ -217,6 +256,60 @@ func _check_lint_samples() -> void:
 	for smp: Array in LINT_CLEAN:
 		var v := _violations(smp[0], smp[1], compiled, compiled_net)
 		check(v.is_empty(), "the lint leaves `%s` in %s alone (got %s)" % [smp[1], smp[0], str(v)])
+
+
+## 5. Crew scaling: every crew count in SCALE_SCOPE outside the scale path is in SCALE_ALLOW (and every entry still hits).
+func _check_scale(paths: Array[String]) -> void:
+	var count := RegEx.create_from_string(SCALE_COUNT)
+	var source := RegEx.create_from_string(SCALE_SOURCE)
+	for smp: Array in SCALE_SAMPLES:
+		eq(count.search(str(smp[0])) != null, bool(smp[1]), "the crew-count scan on `%s`" % smp[0])
+	var two := _scale_hits("res://x.gd", "func f() -> void:\n\tvar m := drive.crew_members()\n\tvar n := m.size()\n", count, source)
+	eq(two.size(), 1, "the scan follows a local assigned from crew_members() to its .size()")
+	var used := {}
+	for p in paths:
+		if not SCALE_SCOPE.any(func(d: String) -> bool: return p.begins_with(d)):
+			continue
+		for h: Dictionary in _scale_hits(p, FileAccess.get_file_as_string(p), count, source):
+			var key := "%s:%s" % [p, h["func"]]
+			if p == SCALE_FILE and str(h["func"]) in [SCALE_PATH, HOST_SCALE_PATH]:
+				continue
+			if SCALE_ALLOW.has(key):
+				used[key] = true
+				continue
+			_fail("%s:%d [crew_scale] `%s`: crew-scaled values come only from %s.%s() (the host's scale, replicated): AGENTS.md rule 8. Not scaling? Allowlist %s with a reason (a design decision to report)." % [
+				p, int(h["line"]), str(h["code"]).strip_edges(), "MissionFlow", SCALE_PATH, key])
+	for key: String in SCALE_ALLOW:
+		check(used.has(key), "SCALE_ALLOW entry %s no longer counts the crew: remove it" % key)
+
+
+## Crew counts in one script: [{func, line, code}]. Tracks the enclosing func and locals assigned from a crew list.
+func _scale_hits(path: String, text: String, count: RegEx, source: RegEx) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var fn := ""
+	var locals: Array[String] = []
+	var func_re := RegEx.create_from_string("^(?:static\\s+)?func\\s+(\\w+)")
+	var lines := text.split("
+")
+	for i in lines.size():
+		var code := _strip_comment(lines[i])
+		var fm := func_re.search(code)
+		if fm != null:
+			fn = fm.get_string(1)
+			locals.clear()
+			continue
+		if code.strip_edges() == "":
+			continue
+		var hit := count.search(code) != null
+		for l in locals:
+			if RegEx.create_from_string("\\b%s\\.size\\(\\)" % l).search(code) != null:
+				hit = true
+		var sm := source.search(code)
+		if sm != null:
+			locals.append(sm.get_string(1))
+		if hit:
+			out.append({"func": fn, "line": i + 1, "code": code})
+	return out
 
 
 ## The line without its # comment (a # inside a string literal is kept).

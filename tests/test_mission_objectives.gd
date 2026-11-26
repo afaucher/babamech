@@ -1,5 +1,5 @@
 extends TestCase
-## Mission objectives phase 1 in a SOLO stack drive in plan mode (TestDrive.objectives; scripts/game/mission_flow.gd,
+## Mission objectives phase 1 in a SOLO stack drive (objectives are the only mode; scripts/game/mission_flow.gd,
 ## MissionHud; docs/design/mission-objectives.md §7, §9). Seed 7: deck 1 flag (primary), deck 2 defend, deck 3 defend,
 ## then the extraction hold (shortened by MissionFlow.test_plan; the director's lull / grace shortened too).
 ## A. LOST: the crew reaches deck 2's defend (active), the relay's HP goes to 0 -> "lost" / objective_failed, banner
@@ -35,7 +35,6 @@ func _drive() -> MissionFlow:
 	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = SEED
-	td.objectives = true
 	add_child(td)
 	await frames(4)
 	var mf := td.mission
@@ -132,7 +131,6 @@ func _won() -> void:
 		if check(await _until(func() -> bool: return _wave_units(wid) > 0, float(o["open_at"]) - mf.now() + 4.0),
 				"wave %s spawned at its door" % wid):
 			print("objectives: wave %s arrived with %d units during the capture" % [wid, _wave_units(wid)])
-		check(mf.unspawned.is_empty(), "no wave fell back to the stub (%s)" % str(mf.unspawned))
 	if not check(await _until(func() -> bool: return rules.obj_state(flag["id"]) == "done", 30.0, true), "the flag is raised"):
 		return
 	await _seconds(0.5)
@@ -162,7 +160,7 @@ func _won() -> void:
 	await _seconds(0.3)
 	eq(str(mf.hud_state()["banner"].get("title", "")), "MISSION COMPLETE", "banner MISSION COMPLETE")
 	check(float(mf.world.portal_progress) >= 0.99, "the portal is fully charged")
-	print("objectives: %d wave orders, unspawned (stub) %s" % [mf.opened.size(), str(mf.unspawned)])
+	print("objectives: %d wave orders" % mf.opened.size())
 	var order := {"wave": "d1_w2", "deck": 1, "source": "d1_gate_s0_1", "open_at": 1234.56, "max_units": 8}
 	print("objectives: sizes (var_to_bytes) mission.state %d B, mission.wave order %d B, JSON state %d chars" % [
 		var_to_bytes(mf.plan_state()).size(), var_to_bytes({"order": order}).size(), JSON.stringify(mf.plan_state()).length()])

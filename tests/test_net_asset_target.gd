@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Mission assets across machines (docs/design/weapons.md §5 "Mission assets") over a real crew mission of 2, once per
 ## link (off, coast). Both machines TestDriveCombat.add_asset("relay", node) at the same point (the host sends it); the
 ## drive's combat `_drive` is pointed at a stand-in with a stub `mission` (damage_asset recorder) on both machines.

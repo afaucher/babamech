@@ -31,8 +31,12 @@ heavy, they slide a little when hit again or walked into, and never fly around. 
 ## 3. Layout
 
 `CityProps.layout(plan) -> Array` is pure data: `[{id, type, x, s, h, yaw, scale, variant}]`, ids = array index, generated
-from the plan with its own generator (`plan.cosmetic_seed() + 1`), so it is the same on every machine and no longer
-depends on the order the meshers draw in. `layout_checksum()` covers it. Placement rules are the ones the furniture pass
+from the plan with its own generator (`plan.props_seed() + 1`, roof units `+ 2`; the same value as `cosmetic_seed()`,
+named apart 2026-11-25 because props are gameplay), so it is the same on every machine and no longer depends on the order
+the meshers draw in. `layout_checksum()` covers it, and **the load barrier compares it**: `CityStack.checksum()` joins
+every deck's `layout_checksum(props.items)` (code audit 2026-11-25; until then it was only called from tests, so two
+machines with different prop layouts would desync by index). A district on its own (test drive district mode) reports
+`plan.checksum()` alone: that hook is TestDrive's. Placement rules are the ones the furniture pass
 already uses (street trees about every 9 m with a lamp every third slot, benches and bins beside them, a signal pole per
 block corner, median trees, park and garden trees), plus a sign post per block edge.
 
@@ -89,6 +93,9 @@ whether this machine owns the mover: a `MechController.owner_peer` (or `is_local
   city folder: only calls on `Session`.
 - **Late join**: `props.snapshot() -> PackedByteArray` (every prop that is not standing: id, x, s, lie; anything still
   moving is written at its rest pose) and `props.restore(bytes)`. The host sends it as `prop.sync` when a peer joins.
+  The bytes are checked first (`CityProps.valid_snapshot`, 2026-11-25): a count no larger than this layout's props, the
+  buffer exactly that many records long, every id in the layout, every float finite; a malformed buffer is ignored with a
+  warning (every prop stands) instead of looping on the peer's count.
 - Declared in `net_fields()`: layout `SPAWN`; prop states `OWNER` (the host); render caches `LOCAL`.
 - Hooks still needed in `scripts/net/`: none for the events above. A "world state for late joiners" registry (so each
   system does not hand-roll its own `*.sync`) would be the tidy home for the snapshot once more systems need it.

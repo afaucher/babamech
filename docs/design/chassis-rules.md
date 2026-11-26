@@ -1,7 +1,7 @@
 # Chassis rules: body, joints, intersection, detail
 
 Draft for review (2026-11-23). The rules every chassis is built to: the Strider as it stands, and the two planned
-variants, **Bulwark** (heavy biped on long forward-kneed legs, slung tank hull between two hip pods, forward knees, 2 side guns + 2 back mounts) and **Wasp** (four ducted
+variants, **Bulwark** (heavy biped on long forward-kneed legs, slung tank hull between two hip pods, forward knees, 2 side guns + a belly turret + 2 back mounts) and **Wasp** (two big tilting ducted lift fans since the 2026-11-25 pick: was four ducted
 fans, pod hull, 3 light mounts). Rules marked **(have)** are already enforced by a test on the Strider; **(new)** are
 proposed here and need a test before the first new chassis mesh is accepted. Concepts: `docs/design/chassis-concepts/`.
 
@@ -32,12 +32,12 @@ and checked by tests, then compared with the concept by eye.
    or socket meets a curved hull, the hull grows a pad with a flat face at least as large as the part's footprint. No
    part sits on bare curvature.
 4. **Silhouette first**: the chassis must be recognisable in black from the third-person camera (behind and above) and
-   from the side. Bulwark: wider than tall, two back boxes above the hull line. Wasp: four rings, small pod, tail fin.
+   from the side. Bulwark: wider than tall, two back boxes above the hull line. Wasp: two big ear rings either side of the head, small egg pod, a small fin.
 5. **Family features every chassis keeps**: white upper / orange band / dark grey mechanics livery, the nose with its
    lamp cluster, the round hatch with the pilot's head and neck, amber running lights, a back plate or fin behind the
    pilot. A chassis changes proportion and locomotion, not the kit of parts that says "babamech".
 6. **Camera check**: the body and its back equipment may not hide the crosshair area or the weapons' muzzles from the
-   default camera. The Bulwark's two back boxes and the Wasp's rear fans are the risks.
+   default camera. The Bulwark's two back boxes and the Wasp's fan rings are the risks.
 
 ## 3. Joints
 1. **A joint is three things**: a socket fixed to the parent, a ball or pin at the pivot, and a cap on the child.
@@ -86,8 +86,14 @@ and checked by tests, then compared with the concept by eye.
    - **Bulwark `back` x2**: two saddles on plinths on the rear wings behind the pods, each the Strider's back saddle; items may
      not overlap each other or rise into the pilot's head (check every pair). Outboard, so the mortar does not stand
      right behind the head in the chase view.
-   - **Wasp `stub`**: a short wing root from a hull pad, between the front and rear fan arms, ending in a side-kind
-     face. **Wasp `chin`**: a turntable under the nose, weapon hangs below; it must clear the ground when landed.
+   - **Wasp `stub`** (built 2026-11-25): a flat wing root from a pad on each flank under the fan, ending in the Strider
+     side mount's block (the weapon's pivot 0.48 out from the pad: shorter and an outward-yawed gun's receiver tail meets the
+     hull). Takes the side weapons up to weight 7 with their catalog arcs; the swivel's 120 deg boom is cut to 45 in / 60
+     out (`yaw_in_max` / `yaw_out_max`: past them it meets the hull or the fan ring). **Wasp `chin`**: a turntable on a
+     block under the nose, the weapon hanging on a pintle 0.4 below it. Light guns only (`max_item_weight` 6: laser,
+     gatling, swivel, flamer; the autocannon's and flak's tall receivers would meet the bearing). Its arc is cut in data:
+     yaw +-45, pitch -8 / +10 (further down and a long receiver's tail lifts into the belly; landed, every gun at every
+     aim stays over the ground). `tests/test_hardpoint_contact_wasp.gd`.
 6. **Pivot clearance** **(have)**: a weapon swept through its full aim range keeps at least 0.005 off pads and hull, and
    **(new)** off other weapons, fan ducts, arms and the pilot's head. Where it cannot, the aim range is cut down in data
    rather than the weapon allowed to clip.
@@ -107,7 +113,9 @@ and checked by tests, then compared with the concept by eye.
    passes through the head's bounding sphere in any aim pose **(have for the seal; new for the sweep)**.
 6. **Chassis-specific risks to test first**: Bulwark: side guns against the nose and the legs (standing and slumped) when
    aiming in, up and down, the thighs against the hip pods' undersides when stepping up, every pilot head against the
-   coaming; the two back boxes against each other. Wasp: stub guns against the fan ducts; the chin gun
+   coaming; the two back boxes against each other. Wasp (tested, `test_clearance_wasp` / `test_hardpoint_contact_wasp`):
+   the fans tilted against the hull, coaming and every pilot head (the dog's ears set the fans' position); stub guns
+   against the fan rings across their tilt; the chin gun
    against the ground and the front fans' downwash cone; tilting ducts against the hull.
 
 ## 6. Detail
@@ -135,16 +143,23 @@ and checked by tests, then compared with the concept by eye.
    stance width, step length and rate, max step-up from the leg geometry (`rig.max_step()`), sag numbers.
 2. **Hover** (Wasp, new): no gait. Space / Ctrl climb and descend, full-speed strafe, a ceiling, body banks into
    acceleration, fans tilt and spin up with thrust. **It has mini legs** (user, 2026-11-23: "mini legs so it can land in
-   overheat"): short landing legs folded under the hull in flight. On heat shutdown the fans wind down, the legs
-   unfold and it settles onto them (a fall from height is still a hard landing); it stands there, unable to move, until
-   it restarts and lifts off. The legs are joints like any other (section 3): a socket on a hull pad, a declared fold
-   range, clear of the chin gun, the stub guns and the fans both folded and down, and long enough that the chin gun
-   clears the ground when landed.
-   **Fans are damage components** (user, 2026-11-23: "min 3 required to fly"): each of the four fans has its own HP,
-   as legs do on the walkers. With one fan out it still flies, with reduced lift and speed and a visible list toward the
-   dead corner. With two out it cannot fly: it comes down onto the mini legs (a hard landing from height) and stays
-   there, still able to aim and fire, until a fan is repaired. A dead fan shows it: blades stopped, guard bent, smoke.
-   The fan's hit volume is its duct ring, so the four rings must be separate, targetable shapes.
+   overheat"): two mini chicken legs under the belly that **dangle in flight** (knees bent, a little tucked, toes
+   drooping: the A1 pick of 2026-11-25 replaces "folded away") and stand when landed. On heat shutdown the fans wind
+   down and it settles onto them (a fall from height is still a hard landing); it stands there, unable to move, until it
+   restarts and lifts off. The legs are joints like any other (section 3): a clevis on a belly pad, a hip and a knee pin
+   with declared ranges (`WaspMeshes.THIGH_RANGE` / `KNEE_RANGE` / `FOOT_RANGE`), two poses (dangle, stand) and every
+   pose between them clear of the hull, the guns and each other, standing with the soles on the ground under the centre
+   of mass, the chin gun over the ground (`tests/test_clearance_wasp.gd`). Stand only: no gait.
+   **Two main fans, tilting** (user, 2026-11-25: the A1 pick without its two small rear fans): `fan_l` / `fan_r` sit on
+   gimbal balls and vector for steering and strafing: 20 deg forward / back, 15 deg sideways (an ellipse,
+   `WaspMeshes.FAN_TILT_MAX`; `MechModel.set_fan_tilt` clamps to it, either fan alone), clear of the hull, the coaming,
+   every pilot head and the stub guns across all of it.
+   **Fan damage: PROPOSAL, awaiting the user** (it replaces "min 3 fans to fly", which the user said must change with
+   this pick): the two main fans are the damage components, as legs are on the walkers (each its own HP; its hit volume
+   the duct ring, so the two rings are separate, targetable shapes). **One fan out = it cannot hold altitude**: it
+   settles onto its legs (a hard landing from height). A dead fan shows it: blades stopped, guard bent, smoke. Nothing of
+   this is built. Open questions for the user: **can a grounded Wasp still shoot?** **Does it stay down until the fan is
+   repaired** (or limp up on one fan for short hops)?
    **It needs its own AI** (user): the mission bot and route planner assume a walker on decks and ramps. A hover pilot
    needs 3D routes (over obstacles, between decks through ceiling openings), altitude choice, landing before overheat,
    and enemy AI needs to aim at and react to a flying target. Design that with the bot's owners before building.
@@ -198,12 +213,38 @@ and checked by tests, then compared with the concept by eye.
   down for short legs) and dip it 0.38 on landing.
 - Bulwark weapons: two side guns on short yokes bolted to the hip pods' fronts, two back mounts on the rear wings
   (`pick_bulwark_concept.png` for the loadout, B1 for the placement).
-- Wasp: four ducted fans, pod hull (`pick_wasp_four_fans_pod.png`).
+- Bulwark hardpoints and armour (user, 2026-11-25, `docs/design/bulwark-effectiveness.md` options A + C4): **5
+  hardpoints**: side_l, side_r, belly (a pintle turret under the keel between the thighs, key 5, side weapons only,
+  yaw +-30 / pitch -10 +15), back_l, back_r. **Core HP 900 / 420 / 150** (torso / each leg / head: the earlier
+  600 / 280 / 100 x1.5, every core component as the study measured it; hardpoints 80 as on every chassis).
+- Wasp: ~~four ducted fans, pod hull (`pick_wasp_four_fans_pod.png`)~~ superseded 2026-11-25 by **A1 "tandem pairs /
+  compact"** (`pick_wasp_tandem_compact.png`, user: "the look is the best"), **without its two small rear fans** (user,
+  same day): a compact chunky faceted egg pod (orange flank bands, white front and top, dark grey lower hull, dark belly,
+  amber window lights), the pilot out of a round hatch ring on top, a small upright fin behind it, **two big ducted lift
+  fans** high either side of the cockpit on short stout struts (the ears), three bolted-on guns (a stub each flank, a
+  chin turret). Art phase 1 built (`WaspMeshes`, ChassisParts "wasp", `MechCatalog.DRAFT_CHASSIS`: not playable, not
+  in CHASSIS / CHASSIS_ORDER; no controller, weapons code, networking or bots yet).
 - Wasp mini legs: **two tiny mechanical chicken legs** (reverse knee, three toes and a spur, like the Strider's in
-  miniature), folded under the belly in flight (`pick_wasp_landed_chicken_legs.png`). Two legs under a wide hull: the
-  landed pose must balance (feet under the centre of mass, wide enough apart) and lift the chin gun clear of the ground,
-  so the real legs are longer and set wider than drawn. **Stand only** (user): no walking on them, so they need a
-  fold / unfold motion and a landing bounce, no gait.
+  miniature), ~~folded under the belly~~ **dangling in flight** (the A1 pick). **Coloured as the Strider's legs** (user,
+  2026-11-25: "Mirror the color scheme of the other mech with chicken feet", not the concept's orange feet). **Stand
+  only** (user): a hip and a knee pin, two poses, no gait.
+- Wasp measured (art phase 1, scale 2, `test_mech_parts`): comb landed **7.80 m** (Strider 11.74, Bulwark 9.08), 8.41 m
+  across the fans, hull 3.69 m wide x 3.53 m tall (belly to the hatch rim) x 4.41 m long (the chin block included; the
+  egg alone 4.13), fans 3.0 m across, belly 1.44 m over the ground landed, legs 1.82 m (thigh + shin + ankle height),
+  heaviest loadout 8460 faces (Strider 11522, Bulwark 10828). **Bent: the comb target (5.5-6.5 m) is not reachable**:
+  the shared chicken head alone stands 2.8 m over the hatch rim (the heads are not rescaled), the hull is at least 3.2 m
+  and the chin gun needs about 1.4 m of belly clearance landed; 7.8 m keeps the head near the Bulwark's deck (6.45 m)
+  and well under the Strider's chest. The fans sit a little behind the head (gimbal at z 0.28): the dog's ears
+  (3 m across) meet them anywhere further forward once they tilt.
+- Wasp art pass 2 (user, 2026-11-26: "Make the hull slightly longer front to back and just a smidge wider"): hull
+  4.41 -> **4.94 m** long (chin block included; the egg 4.13 -> 4.67), 3.69 -> **4.01 m** wide (pads included; the egg
+  3.94), same height (3.46 m belly to the hatch rim); 8.75 m across the fans (was 8.41: they moved out with the hull and
+  carry segment clamps); the fans' gimbals now 0.36 behind the hatch (was 0.44), as far forward as the dog's ears allow
+  at full tilt. Hull read as the A1 egg: broad orange flanks and shoulders, a white top and front centre panel, grey only
+  low, a dark belly. Chunky segmented guard rings (deeper duct, seven dark clamps over the orange band, lighter blades
+  with white tips). Legs 1.35x thicker (drums sized to them, rule 3.3), feet 1.4x, a tidier dangle (both legs alike,
+  feet nearly level). A taller, thicker fin, further back. The stub swivel's pitch-up is cut to 45 (the fans now sit over
+  the stubs). Heaviest loadout 8508 faces; comb unchanged (7.80 m).
 
 ## Bulwark world fit (2026-11-24, Mech session)
 The city, the missions and the bots were built around the Strider's 2.2 m capsule that can thrust onto roofs. Measured
@@ -212,17 +253,42 @@ with the Bulwark's real capsule (3.6 m, 8 m tall) against the built stack (`scri
 - **Fits**: every road line the bot graph walks (streets, lanes, pedestrian streets, open courts, all spine lanes, with
   the avenue carriageways at 5.25 m off the median), every ramp (9 m between the parapets, the capsule passes along the
   whole slope), shaft drops (48 m, 96 m with the landing burn), the four crew spawn slots (10.5 m columns, 8 m rows),
-  hold zones, defend relays, sweeps. Alleys (7 m) and roofs above the hop are out **by design**.
+  hold zones, defend relays, sweeps. Alleys (7 m) and roofs above 6 m (the bots' planning margin, below) are out **by design**.
 - **Bugs (handed to Environment, side-session note `bulwark-world-fit.md`)**: 3 of 8 seeds have a REQUIRED objective a
   Bulwark cannot reach: seed 4 d1_p and seed 6 d0_p (flag masts snapped deep inside blocks whose way in is 7.6 / 7.0 m),
   seed 9 deck 1 (reached from deck 0 only by an atrium glide; measured: a Bulwark falls through to deck 2 every time).
   `test_bulwark_world_fit` lists them as KNOWN and fails on any new one.
 - **Rules built (mission bot)**: the route planner takes the body's capsule (`BotRoutePlanner.body_r`, `fit_body`: every
   walk edge and ramp leg probed at attach, glides left out for a hop-only body; a wide body standing on a ramp first
-  follows the lane to an end); a hop-only body never climbs a roof above its hop (`BotNavigator.drop_roofs_above`);
+  follows the lane to an end); a hop-only body never climbs a roof above its hop (`BotNavigator.drop_roofs_above`;
+  since 2026-11-25 "hop-only" is `MechCatalog.bot_hop_height(chassis) > 0`, 6 m for the Bulwark: a bot planning
+  margin, the mech itself has no ceiling);
   the grid plan's side rays, stand room and floor-cut veto grow by the extra radius; a wide body keeps out of lift wells
   and keeps to a ramp it is halfway down when the goal changes; the stuck window stretches with the slower turn. The
   Strider's values are the old constants (its bot tests unchanged).
+
+## Bulwark thrust: heat, not a ceiling (2026-11-25, user playtest)
+"The artificial limit on the Bulwark's jump height doesn't make sense. Let's just have the thrusters accumulate heat a
+lot faster, so you're more limited but can still push it." The 6 m `thrust_ceiling` is gone (the controller mechanism,
+its net field and lab param removed). The Bulwark's pilot thrust heats **80 /s** (was 30; the Strider 24) against
+cooling 12 and a 130 cap, with thrust 30 vs gravity 22 (8 m/s^2 of lift). Measured (`tests/test_chassis_movement.gd`,
+flat floor, from cold):
+
+| | Strider | Bulwark before | Bulwark now |
+| --- | --- | --- | --- |
+| pilot thrust heat /s (net of cooling) | 24 (15) | 30 (18), throttled at 6 m | 80 (68) |
+| continuous burn, cold to shutdown | 6.7 s | (hovers at 6 m) | 1.9 s |
+| height at shutdown / peak of one burn | 267 / 412 m | 6 / 6.8 m | 15 / 20 m |
+| highest jump that still lands safely (auto burn) | ~314 m | 6.8 m | ~19 m (1.85 s burn) |
+| 6 m ledge / 12 m roof / 30 m roof (heat at the top) | yes / yes / yes (21) | yes / no / no | yes (85) / yes (112) / no |
+
+The pilot can hop a ledge, push onto a 12 m roof at the cost of most of the heat bar, and nothing much higher: a full
+burn shuts the mech down ~15 m up and it falls uncushioned from ~20 m (~30 m/s, leg damage). The **automatic landing
+burn** costs its own `auto_burn_heat` (Bulwark 30 /s at full throttle, the old value; Strider 24 = its thrust_heat, so
+nothing changed for it): at 80 /s the burn alone would shut a cold Bulwark down on a two-deck (96 m) shaft drop
+(touchdown ~31 m/s), so the safety burn is kept as cheap as before. Bots keep their 6 m planning margin
+(`MechCatalog.bot_hop_height`). Reboot timer (same day, audit): the reboot countdown runs only while heat is at or
+under `reboot_heat`; heat climbing over it during a shutdown restarts the countdown (`tests/test_reboot_rule.gd`).
 
 ## Open questions
 - `decisions.md` says one chassis for all four pilots: adding chassis is a decision for the user to record.

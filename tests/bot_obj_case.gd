@@ -33,7 +33,7 @@ func _init() -> void:
 
 
 func setup() -> void:
-	TestDrive.solo_launch = {"seed": seed_n, "mode": TestDrive.MODE_STACK, "objectives": true}
+	TestDrive.solo_launch = {"seed": seed_n, "mode": TestDrive.MODE_STACK}
 	TestDrive.bot_profile = profile()
 	print("[Test] bot profile %s" % TestDrive.bot_profile)
 	TestDrive.dev_bot_travel = false

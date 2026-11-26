@@ -36,7 +36,7 @@ extends Node3D
 ## gallery), downtown_top (from above over the zone, the ceiling and the decks above hidden).
 ##   --city downtown=0.5,camera=downtown_avenue       --city site=stack,seed=4,camera=downtown_top
 ## Deck lettering (docs/design/city-signs.md): option "deck_signs" (white / dark / off) sets CitySigns.style and rebuilds
-## the lettering of every deck (default dark, the user's pick); cameras sign_gate / sign_lift / sign_ramp, and sign_road (on
+## the lettering of every deck (default dark, the user's pick); cameras sign_lift / sign_ramp, and sign_road (on
 ## the road that ends at a gate, 80 m back at 10 m, at the over-gate sign); the deck on show first: `deck=1` shows "02".
 
 const PARAMS := [
@@ -70,7 +70,7 @@ const CAMERAS := ["lab", "avenue", "street", "rooftop", "plaza", "pillar", "park
 		"ramp_under", "ramp_head", "ramp_cut", "farm_far", "farm_near", "farm_gate", "mission_gate", "mission_bay", "mission_air", "mission_air_farm", "mission_lift", "mission_flag", "mission_flag_far",
 		"mission_asset", "mission_portal", "downtown_avenue", "downtown_perch", "downtown_plaza", "downtown_arcade", "downtown_top", "downtown_street",
 		"tint_street", "variety_top", "alley", "alley_top", "alley_pillar", "lane", "pedestrian", "court",
-		"sign_gate", "sign_lift", "sign_ramp", "sign_road"]
+		"sign_lift", "sign_ramp", "sign_road"]
 const SETTLE_FRAMES := 8         ## rebuild once the sliders have been still this long
 const DOZER_SPEED := 12.0        ## m/s: a mech's walk
 const DOZER_RADIUS := 1.6
@@ -483,7 +483,7 @@ func _apply_view() -> void:
 				var o: Rect2 = found["rect"]
 				eye = Vector3(o.get_center().x, o.position.y - 2.0, 5.0)
 				target = Vector3(o.get_center().x, o.get_center().y, -30.0)
-		"sign_gate", "sign_lift", "sign_ramp", "sign_road":     # deck lettering (CitySigns.lab_view): the deck on show first
+		"sign_lift", "sign_ramp", "sign_road":     # deck lettering (CitySigns.lab_view): the deck on show first
 			var sl: Array = [district]
 			sl.append_array(_districts())
 			var sv := CitySigns.lab_view(sl, str(options["camera"]))

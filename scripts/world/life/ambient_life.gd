@@ -554,14 +554,6 @@ func _build_section() -> void:
 	_tram_step()
 
 
-## Change the number of people (rebuilds the plan; forgets every threat, kill and wreck).
-func set_people(n: int) -> void:
-	if stack != null:
-		setup_stack(stack, n, pods, carts)
-	elif district != null:
-		setup(district, n, pods, carts)
-
-
 ## Change the number of pods and carts (forgets every vehicle event; the people keep theirs).
 func set_vehicles(pod_count: int, cart_count: int) -> void:
 	pods = pod_count
@@ -803,6 +795,7 @@ func _rebase(t: float) -> void:
 	crowd.dead = keep
 	fleet.episodes.clear()
 	fleet.locks.clear()
+	fleet.rebase_unloads()
 	if tram != null:
 		tram.episodes.clear()
 	for vid: int in fleet.wrecks:
@@ -1361,12 +1354,6 @@ func _tram_step() -> void:
 func tram_car_pose(i: int) -> Transform3D:
 	var p := tram.pose(now)
 	return _to_world() * _geo.frame(tram.x, LifeTram.car_s(float(p["s"]), i), 0.0)
-
-
-## running | dwell | halted | away (beyond a portal), now; "" with no tram. In a stack: deck k's.
-func tram_state(k: int = 0) -> String:
-	var u := unit(k)
-	return u.tram.state_of(u.now) if u.tram != null else ""
 
 
 # --- Audio hooks -------------------------------------------------------------------------------------------
@@ -2153,6 +2140,9 @@ func snapshot() -> PackedByteArray:
 	return buf.data_array
 
 
+## The bytes come from a peer (life.sync): a part's length larger than what is left is cut to what is left (that part
+## then fails its own checks and is cleared), so nothing is read past the end or allocated by the peer's number; parts
+## for decks this stack does not have are ignored.
 func restore(bytes: PackedByteArray) -> void:
 	if not units.is_empty():
 		var sb := StreamPeerBuffer.new()
@@ -2161,7 +2151,7 @@ func restore(bytes: PackedByteArray) -> void:
 		for k in units.size():
 			var part := PackedByteArray()
 			if k < n and sb.get_available_bytes() >= 4:
-				var size := sb.get_u32()
+				var size := mini(sb.get_u32(), sb.get_available_bytes())
 				part = sb.get_data(size)[1]
 			units[k].restore(part)
 		tally_changed.emit()
@@ -2169,11 +2159,14 @@ func restore(bytes: PackedByteArray) -> void:
 	if bytes.size() >= 4:
 		var buf := StreamPeerBuffer.new()
 		buf.data_array = bytes
-		var n := buf.get_u32()
+		var n := mini(buf.get_u32(), bytes.size() - 4)
 		crowd.restore(bytes.slice(4, 4 + n))
 		if tram != null:
 			buf.seek(4 + n)
-			var m := buf.get_u32() if buf.get_available_bytes() >= 4 else 0
+			var m := 0
+			if buf.get_available_bytes() >= 4:
+				m = buf.get_u32()
+				m = mini(m, buf.get_available_bytes())
 			fleet.restore(bytes.slice(8 + n, 8 + n + m))
 			tram.restore(bytes.slice(8 + n + m))
 		else:
@@ -2205,10 +2198,11 @@ func _on_event(_from: int, kind: String, data: Dictionary, _stamp: float) -> voi
 	if not units.is_empty():
 		var s0 := Net.session()
 		if kind == "life.sync":
-			if s0 != null and s0.is_client():
+			var sb: Variant = data.get("bytes", PackedByteArray())
+			if s0 != null and s0.is_client() and sb is PackedByteArray:
 				for u in units:
 					u.now = u._clock()
-				restore(data.get("bytes", PackedByteArray()))
+				restore(sb)
 			return
 		units[clampi(int(data.get("deck", 0)), 0, units.size() - 1)]._on_event(_from, kind, data, _stamp)
 		return
@@ -2236,9 +2230,10 @@ func _on_event(_from: int, kind: String, data: Dictionary, _stamp: float) -> voi
 				now = _clock()
 				apply_event(kind, data)
 		"life.sync":
-			if s != null and s.is_client():
+			var b: Variant = data.get("bytes", PackedByteArray())
+			if s != null and s.is_client() and b is PackedByteArray:
 				now = _clock()
-				restore(data.get("bytes", PackedByteArray()))
+				restore(b)
 
 
 func _on_peer_joined(peer: int) -> void:

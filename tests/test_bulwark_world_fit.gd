@@ -90,7 +90,7 @@ func _seed(seed_n: int) -> void:
 	p_b.body_r = rb
 	p_b.setup(stack)
 	var fit_s := p_s.fit_body(space, BotFit.radius_of(STRIDER), BotFit.height_of(STRIDER), 0.0)
-	var fit_b := p_b.fit_body(space, rb, BotFit.height_of(BULWARK), float(MechCatalog.movement(BULWARK)["thrust_ceiling"]))
+	var fit_b := p_b.fit_body(space, rb, BotFit.height_of(BULWARK), MechCatalog.bot_hop_height(BULWARK))
 	print("[Fit] %s: graph %s; strider blocks %d edges + %d ramp legs, bulwark blocks %d + %d ramp legs %s (+ %d glides)" % [what,
 		str(p_b.summary()), int(fit_s["blocked"]), int(fit_s.get("ramps", 0)), int(fit_b["blocked"]), int(fit_b.get("ramps", 0)),
 		str(fit_b.get("ramp_first", "")), int(fit_b["glides"])])

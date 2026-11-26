@@ -18,6 +18,7 @@ extends Node
 ##   feed_owned(id, state, dt)  the same for another mech this machine runs (the host's bots, docs/design/hangar-bots.md:
 ##                              pilot id < 0); each is stamped with its own teleport counter and step clock
 ##   pose(peer)                 the puppet's state to show now (interpolated), null before its first sample
+##   drop(peer)                 that member left (Session.peer_left, connected here): its buffer goes
 ##   end()                      the mission's scene is going
 ## Plus newest(peer), buffer(peer), delay_of(peer), puppet_peers(), and `stats` for tests and telemetry.
 
@@ -54,6 +55,7 @@ func _ready() -> void:
 		return
 	_session.packet_received.connect(_on_packet)
 	_session.session_ended.connect(func(_reason: String) -> void: end())
+	_session.peer_left.connect(drop)
 	_reset_stats()
 
 
@@ -94,6 +96,15 @@ func end() -> void:
 	_last_fed_pos = Vector3.INF
 	_step_t = -1.0
 	local_peer = 0
+
+
+## A crew member left mid-mission: forget its puppet buffer (pose() is null from now on) and stop forwarding it.
+func drop(peer: int) -> void:
+	_buffers.erase(peer)
+	_owned.erase(peer)
+	for key: int in _forwarded.keys():
+		if (key & 0xFFFFFFFF) == (peer & 0xFFFFFFFF) or (key >> 32) == peer:
+			_forwarded.erase(key)
 
 
 ## The local mech's state after a physics step of `delta` s. Stamps it: peer, teleport counter (a jump of more than
@@ -141,14 +152,6 @@ func owned_state(id: int) -> NetMechState:
 	return (_owned[id] as Dictionary)["s"] as NetMechState if _owned.has(id) else null
 
 
-func owned_ids() -> Array[int]:
-	var out: Array[int] = []
-	for p: int in _owned:
-		out.append(p)
-	out.sort()
-	return out
-
-
 ## feed()'s step clock: the last t plus `delta`, eased toward `now` (re-anchored past CLOCK_SNAP; delta <= 0 or no
 ## clock yet: now).
 static func _step_clock(t: float, delta: float, now: float) -> float:
@@ -162,10 +165,6 @@ static func _step_clock(t: float, delta: float, now: float) -> float:
 ## The newest state fed for the local mech (what goes out next), null before the first feed.
 func local_state() -> NetMechState:
 	return _local
-
-
-func is_puppet(peer: int) -> bool:
-	return _buffers.has(peer)
 
 
 func puppet_peers() -> Array[int]:

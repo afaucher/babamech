@@ -5,6 +5,7 @@
 #   .\test_runner.ps1 -TestAll -NoImport                            # skip the import check
 #   .\test_runner.ps1 -TestName test_net_handshake -Link coast      # a net test under one link preset only
 #   .\test_runner.ps1 -Visual                                       # the VISUAL tests: real renderer, hidden window
+#   .\test_runner.ps1 -TestAll -Skip test_perf                      # leave tests out (comma-separate; CI, docs/ci.md)
 #
 # VISUAL TESTS (docs/testing.md): a test whose source declares `const VISUAL := true` needs real pixels. -TestAll skips
 # it; -Visual runs every visual test (or -Visual -TestName x) one at a time WITHOUT --headless, in a 1600x900 window on a
@@ -18,7 +19,9 @@
 #
 # SERIAL TESTS: a test whose source declares `const SERIAL := true` (a wall-clock budget, e.g. test_perf) is left out of
 # the parallel batch and runs after everything else (the net runs too), one at a time, with no other test process going.
-# PER-TEST TIMEOUT: `const TEST_TIMEOUT := N` gives a (non-net) test max(-TimeoutSec, N) s (the bot-played missions).
+# PER-TEST TIMEOUT (wall clock): a (non-net) test gets max(-TimeoutSec, 1.5 x D + 30) s, D = the larger of its
+# `const TEST_TIMEOUT := N` and a literal `timeout_sec = N` (also read from a `extends "res://tests/..."` case file). A
+# net run gets max(-NetTimeoutSec, NET_TIMEOUT, literal net_timeout + 20). docs/testing.md "Timeouts and audio".
 #
 # Logs: test_logs\<name>.log / .err.log. A test passes only with exit code 0, the ">>> [TEST PASSED] <name> <<<"
 # marker, AND no "SCRIPT ERROR" / "Parse Error" in its output. Ordinary tests run under --fixed-fps 60.
@@ -39,7 +42,8 @@ param(
     [int]$TimeoutSec = 120,
     [string]$Link = "",
     [int]$NetTimeoutSec = 90,
-    [switch]$Visual
+    [switch]$Visual,
+    [string]$Skip = ""
 )
 . "$PSScriptRoot\godot_env.ps1"
 $godot = Resolve-BabamechGodot
@@ -55,10 +59,14 @@ if (-not $Visual -and -not $TestAll -and $TestName -eq "") {
 }
 if (-not $NoImport) { Update-BabamechImport $godot }
 
+# No test makes a sound: the Dummy audio driver for every test process (--headless implies it already; the visual runs
+# on the hidden desktop are windowed and need it said). AudioDirector.silent also skips the cue work itself headless.
+$script:quiet = "--audio-driver Dummy"
+
 function Start-Godot([string]$Name, [string]$Extra = "", [string]$Timing = "--fixed-fps 60", [string]$Display = "--headless") {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $godot
-    $psi.Arguments = "--path `"$PSScriptRoot`" $Display $Timing -- --run-test $Name $Extra"
+    $psi.Arguments = "--path `"$PSScriptRoot`" $Display $Timing $script:quiet -- --run-test $Name $Extra"
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
     $psi.RedirectStandardOutput = $true
@@ -75,10 +83,30 @@ function Test-Visual([string]$Name) { return (Get-Content -Raw "$PSScriptRoot\te
 function Test-Serial([string]$Name) { return (Get-Content -Raw "$PSScriptRoot\tests\$Name.gd") -match '(?m)^const SERIAL\s*:=\s*true' }
 
 # `const TEST_TIMEOUT := N` in a (non-net) test: it gets max(-TimeoutSec, N) s (a whole bot-played mission).
+# The largest literal value of `pattern` (group 1) in tests\<name>.gd and the scripts it extends by path
+# (`extends "res://tests/x_case.gd"`, several levels); 0 when none. A computed value (`timeout_sec = limit + 60.0`) is
+# not read: declare `const TEST_TIMEOUT` for those.
+function Get-DeclaredMax([string]$Name, [string]$Pattern) {
+    $best = 0.0
+    $file = "$PSScriptRoot\tests\$Name.gd"
+    for ($depth = 0; $depth -lt 6 -and (Test-Path $file); $depth++) {
+        $src = Get-Content -Raw $file
+        foreach ($m in [regex]::Matches($src, $Pattern)) { $best = [Math]::Max($best, [double]$m.Groups[1].Value) }
+        $e = [regex]::Match($src, '(?m)^extends\s+"res://([^"]+)"')
+        if (-not $e.Success) { break }
+        $file = Join-Path $PSScriptRoot ($e.Groups[1].Value -replace '/', '\')
+    }
+    return $best
+}
+
+# A (non-net) test's wall-clock kill: the test's own limit is the larger of `const TEST_TIMEOUT := N` and a literal
+# `timeout_sec = N` (TestCase's game-time timer); game time can run slower than the wall clock under load (and the
+# scene loads before the timer starts), so the runner allows x1.5 + 30 s of it, never less than -TimeoutSec (120).
 function Get-TestTimeout([string]$Name) {
-    $m = [regex]::Match((Get-Content -Raw "$PSScriptRoot\tests\$Name.gd"), '(?m)^const TEST_TIMEOUT\s*:=\s*(\d+)')
-    if ($m.Success) { return [Math]::Max($TimeoutSec, [int]$m.Groups[1].Value) }
-    return $TimeoutSec
+    $declared = [Math]::Max((Get-DeclaredMax $Name '(?m)^const TEST_TIMEOUT\s*:=\s*(\d+)'),
+        (Get-DeclaredMax $Name '(?m)^\s*timeout_sec\s*=\s*(\d+(?:\.\d+)?)\s*(?:#.*)?$'))
+    if ($declared -le 0) { return $TimeoutSec }
+    return [Math]::Max($TimeoutSec, [int][Math]::Ceiling($declared * 1.5 + 30))
 }
 
 function Start-Test([string]$Name) {
@@ -113,10 +141,12 @@ function Get-NetSpec([string]$Name) {
     $lm = [regex]::Match($src, '(?m)^const LINKS\s*:=\s*\[([^\]]*)\]')
     if ($lm.Success) { $links = @([regex]::Matches($lm.Groups[1].Value, '"([a-z]+)"') | ForEach-Object { $_.Groups[1].Value }) }
     if ($Link -ne "") { $links = @($Link) }
-    # `const NET_TIMEOUT := N`: a long net test (a whole bot-played mission) gets N s instead of -NetTimeoutSec.
-    $timeout = $NetTimeoutSec
-    $tm = [regex]::Match($src, '(?m)^const NET_TIMEOUT\s*:=\s*(\d+)')
-    if ($tm.Success) { $timeout = [Math]::Max($NetTimeoutSec, [int]$tm.Groups[1].Value) }
+    # `const NET_TIMEOUT := N`: a long net test (a whole bot-played mission) gets N s instead of -NetTimeoutSec. A literal
+    # `net_timeout = N` (NetTest's own wall-clock limit, counted from setup()) in the test or its case file gets N + 20 s
+    # (process start and scene load before setup); never less than -NetTimeoutSec (90).
+    $timeout = [Math]::Max($NetTimeoutSec, [int](Get-DeclaredMax $Name '(?m)^const NET_TIMEOUT\s*:=\s*(\d+)'))
+    $own = Get-DeclaredMax $Name '(?m)^\s*net_timeout\s*=\s*(\d+(?:\.\d+)?)\s*(?:#.*)?$'
+    if ($own -gt 0) { $timeout = [Math]::Max($timeout, [int][Math]::Ceiling($own + 20)) }
     return @{ Peers = [int]$m.Groups[1].Value; Links = $links; Timeout = $timeout }
 }
 
@@ -204,7 +234,7 @@ function Invoke-VisualNetRun([string]$Name, [int]$Peers, [string]$LinkName, [int
             $netRole = if ($i -eq 0) { "--net-role host --net-index 0" } else { "--net-role client --net-index $i" }
             $log = "$logDir\$tag.$role.log"
             Remove-Item $log -ErrorAction SilentlyContinue
-            $argLine = "--path `"$PSScriptRoot`" --resolution 1600x900 --position $(40 * $i),$(40 * $i) --max-fps 60 --log-file `"$log`" -- --run-test $Name $netRole $common"
+            $argLine = "--path `"$PSScriptRoot`" --resolution 1600x900 --position $(40 * $i),$(40 * $i) --max-fps 60 $script:quiet --log-file `"$log`" -- --run-test $Name $netRole $common"
             $procs += [PSCustomObject]@{ Role = $role; Log = $log; P = (Start-HiddenDesktop -Exe $godot -WorkDir $PSScriptRoot -Arguments $argLine) }
             if ($i -eq 0) { Start-Sleep -Milliseconds 400 }   # the host binds first; clients also retry while it starts
         }
@@ -247,6 +277,11 @@ function Invoke-VisualNetRun([string]$Name, [int]$Peers, [string]$LinkName, [int
 # --- Schedule ------------------------------------------------------------------------------------
 
 $names = if ($TestAll -or ($Visual -and $TestName -eq "")) { Get-ChildItem "$PSScriptRoot\tests\test_*.gd" | ForEach-Object { $_.BaseName } } else { @($TestName -split '[\s,]+' | Where-Object { $_ -ne "" }) }
+$skipNames = @($Skip -split '[\s,]+' | Where-Object { $_ -ne "" })
+if ($skipNames.Count -gt 0) {
+    $names = @($names | Where-Object { $skipNames -notcontains $_ })
+    Write-Host "  (skipped by -Skip: $($skipNames -join ', '))" -ForegroundColor DarkGray
+}
 $existing = @($names | Where-Object { Test-Path "$PSScriptRoot\tests\$_.gd" })
 if ($Visual) {
     # Only visual tests, one window at a time (GPU).
@@ -292,8 +327,8 @@ if ($Visual) {
             $log = "$logDir\$n.log"
             Remove-Item $log -ErrorAction SilentlyContinue
             $w = [Diagnostics.Stopwatch]::StartNew()
-            $code = Invoke-HiddenDesktop -Exe $godot -WorkDir $PSScriptRoot -TimeoutSec $TimeoutSec `
-                -Arguments "--path `"$PSScriptRoot`" --resolution 1600x900 --fixed-fps 60 --log-file `"$log`" -- --run-test $n"
+            $code = Invoke-HiddenDesktop -Exe $godot -WorkDir $PSScriptRoot -TimeoutSec (Get-TestTimeout $n) `
+                -Arguments "--path `"$PSScriptRoot`" --resolution 1600x900 --fixed-fps 60 $script:quiet --log-file `"$log`" -- --run-test $n"
             $out = if (Test-Path $log) { Get-Content -Raw $log } else { "" }
             $total += 1
             $ok = ($code -eq 0) -and ($out -match [regex]::Escape(">>> [TEST PASSED] $n <<<")) -and -not (Test-Bad $out)

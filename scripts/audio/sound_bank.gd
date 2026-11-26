@@ -170,10 +170,6 @@ func clear_cache() -> void:
 	_prewarm_idx = 0
 
 
-func is_cached(cue_id: String) -> bool:
-	return _cache.has(cue_id)
-
-
 ## Two-tier lookup: baked res://assets/audio/<id>.res if present, else cached runtime AudioSynth stream.
 func get_stream(cue_id: String) -> AudioStreamWAV:
 	if _cache.has(cue_id):

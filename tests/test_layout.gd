@@ -341,9 +341,10 @@ func _long_plan() -> MissionPlan:
 	return mp
 
 
-## The objective panel with the longest content (5 decks, two found bonuses on each, the depot line, this deck's primary
-## done so "Proceed to the next floor" leads): still the one panel, top right, on screen, at most MissionHud.PANEL_FRAC
-## of the screen height; every deck still has a line (other decks collapse to one line each); the depot line shows.
+## The objective panel with the longest content (5 decks all visited by the crew, two found bonuses on each and every
+## other deck's primary left, the depot line, this deck's primary done so the "Deck n: ... left" / "Return to deck n"
+## lines lead with their route hints): still the one panel, top right, on screen, at most MissionHud.PANEL_FRAC of the
+## screen height; every other deck still has its line; the depot line shows; no direction prefix ("V1", "^1") anywhere.
 func _long_panel(hud: MechHud, mh: MissionHud, tag: String) -> void:
 	var sec := SectionPlan.make({"seed": 21.0, "decks": 5.0})
 	var rules := MissionRules.make(sec, {"plan": _long_plan()})
@@ -351,10 +352,13 @@ func _long_panel(hud: MechHud, mh: MissionHud, tag: String) -> void:
 	for o: Dictionary in rules.objectives:
 		objs[o["id"]] = ["known", 3.0, 20.0]
 	objs["p0"] = ["done", 20.0, 20.0]
-	rules.apply_state({"objs": objs, "left": [4, 6, 8, 10, 12], "reached": 0})
+	rules.apply_state({"objs": objs, "left": [4, 6, 8, 10, 12], "reached": 4})
 	var core_line := MissionDepots.line_for(0.6)
 	for v: int in [0, 2, 4]:
-		var pn := rules.panel(v, Vector2(20.0, 30.0), MissionHud.ascii_arrows())
+		var vo := objs.duplicate()
+		vo["p%d" % v] = ["done", 20.0, 20.0]
+		rules.apply_state({"objs": vo})
+		var pn := rules.panel(v, Vector2(20.0, 30.0))
 		pn["extra"] = [core_line]
 		hud.demo = false
 		mh.source = func() -> Dictionary: return {"objective": rules.text(), "waypoint": {}, "banner": {}, "plan": true,
@@ -375,19 +379,22 @@ func _long_panel(hud: MechHud, mh: MissionHud, tag: String) -> void:
 				continue
 			var any := false
 			for s: String in shown:
-				any = any or s.contains("DECK %d" % (d + 1))
+				any = any or s.to_upper().contains("DECK %d" % (d + 1))
 			check(any, t + ": deck %d still has a line (%s)" % [d + 1, shown])
+		for s: String in shown:
+			check(not s.begins_with("V1") and not s.begins_with("^1") and not s.contains("?"), t + ": no prefix in %s" % s)
 		var ok := mh.list_panel.get_global_rect().end.y <= root.end.y
 		check(ok and not r.intersects(hud.weapon_panel.get_global_rect()) and not r.intersects(hud.crew_panel.get_global_rect()),
 			t + ": clear of the weapons and the crew panel")
 		print("%s: %d rows, panel %.0f x %.0f at (%.0f, %.0f)" % [t, shown.size(), r.size.x, r.size.y, r.position.x, r.position.y])
-	# The demo panel (deck 1 of 3) shows its header, the sub-headers and the route line.
+	# The demo panel (deck 1 of 3) shows its three lines, "Proceed to deck 2" and the route hint.
 	mh.source = Callable()
 	hud.demo = true
 	mh.demo_plan = true
 	await frames(2)
 	var demo := mh.shown_lines()
-	check(demo.size() >= 6, tag + ": the demo panel lists this deck, deck 2 with its route, deck 3 (%s)" % [demo])
+	check(demo.size() == 5 and demo.has("Proceed to deck 2") and demo.has("ramp down 120 m"),
+		tag + ": the demo panel lists this deck, then Proceed to deck 2 with its route (%s)" % [demo])
 	mh.demo_plan = false
 	await frames(1)
 
@@ -442,7 +449,7 @@ func _menu(sz: Vector2i) -> void:
 	await frames(2)
 	lc.on_screen(fe.chassis_pick, tag + " hangar chassis")
 	lc.on_screen(fe.ff_check, tag + " hangar friendly fire")
-	lc.on_screen(fe.obj_check, tag + " hangar objectives")
+	check(fe.find_child("Objectives", true, false) == null, tag + ": no Objectives box in the hangar (objectives are the only mode)")
 	await _hangar_framing(fe, left, tag)
 	for hp: String in fe.weapon_picks:
 		await _reachable(fe.weapon_picks[hp], "%s hangar %s" % [tag, hp])
@@ -457,8 +464,33 @@ func _menu(sz: Vector2i) -> void:
 		check(b.get_parent() == fe.footer, "%s: '%s' sits in the pinned footer" % [tag, b.text])
 	fe.note = ""
 	await _hangar_bots(fe, tag)
+	await _invite_prompt(fe, tag)
 	fe.queue_free()
 	await frames(1)
+
+
+## A Steam invite asks first (FrontEnd.show_invite_prompt): a modal over the whole menu naming the inviter, its Accept and
+## Decline buttons on screen (also with a long name); Decline closes it and forgets the invite.
+func _invite_prompt(fe: FrontEnd, tag: String) -> void:
+	for who: String in ["Ripley", "A Pilot With A Very Long Steam Persona Name"]:
+		Session.pending_invite = {"lobby": 42, "inviter": who}
+		fe.show_invite_prompt(who)
+		await frames(2)
+		var t := "%s invite prompt (%d chars)" % [tag, who.length()]
+		if not check(fe.invite_prompt != null, t + ": shown"):
+			return
+		lc.fills_screen(fe.invite_prompt, t + " shade")
+		lc.on_screen(fe.invite_prompt.get_node_or_null("Center/Panel") as Control, t + " panel", Vector2(300, 100), 1.0)
+		lc.on_screen(fe.invite_label, t + " text", Vector2(100, 20), 1.0)
+		check(fe.invite_label.text.contains(who), "%s: names the inviter (%s)" % [t, fe.invite_label.text])
+		for b: Button in [fe.btn_invite_accept, fe.btn_invite_decline]:
+			lc.on_screen(b, "%s '%s'" % [t, b.text], Vector2(100, 40), 1.0)
+		lc.buttons_on_screen(fe.invite_prompt, t)
+	var prompt := fe.invite_prompt
+	fe.btn_invite_decline.pressed.emit()
+	await frames(2)
+	check(fe.invite_prompt == null and not is_instance_valid(prompt), tag + " invite prompt: Decline closes it")
+	check(Session.pending_invite.is_empty(), tag + " invite prompt: Decline forgets the invite")
 
 
 ## The chassis picker: switching to the Bulwark rebuilds the loadout rows for its four hardpoints (each reachable, the

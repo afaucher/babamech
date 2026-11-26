@@ -45,7 +45,6 @@ func run_host() -> void:
 	eq(str(Session.bots[id]["skill"]), "veteran", "the skill reaches every bot")
 	check(Session.remove_bot(id2), "the host removes the second bot")
 	eq(Session.crew().size(), 3, "crew: host, bot, client")
-	Session.objectives = true   # plan mode (the game's default): waves, depots
 	check(Session.start_mission(SEED), "the host launches")
 	eq(Session.remove_bot(id), false, "no bot changes during a mission")
 	await _load()
@@ -139,7 +138,6 @@ func run_host() -> void:
 		print("[Test] bot depot: nearest %s" % str(near))
 		check(await until(func() -> bool: return granted[0] or cb.target.disabled, DEPOT_TIMEOUT),
 			"the hurt bot walks to a depot and gets a core (visits %d, %s)" % [int(cb.ai.depot_visits), cb.ai.goal_text])
-	Session.objectives = false
 	command(peers_with("lobby")[0], "end")   # the client stays in the mission until the depot check is done
 	print("[Test] bot: %s" % (str(cb.ai.stats()) if cb.ai != null else "none"))
 	check(await wait_done(1, 30.0), "the client is done")

@@ -309,11 +309,6 @@ func _dest(t: float) -> Dictionary:
 	return {"ps": e["ps"], "pdwell": e["pdwell"], "dep_sched": e["dep"], "dep_base": e["dep_base"]}
 
 
-## The train's ends at its pose: Vector2(s of the low end, s of the high end).
-static func extent_of(s: float) -> Vector2:
-	return Vector2(s - HALF, s + HALF)
-
-
 ## The centre s of car i (0..2) when the middle car's centre is at s.
 static func car_s(s: float, i: int) -> float:
 	return s + float(i - 1) * PITCH
@@ -383,12 +378,6 @@ func _finish(e: Dictionary) -> void:
 	e["shift"] = float(e["dep"]) - float(e["dep_base"])
 
 
-## The time the tram restarts (or last restarted) after a halt at or before t, or -INF.
-func restart_time(t: float) -> float:
-	var e := _episode_at(t)
-	return -INF if e.is_empty() else float(e["tr"])
-
-
 # --- For people crossing the rail lane (pure: the timetable only) ---------------------------------------------
 
 ## The earliest time >= t from which the timetable keeps every car more than `gap` m (along the rail) from the cross
@@ -433,6 +422,11 @@ func restore(bytes: PackedByteArray) -> void:
 	if buf.get_u8() != SNAP_VERSION:
 		return
 	var n := buf.get_u16()
+	# From a peer (life.sync): exactly n episodes must follow, else the whole buffer is ignored (no reading past its end,
+	# no allocating by the peer's count).
+	if buf.get_available_bytes() != n * EP_KEYS.size() * 8:
+		push_warning("LifeTram.restore: malformed snapshot (%d bytes, %d episodes): ignored" % [bytes.size(), n])
+		return
 	for i in n:
 		var e := {}
 		for k: String in EP_KEYS:

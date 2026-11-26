@@ -1,8 +1,9 @@
 class_name CitySigns
 extends RefCounted
-## Deck lettering (docs/design/city-signs.md): "DECK" + the deck's two-digit number beside every boundary-wall gate and
-## freight lift door, and a way-finding sign (arrow + the destination deck) at both ends of every ramp and over every
-## open-air shaft. Number = section deck index + 1 (the top deck, with the entry portal, is 01), as the mission HUD says.
+## Deck lettering (docs/design/city-signs.md): "DECK" + the deck's two-digit number, ONE sign above every boundary-wall
+## gate / portal and every freight lift door, and a way-finding sign (arrow + the destination deck) at both ends of every
+## ramp. Nothing beside doors, nothing over shafts or ceiling openings (user feedback 2026-11-25). Number = section deck
+## index + 1 (the top deck, with the entry portal, is 01), as the mission HUD says.
 ##
 ## Cosmetic only: baked flat polygons drawn through CityGeo (one flat colour per face, no textures, no fonts, no Label3D),
 ## no collision, not in the plan checksum, not in CityDistrict.geometry_digest() or stats.triangles (its own
@@ -13,7 +14,7 @@ extends RefCounted
 ##            the game's look
 ##   "white"  bold stencil numerals painted on the wall in off-white with a thin dark outline (cell 4), lab only
 ##   "off"    nothing
-## Where the surface is not a plain wall (a farm wall's racks, a lift core's pilasters, the air over a ramp or shaft), both
+## Where the surface is not a plain wall (a farm wall's racks, a lift core's pilasters, the air over a ramp), both
 ## looks stand on the same panel (white: plain concrete), so switching never moves a sign.
 ##
 ## Glyphs: a small stencil face designed on a 10-unit cap height (digits 6 wide, stroke 1.9, stencil gaps 0.7): 0-9,
@@ -22,23 +23,12 @@ extends RefCounted
 static var style := "dark"           ## "dark" (the user's pick 2026-11-24, cell 6) | "white" (cell 4, lab only) | "off"
 static var force_number := 0         ## > 0: a district with no section shows this number (tests / lab); 0: none
 
-## Wall signs keep their near edge this far beyond a gate's edge (clear of a MissionWorld bunker's jambs and sloped
-## buttress feet, which reach 2.4 + 2.2 m past the opening's post, 2 m out of the wall) ...
-const GATE_CLEAR := 5.0
-## ... and on the gate's right as seen from the street (+X of MissionProps.gate_frame) past the bunker's sign pier too
-## (half + 4.9 .. half + 11.7 m from mid-gate, 8 m tall, 1.6 m out: MissionProps.GateDoor._build_bunker).
-const GATE_CLEAR_PIER := 11.6
 const OVER_CLEAR := 5.7              ## over-gate sign: its panel's bottom this far over the gate's top (bunker lintel + beacons + 1 m) ...
 const OVER_MIN := 17.2               ## ... and at least this high (over a bulkhead's gallery band, 15.4-16.6 m)
-const OVER_SHARE := 0.6              ## its panel is this share of the gate's width ...
+const OVER_SHARE := 0.75             ## its panel is this share of the gate's width (0.6 until the side signs went, 2026-11-25) ...
 const OVER_U := Vector2(0.4, 0.8)    ## ... with its glyph unit in this range (numeral 4-8 m) ...
 const OVER_TOP := 4.0                ## ... and its top this far under the ceiling (the girders)
-const MAX_REACH := 18.0             ## a wall sign's near edge at most this much past its clearance (else no sign there)
-const END_MARGIN := 3.0              ## and this far from the wall's ends (the side walls' posts reach 1.4 m in)
-const BAY_MARGIN := 1.1              ## a bulkhead sign stays this far from each buttress post's centre line + 0.3 m
 
-const WALL_U := 0.58                 ## wall signs: numeral 5.8 m tall ...
-const WALL_BASE := 4.5               ## ... its bottom this high (a dark panel reaches 1.6 m lower)
 const LIFT_U := 0.36                 ## lift signs: numeral 3.6 m, the panel's bottom over the door's lamps (9.0-9.8 m)
 const LIFT_BOTTOM := 10.4
 const LIFT_Z := Vector2(0.3, 0.9)    ## the lift panel's back and face, out of the core's face (pilasters 0.5, channel 0.62)
@@ -91,21 +81,20 @@ static func label(n: int) -> String:
 
 # --- Layout (style independent) ----------------------------------------------------------------------------------
 
-## Every sign of a district, whatever the style: [{kind (wall | lift | ramp | shaft), surface (bulkhead | farm | lift |
+## Every sign of a district, whatever the style: [{kind (over_gate | lift | ramp), surface (bulkhead | farm | lift |
 ## hang), xf (frame in district coordinates: origin on the surface plane at the floor, +X reading right, +Z out of the
 ## surface), u, base (numeral bottom, frame y), z0 / z1 (panel back / face), w / y0 / y1 (footprint, x centred on 0),
 ## front / back ({number, arrow}), number, dest, arrow, at / n / ref (arc x, s of the sign's centre on its surface, its
-## facing, the thing it labels), h (centre height), side, u0 / u1 (along its wall, arc), gate, pillar, ramp, shaft}].
+## facing, the thing it labels), h (centre height), side, u0 / u1 (along its wall, arc), gate, pillar, ramp}].
 static func layout(plan: CityPlan, ring: RingFrame) -> Array:
 	var out := []
 	var n := number_of(plan)
 	if n <= 0:
 		return out
 	var geo := CityGeo.new(ring)
-	_walls(out, plan, geo, n)
+	_gates(out, plan, geo, n)
 	_lifts(out, plan, ring, n)
 	_ramps(out, plan, geo, n)
-	_shafts(out, plan, geo, n)
 	return out
 
 
@@ -130,78 +119,30 @@ static func _sign(kind: String, surface: String, xf: Transform3D, u: float, base
 	return {"kind": kind, "surface": surface, "xf": xf, "u": u, "base": base, "z0": z.x, "z1": z.y, "w": fp.x,
 			"y0": base + fp.y, "y1": base + fp.z, "front": front, "back": back, "number": int(front["number"]),
 			"dest": int(front["number"]) if str(front.get("arrow", "")) != "" else -1, "arrow": str(front.get("arrow", "")),
-			"h": base + (fp.y + fp.z) * 0.5, "side": -1, "u0": 0.0, "u1": 0.0, "gate": -1, "pillar": -1, "ramp": -1, "shaft": -1}
+			"h": base + (fp.y + fp.z) * 0.5, "side": -1, "u0": 0.0, "u1": 0.0, "gate": -1, "pillar": -1, "ramp": -1}
 
 
-## Beside every gate of every bulkhead / farm wall, both sides where the wall allows. A bulkhead is painted between its
-## buttress posts (a bay); a farm wall gets a plain panel in front of its racks. Window walls (the hull, a district on its
-## own only) carry none: their glazing starts 8 m up.
-static func _walls(out: Array, plan: CityPlan, geo: CityGeo, n: int) -> void:
-	var e := plan.extent
-	var fp := footprint(WALL_U, content_w({"number": n}))
-	var sw := fp.x
+## One sign per gate of every bulkhead / farm wall (portals too): the over-gate sign, and nothing beside the gate (user
+## feedback 2026-11-25: "Just one sign above doors, not 3"). Window walls (the hull, a district on its own only) carry none.
+static func _gates(out: Array, plan: CityPlan, geo: CityGeo, n: int) -> void:
 	var gi := 0
 	for w: Dictionary in plan.boundary():
 		var kind := str(w["kind"])
 		var gates: Array = w["gates"]
-		if kind != "bulkhead" and kind != "farm":
-			gi += gates.size()
-			continue
-		var side := int(w["side"])
-		var across := side >= 2
-		var at := float(w["at"])
-		var inward := -1.0 if side % 2 == 0 else 1.0
-		var ux := [1.0, -1.0, -1.0, 1.0][side] as float       # +u along the wall is reading-right (1) or left (-1)
-		var u0 := e.position.x if across else e.position.y
-		var u1 := e.end.x if across else e.end.y
-		# Blocked: each gate grown by its clearances (the pier side is reading-right), and the wall's ends.
-		var blocked: Array = []
-		for g: Dictionary in gates:
-			var right := GATE_CLEAR_PIER
-			var left := GATE_CLEAR
-			if ux > 0.0:
-				blocked.append([float(g["a"]) - left, float(g["b"]) + right])
-			else:
-				blocked.append([float(g["a"]) - right, float(g["b"]) + left])
-		var placed: Array = []
-		for gk in gates.size():
-			var g: Dictionary = gates[gk]
-			var over := _over_gate(plan, geo, w, g, n)
-			if not over.is_empty():
-				over["gate"] = gi + gk
-				out.append(over)
-			for du: float in [-1.0, 1.0]:
-				var clear := GATE_CLEAR_PIER if du * ux > 0.0 else GATE_CLEAR
-				var near := float(g["b"]) + clear if du > 0.0 else float(g["a"]) - clear
-				var c := _fit(kind, across, near, du, sw, u0, u1, blocked, placed)
-				if is_nan(c):
-					continue
-				placed.append([c - sw * 0.5, c + sw * 0.5])
-				var xf: Transform3D
-				if across:
-					xf = geo.frame(c, at, 0.0, 0.0 if inward > 0.0 else PI)
-				else:
-					xf = geo.frame(at, c, 0.0, PI * 0.5 if inward > 0.0 else -PI * 0.5)
-				var z := FARM_Z if kind == "farm" else Vector2(0.0, PANEL_T)
-				var s := _sign("wall", kind, xf, WALL_U, WALL_BASE, z, {"number": n, "arrow": ""})
-				s["side"] = side
-				s["u0"] = c - sw * 0.5
-				s["u1"] = c + sw * 0.5
-				s["gate"] = gi + gk
-				var nv := Vector2(inward, 0.0) if not across else Vector2(0.0, inward)
-				var mid := (float(g["a"]) + float(g["b"])) * 0.5
-				s["n"] = nv
-				s["at"] = Vector2(c, at) if across else Vector2(at, c)
-				s["ref"] = Vector2(mid, at) if across else Vector2(at, mid)
-				out.append(s)
+		if kind == "bulkhead" or kind == "farm":
+			for gk in gates.size():
+				var over := _over_gate(plan, geo, w, gates[gk], n)
+				if not over.is_empty():
+					over["gate"] = gi + gk
+					out.append(over)
 		gi += gates.size()
 
 
-## Centred ABOVE gate g on the wall over it (reads from the road that ends at the gate, where the side signs are behind
-## the corner blocks): its panel's bottom over a MissionWorld bunker's lintel and the beacons standing on it (gate top +
-## LINTEL_H 3 + housing 0.4 + beacon 1.3 m, MissionProps.GateDoor) with 1 m to spare, which also clears the baked hazard
-## frame (gate top + 1.6 m), and over a bulkhead's gallery band (15.4-16.6 m); sized with the gate (OVER_SHARE of its
-## width), under the ceiling's girders. Farm walls: on the proud panel like the side signs.
+## Centred ABOVE gate g on the wall over it (reads from the road that ends at the gate): its panel's bottom over a
+## MissionWorld bunker's lintel and the beacons standing on it (gate top + LINTEL_H 3 + housing 0.4 + beacon 1.3 m,
+## MissionProps.GateDoor) with 1 m to spare, which also clears the baked hazard frame (gate top + 1.6 m), and over a
+## bulkhead's gallery band (15.4-16.6 m); sized with the gate (OVER_SHARE of its width), under the ceiling's girders.
+## Farm walls: on a proud panel in front of the racks.
 static func _over_gate(plan: CityPlan, geo: CityGeo, w: Dictionary, g: Dictionary, n: int) -> Dictionary:
 	var side := int(w["side"])
 	var across := side >= 2
@@ -233,53 +174,6 @@ static func _over_gate(plan: CityPlan, geo: CityGeo, w: Dictionary, g: Dictionar
 	s["gate_top"] = float(g["h"])
 	s["door_key"] = "%d:%.2f" % [side, float(g["a"])]     # CityStreets.walls' key of a MissionWorld door in this gate
 	return s
-
-
-## The centre (along the wall) of a sign `sw` wide whose near edge is as close past `near` (going `du`) as the wall
-## allows, or NAN. Bulkheads: inside one bay between buttress posts, centred in it where it can be.
-static func _fit(kind: String, across: bool, near: float, du: float, sw: float, u0: float, u1: float, blocked: Array,
-		placed: Array) -> float:
-	var lo_lim := u0 + END_MARGIN
-	var hi_lim := u1 - END_MARGIN
-	var cands: Array = []      # [lo, hi, preferred centre]
-	if kind == "bulkhead":
-		var pitch := CityStreets.GIRDER_PITCH if across else CityStreets.RIB_PITCH * 0.5
-		var k0 := floori(minf(near, near + du * (MAX_REACH + sw)) / pitch) - 1
-		var k1 := ceili(maxf(near, near + du * (MAX_REACH + sw)) / pitch) + 1
-		for k in range(k0, k1 + 1):
-			var a := float(k) * pitch + BAY_MARGIN
-			var b := float(k + 1) * pitch - BAY_MARGIN
-			cands.append([a, b, (a + b) * 0.5])
-	else:
-		cands.append([near - 1e4 if du < 0.0 else near, near + 1e4 if du > 0.0 else near, NAN])
-	var best := NAN
-	var best_d := INF
-	for cd: Array in cands:
-		var a := maxf(float(cd[0]), lo_lim)
-		var b := minf(float(cd[1]), hi_lim)
-		if du > 0.0:
-			a = maxf(a, near)
-		else:
-			b = minf(b, near)
-		if b - a < sw:
-			continue
-		var c: float = cd[2] if not is_nan(float(cd[2])) else (a + sw * 0.5 if du > 0.0 else b - sw * 0.5)
-		c = clampf(c, a + sw * 0.5, b - sw * 0.5)
-		var edge := c - sw * 0.5 if du > 0.0 else c + sw * 0.5
-		var d := (edge - near) * du
-		if d < -0.001 or d > MAX_REACH:
-			continue
-		var ok := true
-		for bl: Array in blocked:
-			if c + sw * 0.5 > float(bl[0]) + 0.001 and c - sw * 0.5 < float(bl[1]) - 0.001:
-				ok = false
-		for bl: Array in placed:
-			if c + sw * 0.5 > float(bl[0]) - 0.5 and c - sw * 0.5 < float(bl[1]) + 0.5:
-				ok = false
-		if ok and d < best_d:
-			best_d = d
-			best = c
-	return best
 
 
 ## Over every freight lift door (the core's `front` face: CityBuildings._pillar), on a panel above the door's lamps:
@@ -333,26 +227,6 @@ static func _ramps(out: Array, plan: CityPlan, geo: CityGeo, n: int) -> void:
 			continue
 		s["ramp"] = ri
 		s["ref"] = Vector2(xc, float(r["s_top"]) if top else float(r["s_foot"]))
-		out.append(s)
-
-
-## Over every open-air shaft cut in this deck's floor, at its middle: arrow down + the deck it drops to, both faces.
-static func _shafts(out: Array, plan: CityPlan, geo: CityGeo, _n: int) -> void:
-	var sec := plan.section
-	if sec == null:
-		return
-	for ci in sec.connectors.size():
-		var cn: Dictionary = sec.connectors[ci]
-		if cn["kind"] != "shaft" or not sec.is_hole(ci, plan.deck):
-			continue
-		var rect := sec.connector_rect(ci, plan.deck)
-		var c := rect.get_center()
-		var way := {"number": int(cn["to"]) + 1, "arrow": "down"}
-		var s := _hung(plan, geo, "shaft", c.x, c.y, 1.0, way, way)
-		if s.is_empty():
-			continue
-		s["shaft"] = ci
-		s["ref"] = c
 		out.append(s)
 
 
@@ -617,10 +491,10 @@ static func _make_glyphs() -> Dictionary:
 # --- Lab ---------------------------------------------------------------------------------------------------------
 
 ## A lab camera on the first sign of a kind on the first district of `list` that has one: {district, eye, target} in arc
-## coordinates (x, s, h), or {}. sign_gate: a wall gate and its lettering from 60 m at 10 m up; sign_lift: a lift door
-## and its sign from 45 m; sign_ramp: a ramp's hung sign from 55 m in front of its face.
+## coordinates (x, s, h), or {}. sign_road: a gate and its over-gate sign from its road, 80 m back at 10 m up; sign_lift:
+## a lift door and its sign from 45 m; sign_ramp: a ramp's hung sign from 55 m in front of its face.
 static func lab_view(list: Array, cam: String) -> Dictionary:
-	var want := {"sign_gate": "wall", "sign_lift": "lift", "sign_ramp": "ramp", "sign_road": "over_gate"}.get(cam, "") as String
+	var want := {"sign_lift": "lift", "sign_ramp": "ramp", "sign_road": "over_gate"}.get(cam, "") as String
 	for d: Variant in list:
 		if d == null or d.plan == null:
 			continue
@@ -642,20 +516,6 @@ static func lab_view(list: Array, cam: String) -> Dictionary:
 					first = v0
 				if _seen(d.plan, Vector3(e0.x, e0.y, 10.0), Vector3(at.x, at.y, float(s["h"]))):
 					return v0
-				continue
-			if want == "wall":
-				# 60 m out at 10 m, down the road that ends at the gate (gates sit at road ends) or straight out from the sign:
-				# the first sign whose lettering and gate no building hides from there (a sign 5 m beside a road-end gate is
-				# behind the corner block from down that road; it reads from the perimeter road and open ground).
-				var ref: Vector2 = s["ref"]
-				var mid := (at + ref) * 0.5
-				for e: Vector2 in [mid + nv * 60.0, ref + nv * 60.0, at + nv * 60.0]:
-					var v := {"district": d, "eye": Vector3(e.x, e.y, 11.0), "target": Vector3(mid.x, mid.y, 8.0)}
-					if first.is_empty():
-						first = v
-					if _seen(d.plan, Vector3(e.x, e.y, 11.0), Vector3(at.x, at.y, float(s["h"]))) \
-							and _seen(d.plan, Vector3(e.x, e.y, 11.0), Vector3(ref.x, ref.y, 5.0)):
-						return v
 				continue
 			var dist := 45.0 if want == "lift" else 55.0
 			var e2 := at + nv * dist

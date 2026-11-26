@@ -79,7 +79,7 @@ var _rest_xs: Dictionary = {}   ## id -> [event, motion end, rest base Vector2(x
 
 func net_fields() -> Dictionary:
 	return {
-		"items": Net.SPAWN,          # from the plan's cosmetic seed, the same on every machine (layout_checksum)
+		"items": Net.SPAWN,          # from the plan's props seed, the same on every machine (layout_checksum, in CityStack.checksum)
 		"plan": Net.SPAWN, "ring": Net.SPAWN,
 		"deck": Net.SPAWN,           # from the section plan's deck index, the same on every machine
 		"_ev": Net.OWNER,            # the host decides every event; the crew receives them (prop.ev, prop.sync)
@@ -123,7 +123,7 @@ func _exit_tree() -> void:
 ## plaza and park benches. Nothing stands in a floor hole or on ground kept clear. ids are array indices.
 static func layout(p: CityPlan) -> Array:
 	var rng := RandomNumberGenerator.new()
-	rng.seed = p.cosmetic_seed() + 1
+	rng.seed = p.props_seed() + 1
 	var out: Array = []
 	for bi in p.blocks.size():
 		var sf: Array = [] if p.forms.is_empty() else [p.block_side_form(bi, 0), p.block_side_form(bi, 1), p.block_side_form(bi, 2), p.block_side_form(bi, 3)]
@@ -171,7 +171,7 @@ static func building_xf(ring: RingFrame, p: CityPlan, i: int) -> Transform3D:
 ## roof clutter, each at least 3.6 m from the others and clear of what stands on the roof (CityPlan.roof_blockers).
 static func _roof_items(out: Array, p: CityPlan) -> void:
 	var rng := RandomNumberGenerator.new()
-	rng.seed = p.cosmetic_seed() + 2
+	rng.seed = p.props_seed() + 2
 	var ring := RingFrame.new(p.p("radius"))
 	for i in p.buildings.size():
 		var xf := building_xf(ring, p, i)
@@ -706,25 +706,54 @@ func snapshot() -> PackedByteArray:
 	return buf.data_array
 
 
-## Every prop as `bytes` says (an empty snapshot stands them all up again).
+## Bytes per prop in snapshot(): its id (u32) and five floats.
+const SNAP_REC := 4 + 5 * 4
+
+
+## Every prop as `bytes` says (an empty snapshot stands them all up again). The bytes come from a peer (prop.sync), so
+## they are checked before anything is believed: the count may not exceed this machine's own layout nor the records the
+## buffer actually holds (its size must be exactly 4 + count records), every id must be one of this layout's props and
+## every float finite. A malformed buffer is rejected as a whole (a warning, every prop stood up) without reading past
+## its end or looping or allocating by the peer's number (valid_snapshot).
 func restore(bytes: PackedByteArray) -> void:
 	var touched := _ev.keys()
 	_ev.clear()
 	_moving.clear()
 	_asked.clear()
 	if bytes.size() >= 4:
-		var buf := StreamPeerBuffer.new()
-		buf.data_array = bytes
-		var n := buf.get_u32()
-		for i in n:
-			var id := buf.get_u32()
-			var pose := {}
-			for k: String in ["x", "s", "lie", "tilt", "spin"]:
-				pose[k] = buf.get_float()
-			if id < items.size():
+		if not valid_snapshot(bytes, items.size()):
+			push_warning("CityProps.restore: malformed prop snapshot (%d bytes, %d props here): ignored" % [bytes.size(), items.size()])
+		else:
+			var buf := StreamPeerBuffer.new()
+			buf.data_array = bytes
+			var n := buf.get_u32()
+			for i in n:
+				var id := buf.get_u32()
+				var pose := {}
+				for k: String in ["x", "s", "lie", "tilt", "spin"]:
+					pose[k] = buf.get_float()
 				_ev[id] = {"id": id, "kind": CityPropSim.REST, "pose": pose, "t0": now}
 	for id: int in touched + _ev.keys():
 		_draw(id)
+
+
+## True when `bytes` is a well-formed snapshot() for a layout of `count` props: a u32 record count no larger than
+## `count`, exactly that many SNAP_REC records after it, every id below `count` and every float finite.
+static func valid_snapshot(bytes: PackedByteArray, count: int) -> bool:
+	if bytes.size() < 4:
+		return false
+	var n := bytes.decode_u32(0)
+	if n > count or bytes.size() != 4 + n * SNAP_REC:
+		return false
+	for i in n:
+		var o := 4 + i * SNAP_REC
+		if bytes.decode_u32(o) >= count:
+			return false
+		for k in 5:
+			var f := bytes.decode_float(o + 4 + k * 4)
+			if is_nan(f) or is_inf(f):
+				return false
+	return true
 
 
 func _on_event(_from: int, kind: String, data: Dictionary, _stamp: float) -> void:
@@ -752,8 +781,9 @@ func receive(kind: String, data: Dictionary, host: bool, client: bool) -> void:
 			if client:
 				apply_event(data)
 		"prop.sync":
-			if client:
-				restore(data.get("bytes", PackedByteArray()))
+			var b: Variant = data.get("bytes", PackedByteArray())
+			if client and b is PackedByteArray:
+				restore(b)
 
 
 func _on_peer_joined(peer: int) -> void:

@@ -8,6 +8,8 @@
 ## without a mission (or after its teardown) is exactly the stack it was.
 
 const SEEDS_TO := 30            ## the seed loop runs seeds 1..SEEDS_TO
+## test_runner's wall limit (default 120 s): about 90 s alone, 160 s on a busy machine (2026-11-25)
+const TEST_TIMEOUT := 300
 
 var flag_id: Variant
 var asset_id: Variant

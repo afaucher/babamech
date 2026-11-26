@@ -83,7 +83,7 @@ static func set_siren(p: AudioStreamPlayer3D, on: bool, t: float) -> void:
 		return
 	if on:
 		p.bus = bus()
-		if p.is_inside_tree():
+		if p.is_inside_tree() and DisplayServer.get_name() != "headless":   # headless runs are silent (AudioDirector.silent)
 			p.play(fposmod(t, klaxon_length()))
 	else:
 		p.stop()

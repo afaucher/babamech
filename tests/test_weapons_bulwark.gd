@@ -1,4 +1,7 @@
 extends TestCase
+## (The belly turret, MechCatalog "belly" key 5, when the catalog has it: slot 5, its centred arc, every side
+## weapon fires from it at 30 / 80 m, its shot paths clear the own mech standing and walking, its HP and aim ride the
+## snapshot; docs/design/bulwark-effectiveness.md.)
 ## Bulwark weapons (MechCatalog "bulwark": side guns side_l / side_r with `yaw_in_max`, back saddles back_l / back_r): every
 ## item that fits each hardpoint works there exactly as on the Strider's. Headless, fixed step (DT), no wall clock, world
 ## geometry off (CombatWorld.use_physics false): shots meet hit spheres only. A Bulwark MechModel at mech scale 2 (as
@@ -163,9 +166,31 @@ func _drop(d: TargetDummy) -> void:
 
 # --- Slots and ranges --------------------------------------------------------------------------------------------
 
+## The Bulwark's hardpoint ids in catalog order (side_l, side_r, back_l, back_r, and the belly turret when the catalog
+## has it).
+static func _bulwark_ids() -> Array[String]:
+	var out: Array[String] = []
+	for hp: Dictionary in MechCatalog.chassis("bulwark")["hardpoints"]:
+		out.append(str(hp["id"]))
+	return out
+
+
+## The hardpoints that carry direct-fire (pivoting) weapons: the side guns, and the belly turret when present.
+static func _direct_ids() -> Array:
+	var out: Array = SIDES.duplicate()
+	if "belly" in _bulwark_ids():
+		out.append("belly")
+	return out
+
+
 func _slots() -> void:
-	eq(rack.hardpoints, ["side_l", "side_r", "back_l", "back_r"] as Array[String], "one slot per Bulwark hardpoint, chassis order")
-	eq(rack.slot_count(), 4, "four slots")
+	var ids := _bulwark_ids()
+	check(ids.slice(0, 4) == ["side_l", "side_r", "back_l", "back_r"], "the Bulwark's first four hardpoints (%s)" % str(ids))
+	eq(rack.hardpoints, ids, "one slot per Bulwark hardpoint, chassis order")
+	eq(rack.slot_count(), ids.size(), "one slot per hardpoint")
+	if "belly" in ids:
+		eq(_slot_of("belly"), 5, "the belly turret is slot / key 5")
+		eq(MechCatalog.slot_key("bulwark", "belly"), 5, "MechCatalog.slot_key: belly = 5")
 	eq((rack.slots()[2] as Dictionary)["weapon"], "mortar", "slot 3 = back_l (the mortar)")
 	check(bool((rack.slots()[3] as Dictionary)["equipment"]) and bool((rack.slots()[3] as Dictionary)["passive"]), "slot 4 = back_r (radiator, passive)")
 	rack.press_slot(3, 10.0)
@@ -176,8 +201,9 @@ func _slots() -> void:
 	rack.press_slot(1, 30.1)
 	check(rack.enabled[0] and not rack.enabled[1] and not rack.enabled[2], "double tap 1 solos the left side gun")
 	check(rack.enabled[3], "a passive stays on")
-	for i in 3:
-		rack.set_enabled(i + 1, true)
+	for i in rack.slot_count():
+		if i != 3:   # every slot but the passive radiator back on (the belly turret's slot 5 too)
+			rack.set_enabled(i + 1, true)
 	near(rack.cooling_bonus, float(MechCatalog.weapon("radiator")["cooling_bonus"]), 1e-6, "the radiator on back_r cools")
 
 
@@ -185,7 +211,12 @@ func _ranges() -> void:
 	for hp: Dictionary in MechCatalog.chassis("bulwark")["hardpoints"]:
 		var id := str(hp["id"])
 		var r := WeaponMount.hardpoint_range("bulwark", id)
-		if hp.has("yaw_in_max"):
+		if id == "belly":   # centred: yaw_in_max caps both ways; the pitch limits come from the catalog too
+			eq(WeaponMount.hardpoint_side("bulwark", id), 0.0, "belly: centred (the art's mount point at x 0)")
+			var y := float(hp["yaw_in_max"])
+			check(r.x == -y and r.y == y and r.z == float(hp["pitch_down_max"]) and r.w == float(hp["pitch_up_max"]),
+				"belly: yaw +-%.0f, pitch -%.0f / +%.0f (%s)" % [y, float(hp["pitch_down_max"]), float(hp["pitch_up_max"]), str(r)])
+		elif hp.has("yaw_in_max"):
 			var y := float(hp["yaw_in_max"])
 			var side := WeaponMount.hardpoint_side("bulwark", id)
 			eq(side, -1.0 if id.ends_with("_l") else 1.0, "%s: the side comes from the art's mount point" % id)
@@ -429,11 +460,13 @@ static func _seg_hits(parts: Array, a: Vector3, b: Vector3) -> String:
 func _shot_paths() -> void:
 	var worst := {}
 	for pose: String in ["stand", "walk0", "walk1", "walk2", "walk3"]:
-		for id: String in SIDES:
+		for id: String in _direct_ids():
 			var hpd := _hpd("bulwark", id)
 			for w: String in MechCatalog.items_for(hpd):
 				var other := "rockets" if w != "rockets" else "autocannon"
 				var lo := {id: w, ("side_r" if id == "side_l" else "side_l"): other, "back_l": "mortar", "back_r": "repair_drone"}
+				if id == "belly":   # both side guns loaded too: the belly gun's shots must clear them
+					lo = {id: w, "side_l": "rockets", "side_r": "autocannon", "back_l": "mortar", "back_r": "repair_drone"}
 				await _load(lo)
 				_pose(pose)
 				if w == "laser" and id == "side_l":
@@ -445,7 +478,9 @@ func _shot_paths() -> void:
 				var parts := _parts(hp.get_node_or_null("Weapon_" + w))
 				# Control: a line from the muzzle back into the hull does meet the mech (the check can fail).
 				var mz0 := WeaponPose.muzzle(hp, 0.0, 0.0, float(st["muzzle"]))
-				check(_seg_hits(parts, mz0, model.global_position + Vector3(0, hp.global_position.y - 0.5, 0)) != "",
+				# (the belly gun hangs under the keel: its control line goes up into the keel instead of down)
+				var ctl_y := hp.global_position.y + (1.5 if id == "belly" else -0.5)
+				check(_seg_hits(parts, mz0, model.global_position + Vector3(0, ctl_y, 0)) != "",
 					"%s/%s (%s): control: a line from the muzzle into the hull meets it (%d parts)" % [id, w, pose, parts.size()])
 				var r := m.aim_range()
 				var yaws: Array = [r.x]
@@ -482,7 +517,7 @@ func _shot_paths() -> void:
 				check(hits == 0, "%s/%s (%s): the shot path clears the own mech across the aim range (%d hits; first %s)" % [id, w, pose, hits, first])
 				worst["%s/%s" % [id, w]] = int(worst.get("%s/%s" % [id, w], 0)) + hits
 	_pose("stand")
-	print("  shot path self-hits per side gun item (all poses): ", worst)
+	print("  shot path self-hits per direct-fire item (all poses): ", worst)
 
 
 ## The model's leg pose: "stand" (the rest pose) or "walkN" (a lab walk cycle, a quarter cycle per N).
@@ -642,6 +677,12 @@ func _net_codec() -> void:
 	s.comp[NetMechCodec.COMPONENTS.find("back_r")] = 0.0
 	s.disable_cause = "back_r"
 	s.mount_aim.resize(NetMechCodec.MOUNTS.size() * 2)
+	var has_belly := "belly" in _bulwark_ids()
+	if has_belly:   # the belly turret: its HP and its barrel aim ride the entry too
+		s.comp[NetMechCodec.COMPONENTS.find("belly")] = 0.25
+		var bi := NetMechCodec.MOUNTS.find("belly")
+		s.mount_aim[bi * 2] = -21.0
+		s.mount_aim[bi * 2 + 1] = 9.0
 	var states: Array[NetMechState] = [s]
 	var bytes := NetMechCodec.encode(states, {1: 1}, 1.0)
 	eq(bytes.size(), NetMechCodec.COUNT_SIZE + NetMechCodec.ENTRY_SIZE, "one entry is ENTRY_SIZE bytes")
@@ -654,6 +695,31 @@ func _net_codec() -> void:
 		near(b.comp[NetMechCodec.COMPONENTS.find("back_r")], 0.0, 0.005, "back_r HP rides the snapshot")
 		check(b.comp[NetMechCodec.COMPONENTS.find("shoulder_l")] < 0.0, "a Strider-only hardpoint is absent on a Bulwark")
 		eq(b.disable_cause, "back_r", "a back saddle can be the disable cause")
+		if has_belly:
+			near(b.comp[NetMechCodec.COMPONENTS.find("belly")], 0.25, 0.005, "belly HP rides the snapshot")
+			var bi := NetMechCodec.MOUNTS.find("belly")
+			near(b.mount_aim[bi * 2], -21.0, NetMechCodec.MOUNT_UNIT, "the belly turret's yaw rides the snapshot")
+			near(b.mount_aim[bi * 2 + 1], 9.0, NetMechCodec.MOUNT_UNIT, "the belly turret's pitch rides the snapshot")
+	# The armoured core (2026-11-25: torso 900, legs 420, head 150) rides as fractions of the owner's max: no clipping, and
+	# a puppet's HP is within half a step (max / 508) of the owner's.
+	var caps := PlayerTarget.component_hp("bulwark")
+	var want_hp := {"torso": 899.0, "head": 75.0, "leg_l": 420.0, "leg_r": 3.0}
+	var s2 := NetMechState.new()
+	s2.peer = 1
+	s2.t = 1.0
+	s2.comp.resize(NetMechCodec.COMPONENTS.size())
+	for i in s2.comp.size():
+		s2.comp[i] = -1.0
+	for id: String in want_hp:
+		s2.comp[NetMechCodec.COMPONENTS.find(id)] = float(want_hp[id]) / float(caps[id])
+	s2.mount_aim.resize(NetMechCodec.MOUNTS.size() * 2)
+	var states2: Array[NetMechState] = [s2]
+	var back2 := NetMechCodec.decode(NetMechCodec.encode(states2, {1: 1}, 1.0), {1: 1}, 1.0)
+	if check(back2.size() == 1, "the armoured Bulwark's entry decodes"):
+		for id: String in want_hp:
+			var got := float(back2[0].comp[NetMechCodec.COMPONENTS.find(id)]) * float(caps[id])
+			near(got, float(want_hp[id]), float(caps[id]) / 508.0 + 1e-3, "Bulwark %s %.0f / %.0f HP rides the snapshot (%.2f)" % [id,
+				want_hp[id], caps[id], got])
 
 
 func _playable() -> void:
@@ -696,7 +762,7 @@ func _lab() -> void:
 	for o: Dictionary in lab.lab_options():
 		if o["id"] == "hardpoint":
 			hps = o["choices"]
-	eq(hps, ["side_l", "side_r", "back_l", "back_r"], "the lab lists the Bulwark's hardpoints")
+	eq(hps, _bulwark_ids() as Array, "the lab lists the Bulwark's hardpoints")
 	lab.set_lab_option("chassis", "strider")
 	lab.set_lab_option("weapon", "mortar")
 	eq(lab.hardpoint, "back", "back on the Strider: the mortar on its back")

@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## The crew mission in the multi-deck city stack (W2, docs/networking.md "Mission"), over a real crew, once per link:
 ## - the host launches in stack mode (Session.start_mission(seed, NetMission.MODE_STACK)): the launch carries the mode;
 ## - every machine builds the stack (TestDrive.stack), the load barrier compares CityStack.checksum(), and every machine

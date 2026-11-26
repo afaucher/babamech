@@ -20,6 +20,9 @@ extends Node3D
 ## `decides(target, record.peer)` builds a Hit; `deliver` applies it if this machine `owns(target)`, otherwise emits
 ## `remote_hit` (a client's hit on a host-owned target), which CombatNet carries to the host. A machine that doesn't
 ## decide still shows the impact. Fire records cross machines through CombatNet (scripts/combat/combat_net.gd).
+## SHOT DROPS: when a projectile stops on something this machine decides, `shot_decided` fires (shot_stopped) and
+## CombatNet tells the crew; each other machine calls `drop_shot(key, point, normal)`, which ends its copy there if it is
+## still flying (one dictionary lookup), so a shot never lands on two deciders in the common case.
 ##
 ## CITY PROPS (docs/design/city-props.md Â§5): `first_hit` also asks the props `first_hit(a, b, r)` and keeps the nearest
 ## of targets / world / props (a hit on a prop carries "prop": id and "prop_node": the CityProps it came from, target
@@ -62,12 +65,18 @@ signal impact_from(record: Dictionary, point: Vector3, radius: float)
 signal advanced(dt: float, space: PhysicsDirectSpaceState3D)
 ## A repair drone started here (launch_drone): the launcher's own (CombatNet broadcasts it) or a remote one.
 signal drone_launched(record: Dictionary, drone: RepairDrone)
+## A projectile stopped HERE on something this machine decides (shot_stopped): a target it `decides`, or a prop when it
+## `decides_shot`. CombatNet tells the crew, whose copies then end at `point` (drop_shot). Not for world geometry (the
+## same everywhere), the range end, or a pierce that flies on.
+signal shot_decided(record: Dictionary, point: Vector3, normal: Vector3, color: Color)
 
 const PROP_COLOR := Color(0.42, 0.4, 0.36)    ## debris colour of a prop that names none
 const PROPS_PER_SEGMENT := 64     ## props_on_segment: at most this many props per props node on one segment
 const PROP_STEP := 0.25           ## m props_on_segment steps on when its query meets a prop it already listed
 const LIFE_RESCAN := 0.5          ## s of clock between "ambient_life" group lookups while the node is missing
 const WALL_PROBE := 0.3           ## m each way along an impact's normal that wall_at looks for the static surface it hit
+const EARLY_DROP_LIFE := 2.0      ## s of clock a drop for a shot not fired here yet waits for its record (drop_shot)
+const EARLY_DROP_MAX := 256       ## such drops kept at most (oldest forgotten first)
 
 ## DEV ONLY: damage multiplier on hits against team "enemy" (TestDrive sets it for `--dev-fast-clear`, so a bot run
 ## clears decks quickly without skipping any transition). 1 = normal play.
@@ -133,6 +142,11 @@ var equipment_look := EquipmentLook.new()
 var fire_gate := Callable()
 ## True while advance() steps the targets this machine owns (an enemy's AI firing happens inside it).
 var stepping_targets := false
+## SHOT DROPS (drop_shot): shot key -> this machine's live Projectile with that key (kept by _add_effect / remove_effect,
+## so a drop is one lookup), and drops that arrived before their record: key -> [point, normal, color, clock time].
+var _shots: Dictionary = {}
+var _early_drops: Dictionary = {}
+var _early_order: Array[String] = []
 var _ray_exclude: Array[RID] = [] ## registered targets' physics bodies (mech capsules): shot rays ignore them
 var _exclude_bodies: Array = []   ## the bodies behind _ray_exclude (to notice one freed)
 var _exclude_dirty := true
@@ -185,7 +199,8 @@ func net_fields() -> Dictionary:
 		"designators": Net.LOCAL, "use_physics": Net.LOCAL, "looks_rng": Net.LOCAL,
 		"muzzles": Net.LOCAL, "_shooter_teams": Net.LOCAL, "stack": Net.LOCAL, "_props": Net.LOCAL, "_props_scan": Net.LOCAL,
 		"skip_props": Net.LOCAL, "_life": Net.LOCAL, "_life_scan": Net.LOCAL, "clock": Net.LOCAL, "anchors": Net.LOCAL, "equipment_look": Net.LOCAL,
-		"fire_gate": Net.LOCAL, "stepping_targets": Net.LOCAL, "_ray_exclude": Net.LOCAL, "_exclude_bodies": Net.LOCAL,
+		"fire_gate": Net.LOCAL, "stepping_targets": Net.LOCAL, "_shots": Net.LOCAL, "_early_drops": Net.LOCAL,
+		"_early_order": Net.LOCAL, "_ray_exclude": Net.LOCAL, "_exclude_bodies": Net.LOCAL,
 		"_exclude_dirty": Net.LOCAL, "_shot_query": Net.LOCAL, "_mesh_pool": Net.LOCAL, "_pool_root": Net.LOCAL,
 		"_mesh_pool_by": Net.LOCAL, "_mesh_pool_n": Net.LOCAL, "_tb_on": Net.LOCAL, "_tb_dirty": Net.LOCAL, "_tb_fresh": Net.LOCAL, "_tb_epoch": Net.LOCAL, "_tb_n": Net.LOCAL,
 		"_tb_t": Net.LOCAL, "_tb_c": Net.LOCAL, "_tb_r": Net.LOCAL, "_tb_space": Net.LOCAL, "_tb_rg": Net.LOCAL, "_tb_ax": Net.LOCAL, "_tb_st": Net.LOCAL, "_tb_st_ok": Net.LOCAL, "_tb_dp": Net.LOCAL}
@@ -220,7 +235,7 @@ func _body_excludes() -> Array[RID]:
 			if not is_instance_valid(t):
 				continue
 			var b: Variant = t.get("mech") if "mech" in t else null
-			if b is CollisionObject3D and is_instance_valid(b):
+			if b != null and is_instance_valid(b) and b is CollisionObject3D:   # validity first: `is` on a freed body raises
 				_ray_exclude.append((b as CollisionObject3D).get_rid())
 				_exclude_bodies.append(b)
 		_shot_query.exclude = _ray_exclude
@@ -279,6 +294,8 @@ func fire(record: Dictionary) -> CombatEffect:
 		var mf := MuzzleFlash.new()
 		_add_effect(mf)
 		mf.setup(self, p.flight_pos(0.0), p.flight_dir(0.0), MuzzleFlash.size_for(p.stats), float(record.get("t", now)))
+	if not _early_drops.is_empty() and e is Projectile:
+		_take_early_drop(e as Projectile)
 	var f3 := Time.get_ticks_usec() if profiling else 0
 	fired.emit(record)
 	if profiling:
@@ -443,6 +460,10 @@ func prewarm_mesh_pool(n: int, plan: Array = []) -> void:
 func _add_effect(e: CombatEffect) -> void:
 	add_child(e)
 	effects.append(e)
+	if e is Projectile:
+		var k := e.key()
+		if k != "":
+			_shots[k] = e
 
 
 ## Run `now` on a shared clock `f` (() -> seconds, negative = none right now; CombatNet.session_clock in a crew mission):
@@ -524,16 +545,76 @@ func _advance_profiled(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 
 func remove_effect(e: CombatEffect) -> void:
 	effects.erase(e)
+	if e is Projectile:
+		var k := e.key()
+		if k != "" and _shots.get(k) == e:
+			_shots.erase(k)
 	if e.get_parent() == self:
 		remove_child(e)
 	e.queue_free()
 
 
-## Drop a shot by key (a hit another machine decided arrives as an event).
+## Remove a shot by key at once, with no impact (tests clearing a shot they no longer need). A hit another machine
+## decided goes through drop_shot instead.
 func remove_shot(key: String) -> void:
 	for e in effects.duplicate():
 		if e.key() == key:
 			remove_effect(e)
+
+
+## This machine's live projectile with shot key `key`, or null (one lookup).
+func shot(key: String) -> Projectile:
+	var e: Variant = _shots.get(key)
+	return e as Projectile if e != null and is_instance_valid(e) else null
+
+
+## Projectile `p` stopped on `h` (a first_hit result) in its sweep (Projectile._sweep, after a terminal on_hit): emits
+## shot_decided when this machine decided that stop, a target it `decides` (a host-owned one for the shooter's machine,
+## its own mech for the victim's) or a prop on the machine that `decides_shot`. World geometry stops are the same on every
+## machine: nothing to tell.
+func shot_stopped(p: Projectile, h: Dictionary) -> void:
+	var t: Variant = h.get("target")
+	var mine := false
+	if t != null and is_instance_valid(t):
+		mine = decides(t as CombatTarget, int(p.record.get("peer", 1)))
+	elif h.has("prop"):
+		mine = decides_shot(p.record)
+	if mine and p.record.has("shot_index"):
+		shot_decided.emit(p.record, h["point"], h["normal"], h.get("color", MechMeshes.GREY))
+
+
+## THE DROP RULE (weapons.md §5.1): another machine decided where shot `key` stopped (at `point`, facing `normal`). This
+## machine's copy, if it is still flying, ends there now through its own on_hit with no target (Projectile.drop_at: the
+## normal impact look once; splash / prop blast / ambient life only where this machine decides them, as for any hit), so
+## it never flies on into something else here. Returns 1 when a copy ended; 0 when there is nothing to end (the copy
+## already ended on its own: here its own hit stands); -1 when no live projectile has that key and
+## `remember` is true: the drop waits EARLY_DROP_LIFE s for the record (fire() applies it at spawn), then is forgotten.
+## Repeats are harmless (the second finds the copy ended).
+func drop_shot(key: String, point: Vector3, normal: Vector3, color: Color = MechMeshes.GREY, remember: bool = true) -> int:
+	var p := shot(key)
+	if p != null:
+		return 1 if p.drop_at(point, normal, color) else 0
+	if not remember:
+		return 0
+	while not _early_order.is_empty() and (_early_order.size() >= EARLY_DROP_MAX
+			or now - float((_early_drops[_early_order[0]] as Array)[3]) > EARLY_DROP_LIFE):
+		_early_drops.erase(_early_order.pop_front())
+	if not _early_drops.has(key):
+		_early_order.append(key)
+	_early_drops[key] = [point, normal, color, now]
+	return -1
+
+
+func _take_early_drop(p: Projectile) -> void:
+	var k := p.key()
+	var d: Variant = _early_drops.get(k)
+	if d == null:
+		return
+	_early_drops.erase(k)
+	_early_order.erase(k)
+	var a := d as Array
+	if now - float(a[3]) <= EARLY_DROP_LIFE:
+		p.drop_at(a[0], a[1], a[2])
 
 
 func live_shots() -> int:

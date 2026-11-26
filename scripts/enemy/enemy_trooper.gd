@@ -99,9 +99,7 @@ var _drop_end := Vector3.ZERO
 
 # Host stomp / telemetry tracking
 var _player_prev_pos: Dictionary = {}
-var _stomped := false
 var _scatter_count := 0
-var _shots_fired := 0
 
 
 func _init() -> void:
@@ -130,8 +128,7 @@ func net_fields() -> Dictionary:
 		"_jump_end": Net.PRIVATE, "_jump_roof_yaw": Net.PRIVATE, "_jump_count": Net.PRIVATE,
 		"_drop_active": Net.OWNER, "_drop_delay": Net.PRIVATE, "_drop_t": Net.PRIVATE,
 		"_drop_start": Net.PRIVATE, "_drop_end": Net.PRIVATE,
-		"_player_prev_pos": Net.PRIVATE, "_stomped": Net.PRIVATE, "_scatter_count": Net.PRIVATE,
-		"_shots_fired": Net.PRIVATE,
+		"_player_prev_pos": Net.PRIVATE, "_scatter_count": Net.PRIVATE,
 		"_rig": Net.LOCAL, "_rig_parts": Net.LOCAL, "_rig_on": Net.LOCAL, "_joints": Net.LOCAL, "_gait": Net.LOCAL,
 		"_crouch": Net.LOCAL, "_peek_w": Net.LOCAL, "_air_w": Net.LOCAL, "_air_hold": Net.LOCAL,
 		"_pose_pelvis": Net.LOCAL, "force_rig": Net.LOCAL, "rig_lod_dist": Net.LOCAL,
@@ -435,119 +432,53 @@ func _check_mech_stomp(dt: float) -> void:
 		var v_off := absf(dvec.dot(up))
 		var h_off := (dvec - up * dvec.dot(up)).length()
 		if h_off <= STOMP_HORIZ_R and v_off <= STOMP_VERT_R:
-			_stomped = true
 			if world != null:
 				world.spawn_impact(my_pos + up * 0.4, up, 1.8, EnemyMeshes.CHARRED, true)
 			_kill("crushed")
 			return
 
 
-func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
-	move_speed_ratio = 0.0
-	turret_slew_speed = 0.0
-	if _cooldown > 0.0:
-		_cooldown = maxf(_cooldown - dt, 0.0)
-	if _relay_timer >= 0.0:
-		_relay_timer -= dt
-		if _relay_timer <= 0.0:
-			_relay_timer = -1.0
-			_fire_comms_relay()
+# EnemyBase state-machine hooks (docs/design/enemy-ai-structure.md): the trooper's peek pose, fire token and fireteam.
 
-	if ai_mode == "idle":
-		ai_state = STATE_IDLE
-		_peeking = false
-		_peek_frac = 0.0
-		_align_to_ring()
-		return
-	if ai_mode == "overheat" or heat.shutdown:
-		if ai_mode == "overheat" and not heat.shutdown:
-			heat.add(heat.cap)
-		ai_state = STATE_OVERHEATED
-		_peeking = false
-		_peek_frac = 0.0
-		_release_fire_token()
-		_align_to_ring()
-		return
-	if knock.staggered():
-		ai_state = STATE_STAGGERED
-		_peeking = false
-		_peek_frac = 0.0
-		_release_fire_token()
-		_align_to_ring()
-		return
-	if _transit_ramp and _step_transit(dt, space):
-		return   # walking a ramp to the crew's deck (EnemyBase._step_transit)
+func _ai_idle_pose(_dt: float) -> void:
+	_peeking = false
+	_peek_frac = 0.0
 
-	var target := _acquire_target(space)
-	if target == null:
-		_has_los = false
-		_no_los_time = 0.0
-		_peeking = false
-		_peek_frac = 0.0
-		_cancel_telegraph("lost_los")
-		_release_slot()
-		_release_fire_token()
-		var board_entry: Dictionary = _board_entry() if is_alerted() else {}
-		if not board_entry.is_empty():
-			_step_search(dt, board_entry["pos"] as Vector3, space)
-		else:
-			if ai_state in [STATE_ALERT, STATE_ENGAGE, STATE_FLANK, STATE_COOLDOWN]:
-				_emit_squad("alerted", {"id": target_id, "state": "lost", "pos": _world_pos()})
-			if not _step_transit(dt, space):
-				_step_patrol(dt, space)
-			_idle_scan(dt)
-		return
 
-	_target_id = target.target_id
-	_last_target_ref = target
-	var target_pos := Vector3.ZERO
-	if _has_los:
-		target_pos = _target_aim_center(target) + _vis_off   # the part seen (an 8 m mech's head over a low wall)
-		_last_seen_pos = target_pos
-		_update_target_velocity(target, target_pos, dt)
-		_no_los_time = 0.0
-		_hunt_t = 0.0
-		if squad != null and squad.has_method("note_deck_activity"):
-			squad.note_deck_activity(spawn_deck)
-		if _relayed and squad != null and squad.has_method("report_sighting"):
-			squad.report_sighting(self, target, target_pos)
-	else:
-		if target is AssetTarget:
-			target_pos = _target_aim_center(target)
-			_last_seen_pos = target_pos
-		else:
-			var b_entry := _board_entry()
-			target_pos = (b_entry["pos"] as Vector3) if not b_entry.is_empty() else _last_seen_pos
-		_target_vel = Vector3.ZERO
-		_has_prev_pos = false
-		_no_los_time += dt
-	_aim_point = target_pos
+func _on_ai_disabled(_reason: String) -> void:
+	_peeking = false
+	_peek_frac = 0.0
+	_release_fire_token()
 
-	if ai_state in [STATE_IDLE, STATE_PATROL]:
-		_enter_alert(target, "spotted")
-		_alert_timer = ALERT_DELAY + _react_delay
-		if fireteam != null:
-			fireteam.share_alert(self, target, target_pos)
-		return
-	if ai_state == STATE_ALERT:
-		_alert_timer -= dt
-		_track_aim(target_pos, dt)
-		if _alert_timer <= 0.0:
-			ai_state = STATE_ENGAGE
-		return
 
-	if ai_state == STATE_TELEGRAPH:
-		_peeking = true
-		_peek_frac = 1.0
-		_step_telegraph(dt, target, target_pos)
-		return
+func _on_target_dropped(_dt: float) -> void:
+	_peeking = false
+	_peek_frac = 0.0
 
-	if ai_state == STATE_FIRE:
-		_peeking = true
-		_peek_frac = 1.0
-		_step_firing(dt)
-		return
 
+func _on_spotted(target: CombatTarget, target_pos: Vector3) -> void:
+	_alert_timer = ALERT_DELAY + _react_delay
+	if fireteam != null:
+		fireteam.share_alert(self, target, target_pos)
+
+
+func _ai_telegraph(dt: float, target: CombatTarget, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
+	_peeking = true
+	_peek_frac = 1.0
+	super._ai_telegraph(dt, target, target_pos, space)
+
+
+func _ai_fire(dt: float, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
+	_peeking = true
+	_peek_frac = 1.0
+	super._ai_fire(dt, target_pos, space)
+
+
+func _max_aim_pitch() -> float:
+	return deg_to_rad(70.0)
+
+
+func _ai_engage(dt: float, target: CombatTarget, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
 	# Tactical cover / flank / morale / jump-pack decision.
 	_step_trooper_movement(dt, target_pos, space)
 	if _jump_active:
@@ -556,7 +487,8 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 	var track_err := _track_aim(target_pos, dt)
 	var w_id := str(_cfg.get("primary_weapon", ""))
 	var dist := _world_pos().distance_to(target_pos)
-	var can_reach := w_id != "" and dist <= float(EnemyCatalog.weapon(w_id).get("range", 150.0))
+	var can_reach := w_id != "" and dist <= float(EnemyCatalog.weapon(w_id).get("range", 150.0)) \
+		and _target_elevation(target_pos) <= _max_aim_pitch()
 	var fire_los := _has_los or (_in_cover and _has_peek_los(target_pos))
 	if can_reach and fire_los and _cooldown <= 0.0 and track_err < 0.35 and not _displacing:
 		var now := world.now if world != null else 0.0
@@ -575,39 +507,26 @@ func _step_ai(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 	_peek_frac = 0.0
 
 
-func _step_firing(dt: float) -> void:
-	var st := EnemyCatalog.weapon(_active_weapon)
-	_burst_timer -= dt
-	if _burst_timer <= 0.0 and _burst_left > 0:
-		_fire_one_round(st)
-		_shots_fired += 1
-		_burst_left -= 1
-		_burst_timer = float(st.get("burst_interval", 0.0))
-	if _burst_left <= 0:
-		_cooldown = float(st.get("burst_cooldown", 2.6)) * _cd_mult + _react_delay * 0.6
-		_release_slot()
-		_release_fire_token()
-		_peeking = false
-		_peek_frac = 0.0
-		ai_state = STATE_COOLDOWN if ai_mode == "live" else STATE_ENGAGE
+func _burst_interval(st: Dictionary) -> float:
+	return float(st.get("burst_interval", 0.0))
 
 
-func _fire_one_round(st: Dictionary) -> void:
-	if world == null or puppet or not Net.is_host():
-		return
-	var muz := muzzle_world(_active_weapon)
-	var aim := _locked_aim
-	var extra_spread := float(st.get("spread", 1.4)) + aim_kick + _aim_error_deg
-	var rec := Combat.fire_record(target_id, 1, _active_weapon, _active_weapon, muz, aim, world.now, _shot_index, extra_spread)
-	rec["enemy"] = true
-	rec["team"] = team
-	_shot_index += 1
-	world.fire(rec)
-	weapon_fired.emit(self, _active_weapon, muz, aim)
-	_emit_squad("weapon_fired", {"id": target_id, "weapon": _active_weapon, "pos": muz, "aim_point": aim})
-	note_combat_activity(false)
-	if squad != null and squad.has_method("note_deck_activity"):
-		squad.note_deck_activity(spawn_deck)
+func _burst_cooldown(st: Dictionary) -> float:
+	return float(st.get("burst_cooldown", 2.6)) * _cd_mult + _react_delay * 0.6
+
+
+func _on_burst_done() -> void:
+	_release_fire_token()
+	_peeking = false
+	_peek_frac = 0.0
+
+
+func _extra_spread(st: Dictionary) -> float:
+	return float(st.get("spread", 1.4)) + aim_kick + _aim_error_deg
+
+
+func _pellets(_st: Dictionary) -> int:
+	return 1   # single aimed shots
 
 
 func _cancel_telegraph(reason: String) -> void:
@@ -632,6 +551,12 @@ func rehome_deck(new_deck: int, new_ring: RingFrame = null) -> void:
 	_release_claimed_cover()
 	on_roof = false
 	super.rehome_deck(new_deck, new_ring)
+
+
+## A telegraph started from cover on the peek line keeps going while that line holds (base _step_telegraph would
+## otherwise cancel it on the first tick, since _has_los is false behind cover, and the trooper would never fire).
+func _telegraph_has_line(live_pos: Vector3) -> bool:
+	return _has_los or (_in_cover and _has_peek_los(live_pos))
 
 
 func _has_peek_los(target_pos: Vector3) -> bool:
@@ -665,8 +590,9 @@ func _step_trooper_movement(dt: float, target_pos: Vector3, space: PhysicsDirect
 		ai_state = STATE_FLANK
 		_move_along_plan(target_pos, flank_spd, dt, space)
 		return
-	# Mech rushing close: individual scatter or jump-pack onto low adjacent roof!
-	if dist < RUSH_PANIC_DIST and _scatter_cd <= 0.0:
+	# Mech rushing close on the ground: individual scatter or jump-pack onto low adjacent roof!
+	# Skip ground-rush panic when an airborne target (e.g. hovering Wasp) is > 8 m overhead.
+	if dist < RUSH_PANIC_DIST and (target_pos - pos).dot(up) <= 8.0 and _scatter_cd <= 0.0:
 		_trigger_scatter_or_jump(target_pos, space)
 		if _jump_active:
 			return

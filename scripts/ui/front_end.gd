@@ -46,8 +46,13 @@ var btn_add_bot: Button
 var bot_skill_pick: OptionButton
 var bot_remove: Dictionary = {}
 var ff_check: CheckBox               ## Hangar: the crew's friendly fire (host / solo edit it; a client sees the host's)
-var obj_check: CheckBox              ## Hangar, host / solo only: objectives (the mission plan) or the old clear-and-extract
 var stats_label: Label
+## A Steam invite waiting for an answer (Session.pending_invite): a modal over the whole menu naming the inviter, with
+## Accept (leave whatever this is and join) and Decline. Null when none is shown.
+var invite_prompt: Control
+var invite_label: Label
+var btn_invite_accept: Button
+var btn_invite_decline: Button
 
 var _shot_path := ""
 var _shot_after := 1.5
@@ -118,8 +123,6 @@ func _ready() -> void:
 		Session.set_friendly_fire(bool(settings["friendly_fire"]))   # the crew this machine hosts (or solo) uses its choice
 	CrewAuto.ensure(get_tree())   # --auto-launch / --auto-relaunch / --auto-quit, and the clients' hangar heartbeat
 	var args := OS.get_cmdline_user_args()
-	if not Session.is_client():
-		Session.objectives = MissionFlow.objectives_wanted(args, settings)   # DEV plan mode for the crews this machine hosts
 	_shot_path = Boot.arg_value(args, "--menu-shot")
 	if Boot.arg_value(args, "--menu-after").is_valid_float():
 		_shot_after = float(Boot.arg_value(args, "--menu-after"))
@@ -140,6 +143,8 @@ func _ready() -> void:
 		var cover := LoadingScreen.cover(self)
 		cover.set_phase(LoadingScreen.handoff_phase)
 		_uncover_later(cover)
+	if not Session.pending_invite.is_empty():   # an invite that came while a mission ran: ask now
+		show_invite_prompt(str(Session.pending_invite.get("inviter", "")))
 	if _shot_path != "":
 		_take_shot.call_deferred()
 	var audio := _audio()
@@ -183,7 +188,6 @@ func show_screen(s: String) -> void:
 	bot_skill_pick = null
 	bot_remove.clear()
 	ff_check = null
-	obj_check = null
 	stats_label = null
 	match s:
 		"settings": _build_settings()
@@ -297,18 +301,6 @@ func _build_hangar() -> void:
 	ff_check.tooltip_text = "The host's choice for the whole crew." if client_ff else "Your shots can hurt your crew."
 	_row("Friendly fire", ff_check)
 	_mark_friendly_fire()
-	if not client_ff:   # the host's choice reaches the crew in mission.launch; a client has no say
-		var args := OS.get_cmdline_user_args()
-		var forced := args.has(MissionFlow.NO_OBJECTIVES_FLAG) or args.has("--objectives")
-		obj_check = _check(MissionFlow.objectives_wanted(args, settings), func(v: bool) -> void:
-			_set_setting("objectives", v)
-			Session.objectives = v
-			obj_check.text = "On" if v else "Off (clear and extract)")
-		obj_check.name = "Objectives"
-		obj_check.text = "On" if obj_check.button_pressed else "Off (clear and extract)"
-		obj_check.disabled = forced
-		obj_check.tooltip_text = "Set by a command-line flag." if forced else "Objectives, waves and depots (off: the old clear-and-extract mission)."
-		_row("Objectives", obj_check)
 	_section("Mech")
 	chassis_pick = _option(MechCatalog.CHASSIS_ORDER.map(func(c: String) -> String: return str(MechCatalog.chassis(c)["name"])),
 		MechCatalog.CHASSIS_ORDER.find(str(settings["chassis"])),
@@ -402,10 +394,10 @@ func _on_launch() -> void:
 	var args := OS.get_cmdline_user_args()
 	if Session.online():
 		if Session.hosting:
-			Session.start_mission(mission_seed(args), TestDrive.launch_mode(args))
+			Session.start_mission(mission_seed(args), TestDrive.MODE_STACK)
 		return
-	TestDrive.solo_launch = {"seed": mission_seed(args), "mode": TestDrive.launch_mode(args),
-		"friendly_fire": bool(settings["friendly_fire"]), "objectives": MissionFlow.objectives_wanted(args, settings)}
+	TestDrive.solo_launch = {"seed": mission_seed(args), "mode": TestDrive.MODE_STACK,
+		"friendly_fire": bool(settings["friendly_fire"])}
 	_play_launch(LAUNCH_ALERT_TIME)
 
 
@@ -434,7 +426,7 @@ func _play_launch(delay: float) -> void:
 		show_screen("hangar")
 	btn_launch.disabled = true
 	btn_launch.text = "Launching..."
-	stage.set_alert(true)
+	stage.set_alert(true, delay)   # the egress (docs/design/hangar-v2/README.md); it plays on over the load (HangarHandoff)
 	var audio := _audio()
 	if audio != null:
 		audio.play_2d("ui.hangar.alert", 0.0, 1.0, AudioDirector.BUS_SFX_TELEGRAPH)
@@ -442,6 +434,8 @@ func _play_launch(delay: float) -> void:
 	if is_inside_tree() and launching:
 		# The mission's loading screen, already up here and drawn, so the scene change (a blocking load) shows it, not a
 		# frozen bay; the mission scene puts its own up in its first line.
+		if HangarHandoff.wanted(stage):
+			HangarHandoff.carry(stage)   # the egress keeps playing over the mission's loading screen
 		var cover := LoadingScreen.cover(self)
 		var seed_value := int(Session.mission_params().get("seed", 0)) if Session.online() else int(TestDrive.solo_launch.get("seed", 0))
 		if seed_value > 0:
@@ -501,9 +495,81 @@ func _mark_friendly_fire() -> void:
 	ff_check.text = ("On" if ff_check.button_pressed else "Off") + ("   (host's choice)" if ff_check.disabled else "")
 
 
-func _on_invite(_lobby_id: int, _inviter: String) -> void:
-	Session.accept_invite()
-	show_screen("busy")
+func _on_invite(_lobby_id: int, inviter: String) -> void:
+	show_invite_prompt(inviter)
+
+
+## Ask about the pending invite (docs: NetSession INVITES): who invited, and what accepting does to the current crew.
+func show_invite_prompt(inviter: String) -> void:
+	_close_invite_prompt()
+	var who := inviter if inviter != "" else "A Steam friend"
+	var shade := ColorRect.new()
+	shade.name = "InvitePrompt"
+	shade.color = Color(0.0, 0.0, 0.0, 0.55)
+	shade.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(shade)
+	shade.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var center := CenterContainer.new()
+	center.name = "Center"
+	shade.add_child(center)
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	var panel := PanelContainer.new()
+	panel.name = "Panel"
+	panel.custom_minimum_size = Vector2(520, 0)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.1, 0.11, 0.14, 0.98)
+	sb.border_color = Color(0.9, 0.48, 0.12)
+	sb.set_border_width_all(3)
+	sb.set_content_margin_all(28)
+	panel.add_theme_stylebox_override("panel", sb)
+	center.add_child(panel)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 16)
+	panel.add_child(col)
+	var title := Label.new()
+	title.text = "Crew invite"
+	title.add_theme_font_size_override("font_size", 26)
+	col.add_child(title)
+	invite_label = Label.new()
+	invite_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	invite_label.add_theme_font_size_override("font_size", 20)
+	var leaving := ""
+	if Session.online():
+		leaving = "
+Accepting leaves your current crew."
+	elif Session.busy():
+		leaving = "
+Accepting stops opening or joining a crew."
+	invite_label.text = "%s invited you to their crew.%s" % [who, leaving]
+	col.add_child(invite_label)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 12)
+	col.add_child(row)
+	btn_invite_accept = _button("Accept", _accept_invite, row)
+	btn_invite_decline = _button("Decline", _decline_invite, row)
+	for b: Button in [btn_invite_accept, btn_invite_decline]:
+		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	invite_prompt = shade
+
+
+func _accept_invite() -> void:
+	_close_invite_prompt()
+	if Session.accept_invite():
+		show_screen("busy")
+
+
+func _decline_invite() -> void:
+	_close_invite_prompt()
+	Session.decline_invite()
+
+
+func _close_invite_prompt() -> void:
+	if invite_prompt != null and is_instance_valid(invite_prompt):
+		invite_prompt.queue_free()
+	invite_prompt = null
+	invite_label = null
+	btn_invite_accept = null
+	btn_invite_decline = null
 
 
 func _on_status(text: String) -> void:

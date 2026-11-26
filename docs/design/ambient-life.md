@@ -329,6 +329,17 @@ Renders: `docs/design/ambient-life/life_calm.png`, `life_street.png` (default 24
   cart 500 kg; start speed up to 10 m/s x min(800 / mass, 1), so a blast or a mech can shove it clear of a lane); it tips
   onto its side in 0.7 s on a blast or a push faster than 8 m/s; blasts and pushes shove a wreck again, shots do not.
   Passengers still inside are killed and counted (`occupants_killed`, also in the player / enemy tallies and per src).
+  **Riders and wrecks (2026-11-25, code audit).** A pod's one unloading is kept in `LifeFleet.unloads` (vid -> doors
+  time, n aboard, rider slots used, first rider id; OWNER state, in the snapshot, SNAP_VERSION 3), past the episode that
+  planned it. Wrecked at t, rider k (out at doors + 0.4 k) is out once that moment has come and lives on; the rest never
+  get out (their alarm records are dropped on every machine) and die inside with those who got no slot, so
+  `occupants_killed` = n minus those out. A pod that never unloaded holds its timetable's riders (a pod held by another
+  stop no longer counts 0). A pod that unloaded runs empty from then on: a later threat lets nobody out again (the
+  timetable's riders of the same lap were let out a second time before). Before the fix every rider with a slot counted
+  as out once the doors opened, though the later ones were still aboard and then stepped out of the wreck. Test:
+  `tests/test_life_traffic.gd` `_wreck_riders_check`. Snapshots from a peer are checked before they are believed (counts
+  against the bytes left, indices against the plan; a malformed one is ignored with a warning), likewise `LifeCrowd`,
+  `LifeTram` and `AmbientLife.restore`.
 - **`LifeCars`**: 6 MultiMeshes (pod and cart, each plain / hazards dark / hazards bright). The pod is a rounded 16-sided
   loft (cream, terracotta stripe, dark-teal glass canopy over the top half, cream roof cap, dark skirt), light bars front
   and back. Hazards (and a wreck's alarm): big amber bars front and back and a band round the roof edge, swapped between
@@ -409,7 +420,7 @@ traffic checksums, same ids, no viewer culling unless a viewer is registered).
   `LifeTram`). Not wreckable, not pushable; sweeps / blasts / pushers ignore it. `vehicle_event("tram_bell", pos)` on
   leaving a stop or restarting. Collision: one `AnimatableBody3D` per car (`sync_to_physics` off, layer 1, a 3 x 3.2 x 9
   box), moved to the pose every frame; a car wholly beyond an end wall is hidden. Queries:
-  `tram_state(k)`, unit `tram_car_pose(i)`.
+  unit `tram_car_pose(i)` (`tram_state(k)` was never called and went 2026-11-25; a unit's `tram.state_of(now)`).
   **Tram collision and crushing (2026-11-23, playtest seed 403112: the cars shoved the mech out through the portal, then,
   once the recess was sealed, pinched it against the back plate).** `LifeTramCars.settle()` after every pose: (1) a car
   is solid only while all of it is at least `LifeTram.END_CLEAR` = 5 m inside both end walls (`car_solid`; a mech is
@@ -419,7 +430,8 @@ traffic checksums, same ids, no viewer culling unless a viewer is registered).
   recess, never launches it); (3) pinch: a moving solid car pressing a body ahead of it that has something solid within
   0.5 m ahead (above 1 m: curbs and steps do not count), or that does not make way (< 30 % of the car's advance over
   0.2 s), or a car entering the END_CLEAR zone while pressing one, switches off and passes through it: a **crush**,
-  `LifeTram.CRUSH_DAMAGE` = 60 HP to each leg (like a 40 m/s fall), once per body per 8 s (one train pass; every car
+  `LifeTram.CRUSH_DAMAGE` = 60 HP to each leg (like a 40 m/s fall; **amount confirmed by the user 2026-11-25: 60 per
+  leg, once per pass**), once per body per 8 s (one train pass; every car
   touching it then passes through). Damage only on the machine whose mech it is (not a puppet), through the
   `PlayerTarget` (group `player_target`) whose `mech` is the body, `apply_damage(.., "leg_l"/"leg_r", "crush")`; signal
   `LifeTramCars.crushed(body, amount, applied)`. Enemies are never damaged by it. Timing, state and snapshot unchanged
@@ -444,7 +456,8 @@ blocks at the far blast door), `life_tram_close.png`, `life_checkpoint.png` (a p
 booth beyond it), `life_section_street.png` (mech eye on a section deck: one person and a service cart in frame).
 
 **Pod model adopted (user pick: candidate 7, `capsule_a`, 2026-11-22).** `LifeCars.pod()` calls
-`LifePodVariants.adopted(geo, lights)` (one source of truth; the gallery still draws the nine candidates unchanged):
+`LifePodVariants.adopted(geo, lights)` (one source of truth; the other eight candidates and the `pod_gallery` lab subject
+were removed 2026-11-25, the mesh vertex for vertex the same; the grid shots stay in this folder):
 the capsule_a body and glass, trimmed to 484 triangles plain / 496 with hazards (one lighter facet on each end glass only,
 no dark lower split on the door glass, a straight side stripe, hexagonal wheels with a three-sided pyramid hub cap), closed
 and consistently wound (tested: every directed edge has its reverse). Pale light bars sit in the end slots with no housing;
@@ -588,7 +601,7 @@ Animation is cosmetic on every machine, computed locally from the same state and
 **Rig** (`LifeAnimRig`, `life_anim_rig.gd`): one jointed figure mesh, 10 rigid parts (torso, head + hair, upper arms,
 forearms, thighs, shins), **132 triangles**; UV.x = part id, UV.y = colour slot (0 vertex colour: skin / hair, 1 shirt,
 2 trousers), so one mesh serves every clothes set. Child boxes overlap their joint, so bends never open a gap.
-`static_figure(geo, v)` gives the same figure standing still as plain geometry (the pod gallery's scale figure).
+(`static_figure`, the pod gallery's scale figure, went with the gallery 2026-11-25.)
 
 **Drawing** (`LifeFigures`): **one MultiMeshInstance3D per deck** (was 45: 9 pose meshes x 5 clothes), one instance per
 person (index = id), `use_custom_data`, `material_override` = the shader material, `layers` = the deck's render layer set

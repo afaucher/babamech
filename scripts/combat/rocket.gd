@@ -42,6 +42,7 @@ var wobble_phase := 0.0           ## rad
 var _side := Vector3.RIGHT        ## the corkscrew's plane, perpendicular to dir
 var _up := Vector3.UP
 var _burst := false               ## on_expire ran
+var _expired := false             ## reach_range ran: the flight ended at range with nothing met (not a contact)
 var _body: Node3D
 var _flame: MeshInstance3D
 var _puffs: Array = []            ## pooled MeshInstance3D, one per live puff
@@ -59,7 +60,7 @@ var _puffs_borrowed := false      ## _puffs came from world.take_mesh
 func net_fields() -> Dictionary:
 	var f := super.net_fields()
 	f.merge({"launch": Net.SPAWN, "wobble": Net.SPAWN, "wobble_rate": Net.SPAWN, "wobble_phase": Net.SPAWN, "_side": Net.SPAWN,
-		"_up": Net.SPAWN, "_burst": Net.LOCAL, "_body": Net.LOCAL, "_flame": Net.LOCAL, "_puffs": Net.LOCAL,
+		"_up": Net.SPAWN, "_burst": Net.LOCAL, "_expired": Net.LOCAL, "_body": Net.LOCAL, "_flame": Net.LOCAL, "_puffs": Net.LOCAL,
 		"_pl_jitter": Net.LOCAL, "_pl_axis": Net.LOCAL, "_pl_spin": Net.LOCAL, "_pl_at": Net.LOCAL, "_pl_size": Net.LOCAL,
 		"_pl_set": Net.LOCAL, "_puffs_borrowed": Net.LOCAL})
 	return f
@@ -115,12 +116,18 @@ func sub_step() -> float:
 
 # --- Hits --------------------------------------------------------------------------------------------
 
+## The range air burst runs only when the flight really ran out (reach_range set `_expired`), never after a contact that
+## happened to land on the last chord at max range (on_hit already detonated: one detonation per rocket).
 func advance_to(now: float) -> void:
-	var flying := end_time < 0.0
 	super.advance_to(now)
-	if flying and end_time >= 0.0 and end_time >= max_time - 1e-6 and not _burst:
+	if _expired and not _burst:
 		_burst = true
 		on_expire()
+
+
+func reach_range() -> void:
+	super.reach_range()
+	_expired = true
 
 
 func on_hit(h: Dictionary, e: float) -> bool:

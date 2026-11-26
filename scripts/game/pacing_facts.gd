@@ -10,7 +10,7 @@ extends RefCounted
 ## A staged unit (closed gate bay) is not awake: it never engages. in play (per deck, only on a deck with a standing
 ## mech): wave units (staged included) and garrison units that are alerted or within IN_PLAY_RANGE of a standing mech.
 
-const IN_PLAY_RANGE := 150.0   ## m: idle garrison farther than this from every standing mech does not count for DECK_CAP
+const IN_PLAY_RANGE := 150.0   ## m: idle garrison farther than this from every standing mech does not count for the deck cap
 
 var world: CombatWorld
 var _now: Callable              ## the mission clock (MissionFlow.now)
@@ -38,6 +38,11 @@ func unbind() -> void:
 	if world != null and is_instance_valid(world) and world.fired.is_connected(_on_fired):
 		world.fired.disconnect(_on_fired)
 	world = null
+
+
+## Host: pilot `pilot_id` left the crew: forget when its target was last engaged (its target id, "player<id>").
+func forget_pilot(pilot_id: int) -> void:
+	_eng_p.erase("player%d" % pilot_id)
 
 
 func _t() -> float:
@@ -72,9 +77,11 @@ func collect(pilots: Array, stack: Node, live: Array, decks: int) -> Dictionary:
 	var tid_pos := {}
 	var tid_deck := {}
 	for p: Dictionary in pilots:
-		var pt := p.get("target") as PlayerTarget
-		if pt != null and is_instance_valid(pt) and not bool(p.get("downed", false)):
-			tid_pos[pt.target_id] = (p["mech"] as Node3D).global_position if p.get("mech") is Node3D else pt.global_position
+		var pt := _live(p.get("target")) as PlayerTarget
+		var mech := _live(p.get("mech")) as Node3D
+		# Standing: not downed, and its mech still exists (a freed controller's pilot is treated as not standing).
+		if pt != null and mech != null and not bool(p.get("downed", false)):
+			tid_pos[pt.target_id] = mech.global_position
 			tid_deck[pt.target_id] = int(p.get("deck", -1))
 	var seen := {}
 	for e: EnemyBase in live:
@@ -114,10 +121,11 @@ func collect(pilots: Array, stack: Node, live: Array, decks: int) -> Dictionary:
 			_kills.append({"deck": int(a["deck"]), "x": float(a["x"]), "s": float(a["s"])})
 	var pf := {}
 	for p: Dictionary in pilots:
-		var pt := p.get("target") as PlayerTarget
+		var pt := _live(p.get("target")) as PlayerTarget
+		var mech := _live(p.get("mech"))
 		var tot := 100.0
 		var destroyed := 0
-		if pt != null and is_instance_valid(pt):
+		if pt != null:
 			var hp := 0.0
 			var mx := 0.0
 			for c: Variant in pt.max_hp:
@@ -129,18 +137,24 @@ func collect(pilots: Array, stack: Node, live: Array, decks: int) -> Dictionary:
 				if float(pt.hp.get(c, 0.0)) <= 0.0:
 					destroyed += 1
 			tot = 100.0 * hp / mx if mx > 0.0 else 100.0
-		var mech: Variant = p.get("mech")
 		var shut := false
-		if mech is Object and is_instance_valid(mech):
-			shut = bool((mech as Object).get("shutdown")) if (mech as Object).get("shutdown") != null else false
+		if mech != null:
+			shut = bool(mech.get("shutdown")) if mech.get("shutdown") != null else false
+		var down := bool(p.get("downed", false)) or mech == null   # no mech: not standing
 		var eng := false
-		if pt != null and is_instance_valid(pt) and not bool(p.get("downed", false)):   # downed: never engaged (DownedRules)
+		if pt != null and not down:   # downed: never engaged (DownedRules)
 			eng = PilotIntensity.engaged(now, float(_eng_p.get(pt.target_id, -INF)))
 		pf[str(p["peer"])] = {"tot": snappedf(tot, 0.1), "destroyed": destroyed,
-				"disabled": bool(p.get("downed", false)), "shutdown": shut, "engaged": eng}
+				"disabled": down, "shutdown": shut, "engaged": eng}
 	var kills := _kills
 	_kills = []
 	return {"pilots": pf, "engaging": engaging, "active": active, "kills": kills}
+
+
+## `v` when it is a live object, else null. Stored references (a crew member's mech or target, an enemy) are read through
+## this BEFORE any `is` / `as`: either raises on a freed instance.
+static func _live(v: Variant) -> Object:
+	return v as Object if is_instance_valid(v) else null
 
 
 func _on_relayed(e: EnemyBase, stack: Node) -> void:

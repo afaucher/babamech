@@ -144,10 +144,6 @@ func flank_angle_for(bot: PlayerBot) -> float:
 	return float(slot_angles.get(bot.bot_id, 0.0))
 
 
-func bot_index_of(bot: PlayerBot) -> int:
-	return bots.find(bot)
-
-
 ## Soft horizontal separation vector away from nearby alive teammates (prevents splash clumping).
 func separation_vector(self_bot: PlayerBot, up: Vector3) -> Vector3:
 	if self_bot == null or self_bot.mech == null or not self_bot.mech.is_inside_tree():
@@ -204,10 +200,6 @@ func alive_count() -> int:
 
 func total_count() -> int:
 	return bots.size()
-
-
-func all_disabled() -> bool:
-	return alive_count() == 0
 
 
 func _bot_alive(b: PlayerBot) -> bool:

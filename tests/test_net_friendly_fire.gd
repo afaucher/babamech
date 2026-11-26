@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Friendly fire across machines (docs/design/weapons.md §4.6, §5.1) over a real crew mission of 2, once per link. The
 ## host (A) shoots client c1 (B), both team "player". No new message: A's fire record is simulated on B's machine, and
 ## B decides about its own mech (CombatWorld.decides), exactly as for enemy fire.

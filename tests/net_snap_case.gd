@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Mech snapshots (co-op step 2, docs/networking.md "Mech snapshots") over a real crew, once per link (off, coast):
 ## - the crew launches a mission (as net_mission_case.gd); every machine has one mech per crew member, every one but its
 ##   own a puppet (MechController.puppet, a MechPuppet child) registered as a PlayerTarget with its owner's peer;

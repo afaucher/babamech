@@ -33,7 +33,8 @@ const BAY_HEAVY_MAX := 2           ## heavies (tank, gunship) in one gate-bay op
 
 
 ## Deterministic total unit budget for one deck (garrison + waves combined; deeper decks & larger crews scale up).
-## Kept cleanly inside PacingDirector.DECK_CAP (24) so 4-mech co-op + waves never stall on caps or frame budget.
+## Kept cleanly inside PacingDirector.DECK_CAP_BY_CREW (24 at 4 pilots) so 4-mech co-op + waves never stall on caps or
+## frame budget.
 static func deck_budget(crew_size: int = 1, deck: int = 0) -> int:
 	var crew := clampi(crew_size, 1, 4)
 	var depth := maxi(deck, 0)

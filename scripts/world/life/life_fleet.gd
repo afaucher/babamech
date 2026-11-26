@@ -47,12 +47,16 @@ const TIP_S := 0.7
 const NONE := 0
 const FWD := 1
 const REV := 2
-const SNAP_VERSION := 2
+const SNAP_VERSION := 3          ## 3: the pods' unloads (2026-11-25)
 
 var tr: LifeTraffic
 var episodes: Dictionary = {}   ## loop -> its latest episode (the one before under "prev")
 var locks: Dictionary = {}      ## loop -> PackedFloat64Array [a0, b0, ...]: held until b
 var wrecks: Dictionary = {}     ## vid -> its last wreck event
+## pod vid -> {doors, n, riders, rider0}: the one time it let its passengers out (doors: the first steps out then, rider
+## k at doors + 0.4 k; n aboard, `riders` of them got a rider slot from rider0 on). Kept past the episode that planned it,
+## so a later wreck knows who is out and who is still inside, and the pod never lets anyone out again (it ran empty).
+var unloads: Dictionary = {}
 var brute_force := false        ## the reference path for tests: every vehicle's pose on every threat
 var _loop_box: Array = []       ## loop -> Rect2 holding every pose a vehicle on it can have (its path, grown LOOP_SLACK)
 const LOOP_SLACK := 5.0         ## m: a vehicle that is not a wreck is on its loop's path (docked / pulled over: within this)
@@ -62,6 +66,7 @@ func net_fields() -> Dictionary:
 	return {
 		"tr": Net.SPAWN,
 		"episodes": Net.OWNER, "locks": Net.OWNER, "wrecks": Net.OWNER,    # decided by the host's events, derived everywhere
+		"unloads": Net.OWNER,                                              # the same (from the episodes), in the snapshot
 		"brute_force": Net.LOCAL, "_loop_box": Net.LOCAL,                 # test switch / derived from the plan
 	}
 
@@ -74,6 +79,7 @@ func reset() -> void:
 	episodes.clear()
 	locks.clear()
 	wrecks.clear()
+	unloads.clear()
 
 
 # --- Locks -----------------------------------------------------------------------------------------------
@@ -405,7 +411,8 @@ func _episode(li: int, T: float, hold: bool, c: Vector2, st: int, crowd: LifeCro
 			a["t0"] = T + 0.2 + 0.3 * tr.lp.h(vid + 70000, 9)
 			if c != Vector2.INF and Vector2(p["x"], p["s"]).distance_to(c) <= ESTOP_R:
 				a["hot"] = true
-				var n := tr.riders(vid, T) if p["state"] in ["driving", "stopped", "dwell"] and not p["held"] else 0
+				# A pod that already let its passengers out runs empty from then on (unloads): nobody gets out twice.
+				var n := tr.riders(vid, T) if p["state"] in ["driving", "stopped", "dwell"] and not p["held"] and not unloads.has(vid) else 0
 				a["n"] = n
 		e["v"][vid] = a
 	# limits from wrecks lying in the lane
@@ -460,6 +467,7 @@ func _plan_flee(e: Dictionary, vid: int, c: Vector2, st: int, crowd: LifeCrowd, 
 				if int(a["riders"]) == 0:
 					a["rider0"] = rid
 				a["riders"] = int(a["riders"]) + 1
+		unloads[vid] = {"doors": float(a["doors"]), "n": n, "riders": int(a["riders"]), "rider0": int(a["rider0"])}
 	if tr.vehicles[vid]["kind"] != "pod":
 		return
 	var fwd := Vector2(sin(float(p["heading"])), cos(float(p["heading"])))
@@ -573,16 +581,8 @@ func wreck(ev: Dictionary, crowd: LifeCrowd) -> int:
 	var before := {}
 	if first:
 		var p := pose(vid, t)
-		var a := _anchor_at(vid, t)
 		if str(p["state"]) != "docked":
-			var inside := int(a["n"]) if a.has("n") else tr.riders(vid, t)
-			if not a.is_empty() and float(a["doors"]) >= 0.0:
-				if t >= float(a["doors"]):
-					inside = maxi(inside - int(a["riders"]), 0)
-				else:
-					for k in int(a["riders"]):         # they never get out
-						crowd.recs.erase(int(a["rider0"]) + k)
-			killed = inside
+			killed = _aboard(vid, t, crowd)
 		crowd.add_occupant_kills(killed, int(ev.get("src", 0)))
 	else:
 		before = _wreck_rest(vid)
@@ -609,6 +609,31 @@ func wreck(ev: Dictionary, crowd: LifeCrowd) -> int:
 			_lock(li, t, t + RESTART)
 		_episode(li, t, t < restart_at(li, t), Vector2.INF, 0, crowd)
 	return killed
+
+
+## How many passengers are still inside pod vid when it is wrecked at t (0 for a cart). A pod that never unloaded holds
+## its timetable's riders. One that did (unloads): rider k steps out at doors + 0.4 k, so those whose moment has come are
+## out and live on; the rest of its rider slots never get out (their alarm records are dropped on every machine, so no
+## one steps out of the wreck later), and they die inside with those who got no slot. (Before 2026-11-25 every rider
+## with a slot counted as out once the doors opened, though the later ones were still aboard and then stepped out of the
+## wreck; a later threat on the same lap let the timetable's riders out again; a pod held by another stop counted 0.)
+func _aboard(vid: int, t: float, crowd: LifeCrowd) -> int:
+	if not unloads.has(vid):
+		return tr.riders(vid, t)
+	var u: Dictionary = unloads[vid]
+	var out := 0
+	for k in int(u["riders"]):
+		if t >= float(u["doors"]) + 0.4 * float(k):
+			out += 1
+		else:
+			crowd.recs.erase(int(u["rider0"]) + k)      # still aboard: never gets out
+	return maxi(int(u["n"]) - out, 0)
+
+
+## The clock source changed (AmbientLife._rebase): every pod that unloaded did so on the old clock, long ago.
+func rebase_unloads() -> void:
+	for vid: int in unloads:
+		(unloads[vid] as Dictionary)["doors"] = -INF
 
 
 ## After a clock change (no episodes left): every loop a wreck lies on gets an episode that keeps its vehicles short of it.
@@ -704,27 +729,70 @@ func snapshot() -> PackedByteArray:
 			buf.put_double(float(e[k]))
 		buf.put_double((e["dir"] as Vector2).x)
 		buf.put_double((e["dir"] as Vector2).y)
+	var us := unloads.keys()
+	us.sort()
+	buf.put_u16(us.size())
+	for vid: int in us:
+		var u: Dictionary = unloads[vid]
+		buf.put_u16(vid)
+		buf.put_double(float(u["doors"]))
+		buf.put_u8(int(u["n"]))
+		buf.put_u8(int(u["riders"]))
+		buf.put_32(int(u["rider0"]))
 	return buf.data_array
 
 
+## Bytes of one record in snapshot(): an episode's head, one of its anchors, a wreck, an unload.
+const SNAP_EP := 2 + 8 + 1 + 8 + 2
+const SNAP_ANCHOR := 2 + 4 + 4 + 6 * 8 + 8
+const SNAP_WRECK := 2 + 4 + 12 * 8
+const SNAP_UNLOAD := 2 + 8 + 1 + 1 + 4
+
+
+## Replace the whole state with a snapshot (an empty one clears it). The bytes come from a peer (life.sync): every count
+## is checked against the bytes left before its records are read and the buffer must end where the last record does (a
+## truncated or padded buffer is rejected as a whole: a warning and the cleared state); a record naming a loop or vehicle
+## this traffic plan does not have is skipped.
 func restore(bytes: PackedByteArray) -> void:
 	reset()
-	if bytes.size() < 7:
+	if bytes.size() < 9:
 		return
 	var buf := StreamPeerBuffer.new()
 	buf.data_array = bytes
 	if buf.get_u8() != SNAP_VERSION:
 		return
+	if not _restore_from(buf):
+		reset()
+		push_warning("LifeFleet.restore: malformed snapshot (%d bytes): ignored" % bytes.size())
+
+
+func _restore_from(buf: StreamPeerBuffer) -> bool:
+	if buf.get_available_bytes() < 2:
+		return false
 	for i in buf.get_u16():
+		if buf.get_available_bytes() < 4:
+			return false
 		var li := buf.get_u16()
+		var m := buf.get_u16()
+		if buf.get_available_bytes() < m * 8:
+			return false
 		var iv := PackedFloat64Array()
-		for k in buf.get_u16():
+		for k in m:
 			iv.append(buf.get_double())
-		locks[li] = iv
+		if li < tr.loops.size() and m % 2 == 0:
+			locks[li] = iv
+	if buf.get_available_bytes() < 2:
+		return false
 	for i in buf.get_u16():
+		if buf.get_available_bytes() < SNAP_EP:
+			return false
 		var li := buf.get_u16()
 		var e := {"loop": li, "t": buf.get_double(), "hold": buf.get_u8() == 1, "s_prev": buf.get_double(), "v": {}, "lim": {}}
-		for k in buf.get_u16():
+		var m := buf.get_u16()
+		if buf.get_available_bytes() < m * SNAP_ANCHOR:
+			return false
+		var ok := li < tr.loops.size()
+		for k in m:
 			var vid := buf.get_u16()
 			var a := {"flee": buf.get_u8(), "hot": buf.get_u8() == 1, "riders": buf.get_u8()}
 			var n := buf.get_u8()
@@ -734,12 +802,21 @@ func restore(bytes: PackedByteArray) -> void:
 			for key: String in ANCHOR_KEYS:
 				a[key] = buf.get_double()
 			a["tep"] = float(e["t"])
+			var lim := buf.get_double()
+			if not ok or vid >= tr.count() or int(a["flee"]) not in [NONE, FWD, REV]:
+				ok = false
+				continue
 			e["v"][vid] = a
-			e["lim"][vid] = buf.get_double()
+			e["lim"][vid] = lim
 			_finish(a)
-		if li < tr.loops.size():
+		if ok:
 			episodes[li] = e
-	for i in buf.get_u16():
+	if buf.get_available_bytes() < 2:
+		return false
+	var nw := buf.get_u16()
+	if buf.get_available_bytes() < nw * SNAP_WRECK:
+		return false
+	for i in nw:
 		var vid := buf.get_u16()
 		var e := {"id": vid, "src": buf.get_32()}
 		for k: String in ["t0", "since", "x", "s", "yaw", "tilt0", "tilt1", "roll", "v0", "len"]:
@@ -748,3 +825,14 @@ func restore(bytes: PackedByteArray) -> void:
 		e["dir"] = Vector2(buf.get_double(), buf.get_double())
 		if vid < tr.count():
 			wrecks[vid] = e
+	if buf.get_available_bytes() < 2:
+		return false
+	var nu := buf.get_u16()
+	if buf.get_available_bytes() != nu * SNAP_UNLOAD:
+		return false
+	for i in nu:
+		var vid := buf.get_u16()
+		var u := {"doors": buf.get_double(), "n": buf.get_u8(), "riders": buf.get_u8(), "rider0": buf.get_32()}
+		if vid < tr.count():
+			unloads[vid] = u
+	return true

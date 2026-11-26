@@ -1,5 +1,5 @@
 class_name EnemyDropDrone
-extends EnemyBase
+extends EnemyFlier
 ## Armored Carrier Drop Ship ("dropship", docs/design/enemy-troop-squads.md §6):
 ##   - Unarmed troop transport called in by a Scout Drone beacon (strictly capped per deck so MissionRules never soft-locks).
 ##   - Lean curved-deck flight interpolation (zero per-frame physics raycasts or A* calls for < 4 ms AI budget):
@@ -69,7 +69,6 @@ var _deployed := false
 var _deploy_seq := 0
 var _pitch_anim := 0.0
 var _bay_open := 0.0
-var _hover_t := 0.0
 var _route: Array[Vector2] = []   ## arc waypoints of the current leg
 var _route_alt := 0.0             ## its flight height above the deck floor
 var _route_leg := 0               ## 0 none, 1 in (to the drop point), 2 out (to the exit point)
@@ -84,8 +83,6 @@ var _air_open_at := 0.0           ## the door's ordered open_at (hold extensions
 var air_ordered_at := -1.0        ## telemetry / tests: world time the arrival door was ordered
 var air_times := {}               ## telemetry / tests: world time of passable / out / drop / deploy / door_in / gone
 
-var _body_pivot: Node3D
-var _hull_mi: MeshInstance3D
 var _rotors_mi: MeshInstance3D
 var _bay_mi: MeshInstance3D
 
@@ -95,16 +92,8 @@ func _init() -> void:
 	enemy_type = "dropship"
 
 
-func _is_aerial_wreck() -> bool:
-	return true
-
-
 func _wreck_ground_radius() -> float:
 	return 1.35
-
-
-func _wreck_body_pivot() -> Node3D:
-	return _body_pivot
 
 
 func net_fields() -> Dictionary:
@@ -113,12 +102,12 @@ func net_fields() -> Dictionary:
 		"_drop_phase": Net.PRIVATE, "_drop_pos": Net.SPAWN, "_drop_is_roof": Net.SPAWN,
 		"_drop_half_span": Net.SPAWN, "_exfil_pos": Net.SPAWN, "_exfil_t": Net.PRIVATE,
 		"_deployed": Net.OWNER, "_deploy_seq": Net.PRIVATE, "_pitch_anim": Net.OWNER,
-		"_bay_open": Net.OWNER, "_hover_t": Net.LOCAL,
+		"_bay_open": Net.OWNER,
 		"_route": Net.PRIVATE, "_route_alt": Net.PRIVATE, "_route_leg": Net.PRIVATE, "_guard_q": Net.LOCAL,
 		"_guard_blocks": Net.PRIVATE, "_descend_stall": Net.PRIVATE, "_route_stall": Net.PRIVATE,
 		"_air_in": Net.PRIVATE, "_air_out": Net.PRIVATE, "_air_wait": Net.PRIVATE, "_air_open_at": Net.PRIVATE,
 		"air_ordered_at": Net.PRIVATE, "air_times": Net.PRIVATE,
-		"_body_pivot": Net.LOCAL, "_hull_mi": Net.LOCAL, "_rotors_mi": Net.LOCAL, "_bay_mi": Net.LOCAL,
+		"_rotors_mi": Net.LOCAL, "_bay_mi": Net.LOCAL,
 	})
 	return f
 
@@ -155,17 +144,6 @@ func _is_awake() -> bool:
 
 
 # --- Art-Direction Mesh Deferral + Self-Contained Watertight Placeholders ---------------------------------
-
-## True once EnemyMeshes provides a real art-direction mesh for `part` (not its 1x1x1 36-vertex fallback box).
-static func has_art_mesh(part: String) -> bool:
-	var m := EnemyMeshes.mesh(part)
-	if m == null or m.get_surface_count() == 0:
-		return false
-	var aabb := m.get_aabb()
-	var arrays := m.surface_get_arrays(0)
-	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX] if not arrays.is_empty() else PackedVector3Array()
-	return verts.size() > 36 or aabb.size.length() > 2.2
-
 
 ## Cached, strictly watertight placeholder meshes matching the exact Drop Ship geometry contract (5.2 W x 2.8 H x 6.8 L).
 static func placeholder_mesh(part: String) -> ArrayMesh:
@@ -263,10 +241,6 @@ func set_puppet_aim(a: Vector2) -> void:
 	_bay_open = clampf(a.y, 0.0, 1.0)
 
 
-func _update_dynamic_ground(pos: Vector3, _space: PhysicsDirectSpaceState3D) -> void:
-	ground_y = pos.dot(up)
-
-
 ## Unarmed troop carrier: never fires weapons!
 func _choose_weapon(_target_pos: Vector3) -> String:
 	return ""
@@ -278,30 +252,23 @@ func _fire_one_round(_st: Dictionary) -> void:
 
 # --- Lean Flight State Machine (Approach -> Descend -> 1.5 s Telegraph -> Deploy -> Exfil & Despawn) ------
 
-func _step_ai(dt: float, _space: PhysicsDirectSpaceState3D) -> void:
-	move_speed_ratio = 0.0
-	turret_slew_speed = 0.0
-	if knock.moving():
-		knock.velocity = knock.velocity.move_toward(Vector3.ZERO, 10.0 * dt)
+# EnemyBase state-machine hooks: no fire cooldown or relay to count (it never fires or relays), only the knockback.
+func _air_knock_damp() -> float:
+	return 10.0
 
-	if ai_mode == "idle":
-		ai_state = STATE_IDLE
-		_pitch_anim = move_toward(_pitch_anim, 0.0, dt * 3.0)
-		_bay_open = move_toward(_bay_open, 0.0, dt * 3.0)
-		_align_to_ring()
-		return
-	if ai_mode == "overheat" or heat.shutdown:
-		if ai_mode == "overheat" and not heat.shutdown:
-			heat.add(heat.cap)
-		ai_state = STATE_OVERHEATED
-		_cancel_telegraph("overheat")
-		_align_to_ring()
-		return
-	if knock.staggered():
-		ai_state = STATE_STAGGERED
-		_align_to_ring()
-		return
 
+func _ai_idle_pose(dt: float) -> void:
+	_pitch_anim = move_toward(_pitch_anim, 0.0, dt * 3.0)
+	_bay_open = move_toward(_bay_open, 0.0, dt * 3.0)
+
+
+func _on_ai_disabled(reason: String) -> void:
+	if reason == "overheat":
+		_cancel_telegraph("overheat")   # a stagger leaves the drop telegraph to the shared stagger cancel
+
+
+## The dropship's live step (replaces the base one): its flight phases.
+func _ai_live(dt: float, _space: PhysicsDirectSpaceState3D) -> void:
 	# If not configured with a drop zone (e.g., EnemyLab preset), default to hovering directly below spawn.
 	if _drop_pos == Vector3.ZERO and _exfil_pos == Vector3.ZERO and _drop_phase == PHASE_APPROACH:
 		var p0 := _world_pos()
@@ -363,19 +330,6 @@ func _step_ai(dt: float, _space: PhysicsDirectSpaceState3D) -> void:
 				_finish_exfil()
 
 
-func _drop_height() -> float:
-	if ring != null:
-		return ring.height(_drop_pos)
-	return _drop_pos.y
-
-
-func _exfil_target_world() -> Vector3:
-	if ring != null:
-		var a := ring.world_to_arc(_exfil_pos)
-		return ring.arc_to_world(a.x, a.y, EXFIL_ALT)
-	return Vector3(_exfil_pos.x, EXFIL_ALT, _exfil_pos.z)
-
-
 func _step_fly_to(goal_w: Vector3, spd: float, dt: float, tilt_forward: bool, space: PhysicsDirectSpaceState3D = null,
 		lift_ok_when_blocked: bool = true) -> bool:
 	var pos := _world_pos()
@@ -435,10 +389,6 @@ func _arc2(p: Vector3) -> Vector2:
 		var a := ring.world_to_arc(p)
 		return Vector2(a.x, a.y)
 	return Vector2(p.x, p.z)
-
-
-func _arc_world(a: Vector2, h: float) -> Vector3:
-	return ring.arc_to_world(a.x, a.y, h) if ring != null else Vector3(a.x, h, a.y)
 
 
 func _deck_plan() -> CityPlan:
@@ -634,14 +584,14 @@ func _follow_route(spd: float, dt: float, space: PhysicsDirectSpaceState3D) -> b
 	var h := ring.height(pos) if ring != null else pos.y
 	var here := _arc2(pos)
 	if absf(h - _route_alt) > 0.8:
-		_step_fly_to(_arc_world(here, _route_alt), spd * 0.6, dt, false, space)
+		_step_fly_to(_arc_to_world_alt(here, _route_alt), spd * 0.6, dt, false, space)
 		return false
 	while not _route.is_empty() and here.distance_to(_route[0]) <= WAYPOINT_R:
 		_route.pop_front()
 	if _route.is_empty():
 		return true
 	var blocks0 := _guard_blocks
-	_step_fly_to(_arc_world(_route[0], _route_alt), spd, dt, true, space)
+	_step_fly_to(_arc_to_world_alt(_route[0], _route_alt), spd, dt, true, space)
 	_route_stall = _route_stall + dt if _guard_blocks > blocks0 else 0.0
 	if _route_stall >= REPLAN_STALL:
 		# Held at something the plan data did not show: plan the leg again from here (at most every REPLAN_STALL s).
@@ -698,7 +648,7 @@ func _step_door_in(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 		into = (into - up * into.dot(up)).normalized()
 		if not _turn_to(into, dt, space):
 			return
-		_air_open_at = (world.now if world != null else 0.0) + AIR_ORDER_LEAD
+		_air_open_at = _door_clock() + AIR_ORDER_LEAD
 		air_times["door_in"] = world.now if world != null else 0.0
 		if squad != null and squad.has_method("order_air_door"):
 			squad.order_air_door(id, spawn_deck, _air_open_at, AIR_LEAVE_HOLD)
@@ -722,10 +672,21 @@ func _step_door_in(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 func _hold_door(id: String, st: Dictionary) -> void:
 	if squad == null or not squad.has_method("order_air_door") or world == null:
 		return
+	# Only while it is open / opening: an extension sent with the old open_at after it closed would re-open it.
+	if not (str(st.get("state", "")) in ["open", "opening"]):
+		return
+	var t := _door_clock()
 	var close_at := float(st.get("close_at", INF))
-	if close_at - world.now < 3.0:
+	if close_at - t < 3.0:
 		var oa := float(st.get("open_at", _air_open_at))
-		squad.order_air_door(id, spawn_deck, oa, (world.now + 5.0) - oa - 3.0)
+		squad.order_air_door(id, spawn_deck, oa, (t + 5.0) - oa - MissionWorld.passable_after("air"))
+
+
+## The air doors' clock (the mission world's, EnemySquad.air_door_clock).
+func _door_clock() -> float:
+	if squad != null and squad.has_method("air_door_clock"):
+		return float(squad.air_door_clock())
+	return world.now if world != null else 0.0
 
 
 ## Turns toward horizontal direction `want` at the catalog turn rate (hull guarded). True once aligned.
@@ -784,11 +745,15 @@ func _deploy_carried_squad() -> void:
 	var base_b := global_basis if is_inside_tree() else Basis.IDENTITY
 	var drop_arc := ring.world_to_arc(_drop_pos) if ring != null else Vector3(_drop_pos.x, _drop_pos.z, _drop_pos.y)
 	# Find nearest standing crew mech on this deck so dropped street troopers start actively hunting!
+	# Never a defend relay (EnemyBase._can_target_asset): only a dropship ordered for that defend (its own
+	# defend_target_id, which its troopers inherit) may send them at its relay. No such order exists today.
 	var best_p: CombatTarget = null
 	var best_d := INF
 	if not _drop_is_roof and world != null:
 		for t: CombatTarget in world.targets:
 			if not is_instance_valid(t) or t.team != "player" or not t.is_hittable():
+				continue
+			if t is AssetTarget and (defend_target_id == "" or (t as AssetTarget).asset_id != defend_target_id):
 				continue
 			if squad.has_method("on_deck") and not squad.on_deck(t.global_position, spawn_deck):
 				continue
@@ -806,6 +771,7 @@ func _deploy_carried_squad() -> void:
 		tr.configure(stype, sid, world, squad, ring, seed_v + _deploy_seq * 17 + i)
 		tr.spawn_deck = spawn_deck
 		tr.wave = wave
+		tr.defend_target_id = defend_target_id
 		tr.on_roof = _drop_is_roof
 		tr.auto_remove_wreck = auto_remove_wreck
 		tr.attach_fireteam(ft, i)

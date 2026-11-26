@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## A Bulwark's weapons across machines (docs/networking.md, weapons.md §5) over a real crew mission of 2, once per link.
 ## The host (A) flies a Bulwark (its profile's chassis), client c1 (B) the default Strider; friendly fire on (the default),
 ## world geometry off everywhere (shots meet hit spheres only: the city never blocks a line). Nothing new on the wire:
@@ -6,7 +7,8 @@ extends NetTest
 ## 1. B walks ahead until it is ~DIST m from A (in the side guns' arc, past the mortar's 30 m minimum, inside the
 ##    flamer's 45 m).
 ## 2. A fires one weapon of every class from the hardpoint under test, aimed at B's puppet (PHASES: each side gun with
-##    every side / shoulder weapon class, the mortar from each back saddle). Per phase: B received every A record with
+##    every side / shoulder weapon class, the mortar from each back saddle, the belly turret's gatling and
+##    autocannon when the catalog has it). Per phase: B received every A record with
 ##    its hardpoint id; B applied at least one of them to its own mech, each hit one of A's shots; A built no Hit and sent
 ##    no remote hit for B; B's own HP loss = the sum of its hits; A's puppet of B shows that loss from B's snapshot.
 ##    Then B repairs (its own verb on its own mech).
@@ -47,7 +49,14 @@ func run_host() -> void:
 	if not await _load_and_go():
 		return
 	eq(td.rig.model.chassis_id, "bulwark", "the host flies a Bulwark")
-	eq(td.combat.rack.hardpoints, ["side_l", "side_r", "back_l", "back_r"] as Array[String], "its rack has the Bulwark's four slots")
+	var ids: Array[String] = []
+	for h: Dictionary in MechCatalog.chassis("bulwark")["hardpoints"]:
+		ids.append(str(h["id"]))
+	eq(td.combat.rack.hardpoints, ids, "its rack has one slot per Bulwark hardpoint (%s)" % str(ids))
+	# The belly turret (when the catalog has it): two of its weapon classes too.
+	var phases: Array = PHASES.duplicate()
+	if "belly" in ids:
+		phases.append_array([["belly", "gatling", 1.0, 1.0], ["belly", "autocannon", 0.1, 1.2]])
 	var b := -1
 	for e: Dictionary in Session.crew():
 		if int(e["peer"]) != Session.local_id():
@@ -69,8 +78,8 @@ func run_host() -> void:
 	rack.read_input = false
 	rack.manual_aim = true
 	# 2. Every weapon class from the hardpoint under test.
-	for pi in PHASES.size():
-		var ph: Array = PHASES[pi]
+	for pi in phases.size():
+		var ph: Array = phases[pi]
 		var hp := str(ph[0])
 		var w := str(ph[1])
 		var lo: Dictionary = BULWARK_LO.duplicate()

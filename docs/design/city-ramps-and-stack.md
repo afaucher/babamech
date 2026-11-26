@@ -439,13 +439,20 @@ cameras `mission_gate` / `mission_bay`).
 (s0 / s1), derived by MissionWorld from the stack itself (not from MissionPlan: they exist whenever a mission world is set
 up), so every machine builds the same ones. Shots: `docs/design/city-gates/air_shut.png`, `air_open.png` (bulkhead),
 `air_farm_open.png` (farm wall); lab `mission=doors`, cameras `mission_air` / `mission_air_farm`.
-- **Placement rule** (`MissionWorld.air_spot`, plan data and the deck's sign layout only, no random draw): on each end wall
-  the spot nearest the avenue's centre line (candidates every 0.5 m, + before -) whose door (`air_half()` 9.1 m each side)
-  stays 4 m inside the wall's ends and 1 m clear of every gate's staging bay footprint (`bay_half` + plates) and span,
-  whose frame rect (19.5-29.1 m up, +-8.6 m) is 1 m clear of every deck sign on that wall (`CitySigns.layout`: over-gate
-  and side signs), and whose flight corridor (the opening +-1.6 m, 40 m straight into the deck) crosses no building taller
-  than 20 m, pillar core, park column, ramp (+2 m), ceiling opening or hung ramp / shaft sign; the ceiling must leave 4 m
-  over the lintel. Zero, one or two per deck (one per end wall). Seeds 1, 4, 7, 403112: two on every deck but seed 1 deck
+- **Placement rule** (`MissionWorld.air_spot(plan, wall)` / `air_doors(plan)`, plan data only, no random draw): on each
+  end wall the spot nearest the avenue's centre line (candidates every 0.5 m, + before -) whose door (`air_half()` 9.1 m
+  each side) stays 4 m inside the wall's ends and 1 m clear of every gate's staging bay footprint (`plan_bay_half` +
+  plates) and span, whose frame rect (19.5-29.1 m up, +-8.6 m) is 1 m clear of the band kept over every gate for its deck
+  sign (`GATE_SIGN_HALF` 6.5 m either side of the gate's centre line), and whose flight corridor (the opening +-1.6 m,
+  40 m straight into the deck) crosses no building taller than 20 m, pillar core, park column, ramp (`ramp_keep_out`: the
+  ramp +2 m across, + `RAMP_SIGN_REACH` 5 m past both ends for its hung sign) or ceiling opening; the ceiling must leave 4 m
+  over the lintel. **In the load checksum** (2026-11-25, code audit): `CityStack.checksum()` joins every deck's
+  `MissionWorld.air_checksum(plan)` (side and position of each door), so two builds that place air doors differently fail
+  the load barrier. Until then the rule read the cosmetic `CitySigns.layout` itself (side signs, hung ramp / shaft
+  signs): a sign constant could move wall cuts and dropship entries with no checksum change. Now the looks fit the
+  gameplay: `tests/test_air_doors.gd` checks every over-gate sign fits `GATE_SIGN_HALF`, every hung ramp sign lies in its
+  `ramp_keep_out` or clear of every corridor, and no sign on an end wall overlaps a door's frame. Placement over seeds 1,
+  4, 7, 403112 is unchanged by the switch (all 24 end walls, before and after). Zero, one or two per deck (one per end wall). Seeds 1, 4, 7, 403112: two on every deck but seed 1 deck
   2 (one: its s0 wall, with the collapsed spine gate, has no clear corridor). Most sit just beside the avenue gate's bay
   (30.5 m from the avenue's centre line, or 42.5 m on the other side); a few go out to 120-160 m where buildings block the
   corridor nearer.

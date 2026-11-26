@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Audio for remote events (W8; scripts/audio/combat_audio.gd) over a real crew mission of 2, once per link (off, coast).
 ## Cues are read from the Audio autoload's recorder (AudioDirector.record_events / recent_events). On the client (B), which
 ## fired none of them, the host's (A's)

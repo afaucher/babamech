@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## The flak's proximity fuse across machines (docs/design/weapons.md §3.10, §5), over a crew of 2, once per link. A
 ## host-owned airborne target "flak_dummy" (owner_peer 0, 20 m up, 60 m ahead of the host) exists on both machines. The
 ## client (B) fires one flak record past it, 4 m from its hull (a near miss inside the 6 m fuse), through its own

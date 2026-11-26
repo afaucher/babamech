@@ -5,9 +5,9 @@ extends Node
 ##
 ## SHAPE: host-arbitrated world object (AGENTS rule 6). The pilot's machine asks, the host decides, the mech's owner
 ## applies the effect on its own mech (rule 2).
-##   PLACE (every machine, plan data + the snap rule only): each plan depot snaps to clear ground like a flag site
-##     (MissionProps.snap_site, reach plan `snap`, clear DEPOT_CLEAR, keeping clear of the snapped flag masts / relays and
-##     the deck's other depot) and a SupplyDepot (look, collision, DepotTarget) goes under its deck's CityDistrict.
+##   PLACE (every machine, plan data + the built deck only): each plan depot gets find_site (KEEP-OUT, WIDEST-MECH FIT,
+##     no fallback: see below) and a SupplyDepot (look, collision, DepotTarget) goes under its deck's CityDistrict; a depot
+##     no valid site on its deck takes is not built (unplaced) and its cores are dropped.
 ##   CORES: cores_max = plan cores (1 per pilot) x the crew at mission start, at least MissionPlan.DEPOT_CORES_MIN (2) (the launch's crew: the same on every
 ##     machine); the host then decides `cores_left` / `alive`, which ride in mission.state as "depots":
 ##     {id: [cores_left, alive 0 | 1]} (state / apply_state), so a barrier latecomer starts from them.
@@ -91,7 +91,8 @@ func net_fields() -> Dictionary:
 		"_seq": Net.PRIVATE, "_granted_at": Net.PRIVATE, "_answered": Net.PRIVATE,
 		"_last_seq": Net.LOCAL, "_t": Net.LOCAL, "_stand_depot": Net.PRIVATE, "_stand_t": Net.PRIVATE,
 		"_inflight": Net.PRIVATE, "_nonce": Net.PRIVATE, "_cooldown_until": Net.PRIVATE, "_registered": Net.LOCAL,
-		"_bot_nonce": Net.PRIVATE, "placement_fallbacks": Net.LOCAL, "_keep": Net.LOCAL, "_bot_stand": Net.PRIVATE, "_bot_wait": Net.PRIVATE, "last_grant": Net.LOCAL}
+		"_bot_nonce": Net.PRIVATE, "unplaced": Net.SPAWN, "_keep": Net.LOCAL, "_open": Net.LOCAL, "_stamp": Net.LOCAL, "_stamp_n": Net.LOCAL,
+		"_stack_ref": Net.LOCAL, "_mw_ref": Net.LOCAL, "_bot_stand": Net.PRIVATE, "_bot_wait": Net.PRIVATE, "last_grant": Net.LOCAL}
 
 
 func _ready() -> void:
@@ -103,10 +104,10 @@ func setup(f: MissionFlow) -> void:
 	drive = f.drive
 	plan = f.plan
 	crew = f.crew
-	# The crew at mission start = the launch's crew (players AND hangar bots, negative ids: TestDrive._spawn_crew adds a
-	# mech per launch crew entry, Session.crew() at the launch, to spawn_order), never the
-	# roster / connected peers. Pilot ids are keys everywhere (bots' are negative): no id > 0 assumption.
-	var n_crew := drive.spawn_order.size() if crew and drive != null else 1
+	# The crew scale at mission start = the host's (MissionFlow.crew_scale(): the launch crew, players AND hangar bots, as
+	# the host counted it), never this machine's roster / crew list. Cores placed here stay for the mission: a later rescale
+	# (a pilot left) removes no socket. Pilot ids are keys everywhere (bots' are negative): no id > 0 assumption.
+	var n_crew := f.crew_scale()
 	for d: Dictionary in plan.depots:
 		var id := str(d["id"])
 		cores_max[id] = maxi(int(d["cores"]) * maxi(n_crew, 1), MissionPlan.DEPOT_CORES_MIN)
@@ -119,6 +120,13 @@ func setup(f: MissionFlow) -> void:
 		s.depot_claimed.connect(_on_claim)
 		s.depot_granted.connect(_on_grant)
 		s.depot_denied.connect(_on_deny)
+
+
+## Host: pilot `pilot_id` left the crew (MissionFlow.on_member_retired): drop its claim bookkeeping (last grant time, last
+## answer, a bot's claim counter / stand timer / wait). Cores and depots are unchanged.
+func forget_pilot(pilot_id: int) -> void:
+	for d: Dictionary in [_granted_at, _answered, _bot_nonce, _bot_stand, _bot_wait]:
+		d.erase(pilot_id)
 
 
 ## Remove the depots from the world and the combat world (MissionFlow.rebuild, solo N).
@@ -139,27 +147,62 @@ func _world() -> CombatWorld:
 	return drive.combat.world if drive != null and drive.combat != null else null
 
 
+## The built stack / mission world placement reads (the drive's, or what place_on was given).
+func _stk() -> CityStack:
+	if _stack_ref != null:
+		return _stack_ref
+	return drive.stack if drive != null else null
+
+
+func _mw() -> MissionWorld:
+	if _mw_ref != null and is_instance_valid(_mw_ref):
+		return _mw_ref
+	var w := flow.world if flow != null else null
+	return w if w != null and is_instance_valid(w) else null
+
+
+## PLACEMENT ONLY (tests, sweeps): the sites the depots of plan `p` get on built stack `stk` with mission world `mw`
+## (the same rule and the same answer as a mission's setup; no SupplyDepot nodes, no session). Free it when done.
+static func place_on(stk: CityStack, mw: MissionWorld, p: MissionPlan) -> MissionDepots:
+	var md := MissionDepots.new()
+	md._stack_ref = stk
+	md._mw_ref = mw
+	md.plan = p
+	for d: Dictionary in p.depots:
+		var id := str(d["id"])
+		md.cores_max[id] = MissionPlan.DEPOT_CORES_MIN
+		md.cores_left[id] = MissionPlan.DEPOT_CORES_MIN
+		md.alive[id] = true
+	md._place(false)
+	return md
+
+
 # --- Placement (every machine) ---------------------------------------------------------------------------------
 
-func _place() -> void:
-	if drive == null or drive.stack == null:
+func _place(build_nodes: bool = true) -> void:
+	var stk := _stk()
+	if stk == null:
 		return
 	for d: Dictionary in plan.depots:
 		var id := str(d["id"])
 		var k := int(d["deck"])
-		if k < 0 or k >= drive.stack.decks.size():
+		if k < 0 or k >= stk.decks.size():
 			continue
-		var dist: CityDistrict = drive.stack.decks[k]
+		var dist: CityDistrict = stk.decks[k]
 		var at := Vector2(float(d["site"]["x"]), float(d["site"]["s"]))
 		var snap := find_site(dist, k, at, float(d.get("snap", MissionPlan.DEPOT_SNAP)))
-		if not bool(snap["ok"]):   # nothing clear within PLACE_REACHES: the old snap (counted, reported)
-			placement_fallbacks += 1
-			snap = MissionProps.snap_site(dist, at, float(d.get("snap", MissionPlan.DEPOT_SNAP)), DEPOT_CLEAR, _avoid(k))
-			snap["face"] = open_face(dist, Vector2(float(snap["x"]), float(snap["s"])), _avoid(k))
-			snap["fallback"] = true
-			push_warning("[depot] %s: no site off the roads within %.0f m, placed by the plain snap" % [id, PLACE_REACHES[-1]])
+		if not bool(snap["ok"]):
+			# No spot on the whole deck where the depot blocks nothing and the widest mech reaches it: no depot here (its
+			# cores are not moved elsewhere). Counted and reported; every machine drops the same one.
+			unplaced.append(id)
+			for dd: Dictionary in [cores_max, cores_left, alive]:
+				dd.erase(id)
+			push_warning("[depot] %s (deck %d): no valid site on the deck (%s), not placed" % [id, k, str(snap.get("why", ""))])
+			continue
 		snap["deck"] = k
 		sites[id] = snap
+		if not build_nodes:
+			continue
 		var node := SupplyDepot.new()
 		node.build(dist, MissionProps.site_frame(dist, float(snap["x"]), float(snap["s"]), float(snap["h"])), id, k,
 			int(cores_max[id]), int(snap["face"]))
@@ -175,23 +218,45 @@ func _place() -> void:
 ## cut, a gate's staging bay mouth and exit corridor (MissionWorld.source_bay: door -> exit, + BAY_RUN beyond), a lift /
 ## shaft / ramp source (SOURCE_KEEP), a flag mast or relay; and stays WALK_GAP + the edge's half-width off every
 ## walk-graph edge's centre line (CityPlan.walk_graph(true): what enemies and bots path along). The STANDING AREA in front
-## of the socket wall (STAND_GAP out, a mech capsule MECH_R) must be clear ground. Search: the plan site, then a 1 m grid
-## nearest first out to PLACE_REACHES (widened in steps); each point also needs clear ground under the depot
-## (MissionProps.snap_site at reach 0, the flag rule). FACING among the facings that pass: toward the nearest road (a mech
-## walks up to it from the street), ties +s, +x, -s, -x.
+## of the socket wall (STAND_GAP out) must be clear ground (MissionProps.snap_site, a Strider capsule MECH_R: props, kept-
+## clear boxes) and pass the WIDEST-MECH FIT below. Search: the plan site, then a 1 m grid nearest first out to
+## PLACE_REACHES (widened in steps); each point also needs clear ground under the depot (MissionProps.snap_site at reach
+## 0, the flag rule). FACING among the facings that pass: toward the nearest road (a mech walks up to it from the street),
+## ties +s, +x, -s, -x.
+## WIDEST-MECH FIT (2026-11-26: seed 22's d1_depot1, placed by the old plain-snap fallback inside a block, wedged a
+## Bulwark): on the deck's fit mask (MissionProps.fit_mask: Environment's grid of where a disc of fit_r() = the widest
+## capsule CityPlan.MECH_R_MAX + FIT_MARGIN stands among static obstacles, the same source as the objective site fit),
+## with the flag masts / relays / depots placed already as obstacles too:
+##   RING  every cell whose centre is fit_r() .. fit_r() + RING_W from the footprint is open: the widest mech can walk
+##         right round the depot, so the depot never narrows a passage below its width (no gap a mech squeezes into and
+##         wedges: any gap between the depot and a wall is >= 2 x fit_r() + RING_W);
+##   STAND the standing spot's cell is open (the widest capsule stands there, within claim range);
+##   REACH the standing spot connects (8-neighbour, open cells, never through the depot) to a cell on the deck's walk
+##         graph (the mask's seeds): the widest mech gets there from the street network.
+## NO FALLBACK: when nothing passes within PLACE_REACHES (tier 0), the same rules over the whole deck on a PLACE_FAR_STEP
+## grid nearest first (tier 1), then without the walk-edge gap (tier 2: the fit rule already keeps every passage open);
+## nothing on the deck -> the depot is not placed (unplaced; its cores are not moved elsewhere).
 const KEEP_MARGIN := 4.0
 const WALK_GAP := 3.0
 const WALK_HALF := {"street": 0.0, "lane": 0.0, "pedestrian": 0.0, "none": 2.5, "alley": 2.0}   ## road edges: their strip
 const RAMP_MOUTH := 12.0
 const BAY_RUN := 10.0
 const SOURCE_KEEP := 8.0
-const STAND_GAP := 3.0
+const STAND_GAP := CityPlan.MECH_R_MAX + MissionProps.FIT_MARGIN + 0.5   ## m from the socket wall: inside the RING
 const MECH_R := 2.2
 const ROAD_LOOK := 30.0           ## m a facing looks for a road
 const PLACE_REACHES: Array[float] = [25.0, 50.0, 80.0, 120.0]
+const RING_W := 1.0               ## m: the ring of open cells round the footprint (one cell)
+const PLACE_FAR_STEP := 2.0       ## m: the whole-deck search grid (tiers 1, 2)
+const REACH_CELLS := 400000       ## most cells the REACH search visits (a whole deck is ~200k)
 
-var placement_fallbacks := 0      ## depots placed by the plain snap (no site off the roads within reach)
+var unplaced: Array[String] = []  ## plan depots no valid site on their deck took (not built; their cores dropped)
+var _open: PackedByteArray        ## find_site: the fit mask's free cells minus the avoid discs (this depot's search)
+var _stamp: PackedInt32Array      ## find_site: REACH search visit stamps
+var _stamp_n := 0
 var _keep: Dictionary = {}        ## deck -> keep_out(k) (built once per deck)
+var _stack_ref: CityStack = null  ## place_on: the stack to place on (else the drive's)
+var _mw_ref: MissionWorld = null  ## place_on: the mission world (else the flow's)
 
 
 ## The keep-out of deck k (see KEEP-OUT): {roads: [Rect2 road strips], rects: [Rect2 ramps / cuts, already grown],
@@ -202,12 +267,13 @@ func keep_out(k: int) -> Dictionary:
 	var roads: Array[Rect2] = []
 	var rects: Array[Rect2] = []
 	var caps: Array = []
-	var sec := drive.stack.section if drive != null and drive.stack != null else null
+	var stk := _stk()
+	var sec := stk.section if stk != null else null
 	if sec != null:
 		for sg: Dictionary in sec.segments(k):
 			if str(sg["form"]) != "none":
 				roads.append(sg["rect"])
-	var dist: CityDistrict = drive.stack.decks[k]
+	var dist: CityDistrict = stk.decks[k]
 	var cp := dist.plan
 	for rp: Dictionary in cp.ramps:
 		var s0 := minf(float(rp["s_top"]), float(rp["s_foot"]))
@@ -216,14 +282,14 @@ func keep_out(k: int) -> Dictionary:
 			RAMP_MOUTH, 2.0, RAMP_MOUTH))
 	for c: Rect2 in cp.floor_cuts():
 		rects.append(c.grow(CityStreets.HOLE_CURB + 1.0))
-	var w := flow.world if flow != null else null
+	var w := _mw()
 	for src: Dictionary in plan.deck_sources(k):
 		var at := Vector2(float(src["x"]), float(src["s"]))
-		if str(src["kind"]) == "gate" and w != null and is_instance_valid(w):
+		if str(src["kind"]) == "gate" and w != null:
 			var bay: Dictionary = w.source_bay(src["id"])
 			if bool(bay.get("ok", false)):
 				var door: Vector2 = bay["door"]
-				var ex_a := drive.stack.to_deck_arc(bay["exit"])
+				var ex_a := stk.to_deck_arc(bay["exit"])
 				var ex := Vector2(float(ex_a["x"]), float(ex_a["s"]))
 				var dir := (ex - door).normalized() if ex.distance_to(door) > 0.1 else Vector2.ZERO
 				caps.append([door, ex + dir * BAY_RUN, float(bay["half_width"]) + 1.0])
@@ -231,6 +297,7 @@ func keep_out(k: int) -> Dictionary:
 		caps.append([at, at, SOURCE_KEEP])
 	for av: Array in _avoid(k):     # flag masts, relays and the depots placed already
 		caps.append([av[0], av[0], float(av[1]) + 2.0])
+	var walks: Array = []
 	var g := cp.walk_graph(true)
 	var nodes: Array = g["nodes"]
 	var forms: Dictionary = g.get("forms", {})
@@ -238,8 +305,8 @@ func keep_out(k: int) -> Dictionary:
 		var a := int(ed[0])
 		var b := int(ed[1])
 		var form := str(forms.get(Vector2i(mini(a, b), maxi(a, b)), "street"))
-		caps.append([nodes[a] as Vector2, nodes[b] as Vector2, float(WALK_HALF.get(form, 2.5)) + WALK_GAP])
-	var ko := {"roads": roads, "rects": rects, "caps": caps}
+		walks.append([nodes[a] as Vector2, nodes[b] as Vector2, float(WALK_HALF.get(form, 2.5)) + WALK_GAP])
+	var ko := {"roads": roads, "rects": rects, "caps": caps, "walks": walks}
 	_keep[k] = ko
 	return ko
 
@@ -250,8 +317,9 @@ static func footprint_rect(at: Vector2, f: int) -> Rect2:
 	return Rect2(at - half, half * 2.0)
 
 
-## What a footprint at `at` facing `f` hits in `ko` (keep_out): "road", "ramp_or_cut", "corridor", or "" when clear.
-static func keep_hit(ko: Dictionary, at: Vector2, f: int) -> String:
+## What a footprint at `at` facing `f` hits in `ko` (keep_out): "road", "ramp_or_cut", "corridor", "walk" (a walk-graph
+## edge; skipped when `walk` is false: tier 2), or "" when clear.
+static func keep_hit(ko: Dictionary, at: Vector2, f: int, walk: bool = true) -> String:
 	var r := footprint_rect(at, f)
 	var rm := r.grow(KEEP_MARGIN)
 	for rd: Rect2 in ko["roads"]:
@@ -263,6 +331,10 @@ static func keep_hit(ko: Dictionary, at: Vector2, f: int) -> String:
 	for c: Array in ko["caps"]:
 		if rect_seg_dist(r, c[0], c[1]) < float(c[2]):
 			return "corridor"
+	if walk:
+		for c: Array in ko.get("walks", []):
+			if rect_seg_dist(r, c[0], c[1]) < float(c[2]):
+				return "walk"
 	return ""
 
 
@@ -318,6 +390,17 @@ static func _ring(inner: float, reach: float) -> Array:
 func find_site(d: CityDistrict, k: int, at: Vector2, first_reach: float) -> Dictionary:
 	var ko := keep_out(k)
 	var avoid := _avoid(k)
+	var m := MissionProps.fit_mask(d.plan)
+	_open = m.free.duplicate()
+	for av: Array in avoid:
+		_block_disc(m, av[0], float(av[1]) + m.r)
+	if _stamp.size() != m.free.size():
+		_stamp.resize(m.free.size())
+		_stamp.fill(0)
+		_stamp_n = 0
+	var ring_off := [_ring_cells(m, at, 0), _ring_cells(m, at, 1)]   # per footprint orientation (face % 2)
+	var why := {}
+	# Tier 0: out to PLACE_REACHES, 1 m grid.
 	var inner := -1.0
 	var reaches: Array[float] = [first_reach]
 	for rr in PLACE_REACHES:
@@ -325,25 +408,174 @@ func find_site(d: CityDistrict, k: int, at: Vector2, first_reach: float) -> Dict
 			reaches.append(rr)
 	for reach in reaches:
 		for off: Vector2 in _ring(inner, reach):
-			var pt: Vector2 = at + off
-			var faces: Array[int] = []
-			for f in 4:
-				if keep_hit(ko, pt, f) != "":
-					continue
-				if not bool(MissionProps.snap_site(d, stand_point(pt, f), 0.0, MECH_R, avoid)["ok"]):
-					continue
-				faces.append(f)
-			if faces.is_empty():
-				continue
-			var g := MissionProps.snap_site(d, pt, 0.0, DEPOT_CLEAR, avoid)
-			if not bool(g["ok"]):
-				continue
-			g["face"] = _road_face(ko, pt, faces)
-			g["reach"] = reach
-			g["snapped"] = not pt.is_equal_approx(at)
-			return g
+			var g := _try(d, m, ko, avoid, ring_off, at, at + off, true, why)
+			if not g.is_empty():
+				g["reach"] = reach
+				g["tier"] = 0
+				return g
 		inner = reach
-	return {"ok": false}
+	# Tiers 1 and 2: the whole deck, PLACE_FAR_STEP grid nearest first (tier 2 without the walk-edge gap).
+	var far := _far_points(d.plan.extent, at)
+	for tier in [1, 2]:
+		for pt: Vector2 in far:
+			var g := _try(d, m, ko, avoid, ring_off, at, pt, tier == 1, why)
+			if not g.is_empty():
+				g["reach"] = pt.distance_to(at)
+				g["tier"] = tier
+				return g
+	return {"ok": false, "why": why}
+
+
+## One candidate `pt` (see WIDEST-MECH FIT): snap_site's {x, s, h, ok} + face, snapped when it passes, else {} (the first
+## failing rule counted in `why`).
+func _try(d: CityDistrict, m: MissionProps.FitMask, ko: Dictionary, avoid: Array, ring_off: Array, at: Vector2, pt: Vector2,
+		walk: bool, why: Dictionary) -> Dictionary:
+	var faces: Array[int] = []
+	var fail := ""
+	for o in 2:   # the ring depends only on the orientation: cheap reject first
+		if not _ring_open(m, pt, ring_off[o]):
+			fail = "ring"
+			continue
+		for f in [o, o + 2]:
+			var h := keep_hit(ko, pt, f, walk)
+			if h != "":
+				fail = h
+				continue
+			var sp := stand_point(pt, f)
+			var sc := m.index_of(sp)
+			if sc < 0 or _open[sc] == 0:
+				fail = "stand_fit"
+				continue
+			if not bool(MissionProps.snap_site(d, sp, 0.0, MECH_R, avoid)["ok"]):
+				fail = "stand_clear"
+				continue
+			faces.append(f)
+	if faces.is_empty():
+		why[fail] = int(why.get(fail, 0)) + 1
+		return {}
+	faces.sort()
+	var g := MissionProps.snap_site(d, pt, 0.0, DEPOT_CLEAR, avoid)
+	if not bool(g["ok"]):
+		why["clear"] = int(why.get("clear", 0)) + 1
+		return {}
+	var face := _road_face(ko, pt, faces)
+	if not _reaches_walk(m, footprint_rect(pt, face), stand_point(pt, face)):
+		# the chosen facing's stand spot is cut off: try the others before giving up on the point
+		var ok_f := -1
+		for f in faces:
+			if f != face and _reaches_walk(m, footprint_rect(pt, f), stand_point(pt, f)):
+				ok_f = f
+				break
+		if ok_f < 0:
+			why["reach"] = int(why.get("reach", 0)) + 1
+			return {}
+		face = ok_f
+	g["face"] = face
+	g["snapped"] = not pt.is_equal_approx(at)
+	return g
+
+
+## The fit-mask cell offsets (relative to the cell under the candidate) of the RING round a footprint of orientation `o`
+## (0: faces 0 / 2, 1: faces 1 / 3), for candidates on `at`'s 1 m grid (every candidate shares its fractional offset, so
+## one list serves them all; the far grid's 2 m step keeps it).
+func _ring_cells(m: MissionProps.FitMask, at: Vector2, o: int) -> Array[Vector2i]:
+	var out: Array[Vector2i] = []
+	var fr := footprint_rect(at, o)
+	var c0 := Vector2i(int(floorf((at.x - m.origin.x) / m.cell)), int(floorf((at.y - m.origin.y) / m.cell)))
+	var span := int(ceilf(fr.size.x * 0.5 + m.r + RING_W)) + 2
+	for dj in range(-span, span + 1):
+		for di in range(-span, span + 1):
+			var c := m.origin + Vector2(float(c0.x + di) + 0.5, float(c0.y + dj) + 0.5) * m.cell
+			var dd := _rect_point_dist(fr, c)
+			if dd >= m.r and dd < m.r + RING_W:
+				out.append(Vector2i(di, dj))
+	return out
+
+
+func _ring_open(m: MissionProps.FitMask, pt: Vector2, offs: Array[Vector2i]) -> bool:
+	var ci := int(floorf((pt.x - m.origin.x) / m.cell))
+	var cj := int(floorf((pt.y - m.origin.y) / m.cell))
+	for o: Vector2i in offs:
+		var i := ci + o.x
+		var j := cj + o.y
+		if i < 0 or j < 0 or i >= m.nx or j >= m.ns or _open[j * m.nx + i] == 0:
+			return false
+	return true
+
+
+## REACH: the standing spot's cell connects to a walk-graph seed cell through open cells (8-neighbour), never within
+## the fit radius of the footprint `fr`.
+func _reaches_walk(m: MissionProps.FitMask, fr: Rect2, stand: Vector2) -> bool:
+	var s0 := m.index_of(stand)
+	if s0 < 0 or _open[s0] == 0:
+		return false
+	_stamp_n += 1
+	var q := PackedInt32Array([s0])
+	_stamp[s0] = _stamp_n
+	var head := 0
+	var block := fr.grow(m.r)
+	while head < q.size() and head < REACH_CELLS:
+		var c := q[head]
+		head += 1
+		if m.seeds[c] == 1:
+			return true
+		var i := c % m.nx
+		var j := c / m.nx
+		for dj in range(-1, 2):
+			for di in range(-1, 2):
+				var ii := i + di
+				var jj := j + dj
+				if ii < 0 or jj < 0 or ii >= m.nx or jj >= m.ns:
+					continue
+				var nb := jj * m.nx + ii
+				if _stamp[nb] == _stamp_n or _open[nb] == 0:
+					continue
+				_stamp[nb] = _stamp_n
+				var p := m.centre(nb)
+				if block.has_point(p) and _rect_point_dist(fr, p) < m.r:
+					continue
+				q.append(nb)
+	return false
+
+
+## Mark the cells whose centre is within `rr` of `c` closed in _open.
+func _block_disc(m: MissionProps.FitMask, c: Vector2, rr: float) -> void:
+	var j0 := maxi(int(floorf((c.y - rr - m.origin.y) / m.cell)), 0)
+	var j1 := mini(int(ceilf((c.y + rr - m.origin.y) / m.cell)), m.ns - 1)
+	var i0 := maxi(int(floorf((c.x - rr - m.origin.x) / m.cell)), 0)
+	var i1 := mini(int(ceilf((c.x + rr - m.origin.x) / m.cell)), m.nx - 1)
+	for j in range(j0, j1 + 1):
+		for i in range(i0, i1 + 1):
+			if m.centre(j * m.nx + i).distance_to(c) < rr:
+				_open[j * m.nx + i] = 0
+
+
+static func _rect_point_dist(r: Rect2, p: Vector2) -> float:
+	var dx := maxf(maxf(r.position.x - p.x, p.x - r.end.x), 0.0)
+	var dy := maxf(maxf(r.position.y - p.y, p.y - r.end.y), 0.0)
+	return sqrt(dx * dx + dy * dy)
+
+
+## Every PLACE_FAR_STEP grid point (on `at`'s grid) inside `ext` beyond the widest PLACE_REACHES, nearest first (ties
+## smaller s, then x).
+static func _far_points(ext: Rect2, at: Vector2) -> Array:
+	var keyed := []
+	var st := PLACE_FAR_STEP
+	var i0 := int(floorf((ext.position.x - at.x) / st))
+	var i1 := int(ceilf((ext.end.x - at.x) / st))
+	var j0 := int(floorf((ext.position.y - at.y) / st))
+	var j1 := int(ceilf((ext.end.y - at.y) / st))
+	for j in range(j0, j1 + 1):
+		for i in range(i0, i1 + 1):
+			var p := at + Vector2(float(i), float(j)) * st
+			var l := p.distance_to(at)
+			if l > PLACE_REACHES[-1] + 0.001 and ext.has_point(p):
+				keyed.append([l, p.y, p.x])
+	keyed.sort()
+	var out := []
+	for kk: Array in keyed:
+		out.append(Vector2(float(kk[2]), float(kk[1])))
+	return out
 
 
 ## Of the facings `faces`, the one whose wall looks at the nearest road strip (within ROAD_LOOK m); ties in order.
@@ -403,8 +635,8 @@ static func open_face(d: CityDistrict, at: Vector2, avoid: Array = []) -> int:
 ## What a depot on deck k keeps clear of: the snapped flag masts and defend relays there, and the depots placed already.
 func _avoid(k: int) -> Array:
 	var out: Array = []
-	var w := flow.world if flow != null else null
-	if w != null and is_instance_valid(w):
+	var w := _mw()
+	if w != null:
 		for o: Dictionary in plan.deck_objectives(k):
 			var st: Dictionary = {}
 			var r := 0.0
@@ -750,15 +982,7 @@ func _pilot(peer: int) -> Dictionary:
 	var pp := _live(drive.crew_sync.puppets.get(peer)) as MechPuppet if drive.crew_sync != null else null
 	if pp != null and is_instance_valid(pp.mech):
 		return {"pos": pp.mech.global_position, "downed": pp.downed}
-	# A host-owned bot (negative pilot id): its mech is this machine's, its PlayerTarget (group player_target) says down.
-	var m := _live(drive.mechs.get(peer)) as Node3D
-	if m == null:
-		return {}
-	var downed := false
-	for t: Node in get_tree().get_nodes_in_group("player_target"):
-		if t is PlayerTarget and (t as PlayerTarget).mech == m:
-			downed = (t as PlayerTarget).disabled
-	return {"pos": m.global_position, "downed": downed}
+	return {}   # no such pilot here (every host bot has its CrewBot, every member its puppet)
 
 
 func _reply(peer: int, ans: Dictionary, repeat: bool) -> void:

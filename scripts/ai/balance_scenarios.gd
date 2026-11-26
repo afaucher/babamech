@@ -228,10 +228,16 @@ static func run_scenario(host: Node, spec: Dictionary) -> Dictionary:
 		var cprof := crew_profs[ci]
 		var cloadout_name := loadout_override if loadout_override != "" else str(BotProfile.get_profile(cprof).get("loadout", "default"))
 		var cloadout := BotProfile.get_loadout(cloadout_name)
+		# Optional spec keys (tools/balance/chassis_compare.gd): "chassis" (default strider), "loadout_dict" (an explicit
+		# loadout, over the named one), "on_spawn" Callable(mech, rack, target) after the stack binds (what-if tweaks),
+		# "on_step" Callable(dt, mechs, racks, targets, bots) after each step's metrics sample.
+		var chassis_id := str(spec.get("chassis", "strider"))
+		if spec.has("loadout_dict"):
+			cloadout = (spec["loadout_dict"] as Dictionary).duplicate()
 		var pid := "player%d" % (ci + 1)
 		var bid := "bot%d" % (ci + 1)
 
-		var mech := MechSpawn.make(heads[ci % heads.size()], "strider", cloadout)
+		var mech := MechSpawn.make(heads[ci % heads.size()], chassis_id, cloadout)
 		mech.name = "Mech_%d" % (ci + 1)
 		mech.ring = ring
 		root.add_child(mech)
@@ -264,6 +270,8 @@ static func run_scenario(host: Node, spec: Dictionary) -> Dictionary:
 			bot.set_arena_roofs(arena_roofs)
 		if bot_squad != null:
 			bot_squad.add_bot(bot)
+		if spec.get("on_spawn") is Callable and (spec["on_spawn"] as Callable).is_valid():
+			(spec["on_spawn"] as Callable).call(mech, rack, pt)
 
 		# Disable automatic _physics_process so our tight deterministic loop controls exact step order & speed.
 		mech.set_physics_process(false)
@@ -298,6 +306,7 @@ static func run_scenario(host: Node, spec: Dictionary) -> Dictionary:
 		metrics.add_player(targets[ci], mechs[ci], racks[ci], bots[ci])
 
 	var steps := int(ceil(max_s / DT))
+	var on_step: Callable = spec["on_step"] if spec.get("on_step") is Callable else Callable()
 	var won := false
 	var end_reason := "timeout"
 	var sim_t := 0.0
@@ -315,6 +324,8 @@ static func run_scenario(host: Node, spec: Dictionary) -> Dictionary:
 			racks[ci].step(DT)
 		world.advance(DT)
 		metrics.sample(DT)
+		if on_step.is_valid():
+			on_step.call(DT, mechs, racks, targets, bots)
 
 		var any_alive := false
 		for pt: PlayerTarget in targets:

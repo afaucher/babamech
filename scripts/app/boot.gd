@@ -11,8 +11,9 @@ extends Node
 ##   --crew-shot <png>     (run.ps1 -Crew -ShotDir) save a screenshot once --crew-size players are in, then quit
 ##   --seed <N>            the mission seed: the test drive's city (solo, default 1), and the Launch (host or solo; without
 ##                         it the Launch rolls a fresh random seed and broadcasts it)
-##   --stack / --district  the mission's city: the multi-deck section stack (the default) or one city district (the
-##                         pre-stack test drive); the host's Launch sends it with the seed (TestDrive.launch_mode)
+##   --stack               accepted and ignored: the multi-deck section stack is the only city (`--district` is gone)
+##   --objectives          accepted and ignored: objectives are the only mission mode (user 2026-11-25 "Cut the legacy
+##                         modes."; `--no-objectives` is gone and ignored too)
 ##   --no-renderer-relaunch  this process is the first launch's Compatibility relaunch (GraphicsQuality): don't again
 ##   --dev-pretend-integrated  DEV, hidden: treat the GPU as integrated (exercises that relaunch and the LOW auto quality)
 ##   --no-combat-log       no [Flow] damage lines in missions (CombatLog.FLAG, read by scripts/game/combat_log.gd)

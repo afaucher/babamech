@@ -1,5 +1,5 @@
 extends NetTest
-## Mission objectives phase 1 across a crew (plan mode: Session.objectives on the host, carried in mission.launch;
+## Mission objectives phase 1 across a crew (the one mission mode, the plan;
 ## scripts/game/mission_flow.gd, NetMission "mission.wave" / "mission.state"), once per link. Run with PEERS 2
 ## (test_net_objectives.gd) and 3 (test_net_objectives_3.gd). Seed 7 (deck 1: a flag primary).
 ## 1. Every machine runs plan mode from the launch params; the barrier passed with the plan's checksum joined.
@@ -23,9 +23,11 @@ func run_host() -> void:
 	MissionFlow.test_director = DIRECTOR
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	Session.objectives = true
 	check(Session.start_mission(SEED), "the host launches the mission")
-	check(bool(Session.mission_params().get("objectives", false)), "the launch carries objectives")
+	# Objectives are the only mode (legacy modes cut 2026-11-26): the launch no longer carries a mode switch; it does
+	# carry the host's crew scale.
+	check(not Session.mission_params().has("objectives"), "the launch carries no objectives switch (the only mode)")
+	check(int(Session.mission_params().get("scale", 0)) == peers, "the launch carries the host's crew scale")
 	if not await _load_and_go():
 		return
 	if not check(await wait_reports("ready", peers - 1, 30.0), "every client is ready"):
@@ -92,7 +94,6 @@ func run_host() -> void:
 	for p in _clients():
 		command(p, "finish", {})
 	check(await wait_done(peers - 1, 20.0), "every client is done")
-	Session.objectives = false
 	MissionFlow.test_plan = {}
 	MissionFlow.test_director = {}
 
@@ -187,7 +188,7 @@ func _load_and_go() -> bool:
 	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	add_child(td)
 	await frames(2)
-	if not check(td.crewed and td.objectives and td.mission != null and td.mission.plan != null and td.mission.world != null,
+	if not check(td.crewed and td.mission != null and td.mission.plan != null and td.mission.world != null,
 			"the crew mission runs plan mode"):
 		return false
 	td.drive_override = true

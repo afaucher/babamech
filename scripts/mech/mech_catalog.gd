@@ -34,7 +34,7 @@ const CHASSIS := {
 		"default_loadout": {"side_l": "laser", "side_r": "autocannon", "shoulder_l": "rockets", "shoulder_r": "", "back": "mortar"},
 		## The Strider's numbers are MechController's defaults (test_chassis_movement pins them: the Strider must not change).
 		"movement": {"walk_speed": 12.0, "run_speed": 22.0, "strafe_scale": 1.0, "accel": 30.0, "turn_rate": 1.8,
-			"climb_speed": 10.0, "thrust_accel": 34.0, "air_control": 0.35, "thrust_heat": 24.0, "thrust_ceiling": 0.0,
+			"climb_speed": 10.0, "thrust_accel": 34.0, "air_control": 0.35, "thrust_heat": 24.0, "auto_burn_heat": 24.0,
 			"walk_heat": 2.5, "run_heat": 9.0, "reboot_heat": 35.0, "reboot_time": 1.2, "safe_land_speed": 10.0,
 			"hard_land_speed": 18.0, "auto_land_speed": 16.0, "capsule_radius": 2.2, "capsule_height": 8.0},
 	},
@@ -47,27 +47,41 @@ const CHASSIS := {
 	## (WeaponMount.hardpoint_range: the barrel's range is the weapon's range cut by the hardpoint's).
 	"bulwark": {
 		"name": "Bulwark",
-		"blurb": "Heavy gun platform: slow, tough, four hardpoints. Two side guns take any side or shoulder weapon, two back mounts. Thrusters only hop and brake.",
+		"blurb": "Heavy gun platform: slow, heavily armoured, five hardpoints. Two side guns take any side or shoulder weapon, a belly turret takes side weapons, two back mounts. Weak, hot thrusters: a short climb costs most of its heat.",
 		"base_weight": 55.0,
 		"max_weight": 40.0,
 		"heat_cap": 130.0,
 		"cooling": 12.0,
+		## The highest roof (m above the ground) a BOT plans to climb with this chassis (BotNavigator.drop_roofs_above) and
+		## the mark of a chassis whose bots plan no glides (BotRoutePlanner.fit_body); 0 / absent = no limit. A planning
+		## margin only, not a movement rule: the pilot's climb is limited by heat (bot_hop_height()).
+		"bot_hop_height": 6.0,
 		"hardpoints": [
 			{"id": "side_l", "label": "Left side gun", "mount": "side", "mounts": ["side", "shoulder"], "yaw_in_max": 55.0},
 			{"id": "side_r", "label": "Right side gun", "mount": "side", "mounts": ["side", "shoulder"], "yaw_in_max": 55.0},
 			{"id": "back_l", "label": "Left back", "mount": "back"},
 			{"id": "back_r", "label": "Right back", "mount": "back"},
+			## The belly turret (docs/design/bulwark-effectiveness.md option A, built 2026-11-25, kept by the user): a turret
+			## under the keel between the thighs, key 5. Hardware kind "belly" (BulwarkMeshes' pintle turret), takes the side
+			## weapons only (compact guns; no rocket / missile pods or railgun under a 3 m belly). Its arc is cut in data where
+			## the keel, legs and ground are: yaw +-30 (the side guns' arc; it cuts only the swivel's 120 deg boom arc, swept
+			## no wider), pitch -10 (its park pose in the heat shutdown slump, nose down, stays off the ground)
+			## / +15 (the flak's top against the bearing ring). test_hardpoint_contact_bulwark sweeps it.
+			{"id": "belly", "label": "Belly turret", "mount": "belly", "mounts": ["side"], "yaw_in_max": 30.0,
+				"yaw_out_max": 30.0, "pitch_down_max": 10.0, "pitch_up_max": 15.0},
 		],
-		"default_loadout": {"side_l": "autocannon", "side_r": "rockets", "back_l": "mortar", "back_r": "radiator"},
+		"default_loadout": {"side_l": "autocannon", "side_r": "rockets", "back_l": "mortar", "back_r": "radiator", "belly": "gatling"},
 		## Slow and heavy (test_chassis_movement measures every target): two thirds of the Strider's speeds, a side-step
-		## strafe (no hip twist: the feet step sideways), 61 % of its turn rate, a slower pick-up. Thrust only hops and brakes:
-		## the pilot's thrust stops lifting `thrust_ceiling` m above the ground under the feet (a ~6 m ledge, not a roof), it
-		## still brakes a fall at full strength (the automatic landing burn too: thrust 30 - gravity 22 = 8 m/s^2 of braking,
-		## swept in test_auto_land_bulwark). The capsule: radius 3.6 (7.2 m across: the hull and pods are 9 m wide and 7.5 m
+		## strafe (no hip twist: the feet step sideways), 61 % of its turn rate, a slower pick-up. Weak, hot thrust (user
+		## playtest 2026-11-25: no hop ceiling, heat limits height): thrust 30 - gravity 22 = 8 m/s^2 of lift, and the pilot's
+		## thrust heats 80 /s against cooling 12, so a cold Bulwark burns ~1.9 s (~15 m up, ~20 m peak) before it shuts
+		## down; a 12 m roof costs ~100 of its 130 heat, a 30 m roof is out of reach (test_chassis_movement). The automatic
+		## landing burn keeps the old 30 /s (auto_burn_heat) so long falls still land under the fall-damage speed
+		## (test_auto_land_bulwark). The capsule: radius 3.6 (7.2 m across: the hull and pods are 9 m wide and 7.5 m
 		## deep, a capsule cannot be wider than tall; the pods overhang it by 0.9 m a side above the hull deck), height 8 as
 		## the Strider's (the same deck clearance).
 		"movement": {"walk_speed": 8.0, "run_speed": 14.0, "strafe_scale": 0.8, "accel": 14.0, "turn_rate": 1.1,
-			"climb_speed": 7.0, "thrust_accel": 30.0, "air_control": 0.25, "thrust_heat": 30.0, "thrust_ceiling": 6.0,
+			"climb_speed": 7.0, "thrust_accel": 30.0, "air_control": 0.25, "thrust_heat": 80.0, "auto_burn_heat": 30.0,
 			"walk_heat": 3.0, "run_heat": 10.0, "reboot_heat": 45.0, "reboot_time": 1.6, "safe_land_speed": 10.0,
 			"hard_land_speed": 18.0, "auto_land_speed": 16.0, "capsule_radius": 3.6, "capsule_height": 8.0},
 	},
@@ -75,24 +89,61 @@ const CHASSIS := {
 ## The hangar's chassis, in display order (each pilot picks their own).
 const CHASSIS_ORDER := ["strider", "bulwark"]
 ## The chassis a bot may fly (BotLoadout): the Strider only until the bot phase teaches bots the Bulwark (its 7.2 m capsule,
-## its hop-only thrust).
+## its weak, hot thrust).
 const BOT_CHASSIS_ORDER := ["strider"]
+## Chassis whose ART is built but which nothing can play yet (no controller, no weapons code, no bots): kept OUT of
+## CHASSIS on purpose, so every `CHASSIS.has` gate (settings, MechController, the hello's loadout, the hangar's fleet
+## envelope) still treats the id as unknown and falls back to the Strider. MechModel shows one only when asked to
+## (MechModel.show_drafts: the lab, the part gallery, the review shots). entry() / sanitize_loadout() / fits() read it.
+## Moving one into CHASSIS (and CHASSIS_ORDER) is the gameplay phase's step.
+##   wasp: the light hover chassis (docs/design/chassis-rules.md, art phase 1, 2026-11-25). "No heavy weapons": no single
+##   item over max_item_weight 7 (fits() checks it per hardpoint: the chin turret takes 6 at most, light guns only). The
+##   numbers marked TBD are placeholders until the hover controller is designed (no "movement" block: none is built).
+const WASP_MAX_ITEM_WEIGHT := 7.0
+const DRAFT_CHASSIS := {
+	"wasp": {
+		"name": "Wasp",
+		"blurb": "Light hover gunship: two big tilting lift fans, three light guns, mini legs to land on. No heavy weapons.",
+		"move": "hover",
+		"base_weight": 24.0,   ## TBD
+		"max_weight": 18.0,    ## TBD
+		"max_item_weight": WASP_MAX_ITEM_WEIGHT,
+		"heat_cap": 90.0,      ## TBD
+		"cooling": 9.0,        ## TBD
+		"hardpoints": [
+			## Stub wing roots on the flanks under the fans (WaspMeshes' stub mount: the Strider side mount's block on a longer
+			## root): compact side weapons, the catalog's arcs except the swivel's wide boom, cut where it meets the hull
+			## (inward) and the fan ring above it (outward, up): yaw_in_max / yaw_out_max / pitch_up_max bite only on its wide arc
+			## (tests/test_hardpoint_contact_wasp sweeps every item against the fans across their tilt).
+			{"id": "stub_l", "label": "Left stub", "mount": "stub", "mounts": ["side"], "max_item_weight": WASP_MAX_ITEM_WEIGHT,
+				"yaw_in_max": 45.0, "yaw_out_max": 60.0, "pitch_up_max": 45.0},
+			{"id": "stub_r", "label": "Right stub", "mount": "stub", "mounts": ["side"], "max_item_weight": WASP_MAX_ITEM_WEIGHT,
+				"yaw_in_max": 45.0, "yaw_out_max": 60.0, "pitch_up_max": 45.0},
+			## The chin turret under the nose: light side weapons only (weight 6 at most: no autocannon or flak, whose tall
+			## receivers would meet the bearing ring), its arc cut in data: pitch down 8 (further and a long receiver's tail
+			## lifts into the belly; landed, every gun stays over the ground), up 10 (the receiver's top under the bearing).
+			{"id": "chin", "label": "Chin turret", "mount": "chin", "mounts": ["side"], "max_item_weight": 6.0,
+				"yaw_in_max": 45.0, "yaw_out_max": 45.0, "pitch_down_max": 8.0, "pitch_up_max": 10.0},
+		],
+		"default_loadout": {"stub_l": "laser", "stub_r": "gatling", "chin": "flamer"},   ## TBD with the gameplay phase
+	},
+}
 ## The keys of a chassis' "movement" block (MechController.apply_chassis applies them; heat_cap / cooling come from the
 ## chassis entry itself; gravity is the world's, not the chassis').
 const MOVEMENT_KEYS := ["walk_speed", "run_speed", "strafe_scale", "accel", "turn_rate", "climb_speed", "thrust_accel",
-	"air_control", "thrust_heat", "thrust_ceiling", "walk_heat", "run_heat", "reboot_heat", "reboot_time", "safe_land_speed",
+	"air_control", "thrust_heat", "auto_burn_heat", "walk_heat", "run_heat", "reboot_heat", "reboot_time", "safe_land_speed",
 	"hard_land_speed", "auto_land_speed"]
 
-## Combat stats (docs/design/weapons.md §3; first pass, tuned in the `weapon_range` lab). Every weapon has (WEAPON_STATS):
+## Combat stats (docs/design/weapons.md Â§3; first pass, tuned in the `weapon_range` lab). Every weapon has (WEAPON_STATS):
 ##   kind, damage (per hit), rate (shots/s; inside a salvo for salvo weapons), salvo (shots per trigger cycle), reload
 ##   (s after a salvo), speed (m/s; 0 = instant / ballistic), range (m), falloff_start (m) / falloff_min (share of damage
-##   left at range), spread (deg, cone half-angle), knockback (Δv m/s along the shot, before the target's mass class),
+##   left at range), spread (deg, cone half-angle), knockback (Î”v m/s along the shot, before the target's mass class),
 ##   splash_damage / splash_radius (m), target_heat (heat added to the target per hit), ammo (-1 = unlimited), growth
 ##   (drawn size multiplier) / growth_full (m to reach it), size (m, drawn launch size), trail (s of trail), impact_radius
 ##   (m, ImpactFx R), muzzle (model units ahead of the mount point where shots leave). active_heat is per trigger cycle:
-##   per shot, per salvo for salvo weapons. Optional: max_per_mech, explosive, prop_blast (splash Δv on city props only,
+##   per shot, per salvo for salvo weapons. Optional: max_per_mech, explosive, prop_blast (splash Î”v on city props only,
 ##   default splash_knockback), and the per-weapon extras.
-##   slew (°/s): how fast a direct-fire weapon pivots at its mount toward the aim point (weapons.md §4.4; default
+##   slew (Â°/s): how fast a direct-fire weapon pivots at its mount toward the aim point (weapons.md Â§4.4; default
 ##   Combat.PIVOT_SLEW; pivot range Combat.PIVOT_YAW / _PITCH_DOWN / _PITCH_UP unless the entry sets yaw_arc /
 ##   pitch_down / pitch_up). The mortar does not pivot; the swivel uses its own wide arc.
 const WEAPONS := {
@@ -136,7 +187,7 @@ const WEAPONS := {
 		"note": "Indirect fire over buildings.",
 		"kind": "arc", "damage": 80.0, "rate": 0.2857, "salvo": 1, "reload": 0.0, "speed": 0.0, "range": 250.0,
 		"falloff_start": 250.0, "falloff_min": 1.0, "spread": 0.0, "knockback": 4.0, "splash_damage": 50.0, "splash_radius": 8.0,
-		"target_heat": 0.0, "ammo": 3, "growth": 3.0, "growth_full": 120.0, "size": 0.9, "trail": 0.5, "impact_radius": 6.0,
+		"target_heat": 0.0, "ammo": 6, "growth": 3.0, "growth_full": 120.0, "size": 0.9, "trail": 0.5, "impact_radius": 6.0,
 		"muzzle": 1.3, "explosive": true, "min_range": 30.0, "flight_base": 2.0, "flight_per_100": 1.0, "scatter_max": 3.0,
 		"splash_knockback": 4.0, "splash_lift": 3.0, "apex_min": 10.0, "apex_max": 28.0, "prop_blast": 8.0},
 	"railgun": {"name": "Coil Railgun", "mounts": ["shoulder"], "weight": 14.0, "passive_heat": 1.0, "active_heat": 30.0,
@@ -151,7 +202,7 @@ const WEAPONS := {
 		"falloff_start": 45.0, "falloff_min": 1.0, "spread": 5.0, "knockback": 0.0, "splash_damage": 0.0, "splash_radius": 0.0,
 		"target_heat": 2.2, "ammo": -1, "growth": 6.0, "growth_full": 45.0, "size": 0.25, "trail": 0.0, "impact_radius": 0.0,
 		"muzzle": 0.85, "slew": 180.0},
-	# Flak (weapons.md §3.10): a fast straight shell with a proximity fuse. Armed after arm_distance m, it bursts where its
+	# Flak (weapons.md Â§3.10): a fast straight shell with a proximity fuse. Armed after arm_distance m, it bursts where its
 	# path passes closest to a hit sphere within fuse_radius m of it (any target CombatWorld.spares doesn't spare), on any
 	# contact, and at the end of its range. Direct damage only on an actual strike, on top of the splash. armor_mult: both
 	# direct and splash damage x 0.35 on an armoured target (CombatTarget.armored; CombatWorld.armor_scaled).
@@ -196,6 +247,17 @@ static func chassis(id: String) -> Dictionary:
 	return CHASSIS.get(id, CHASSIS["strider"])
 
 
+## A playable chassis' entry, or a draft's (DRAFT_CHASSIS); the Strider's for an unknown id. For the art (MechModel) and the
+## loadout helpers; gameplay reads chassis(), which knows only the playable ones.
+static func entry(id: String) -> Dictionary:
+	return DRAFT_CHASSIS[id] if DRAFT_CHASSIS.has(id) else chassis(id)
+
+
+## The heaviest single item a chassis takes (INF = no limit: the Strider, the Bulwark).
+static func max_item_weight(id: String) -> float:
+	return float(entry(id).get("max_item_weight", INF))
+
+
 ## The chassis' movement block plus its heat_cap / cooling (the Strider's for an unknown id).
 static func movement(id: String) -> Dictionary:
 	var c := chassis(id)
@@ -203,6 +265,13 @@ static func movement(id: String) -> Dictionary:
 	out["heat_cap"] = float(c["heat_cap"])
 	out["cooling"] = float(c["cooling"])
 	return out
+
+
+## The highest roof (m above the ground) bots plan to climb with chassis `id`; 0 = no limit (the Strider). A chassis with a
+## limit is also planned without glides (BotRoutePlanner.fit_body). It replaced MechController.thrust_ceiling for the
+## bots on 2026-11-25 (same 6 m for the Bulwark): the mech itself has no ceiling, its climb is limited by heat.
+static func bot_hop_height(id: String) -> float:
+	return float(chassis(id).get("bot_hop_height", 0.0))
 
 
 static func weapon(id: String) -> Dictionary:
@@ -254,9 +323,12 @@ static func hardpoint_mounts(hp: Dictionary) -> Array:
 	return hp.get("mounts", [hp["mount"]])
 
 
-## True when weapon / equipment `w` fits hardpoint `hp` (one of its mount kinds is in the item's `mounts`).
+## True when weapon / equipment `w` fits hardpoint `hp` (one of its mount kinds is in the item's `mounts`, and it weighs no
+## more than the hardpoint's `max_item_weight`, if it has one: the Wasp's "no heavy weapons").
 static func fits(hp: Dictionary, w: String) -> bool:
 	if not WEAPONS.has(w):
+		return false
+	if float(WEAPONS[w].get("weight", 0.0)) > float(hp.get("max_item_weight", INF)):
 		return false
 	for m: Variant in hardpoint_mounts(hp):
 		if m in (WEAPONS[w]["mounts"] as Array):
@@ -275,14 +347,16 @@ static func items_for(hp: Dictionary) -> Array[String]:
 
 
 ## A loadout made valid for a chassis: every hardpoint present, unknown or misfit weapons emptied. An empty saved
-## loadout gets the chassis default.
-static func sanitize_loadout(chassis_id: String, loadout: Dictionary) -> Dictionary:
-	var c := chassis(chassis_id)
+## loadout gets the chassis default. `drafts`: a DRAFT_CHASSIS id is itself (MechModel with show_drafts), else the Strider
+## (gameplay: a draft is not playable). An item over the chassis' max_item_weight is emptied too.
+static func sanitize_loadout(chassis_id: String, loadout: Dictionary, drafts: bool = false) -> Dictionary:
+	var c := entry(chassis_id) if drafts else chassis(chassis_id)
 	var src: Dictionary = loadout if not loadout.is_empty() else c["default_loadout"]
+	var heavy := float(c.get("max_item_weight", INF))
 	var out := {}
 	for hp: Dictionary in c["hardpoints"]:
 		var w := str(src.get(hp["id"], ""))
-		var ok := w != "" and fits(hp, w)
+		var ok := w != "" and fits(hp, w) and float(WEAPONS[w].get("weight", 0.0)) <= heavy
 		if ok and int(WEAPONS[w].get("max_per_mech", 0)) > 0:   # e.g. one railgun per mech: later hardpoints are emptied
 			ok = out.values().count(w) < int(WEAPONS[w]["max_per_mech"])
 		out[hp["id"]] = w if ok else ""

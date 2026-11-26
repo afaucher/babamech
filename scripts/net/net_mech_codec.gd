@@ -7,7 +7,7 @@ extends RefCounted
 ##                                     other clients', never the receiver's own)
 ##   count x ENTRY
 ##
-## ENTRY (52 bytes)
+## ENTRY (55 bytes)
 ##   u8  head      crew seat (bits 0-2, 1..4) | teleport counter (bits 4-7)
 ##   u8  flags     grounded 1 | thrusting 2 | emergency 4 | shutdown 8 | hover 16 | designator 32 | disabled 64 |
 ##                 redeploying 128 (held to respawn: DownedRules)
@@ -20,21 +20,23 @@ extends RefCounted
 ##   u8  heat      0..255 of heat_cap
 ##   u8  impact    last touchdown speed, 1/4 m/s (0..63.75)
 ##   i16 aim x,y,z the aim point relative to the mech, 1/4 m (+-8 km)
-##   u8 x 11 comp  PlayerTarget component HP, 0..254 of its max, 255 = no such component (COMPONENTS order: torso (the
+##   u8 x 12 comp  PlayerTarget component HP, 0..254 of its max, 255 = no such component (COMPONENTS order: torso (the
 ##                 hull), head, leg_l, leg_r, then every chassis' weapon hardpoint ids: the Strider's five, the Bulwark's
-##                 back_l / back_r; its side_l / side_r are the Strider's ids. A mech has 255 in the ids its chassis lacks)
+##                 back_l / back_r and belly (its turret prototype, 2026-11-25); its side_l / side_r are the Strider's
+##                 ids. A mech has 255 in the ids its chassis lacks)
 ##   u8  cause     PlayerTarget.disable_cause: 0 = "", else 1 + its index in COMPONENTS
-##   i8 x 10 mount WeaponMount.aim_yaw, aim_pitch per hardpoint (MOUNTS order), MOUNT_UNIT degree steps (+-190 deg)
+##   i8 x 12 mount WeaponMount.aim_yaw, aim_pitch per hardpoint (MOUNTS order), MOUNT_UNIT degree steps (+-190 deg)
 ##   u8  aid       PlayerTarget.aid_charges (bits 0-1, 0..3: repair-drone charges left) | revive_progress (bits 2-7, 0..63
 ##                 of DownedRules.REVIVE_TIME): the crew's "can revive" and revive bar (downed / revive, 2026-11-24)
 ##
-## A client's snapshot is 7 + 1 + 52 = 60 bytes; the host's to a client in a full crew carries 3 mechs, 164 bytes.
+## A client's snapshot is 7 + 1 + 55 = 63 bytes; the host's to a client in a full crew carries 3 mechs, 173 bytes.
 ## MAX_PACKET is a BANDWIDTH BUDGET, not a transport limit: 512 bytes (user decision 2026-11-24: don't trim bytes while
 ## far under the real ceiling; pack tighter only when a packet approaches it). History: 100, then 160 when component
-## HP, the downed state and the mount aims joined the entry, 168 for the Bulwark's back hardpoints, 512 now.
+## HP, the downed state and the mount aims joined the entry, 168 for the Bulwark's back hardpoints, 512 now (entry 52 ->
+## 55 on 2026-11-25 for the Bulwark's belly turret prototype: one more component byte and one more mount pair).
 ## The HARD limit is one datagram: the unreliable MTU of ENet / Steam is about 1200 B, above which a packet fragments and
 ## losing any fragment loses the whole unreliable message (cast lesson 1). Stay one packet per tick, under ~1200 B.
-## At 30 Hz today: 1.8 KB/s up, at most 4.9 KB/s down per client (15.4 KB/s at a full 512 B packet).
+## At 30 Hz today: 1.9 KB/s up, at most 5.2 KB/s down per client (15.4 KB/s at a full 512 B packet).
 ##
 ## MECH_FIELDS is what test_net_contract holds this codec to: every var named must be OWNER on its class, and every OWNER
 ## var of MechController must be carried here (position, velocity and facing are engine properties, sampled directly).
@@ -42,7 +44,7 @@ extends RefCounted
 ## OWNER vars stay on the owner's machine (the reason is written next to each class).
 
 const SNAP_TYPE := NetWire.T_SNAP
-const ENTRY_SIZE := 52
+const ENTRY_SIZE := 55
 const COUNT_SIZE := 1
 const MAX_PACKET := 512
 const FLAG_GROUNDED := 1
@@ -64,10 +66,11 @@ const COMP_ABSENT := 255
 ## PlayerTarget's components in entry order (CORE_COMPONENTS, then the union of every chassis' hardpoint ids: a new
 ## chassis with a new hardpoint id adds it here; test_weapons_bulwark checks every MechCatalog hardpoint is listed).
 const COMPONENTS := ["torso", "head", "leg_l", "leg_r", "side_l", "side_r", "shoulder_l", "shoulder_r", "back", "back_l",
-	"back_r"]
+	"back_r", "belly"]
 ## The hardpoints whose mount aim rides in the entry: every hardpoint id that can carry a pivoting weapon (the Bulwark's
-## back saddles take only the mortar, which does not turn, and equipment; test_weapons_bulwark checks the rule).
-const MOUNTS := ["side_l", "side_r", "shoulder_l", "shoulder_r", "back"]
+## back saddles take only the mortar, which does not turn, and equipment; its belly turret takes side guns, so it is
+## here; test_weapons_bulwark checks the rule).
+const MOUNTS := ["side_l", "side_r", "shoulder_l", "shoulder_r", "back", "belly"]
 
 ## Class -> {var: the entry part that carries it}. Checked by tests/test_net_contract.gd.
 const MECH_FIELDS := {

@@ -47,6 +47,7 @@ func setup() -> void:
 	_flag_placement()
 
 	_forced_primary()
+	_forced_keeps_other_decks()
 	_find_seed()
 	_depots()
 	finish()
@@ -155,6 +156,37 @@ func _forced_primary() -> void:
 		print("forced primary %s: %d of %d decks fell back (decks 3 and 5 x seeds 1-30, + SETTINGS x 3 seeds)" % [forced,
 			fell, decks_n])
 		check(fell < decks_n / 2, "forced %s holds on most decks (%d fell back of %d)" % [forced, fell, decks_n])
+
+
+## Audit 2026-11 (finding 3): forcing the primary type must not shift the generator for the other decks. Every deck whose
+## primary type is the same forced and unforced has byte-identical objectives, reserve and depots in both plans, whatever
+## was forced on the decks before it (before the fix, a flag forced over a rolled sweep drew the flag's defend-bonus coin
+## and every later deck's bonuses and depots moved).
+func _forced_keeps_other_decks() -> void:
+	var shifted := 0
+	var same_decks := 0
+	for forced: String in MissionPlan.PRIMARY_TYPES:
+		for decks in [3, 5]:
+			for seed_ in range(1, 31):
+				var sec := SectionPlan.make({"seed": float(seed_), "decks": float(decks)})
+				var plain := MissionPlan.make(sec)
+				var mp := MissionPlan.make(sec, {"primary": forced})
+				var pt := plain.primary_types()
+				var ft := mp.primary_types()
+				for k in decks:
+					if pt[k] != ft[k]:
+						continue
+					same_decks += 1
+					if _deck_digest(plain, k) != _deck_digest(mp, k):
+						shifted += 1
+						check(false, "forced %s, decks %d seed %d: deck %d (%s either way) differs from the unforced plan" % [
+							forced, decks, seed_, k, pt[k]])
+	eq(shifted, 0, "forcing a primary leaves every deck of unchanged type identical (%d decks compared)" % same_decks)
+
+
+## Everything deck k of a plan rolled or derived: its objectives, its pool, its depots.
+func _deck_digest(mp: MissionPlan, k: int) -> String:
+	return var_to_str([mp.deck_objectives(k), mp.pool(k), mp.deck_depots(k)])
 
 
 func _find_seed() -> void:

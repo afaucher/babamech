@@ -3,7 +3,7 @@ extends Node3D
 ## Lab subject "Thrusters" (S2): a ring-deck strip with a row of towers of rising height and gaps between them, and a
 ## mech that hops, climbs, hovers, overheats and is dropped from a height to test the emergency burn and hard landings.
 ## A label over the mech shows heat, state and the last landing speed. The "Chassis" option rebuilds the mech as another
-## chassis (MechCatalog.CHASSIS_ORDER) and loads its movement numbers into the params (the Bulwark's hop ceiling).
+## chassis (MechCatalog.CHASSIS_ORDER) and loads its movement numbers into the params (the Bulwark's hot thrust).
 ##   drive: W/S forward/back, A/D turn, Q/E strafe, Shift run, Space thrust
 
 const MODES := ["climb towers", "hop", "hover", "drop test", "overheat", "stand", "drive"]
@@ -21,7 +21,8 @@ const PARAMS := [
 	{"id": "thrust_accel", "label": "Thrust (m/s^2)", "min": 24.0, "max": 60.0, "value": 34.0},
 	{"id": "gravity", "label": "Gravity (m/s^2)", "min": 9.0, "max": 30.0, "value": 22.0},
 	{"id": "air_control", "label": "Air control", "min": 0.0, "max": 1.0, "value": 0.35},
-	{"id": "thrust_heat", "label": "Thrust heat (/s)", "min": 5.0, "max": 60.0, "value": 24.0},
+	{"id": "thrust_heat", "label": "Thrust heat (/s)", "min": 5.0, "max": 120.0, "value": 24.0},
+	{"id": "auto_burn_heat", "label": "Auto-burn heat (/s)", "min": 5.0, "max": 120.0, "value": 24.0},
 	{"id": "cooling", "label": "Cooling (/s)", "min": 2.0, "max": 30.0, "value": 9.0},
 	{"id": "safe_land", "label": "Safe landing (m/s)", "min": 4.0, "max": 20.0, "value": 10.0},
 	{"id": "hard_land", "label": "Worst landing (m/s)", "min": 10.0, "max": 40.0, "value": 18.0},
@@ -29,12 +30,11 @@ const PARAMS := [
 	{"id": "auto_land", "label": "Auto-burn landing (m/s)", "min": 8.0, "max": 19.0, "value": 16.0},
 	{"id": "drop_height", "label": "Drop test height (m)", "min": 5.0, "max": 120.0, "value": 40.0},
 	{"id": "hover_height", "label": "Hover height (m)", "min": 3.0, "max": 30.0, "value": 10.0},
-	{"id": "thrust_ceiling", "label": "Hop ceiling (m, 0 off)", "min": 0.0, "max": 20.0, "value": 0.0},
 ]
 ## Params loaded from the chassis' movement block when the chassis changes: param id -> MechController var.
 const CHASSIS_PARAMS := {"thrust_accel": "thrust_accel", "air_control": "air_control", "thrust_heat": "thrust_heat",
 	"cooling": "cooling", "safe_land": "safe_land_speed", "hard_land": "hard_land_speed", "auto_land": "auto_land_speed",
-	"thrust_ceiling": "thrust_ceiling"}
+	"auto_burn_heat": "auto_burn_heat"}
 
 var time_scale := 1.0:
 	set(v):
@@ -128,7 +128,7 @@ func _apply_params() -> void:
 	mech.hard_land_speed = maxf(float(params["hard_land"]), float(params["safe_land"]) + 1.0)
 	mech.auto_burn = float(params["auto_burn"]) >= 0.5
 	mech.auto_land_speed = float(params["auto_land"])
-	mech.thrust_ceiling = float(params["thrust_ceiling"])
+	mech.auto_burn_heat = float(params["auto_burn_heat"])
 
 
 # --- Floor ------------------------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Enemy fire across machines (W4 weapons side, docs/design/weapons.md §5.1) over a real crew mission of 2, once per link
 ## (off, coast). The host's EnemySync carries every enemy fire record in "enemy.ev"; CombatNet guards it on the client
 ## (CombatWorld.fire_gate). The host fires the record through CombatWorld.fire with peer 1, "enemy" true and team "enemy",

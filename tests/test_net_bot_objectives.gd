@@ -28,7 +28,6 @@ func _restore() -> void:
 	TestDrive.bot_profile = ""
 	TestDrive.dev_bot_travel = false
 	MissionBot.bonuses = true
-	Session.objectives = false
 
 
 func run_host() -> void:
@@ -36,7 +35,6 @@ func run_host() -> void:
 	if not check(await until(func() -> bool: return Session.roster.size() == 2, 30.0), "the crew gathers"):
 		_restore()
 		return
-	Session.objectives = true
 	check(Session.start_mission(SEED), "the host launches")
 	await _load()
 	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING, 40.0), "the barrier passes"):

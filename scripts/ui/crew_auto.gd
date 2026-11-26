@@ -97,7 +97,7 @@ func _process(delta: float) -> void:
 	launched += 1
 	var args := OS.get_cmdline_user_args()
 	print("[CrewAuto] auto launch %d of %d (crew %d)" % [launched, allowed, Session.roster.size()])
-	Session.start_mission(FrontEnd.mission_seed(args), TestDrive.launch_mode(args))
+	Session.start_mission(FrontEnd.mission_seed(args), TestDrive.MODE_STACK)
 
 
 func _crew_in_hangar() -> bool:

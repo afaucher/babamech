@@ -69,10 +69,5 @@ func on_shot(mount: WeaponMount) -> void:
 	mount.bloom = minf(mount.bloom + float(mount.stats.get("bloom", 0.0)), room)
 
 
-## Barrel speed share 0..1 (for a spinning-barrel look).
-static func barrel_speed(mount: WeaponMount) -> float:
-	return clampf(mount.spin, 0.0, 1.0)
-
-
 func look() -> Dictionary:
 	return {"color": DART_COLOR, "trail_color": LowPolyFlame.MID, "width": 0.22, "glow": true}

@@ -309,7 +309,17 @@ static func first_launch_relaunch(setting: String) -> bool:
 	return true
 
 
-## Quit and start again with the same command line (the new renderer from override.cfg).
+## Quit and start again with the same command line (the new renderer from override.cfg). OS.get_cmdline_args() stops at
+## `--`: the user args after it (--settings, --net-name, ...) are put back.
 static func restart(tree: SceneTree) -> void:
-	OS.set_restart_on_exit(true, OS.get_cmdline_args())
+	OS.set_restart_on_exit(true, restart_args(OS.get_cmdline_args(), OS.get_cmdline_user_args()))
 	tree.quit()
+
+
+## The command line for restart(): the engine args, then `--` and the user args when there are any.
+static func restart_args(engine_args: PackedStringArray, user_args: PackedStringArray) -> PackedStringArray:
+	var out := PackedStringArray(engine_args)
+	if not user_args.is_empty():
+		out.append("--")
+		out.append_array(user_args)
+	return out

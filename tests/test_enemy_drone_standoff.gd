@@ -34,7 +34,6 @@ func setup() -> void:
 	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = SEED
-	td.objectives = true
 	add_child(td)
 	await frames(4)
 	if not check(td.mission != null and td.combat != null and td.combat.squad != null, "the plan-mode drive runs"):

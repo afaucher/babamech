@@ -18,12 +18,17 @@ extends TestCase
 
 const DT := 1.0 / 60.0
 const SEED := 7
+const TEST_TIMEOUT := 1200.0
+## I. Safe respawn spots (2026-11-26: seed 6's deck 1 arrival is a lift; a Strider respawned on its platform and fell
+## to deck 2): every arrival kind (portal, ramp foot, lift, shaft landing), every deck, every seat, both chassis, and the
+## objective-near spot of every defend / hold.
+const SAFE_SEEDS: Array[int] = [1, 3, 6, 7, 9, 22, 403112]
 
 var world: CombatWorld
 
 
 func _init() -> void:
-	timeout_sec = 240.0
+	timeout_sec = TEST_TIMEOUT
 
 
 func setup() -> void:
@@ -312,9 +317,9 @@ func _depot_flag_wipe() -> void:
 		{"peer": -1, "downed": true, "deck": 0, "x": 5.0, "s": 0.0}]
 	var crew_redeploy := [{"peer": 1, "downed": true, "deck": 0, "x": 0.0, "s": 0.0},
 		{"peer": -1, "downed": true, "redeploying": true, "deck": 0, "x": 5.0, "s": 0.0}]
-	var off := MissionRules.make(sec, {})
-	var on := MissionRules.make(sec, {"wipe": true})
-	var on2 := MissionRules.make(sec, {"wipe": true})
+	var off := MissionRules.make(sec, {"plan": mp})
+	var on := MissionRules.make(sec, {"plan": mp, "wipe": true})
+	var on2 := MissionRules.make(sec, {"plan": mp, "wipe": true})
 	for i in 4:
 		off.evaluate({"t": float(i), "enemies": [3, 3, 3], "crew": crew_down})
 		on.evaluate({"t": float(i), "enemies": [3, 3, 3], "crew": crew_down})
@@ -492,6 +497,7 @@ func _drive() -> void:
 	td.queue_free()
 	await frames(2)
 	await _drive_defend()
+	await _safe_spots()
 
 
 ## H2. Seed 7 in plan mode (deck 1: the defend d1_p): a respawn from deck 1 lands at deck 1's arrival point while the
@@ -501,7 +507,6 @@ func _drive_defend() -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = SEED
-	td.objectives = true
 	add_child(td)
 	await frames(4)
 	var dc := td.downed
@@ -559,3 +564,121 @@ func _drive_defend() -> void:
 		td.mech.run_speed, d])
 	td.queue_free()
 	await frames(2)
+
+
+# --- I ---------------------------------------------------------------------------------------------------------------
+
+## For every seed in SAFE_SEEDS, every deck, every seat (0-3), both chassis: DownedCrew.arrival_spot is a safe standing
+## spot for the widest capsule on THAT deck (DownedCrew.spot_problems: off lift platforms / floor openings / cuts / ramps,
+## free on the fit mask, the widest capsule clear of static collision, floor under its whole footprint), the same for both
+## chassis, two seats never closer than SEAT_APART; the objective-near spot of every defend / hold (60-90 m) passes the same
+## criteria. Then a mech of each chassis dropped on every spot at once is still on that deck 5 s later (and has not slid
+## off it). Seed 6 deck 1 (a lift arrival) is checked by name.
+func _safe_spots() -> void:
+	var bad := 0
+	var n_spots := 0
+	var kinds := {}
+	for sd in SAFE_SEEDS:
+		var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+		td.city_mode = TestDrive.MODE_STACK
+		td.seed_value = sd
+		add_child(td)
+		await frames(4)
+		var dc := td.downed
+		if not check(dc != null and td.stack != null and td.stack.section != null, "seed %d: a stack drive with DownedCrew" % sd):
+			td.queue_free()
+			await frames(2)
+			continue
+		td.drive_override = true
+		td.mech.move_input = Vector2.ZERO
+		td.combat.squad.clear_enemies()
+		td.combat.enemies.clear()
+		var sec := td.stack.section
+		var space := td.get_world_3d().direct_space_state
+		var bw := MechSpawn.make("pickle", "bulwark", {}, -7, "red")
+		bw.ring = td.city.ring
+		td.add_child(bw)
+		bw.global_position = td.stack.from_deck_arc(0, 0.0, 0.0, 300.0)
+		await frames(2)
+		var spots: Array = []   # [tag, deck, Transform3D]
+		for k in sec.deck_count:
+			var arr := sec.arrival(k)
+			kinds[str(arr["kind"])] = int(kinds.get(str(arr["kind"]), 0)) + 1
+			var mine: Array[Vector2] = []
+			for seat in 4:
+				var tag := "seed %d deck %d (%s arrival) seat %d" % [sd, k, str(arr["kind"]), seat]
+				var got: Dictionary = dc.arrival_spot(k, seat, td.mech)
+				if not check(got.has("xf"), tag + ": a respawn spot"):
+					bad += 1
+					continue
+				var got_b: Dictionary = dc.arrival_spot(k, seat, bw)
+				check(got_b.has("xf") and (got_b["xf"] as Transform3D).origin.is_equal_approx((got["xf"] as Transform3D).origin),
+					tag + ": the same spot for a Bulwark")
+				var xf: Transform3D = got["xf"]
+				var why := DownedCrew.spot_problems(td.stack, k, xf.origin, space)
+				n_spots += 1
+				if not check(why == "", tag + ": a safe spot for the widest capsule (%s)" % why):
+					bad += 1
+				var a := td.stack.to_deck_arc(xf.origin)
+				var p := Vector2(float(a["x"]), float(a["s"]))
+				for q in mine:
+					check(q.distance_to(p) >= DownedCrew.SEAT_APART - 0.01, tag + ": %.1f m from another seat's spot" % q.distance_to(p))
+				mine.append(p)
+				if sd == 6 and k == 1:
+					eq(str(arr["kind"]), "lift", "seed 6 deck 1's arrival is a lift")
+					for ci in sec.connectors.size():
+						if str(sec.connectors[ci]["kind"]) == "lift":
+							var lr := sec.connector_rect(ci, 1).grow(CityPlan.MECH_R_MAX)
+							check(not lr.has_point(p), tag + ": off lift %d's platform by the widest capsule (%s)" % [ci, p])
+				spots.append([tag, k, xf])
+			# The objective-near spot (a defend / hold active on this deck).
+			var objs: Array = td.mission.rules.objectives if td.mission != null and td.mission.rules != null else []
+			for o: Dictionary in objs:
+				if int(o.get("deck", -1)) != k or not str(o.get("type", "")) in ["defend", "hold"]:
+					continue
+				var tag := "seed %d deck %d %s (%s) objective-near" % [sd, k, str(o["id"]), str(o["type"])]
+				var nr: Dictionary = dc.near_objective(k, o, td.mech)
+				if not check(nr.has("xf"), tag + ": a spot 60-90 m from the objective"):
+					bad += 1
+					continue
+				var xf2: Transform3D = nr["xf"]
+				var why2 := DownedCrew.spot_problems(td.stack, k, xf2.origin, space)
+				n_spots += 1
+				if not check(why2 == "", tag + ": a safe spot for the widest capsule (%s)" % why2):
+					bad += 1
+				spots.append([tag, k, xf2])
+		bw.queue_free()
+		# Drop tests: every spot at once, one chassis at a time (seats are SEAT_APART apart; an objective-near spot may sit
+		# by an arrival spot, so those go in a second wave).
+		for ch: String in ["strider", "bulwark"]:
+			for wave in 2:
+				var live: Array = []
+				for sp: Array in spots:
+					var is_obj := str(sp[0]).contains("objective-near")
+					if is_obj != (wave == 1):
+						continue
+					var mm := MechSpawn.make("pickle", ch, {}, -20 - live.size(), "blue")
+					mm.ring = td.city.ring
+					td.add_child(mm)
+					mm.global_transform = sp[2]
+					mm.velocity = Vector3.ZERO
+					live.append([sp, mm])
+				if live.is_empty():
+					continue
+				Engine.time_scale = 4.0
+				for i in 300:
+					await get_tree().physics_frame
+				Engine.time_scale = 1.0
+				for l: Array in live:
+					var mm: MechController = l[1]
+					var sp: Array = l[0]
+					var k2 := td.stack.deck_at(mm.global_position)
+					var moved := mm.global_position.distance_to((sp[2] as Transform3D).origin)
+					if not check(k2 == int(sp[1]) and moved < 3.0, "%s, %s: still on deck %d after 5 s (deck %d, moved %.1f m)" % [
+							sp[0], ch, int(sp[1]), k2, moved]):
+						bad += 1
+					mm.queue_free()
+				await frames(2)
+		td.queue_free()
+		await frames(3)
+	print("[downed] safe respawn spots: %d spots over seeds %s (arrival kinds %s), %d bad" % [n_spots, SAFE_SEEDS, kinds, bad])

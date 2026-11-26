@@ -41,6 +41,7 @@ func setup() -> void:
 	_test_buses_and_settings(a)
 	_test_synth_determinism_and_quality(a)
 	_test_pooling_limits_stealing_and_ducking(a)
+	_test_loop_voices(a)
 	await _test_mech_audio(a)
 	await _test_mech_step_signal(a)
 	await _test_remote_mech_audio(a)
@@ -229,6 +230,67 @@ func _test_pooling_limits_stealing_and_ducking(a: AudioDirector) -> void:
 	eq(a.active_2d_count(), 0, "headless expiry reclaims all 2D voices")
 	eq(a.active_3d_count(), 0, "headless expiry reclaims all 3D voices")
 	near(a.duck_world_db(), 0.0, 0.05, "world ducking releases after telegraph expires")
+
+
+## Managed loops (audit 2026-11: "only 8 loop voices, no stealing; extra loops go silent"). A mission machine can want
+## 11 at once (4 crew thrusters + own heat + 5 weapon-slot charge/spin loops + lock tone): every one must sound, and past
+## the cap the least important (world before local, then farthest) gives way, without stealing back and forth.
+func _test_loop_voices(a: AudioDirector) -> void:
+	a.reset_state()
+	var cam := Camera3D.new()
+	add_child(cam)
+	cam.global_position = Vector3.ZERO
+	cam.make_current()
+	var w := AudioDirector.BUS_SFX_WORLD
+	# 1. The realistic worst case: 4 thrusters (3 world + own), own heat, 5 slot loops, lock tone = 11, all heard.
+	var wanted: Array[String] = []
+	for i in 3:
+		a.start_loop("t.crew%d" % i, "mech.thrust.loop", true, Vector3(0, 0, -20.0 - 10.0 * i), 0.0, 1.0, w, "foley")
+		wanted.append("t.crew%d" % i)
+	a.start_loop("t.own", "mech.thrust.loop", true, Vector3.ZERO, 0.0, 1.0, AudioDirector.BUS_SFX_PLAYER, "local_mech")
+	a.start_loop("heat.own", "mech.heat.loop", false)
+	for i in 5:
+		a.start_loop("slot%d" % i, "wpn.laser.charge", true, Vector3(0.5 * i, 2, 0), 0.0, 1.0, AudioDirector.BUS_SFX_PLAYER, "local_mech")
+	a.start_loop("lock", "wpn.missiles.lock", false)
+	wanted.append_array(["t.own", "heat.own", "slot0", "slot1", "slot2", "slot3", "slot4", "lock"])
+	var missing: Array[String] = []
+	for tag in wanted:
+		if not a.has_loop(tag):
+			missing.append(tag)
+	check(missing.is_empty(), "all 11 loops of a busy mission machine sound (silently dropped: %s)" % [missing])
+	# 2. Fill to the cap with world loops at rising distance; one more, nearer, takes the farthest world loop's voice.
+	a.reset_state()
+	var cap := AudioDirector.POOL_LOOPS
+	check(cap >= 16, "loop cap leaves headroom over the 11-loop worst case (%d)" % cap)
+	for i in cap:
+		a.start_loop("w%d" % i, "mech.thrust.loop", true, Vector3(0, 0, -10.0 - 2.0 * i), 0.0, 1.0, w, "foley")
+	eq(a.active_loop_count(), cap, "loops fill to the cap (%d)" % cap)
+	var far_tag := "w%d" % (cap - 1)
+	check(a.start_loop("near", "mech.thrust.loop", true, Vector3(0, 0, -5), 0.0, 1.0, w, "foley") > 0,
+		"a nearer world loop past the cap steals a voice")
+	check(a.has_loop("near") and not a.has_loop(far_tag), "the farthest world loop gave its voice up")
+	eq(a.active_loop_count(), cap, "never more loops than the cap")
+	# The stolen loop's owner keeps calling (update / start every frame, as MechAudio does): no error, no steal-back.
+	for f in 10:
+		a.update_loop(far_tag, Vector3(0, 0, -10.0 - 2.0 * (cap - 1)), 0.0, 1.0)
+		a.start_loop(far_tag, "mech.thrust.loop", true, Vector3(0, 0, -10.0 - 2.0 * (cap - 1)), 0.0, 1.0, w, "foley")
+		a.start_loop("near", "mech.thrust.loop", true, Vector3(0, 0, -5), 0.0, 1.0, w, "foley")
+	check(a.has_loop("near") and not a.has_loop(far_tag), "no ping-pong: the farther loop does not steal back")
+	a.stop_loop(far_tag)   # stopping a stolen loop is a no-op, not an error
+	# A voice frees up: the still-wanted starved loop resumes on its next call.
+	a.stop_loop("w0")
+	check(a.start_loop(far_tag, "mech.thrust.loop", true, Vector3(0, 0, -60), 0.0, 1.0, w, "foley") > 0 and a.has_loop(far_tag),
+		"a starved loop resumes once a voice is free")
+	# 3. A local (player-bus / 2D) loop always beats a world loop; a world loop never takes a local loop's voice.
+	check(a.start_loop("heat.own", "mech.heat.loop", false) > 0, "own heat loop past the cap takes a world loop's voice")
+	a.reset_state()
+	for i in cap:
+		a.start_loop("own%d" % i, "wpn.laser.charge", true, Vector3(0, 0, -30.0 - i), 0.0, 1.0, AudioDirector.BUS_SFX_PLAYER, "local_mech")
+	eq(a.start_loop("world.close", "mech.thrust.loop", true, Vector3(0, 0, -1), 0.0, 1.0, w, "foley"), 0,
+		"a world loop never steals a local loop's voice, however close")
+	eq(a.active_loop_count(), cap, "cap held with local loops")
+	a.reset_state()
+	cam.queue_free()
 
 
 func _test_mech_audio(a: AudioDirector) -> void:

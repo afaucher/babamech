@@ -195,7 +195,138 @@ func setup() -> void:
 					break
 			check(not hit, "%s/%s: nothing of the hull ahead of the muzzle" % [id, w])
 			print("  %-7s %-12s %8.3f %8.3f %8.3f %9s %9.3f %9s   %s" % [id, w, mgap, mseat, gap, "-", pivot, "clear" if not hit else "HIT", worst_pose])
+	await _belly(hull, pads, heads, items)
 	finish()
+
+
+## PROTOTYPE belly turret (MechCatalog hardpoint "belly", mount kind "belly"; docs/design/bulwark-effectiveness.md): its
+## pintle mount's base plate sits on the keel's flat underside; every item it takes touches the mount; across the
+## hardpoint's arc (catalog yaw_in_max / yaw_out_max / pitch_down_max / pitch_up_max, every 5 deg of yaw, pitch at both
+## ends and level) each gun keeps PIVOT_CLEAR off the hull, the pads, every pilot head and the whole legs (boots too)
+## standing, across a forward and a sideways walk cycle, on the landing dip and in the shutdown slump; and stays above
+## the ground in the slump. Skipped when the catalog has no belly hardpoint (the prototype dropped).
+func _belly(hull: PackedVector3Array, pads: PackedVector3Array, heads: PackedVector3Array, items: Dictionary) -> void:
+	var hp := {}
+	for h: Dictionary in MechCatalog.chassis("bulwark")["hardpoints"]:
+		if str(h["id"]) == "belly":
+			hp = h
+	if hp.is_empty():
+		print("  no belly hardpoint in the catalog: skipped")
+		return
+	var at: Vector3 = BulwarkMeshes.MOUNTS["belly"]
+	near((at - Vector3(0, BulwarkMeshes.BELLY_Y, BulwarkMeshes.BELLY_Z)).length(), 0.0, 1e-5, "MOUNTS.belly = (0, BELLY_Y, BELLY_Z)")
+	var mxf := Transform3D(Basis(), at - BulwarkMeshes.BELLY_REACH)
+	var mount_t := HC.tris(BulwarkMeshes.build("bulwark_belly_mount"), mxf)
+	var mgap := HC.contact(mount_t, hull)
+	var seats := PackedVector3Array()
+	var r := BulwarkMeshes.BELLY_BASE * 0.85
+	for i in 8:
+		var a := TAU * float(i) / 8.0
+		seats.append(mxf * Vector3(sin(a) * r, 0.0, cos(a) * r))
+	seats.append(mxf * Vector3.ZERO)
+	var mseat := HC.seat_gap(seats, hull)
+	check(mgap <= GAP_TOL, "belly: the turret mount touches the keel (gap %.3f)" % mgap)
+	check(mseat <= SEAT_TOL, "belly: its base plate sits on the keel's underside (worst seat point %.3f off)" % mseat)
+	# The legs (boots included) in body space across the poses that move them.
+	var m := MechModel.new()
+	m.configure("chicken", "bulwark", {})
+	add_child(m)
+	await frames(1)
+	var chassis := m.find_child("Chassis", true, false) as Node3D
+	var poses := {"standing": _all_leg_tris(m, chassis.global_transform.affine_inverse())}
+	for dir: Vector3 in [Vector3.BACK, Vector3.RIGHT, Vector3.LEFT]:
+		for i in 12:
+			var ph := float(i) / 12.0
+			m.set_external_pose(TCB._walk(m, ph, 0.0, dir), Vector3(0, -0.03 * absf(sin(ph * TAU)), 0), Vector3(-0.05, 0, 0.03 * sin(ph * TAU)), 0.0)
+			poses["walk %s %.2f" % [str(dir), ph]] = _all_leg_tris(m, chassis.global_transform.affine_inverse())
+	var dip := Vector3(0, -TCB.LAND_DIP, 0)
+	m.set_external_pose(TCB._planted(m, dip, Vector3.ZERO), dip, Vector3.ZERO, 0.0)
+	var dip_inv := chassis.global_transform.affine_inverse()
+	poses["landing dip"] = _all_leg_tris(m, dip_inv)
+	var d0 := dip_inv * m.global_transform * Vector3.ZERO
+	var dn := (dip_inv.basis * (m.global_transform.basis * Vector3.UP)).normalized()
+	var off := Vector3(0, -float(TCB.SAG["depth"]) * MechRig.SAG_PEAK, 0)
+	var rot := Vector3(-float(TCB.SAG["pitch"]) * MechRig.SAG_PEAK, 0, float(TCB.SAG["roll"]) * MechRig.SAG_PEAK)
+	m.set_external_pose(TCB._planted(m, off, rot), off, rot, 0.0)
+	var slump_inv := chassis.global_transform.affine_inverse()
+	poses["slump"] = _all_leg_tris(m, slump_inv)
+	# The ground plane (the model's y = 0) in the slumped body frame: a point and its normal.
+	var g0 := slump_inv * m.global_transform * Vector3.ZERO
+	var gn := (slump_inv.basis * (m.global_transform.basis * Vector3.UP)).normalized()
+	m.clear_external_pose()
+	m.queue_free()
+	var legs_all := PackedVector3Array()
+	for k: String in poses:
+		legs_all.append_array(poses[k])
+	var obstacles := hull.duplicate()
+	obstacles.append_array(pads)
+	obstacles.append_array(heads)
+	obstacles.append_array(legs_all)
+	var rng := WeaponMount.hardpoint_range("bulwark", "belly")
+	for w: String in MechCatalog.items_for(hp):
+		var wt := HC.tris(_item(items, w), Transform3D(Basis(), at))
+		var gap := HC.contact(wt, mount_t)
+		check(gap <= GAP_TOL, "belly/%s: touches its pintle mount (gap %.3f)" % [w, gap])
+		var lim := Combat.pivot_limits(MechCatalog.weapon(w))
+		var y0 := maxf(-lim.x, rng.x)
+		var y1 := minf(lim.x, rng.y)
+		var pd := minf(lim.y, rng.z)
+		var pu := minf(lim.z, rng.w)
+		var yaws: Array = []
+		var yy := y0
+		while yy < y1 - 0.01:
+			yaws.append(yy)
+			yy += 5.0
+		yaws.append(y1)
+		var pivot := INF
+		var worst := ""
+		var ground := INF
+		for yaw: float in yaws:
+			for pitch: float in [-pd, 0.0, pu]:
+				var pt := HC.tris(_item(items, w), Transform3D(WeaponPose.rotation(yaw, pitch), at))
+				var g := HC.surface_gap(pt, obstacles, 0.3)
+				if g < pivot:
+					pivot = g
+					worst = "yaw %+.0f pitch %+.0f" % [yaw, pitch]
+				for v in pt:   # live aims: the deepest live pose is the landing dip
+					ground = minf(ground, (v - d0).dot(dn))
+		# Shut down (the slump) the barrel parks at WeaponMount.PARK_YAW / PARK_PITCH clamped to its range.
+		var park := Vector2(clampf(WeaponMount.PARK_YAW, y0, y1), maxf(WeaponMount.PARK_PITCH, -pd))
+		var parked := HC.tris(_item(items, w), Transform3D(WeaponPose.rotation(park.x, park.y), at))
+		var ground_park := INF
+		for v in parked:
+			ground_park = minf(ground_park, (v - g0).dot(gn))
+		if not check(pivot >= PIVOT_CLEAR, "belly/%s: clears the hull, pads, heads and legs (all poses) across its arc (closest %.3f at %s)" % [w, pivot, worst]):
+			var wp := worst.split(" ")
+			var pw := HC.tris(_item(items, w), Transform3D(WeaponPose.rotation(float(wp[1]), float(wp[3])), at))
+			for k: String in poses:
+				var lg := HC.surface_gap(pw, poses[k], 0.3)
+				if lg < PIVOT_CLEAR:
+					print("    belly/%s at %s: legs (%s) gap %.3f" % [w, worst, k, lg])
+			print("    belly/%s at %s: hull gap %.3f, pads %.3f" % [w, worst, HC.surface_gap(pw, hull, 0.3), HC.surface_gap(pw, pads, 0.3)])
+		check(ground > 0.02, "belly/%s: above the ground at every aim on the landing dip (lowest %.3f over it)" % [w, ground])
+		check(ground_park > 0.02, "belly/%s: parked, above the ground in the shutdown slump (lowest %.3f over it)" % [w, ground_park])
+		var mz := at + Vector3(0, 0, -float(MechCatalog.weapon(w).get("muzzle", 1.0)))
+		var hit := false
+		for i in range(0, hull.size(), 3):
+			if Geometry3D.segment_intersects_triangle(mz, mz + Vector3(0, 0, -6.0), hull[i], hull[i + 1], hull[i + 2]) != null:
+				hit = true
+				break
+		check(not hit, "belly/%s: nothing of the hull ahead of the muzzle" % w)
+		print("  %-7s %-12s %8.3f %8.3f %8.3f %9s %9.3f %9s   %s  ground: dip %.3f, slump parked %.3f" % ["belly", w, mgap, mseat, gap,
+			"-", pivot, "clear" if not hit else "HIT", worst, ground, ground_park])
+
+
+## Every leg part of a posed model (thighs, knee drums, shins, ankle blocks and drums, hip balls, boots with toes and
+## spur), in body space.
+static func _all_leg_tris(m: MechModel, inv: Transform3D) -> PackedVector3Array:
+	var out := PackedVector3Array()
+	for n: String in ["thigh_l", "thigh_r", "knee_l", "knee_r", "shin_l", "shin_r", "hip_l", "hip_r", "tarsus_l", "tarsus_r",
+			"ankle_l", "ankle_r", "foot_l", "foot_r"]:
+		var nd := m.find_child(n, true, false)
+		if nd != null:
+			out.append_array(_node_tris(nd, inv))
+	return out
 
 
 static func _item(cache: Dictionary, w: String) -> ArrayMesh:

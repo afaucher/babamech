@@ -602,7 +602,10 @@ func snapshot(now: float) -> PackedByteArray:
 	return buf.data_array
 
 
-## Replace the whole state with a snapshot (an empty one clears it).
+## Replace the whole state with a snapshot (an empty one clears it). The bytes come from a peer (life.sync): every count
+## is checked against the bytes left before its records are read (a truncated or padded-out buffer is rejected as a
+## whole: a warning and the cleared state), and a record naming a person, door or walk node this plan does not have is
+## skipped, so nothing reads past the end, loops on garbage or routes from an index out of range.
 func restore(bytes: PackedByteArray) -> void:
 	reset()
 	if bytes.size() < 9:
@@ -611,35 +614,75 @@ func restore(bytes: PackedByteArray) -> void:
 	buf.data_array = bytes
 	if buf.get_u8() != SNAP_VERSION:
 		return
+	if not _restore_from(buf):
+		reset()
+		push_warning("LifeCrowd.restore: malformed snapshot (%d bytes): ignored" % bytes.size())
+
+
+## Bytes of one record in snapshot(): a dead body, an alarm record.
+const SNAP_DEAD := 2 + 4 + 7 * 8
+const SNAP_REC := 2 + 1 + 1 + 3 * 4 + 9 * 8
+
+
+func _restore_from(buf: StreamPeerBuffer) -> bool:
 	last_threat = buf.get_double()
-	for i in buf.get_u16():
+	if buf.get_available_bytes() < 2:
+		return false
+	var n := buf.get_u16()
+	if buf.get_available_bytes() < n * 6 + 8:
+		return false
+	for i in n:
 		var s := buf.get_32()
 		by_src[s] = buf.get_u16()
 	killed_by_players = buf.get_u16()
 	killed_by_enemies = buf.get_u16()
 	riders_used = buf.get_u16()
 	occupants_killed = buf.get_u16()
-	for i in buf.get_u16():
+	if buf.get_available_bytes() < 2:
+		return false
+	n = buf.get_u16()
+	if buf.get_available_bytes() < n * SNAP_DEAD:
+		return false
+	for i in n:
 		var id := buf.get_u16()
 		var dd := {"src": buf.get_32()}
 		for k: String in ["t", "dx", "ds", "x", "s", "h", "heading"]:
 			dd[k] = buf.get_double()
-		dead[id] = dd
-	for i in buf.get_u16():
+		if id < lp.total():
+			dead[id] = dd
+	if buf.get_available_bytes() < 2:
+		return false
+	n = buf.get_u16()
+	for i in n:
+		if buf.get_available_bytes() < 4:
+			return false
 		var d := buf.get_u16()
+		var m := buf.get_u16()
+		if buf.get_available_bytes() < m * 16:
+			return false
 		var iv := PackedFloat64Array()
-		for j in buf.get_u16() * 2:
+		for j in m * 2:
 			iv.append(buf.get_double())
-		locks[d] = iv
-	for i in buf.get_u16():
+		if d < lp.doors.size():
+			locks[d] = iv
+	if buf.get_available_bytes() < 2:
+		return false
+	n = buf.get_u16()
+	if buf.get_available_bytes() != n * SNAP_REC:
+		return false
+	var nodes := lp.nodes.size()
+	for i in n:
 		var id := buf.get_u16()
 		var r := {"kind": buf.get_u8(), "st": buf.get_u8(), "na": buf.get_32(), "nb": buf.get_32(), "door": buf.get_32()}
 		for k: String in ["t0", "t_flee", "x", "s", "h", "face", "last", "cx", "cs"]:
 			r[k] = buf.get_double()
+		if id >= lp.total() or int(r["kind"]) not in [FLEE, COWER] or int(r["na"]) < -1 or int(r["na"]) >= nodes \
+				or int(r["nb"]) < -1 or int(r["nb"]) >= nodes or int(r["door"]) < -1 or int(r["door"]) >= lp.doors.size():
+			continue
 		var p0 := Vector2(r["x"], r["s"])
 		if int(r["kind"]) == FLEE and int(r["door"]) >= 0:
 			r["route"] = lp.route(p0, int(r["na"]), int(r["nb"]), int(r["door"]))
 		else:
 			r["route"] = _home(Vector2(r["cx"], r["cs"]), int(r["na"]), int(r["nb"]))
-		if id < lp.total():
-			recs[id] = r
+		recs[id] = r
+	return true

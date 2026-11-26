@@ -1,25 +1,27 @@
 class_name MissionFlow
 extends Node
-## The mission's objective and end (W6, win side; docs/design/mission-section.md §14, docs/networking.md "Mission
-## progress"). Built by TestDrive in stack mode (child "MissionFlow"; none in district mode: MissionRules needs the
-## section plan).
+## The mission's objectives and end (docs/design/mission-objectives.md §7, §9, docs/design/mission-section.md §14,
+## docs/networking.md "Mission progress"). Built by TestDrive in stack mode (child "MissionFlow").
 ##
-## RULES: every machine builds the same MissionRules.make(section) (no overrides: extraction on). Who decides:
+## ONE MODE (user 2026-11-25: "Cut the legacy modes."): every mission plays a MissionPlan (objectives, the pacing
+## director, depots, the extraction hold); a section always has one. `--objectives` is accepted as a no-op,
+## `--no-objectives`, the "objectives" setting and the single-district mode are gone. TEST-ONLY: `test_quiet` (set by QuietSectionFixture in
+## scripts/test_support/, never by the game) builds no rules at all: the section, its crew and garrison, no director,
+## no objectives, never ending, for tests of a narrow system (docs/testing.md "Fixtures").
+##
+## RULES: every machine builds the same rules from the plan. Who decides:
 ##   - SOLO (offline, no launched mission): this machine evaluates locally, no network.
 ##   - CREW, HOST (a host alone included): evaluates every EVAL_INTERVAL s and, whenever evaluate() returns true, sends
 ##     rules.state() to the crew (Session.send_mission_state -> reliable "mission.state", also carried by mission.go).
 ##   - CREW, CLIENT: never evaluates; applies what the host sent (Session.mission_state_changed -> rules.apply_state).
 ## Evaluation is GATED until the mission is released (Session.mission_go; solo at once) AND the enemies have spawned
 ## (TestDrive.enemies_spawned), because a clear objective latches the first time its deck counts 0 alive.
-## FACTS: {"t": shared clock (solo: local seconds), "enemies": TestDrive.enemies_alive_per_deck(), "crew": one entry per
-##   mech of the mission still in the crew: {peer, downed, deck, x, s}}, deck / x / s = CityStack.to_deck_arc(position);
-##   downed = this machine's PlayerTarget.disabled / a puppet's streamed `downed` (a disabled mech doesn't extract).
-##   No crew-wipe loss for now (user decision): make() runs with MissionRules' "wipe" option off (its default), so the
-##   rules never report "lost" for the crew; mechs keep their auto-respawn.
+## CREW FACTS: one entry per mech of the mission still in the crew: {peer, downed, deck, x, s}, deck / x / s =
+##   CityStack.to_deck_arc(position); downed = this machine's PlayerTarget.disabled / a puppet's streamed `downed`.
+##   No crew-wipe loss for now (user decision): the rules run with MissionRules' "wipe" option off (its default).
 ##
-## PLAN MODE (DEV, TestDrive.objectives: `--objectives`, GameSettings dev objectives, mission.launch params.objectives;
-## docs/design/mission-objectives.md §7 phase 1, §9). Every machine builds plan = MissionPlan.make(section, test_plan),
-## rules = MissionRules.make(section, {plan}), director = PacingDirector.make(plan, test_director, crew_size()), then
+## THE PLAN (docs/design/mission-objectives.md §7 phase 1, §9). Every machine builds plan = MissionPlan.make(section, test_plan),
+## rules = MissionRules.make(section, {plan}), director = PacingDirector.make(plan, test_director, crew_scale()), then
 ## stack.setup_mission(plan) (Environment's MissionWorld: wave doors, flag masts, defend relays, the portal) and
 ## rules.set_site() from its flag_site / asset_site, all before the first evaluate. The load barrier's checksum joins
 ## plan.checksum() (TestDrive.mission_checksum). The HOST / SOLO tick (same gate, EVAL_INTERVAL, t = Session.host_time(),
@@ -37,9 +39,8 @@ extends Node
 ##                  (EnemySquad.roll_out_wave) and the door is held open while they leave. Other sources spawn at open_at.
 ##   each order     {wave, deck, source, open_at, max_units}: the host sends it (Session.send_mission_wave: reliable
 ##                  "mission.wave"), every machine calls stack.mission.open_source(source, open_at) (`opened` records it),
-##                  and when the shared clock reaches open_at the host spawns it (antigravity's EnemySpawner.spawn_wave,
-##                  see _spawn_wave; stubbed while it is missing: nothing spawns and the director counts the wave beaten
-##                  after its GRACE)
+##                  and when the shared clock reaches open_at the host spawns it (EnemySpawner.spawn_wave, see
+##                  _spawn_wave; a group the spawner never reports counts beaten GRACE s after its door opened)
 ##   state          rules.state() + {"dir": director.state(), "assets": {defend id: hp}}, sent whenever it changes;
 ##                  clients apply both (rules.apply_state, director.apply_state)
 ## The defend relay's HP is held here on the host (`asset_hp`, set_asset_hp / damage_asset). Every machine registers the
@@ -51,6 +52,17 @@ extends Node
 ## the enemies this machine sees in the ring: cosmetic), set_asset(id, hp), set_portal(hold progress), set_hold_zone; the
 ## mission clock goes to MissionWorld.advance_to every frame. A failed primary ends the mission "lost" (objective_failed).
 ##
+## CREW SCALE (AGENTS.md rule 8; docs/networking.md "Crew scale"; user 2026-11-25: "Run it from the host, enforce this! And
+## ease off when a player leaves."): crew_scale() is the ONE read of the co-op scale on this machine (1..4): the director's
+## crew_n, the reserve sizes and spawn ctx (wave_sizes, _spawn_wave), the relay's HP (asset_max_hp), the depot cores
+## (MissionDepots.setup). Only the host derives it (host_crew_scale): at the launch from the launch crew, hangar bots included
+## (mission.launch params.scale, read here by every machine at setup: a client never counts its own crew list); on a retire
+## (on_member_retired, the host's leaver hook) from the members still in the crew. A change goes out as mission.scale {n, at}
+## with at = shared clock + SCALE_LEAD (before the release: now), mission.state carries the newest as "scale": [n, at], and
+## every machine applies it at `at` (_tick_scale -> _apply_scale): director.rescale(n) (PacingDirector.rescale's rules), the
+## relay's max HP follows while its HP FRACTION (asset_hp) stays, depot cores stay, the garrison and every unit alive stay.
+## A change whose `at` is not newer than the last one known here is ignored (duplicate / late). Solo: 1.
+##
 ## END FLOW: once rules.outcome is set ("won"; decided here or heard from the host) every machine shows the banner
 ## (hud_state().banner) for END_HOLD s, then: the HOST calls Session.end_mission(reason) (mission.end to the crew, whose
 ## TestDrive goes back to the hangar on Session.mission_ended); SOLO just leaves; a CLIENT waits for the host's
@@ -59,7 +71,7 @@ extends Node
 signal outcome_reached(outcome: String, reason: String)
 ## The end flow is over: leave the mission scene (TestDrive does, when it is the current scene).
 signal finished(outcome: String)
-## Plan mode, every machine: a wave's door was scheduled (stack.mission.open_source) from a host order.
+## Every machine: a wave's door was scheduled (stack.mission.open_source) from a host order.
 signal wave_ordered(order: Dictionary)
 
 const EVAL_INTERVAL := 0.25       ## s between host / solo evaluations (4 Hz)
@@ -73,27 +85,30 @@ const ALERT_AFTER := 6.0          ## s past open_at the "Reinforcements, east ga
 const RING_POINTS := 40           ## points of a projected objective ring
 const TITLES := {"won": "MISSION COMPLETE", "lost": "CREW LOST"}
 const LOST_TITLES := {"objective_failed": "MISSION FAILED"}
-const REASONS := {"objectives": "Every deck cleared, the crew reached extraction", "crew_down": "Every pilot is down",
-	"objective_failed": "Objective failed"}
-const PLAN_REASONS := {"objectives": "Every primary done, the crew held the extraction portal"}
+const REASONS := {"objectives": "Every primary done, the crew held the extraction portal",
+	"crew_down": "Every pilot is down", "objective_failed": "Objective failed"}
 const END_REASONS := {"won": "Mission complete", "lost": "Crew lost"}
 const LOST_END_REASONS := {"objective_failed": "Objective failed"}
 const MARK_LABEL := {"flag": "FLAG", "defend": "DEFEND", "hold": "EXTRACT"}
-const SPAWNER := "res://scripts/enemy/enemy_spawner.gd"
 const ASSET_MAX_HP := 600.0       ## a defend relay's hit points (Weapons' AssetTarget hits are in points; asset_hp is 0..1) ...
 ## ... times this by crew size (index = pilots - 1; defend balance 2026-11-24: a lone veteran bot at 90 %+ structure lost
 ## relays in 40-110 s): the relay takes hits in points against ASSET_MAX_HP x scale.
 const ASSET_HP_SCALE := [1.75, 1.35, 1.0, 1.0]
 const ASSET_RADIUS := 2.5         ## m, the relay's hit-sphere radius for combat
 const ASSET_HEIGHT := 6.0         ## m, the hit spheres stack this high
-const NO_OBJECTIVES_FLAG := "--no-objectives"
 const ROUTE_EVERY := 2.0          ## s between the host's source route measurements (PacingDirector source choice)
 const ROLL_OUT_HOLD := 15.0       ## s a gate stays open once its staged group starts rolling out (none is shut in)
+const SCALE_LEAD := 1.0           ## s on the shared clock between the host's scale decision and `at` (every machine has it)
+const SCALE_STEP := 0.001         ## s: each new change's `at` is at least this after the previous one (strict order)
 
-## Tests: overrides for MissionPlan.make / PacingDirector.make in plan mode (set the same on every machine of a test:
+## Tests: overrides for MissionPlan.make / PacingDirector.make (set the same on every machine of a test:
 ## the plan's checksum includes its options).
 static var test_plan: Dictionary = {}
 static var test_director: Dictionary = {}
+## TEST-ONLY (QuietSectionFixture, scripts/test_support/quiet_section_fixture.gd; never set by the game, its menus,
+## settings or flags: tests/test_objectives_only.gd checks): no rules, plan or director are built, so the section stays
+## as spawned (crew and full garrison), nothing is released and the mission never ends. Set on every machine of a test.
+static var test_quiet := false
 
 var drive: TestDrive
 var rules: MissionRules
@@ -102,7 +117,7 @@ var released := false             ## the mission started (mission_go; solo at on
 var end_left := -1.0              ## s until the end (>= 0 while the banner shows)
 var ended := false                ## the end flow is over (finished emitted, or the host ended the mission)
 var evaluations := 0              ## evaluate() calls (tests)
-## Plan mode (null otherwise): the mission plan, the host's wave queue (a client's mirrors the host's state()), the
+## The mission plan (null in the TEST-ONLY quiet fixture), the host's wave queue (a client's mirrors the host's state()), the
 ## stack's MissionWorld.
 var plan: MissionPlan
 var director: PacingDirector
@@ -115,24 +130,30 @@ var asset_hp: Dictionary = {}     ## defend id -> 0..1: the host decides, client
 var _asset_targets: Dictionary = {}   ## defend id -> Weapons' AssetTarget (every machine; LOCAL bookkeeping)
 var _asset_armed: Dictionary = {}     ## host: defend id -> true once its objective went active (HP reset to full then)
 var opened: Array = []            ## every machine: [{wave, source, open_at}] each open_source this machine made (tests)
-var unspawned: Array = []         ## host: wave ids ordered while antigravity's spawn_wave is missing (the stub)
 var _eval_left := 0.0
 var _end_wait := 0.0              ## s since the outcome
-var _clock := 0.0                 ## solo plan mode: the mission clock (physics seconds since release)
+var _clock := 0.0                 ## solo: the mission clock (physics seconds since release)
 var _sent: Dictionary = {}        ## host: the plan state last sent
 var _spawns: Array = []           ## host: orders waiting for their door (spawned at open_at)
 var _pending: Dictionary = {}     ## host: wave id -> units still to spawn (the spawner's report)
 var _wave_total: Dictionary = {}  ## host: wave id -> units of it seen so far
 var _seen: Dictionary = {}        ## host: enemy instance id -> true (counted in _wave_total)
 var _wave_size: Dictionary = {}   ## host: wave id -> units the spawner will make (EnemySpawner.plan_wave dry run)
-var _wave_size_crew := 0          ## host: the crew size _wave_size was computed for
+var _wave_size_by: Dictionary = {}   ## host: crew scale -> {wave id: units} (plan_wave dry runs at that scale, cached)
+## The crew scale (see CREW SCALE): the host decides, every machine applies its changes at their `at`.
+var _scale := 1                   ## in force here (crew_scale())
+var scale_at := -INF              ## shared-clock `at` of the change in force (-INF: the launch value)
+var _scale_due: Array = []        ## changes heard / decided, not applied yet, by `at` [{n, at, from, reason, pilot}]
+var _scale_last_at := -INF        ## the newest `at` known here (applied or due): older / equal ones are ignored
+var scale_log: Array = []         ## changes applied here [{from, to, at, t, reason, pilot}] (tests, logs)
+var scale_dups := 0               ## mission.scale messages ignored as duplicate / late (tests)
 var _present_left := 0.0
 var _pushed: Dictionary = {}      ## presentation: key -> last value pushed to the world
 var _alerts: Array = []           ## HUD: orders heard, [{order, text, deck, pos}]
 var _rings: Dictionary = {}       ## HUD: defend id -> PackedVector3Array (its ring on the floor)
 var _zone_seen: Dictionary = {}   ## presentation: objective id -> {crew: bool, enemies: int} (this machine's view)
 var _hud_deck := -1               ## HUD: the deck the local pilot last stood on (kept on a ramp / in a shaft; -1 none yet)
-## Plan mode: the military supply depots (MissionDepots child, every machine; pacing-director.md §2). Their state rides in
+## The military supply depots (MissionDepots child, every machine; pacing-director.md §2). Their state rides in
 ## plan_state()["depots"]; the claim / grant messages are MissionDepots' own.
 var depots: MissionDepots
 
@@ -147,22 +168,14 @@ func net_fields() -> Dictionary:
 		"_asset_targets": Net.LOCAL,   # this machine's combat registrations of the relays
 		"_asset_armed": Net.PRIVATE,   # host: relays whose defend went active (their one HP reset done)
 		"asset_hp": Net.OWNER,         # the host decides (damage_asset), mission.state carries it
-		"opened": Net.LOCAL, "unspawned": Net.PRIVATE, "_clock": Net.PRIVATE, "_sent": Net.PRIVATE, "_spawns": Net.PRIVATE,
-		"_pending": Net.PRIVATE, "_wave_total": Net.PRIVATE, "_seen": Net.PRIVATE, "_wave_size": Net.PRIVATE, "_wave_size_crew": Net.PRIVATE, "_present_left": Net.LOCAL,
+		"opened": Net.LOCAL, "_clock": Net.PRIVATE, "_sent": Net.PRIVATE, "_spawns": Net.PRIVATE,
+		"_pending": Net.PRIVATE, "_wave_total": Net.PRIVATE, "_seen": Net.PRIVATE, "_wave_size": Net.PRIVATE, "_wave_size_by": Net.PRIVATE, "_present_left": Net.LOCAL,
+		"_scale": Net.OWNER, "scale_at": Net.OWNER,   # the host decides (launch params.scale, mission.scale, state "scale")
+		"_scale_due": Net.LOCAL, "_scale_last_at": Net.LOCAL,   # this machine's schedule of the host's changes
+		"scale_log": Net.LOCAL, "scale_dups": Net.LOCAL,
 		"_pushed": Net.LOCAL, "_alerts": Net.LOCAL, "_rings": Net.LOCAL, "_zone_seen": Net.LOCAL,
 		"_hud_deck": Net.LOCAL,        # the local pilot's deck for the objective panel, never sent
 		"depots": Net.LOCAL}   # MissionDepots declares its own state (net_fields)
-
-
-## Plan mode (objectives) wanted by this machine (solo, or the crews it hosts): the default. `--no-objectives` selects the
-## old clear-and-extract mission, `--objectives` forces it on (kept for old scripts); else GameSettings "objectives"
-## (default true). In a crew every machine plays the HOST's choice (mission.launch params.objectives).
-static func objectives_wanted(args: PackedStringArray, settings: Dictionary) -> bool:
-	if args.has(NO_OBJECTIVES_FLAG):
-		return false
-	if args.has("--objectives"):
-		return true
-	return bool(settings.get("objectives", true))
 
 
 func _ready() -> void:
@@ -173,6 +186,14 @@ func setup(td: TestDrive) -> void:
 	drive = td
 	var sess := Net.session()
 	crew = td.crewed and sess != null and sess.online()
+	# The host's crew scale before anything is built from it (it comes with the launch params that carry the crew), then
+	# the changes heard while this machine loaded (due ones apply at once: the director starts at the scale in force).
+	init_scale(sess.mission_params() if crew else {})
+	if crew:
+		for c: Variant in sess.mission_scales():
+			if c is Dictionary:
+				receive_scale(c, false)
+		_tick_scale()
 	rebuild()
 	if crew:
 		released = not td._held
@@ -181,6 +202,7 @@ func setup(td: TestDrive) -> void:
 		sess.mission_state_changed.connect(_on_state)
 		sess.mission_ended.connect(_on_ended)
 		sess.mission_wave.connect(_on_wave)
+		sess.mission_scale.connect(_on_scale_msg)
 		if not sess.mission_state().is_empty():
 			_on_state(sess.mission_state())
 		if not deciding():
@@ -211,9 +233,8 @@ func rebuild() -> void:
 	_asset_targets = {}
 	_asset_armed = {}
 	_wave_size = {}
-	_wave_size_crew = 0
+	_wave_size_by = {}
 	opened = []
-	unspawned = []
 	_sent = {}
 	_spawns = []
 	_pending = {}
@@ -224,12 +245,15 @@ func rebuild() -> void:
 	_rings = {}
 	_zone_seen = {}
 	_clock = 0.0
-	if sec != null and drive.objectives:
+	rules = null
+	if sec == null or test_quiet:
+		pass   # no section (defensive), or TEST-ONLY QuietSectionFixture: no rules, nothing released, never ends
+	else:
 		var pre := drive.prebuilt_plan
 		var ready := pre != null and drive.stack.mission != null
 		plan = pre if ready else MissionPlan.make(sec, test_plan)
 		rules = MissionRules.make(sec, {"plan": plan})
-		director = PacingDirector.make(plan, test_director, crew_size())
+		director = PacingDirector.make(plan, test_director, crew_scale())
 		# The stepped load set the world up over frames already (TestDrive.prebuilt_plan); otherwise in one call.
 		world = drive.stack.mission if ready else drive.stack.setup_mission(plan)
 		for o: Dictionary in plan.objectives:
@@ -248,8 +272,6 @@ func rebuild() -> void:
 		depots.name = "MissionDepots"
 		add_child(depots)
 		depots.setup(self)
-	else:
-		rules = MissionRules.make(sec) if sec != null else null
 	end_left = -1.0
 	_end_wait = 0.0
 	ended = false
@@ -275,9 +297,10 @@ func now() -> float:
 func _physics_process(dt: float) -> void:
 	if rules == null or drive == null:
 		return
+	_tick_scale()
+	if released and not crew:
+		_clock += dt
 	if plan != null:
-		if released and not crew:
-			_clock += dt
 		_tick_world(dt)
 	if end_left >= 0.0:
 		_tick_end(dt)
@@ -299,33 +322,29 @@ func evaluate_now() -> bool:
 	evaluations += 1
 	if plan != null:
 		return _evaluate_plan()
-	if not rules.evaluate(facts()):
-		return false
-	if crew:
-		Net.session().send_mission_state(rules.state())
-	_check_outcome()
-	return true
-
-
-func facts() -> Dictionary:
-	var sess := Net.session()
-	var t := sess.host_time() if crew and sess != null else Time.get_ticks_msec() / 1000.0
-	return {"t": t, "enemies": drive.enemies_alive_per_deck(), "crew": crew_facts()}
+	return false   # no plan: TEST-ONLY QuietSectionFixture (or no section), nothing to evaluate
 
 
 ## [{peer, downed, deck, x, s}] for this machine's mech and (crew) every teammate's puppet still in the crew.
 ## Every pilot (TestDrive.crew_members: the local mech, the host's hangar bots, the puppets of members still in the crew;
 ## a bot's peer is its negative pilot id, docs/design/hangar-bots.md).
+## One entry per crew_members() entry, in its order (_pacing_facts pairs them by index); a member whose mech was freed
+## while still listed is not standing: downed, deck -1.
 func crew_facts() -> Array:
 	var out: Array = []
 	for c: Dictionary in drive.crew_members():
-		out.append(_fact(int(c["peer"]), c["mech"] as Node3D, bool(c["downed"]), bool(c.get("redeploying", false))))
+		var m: Variant = c.get("mech")
+		var mech := (m as Node3D) if is_instance_valid(m) else null   # validity before `as`: a freed instance raises
+		out.append(_fact(int(c["peer"]), mech, bool(c["downed"]), bool(c.get("redeploying", false))))
 	return out
 
 
 ## `redeploying` (DownedRules: held to respawn, the penalty runs; downed is true too): MissionRules' wipe never fires
 ## while anyone redeploys; everything that skips downed pilots (zones, flags, depots, the director) skips it too.
+## `m` null (its mech is gone): downed, on no deck.
 func _fact(peer: int, m: Node3D, downed: bool, redeploying: bool = false) -> Dictionary:
+	if m == null:
+		return {"peer": peer, "downed": true, "redeploying": false, "deck": -1, "x": 0.0, "s": 0.0}
 	var a := drive.stack.to_deck_arc(m.global_position)
 	return {"peer": peer, "downed": downed, "redeploying": redeploying, "deck": int(a["deck"]), "x": float(a["x"]),
 		"s": float(a["s"])}
@@ -344,6 +363,8 @@ func _on_state(d: Dictionary) -> void:
 	if rules == null or deciding():
 		return
 	rules.apply_state(d)
+	if d.has("scale"):
+		apply_scale_state(d["scale"])
 	if plan != null:
 		if d.get("dir") is Dictionary:
 			director.apply_state(d["dir"])
@@ -398,7 +419,7 @@ func _finish() -> void:
 	finished.emit(rules.outcome)
 
 
-# --- Plan mode: the host's tick ------------------------------------------------------------------------------
+# --- The host's tick ------------------------------------------------------------------------------------------
 
 func _evaluate_plan() -> bool:
 	var t := now()
@@ -431,7 +452,7 @@ func _evaluate_plan() -> bool:
 	return changed
 
 
-## What the host broadcasts in plan mode: rules.state() + {"dir": director.state(), "assets": {defend id: hp}}.
+## What the host broadcasts: rules.state() + {"dir": director.state(), "assets": {defend id: hp}}.
 func plan_state() -> Dictionary:
 	var st := rules.state()
 	st["dir"] = director.state()
@@ -441,6 +462,9 @@ func plan_state() -> Dictionary:
 	st["assets"] = a
 	if depots != null:
 		st["depots"] = depots.state()
+	var sc := scale_state()
+	if not sc.is_empty():
+		st["scale"] = sc
 	return st
 
 
@@ -517,7 +541,7 @@ func _source_routes(crew_f: Array) -> Dictionary:
 	_route_t = t
 	_routes = {}
 	var squad: Variant = drive.combat.squad if drive.combat != null else null
-	if squad == null or not (squad as Object).has_method("find_arc_path"):
+	if not is_instance_valid(squad) or not (squad as Object).has_method("find_arc_path"):
 		return _routes
 	var sum := {}
 	for c: Dictionary in crew_f:
@@ -552,13 +576,16 @@ func _pacing_facts(crew_f: Array, live: Array) -> Dictionary:
 		pacing.scout_call = _on_scout_call
 	var targets := {}
 	for tg in drive.combat.world.targets:
-		if is_instance_valid(tg) and tg is PlayerTarget and (tg as PlayerTarget).mech != null:
+		# Validity before `is` / member reads: a PlayerTarget may outlive its MechController (a bot's freed first).
+		if is_instance_valid(tg) and tg is PlayerTarget and is_instance_valid((tg as PlayerTarget).mech):
 			targets[(tg as PlayerTarget).mech.get_instance_id()] = tg
-	var members: Array = drive.crew_members() if drive.has_method("crew_members") else []
+	var members: Array = drive.crew_members()
 	var pilots: Array = []
 	for i in mini(members.size(), crew_f.size()):
 		var m: Variant = members[i].get("mech")
-		var pt: Variant = targets.get((m as Object).get_instance_id()) if m is Object and is_instance_valid(m) else null
+		if not is_instance_valid(m):
+			m = null   # freed while still listed: PacingFacts treats the pilot as not standing
+		var pt: Variant = targets.get((m as Object).get_instance_id()) if m != null else null
 		pilots.append({"peer": crew_f[i]["peer"], "target": pt, "mech": m, "deck": crew_f[i]["deck"],
 				"downed": crew_f[i]["downed"]})
 	return pacing.collect(pilots, drive.stack, live, plan.deck_count)
@@ -594,7 +621,7 @@ func _log_director() -> void:
 				var k := int(ev["deck"])
 				var squad: Variant = drive.combat.squad if drive.combat != null else null
 				var sent := 0
-				if squad != null and (squad as Object).has_method("send_garrison_hunt"):
+				if is_instance_valid(squad) and (squad as Object).has_method("send_garrison_hunt"):
 					var near := drive.stack.from_deck_arc(k, float(ev["x"]), float(ev["s"]), 0.0)
 					sent = int(squad.call("send_garrison_hunt", k, int(ev["units"]), near))
 				print("[mission] release garrison-hunt deck %d size %d reason cap" % [k, sent])
@@ -603,31 +630,43 @@ func _log_director() -> void:
 
 ## Host: {group id: units} for every reserve group of the plan (the director's half rule and the cap room it holds until
 ## a group's units appear), from EnemySpawner.plan_wave with max_units 0 (counts, places nothing) at the reserve budget
-## (PacingDirector.reserve_budget: the solo deck budget x CREW_SCALE); cached per crew size.
+## (PacingDirector.reserve_budget: the solo deck budget x CREW_SCALE) of the crew scale: crew_scale() for a group not released
+## yet (a rescale resizes it), the scale it was released at for a released one (PacingDirector.release_crew: untouched).
+## Cached per scale.
 func wave_sizes() -> Dictionary:
-	var n := director.crew_n if director != null else 1
-	if n == _wave_size_crew and not _wave_size.is_empty():
+	if plan == null or director == null:
+		_wave_size = {}
 		return _wave_size
-	_wave_size_crew = n
-	_wave_size = {}
-	var spawner := load(SPAWNER) as GDScript
-	if plan == null or spawner == null or not _has_static(spawner, "plan_wave") or not _has_static(spawner, "deck_budget"):
-		return _wave_size
+	var n := crew_scale()
+	var out := _sizes_at(n).duplicate()
+	var rel := director.release_crews()
+	for id: Variant in rel:
+		if int(rel[id]) != n and out.has(id):
+			out[id] = int(_sizes_at(int(rel[id])).get(id, out[id]))
+	_wave_size = out
+	return _wave_size
+
+
+## {group id: units} of every reserve group sized at crew scale `n` (EnemySpawner.plan_wave dry runs, cached per n).
+func _sizes_at(n: int) -> Dictionary:
+	if _wave_size_by.has(n):
+		return _wave_size_by[n]
+	var sizes := {}
 	for k in plan.deck_count:
 		var pl := plan.pool(k)
-		var budget := PacingDirector.reserve_budget(int(spawner.call("deck_budget", 1, k)), n)
+		var budget := PacingDirector.reserve_budget(EnemySpawner.deck_budget(1, k), n)
 		for w: Dictionary in pl.get("reserve", []):
-			var r: Variant = spawner.call("plan_wave", null, null, {"wave": w["id"], "max_units": 0}, w, {}, budget,
+			var r := EnemySpawner.plan_wave(null, null, {"wave": w["id"], "max_units": 0}, w, {}, budget,
 				drive.seed_value, 0, 1.0 - float(pl.get("garrison", 0.0)))
-			if r is Dictionary:
-				_wave_size[w["id"]] = int((r as Dictionary).get("total_units", 0))
-	return _wave_size
+			sizes[w["id"]] = int(r.get("total_units", 0))
+	_wave_size_by[n] = sizes
+	return sizes
 
 
 ## Host: dropships order their air doors through order_air_door (EnemySquad.air_door_hook), once the squad exists.
 func _wire_air_doors() -> void:
 	var sq: Variant = drive.combat.squad if drive.combat != null else null
-	if sq != null and (sq as Object).get("air_door_hook") is Callable and not (sq.air_door_hook as Callable).is_valid():
+	if is_instance_valid(sq) and (sq as Object).get("air_door_hook") is Callable and not (sq.air_door_hook as Callable).is_valid():
 		sq.air_door_hook = order_air_door
 
 
@@ -687,22 +726,14 @@ func _spawn_due() -> void:
 	_spawns = rest
 
 
-## Host: create the order's units at its source (antigravity's spawner). The call, when it exists:
-##   EnemySpawner.spawn_wave(order: {wave, deck, source, open_at, max_units}, wave: the plan's pool wave {id, share,
-##     theme, source, trigger}, source: the plan's source + "point": MissionWorld.source_point(id) {deck, x, s},
-##     ctx: {stack: CityStack, world: CombatWorld, squad: EnemySquad, seed: int, crew: int, pool: plan.pool(deck)}) -> int
+## Host: create the order's units at its source:
+##   EnemySpawner.spawn_wave(order: {wave, deck, source, open_at, max_units}, wave: the director's group_def {id, share,
+##     theme, source, for, units, kind}, source: the plan's source + "point": MissionWorld.source_point(id) {deck, x, s}
+##     (+ "bay" for a gate with a staging bay), ctx: {stack, world, squad, seed, crew, pool: plan.pool(deck), budget}) -> int
 ##   creates at most max_units units now, tagged wave = order.wave and spawn_deck = order.deck, arriving hunting, added
 ##   to the squad (so EnemySync streams them), and returns the units of that wave still to spawn (wave_pending).
-## TODO(antigravity): EnemySpawner.spawn_wave is not built yet; until it is, nothing spawns (the wave id goes to
-## `unspawned`) and the director counts the wave beaten GRACE s after its door opened.
 func _spawn_wave(o: Dictionary) -> void:
 	var id := str(o["wave"])
-	var spawner := load(SPAWNER) as GDScript
-	if spawner == null or not _has_static(spawner, "spawn_wave"):
-		if not unspawned.has(id):
-			unspawned.append(id)
-			print("[mission] TODO antigravity: EnemySpawner.spawn_wave missing, wave %s not spawned" % id)
-		return
 	var k := int(o["deck"])
 	var pool := plan.pool(k)
 	var wave := director.group_def(id)
@@ -711,12 +742,11 @@ func _spawn_wave(o: Dictionary) -> void:
 	var bay := source_bay(str(o["source"]))
 	if not bay.is_empty():
 		src["bay"] = bay
+	var cn := director.release_crew(id)   # the scale it was released at (a later rescale leaves it as it was ordered)
 	var ctx := {"stack": drive.stack, "world": drive.combat.world if drive.combat != null else null,
 		"squad": drive.combat.squad if drive.combat != null else null, "seed": drive.seed_value,
-		"crew": director.crew_n, "pool": pool,
-		"budget": PacingDirector.reserve_budget(EnemySpawner.deck_budget(1, k), director.crew_n)}
-	var left: Variant = spawner.call("spawn_wave", o, wave, src, ctx)
-	_pending[id] = maxi(int(left), 0) if (left is int or left is float) else 0
+		"crew": cn, "pool": pool, "budget": PacingDirector.reserve_budget(EnemySpawner.deck_budget(1, k), cn)}
+	_pending[id] = maxi(EnemySpawner.spawn_wave(o, wave, src, ctx), 0)
 
 
 ## Host: staged gate groups whose door is passable roll out (EnemySquad.roll_out_wave); the door is held open while they
@@ -729,7 +759,7 @@ func _roll_due() -> void:
 	for r: Dictionary in _rollouts:
 		if t >= float(r["open_at"]) and _passable(str(r["source"]), float(r["open_at"]), t):
 			var squad: Variant = drive.combat.squad if drive.combat != null else null
-			if squad != null and (squad as Object).has_method("roll_out_wave"):
+			if is_instance_valid(squad) and (squad as Object).has_method("roll_out_wave"):
 				squad.call("roll_out_wave", str(r["wave"]))
 			if world != null:
 				world.hold_source(str(r["source"]), t + ROLL_OUT_HOLD)
@@ -763,35 +793,156 @@ func source_bay(src: String) -> Dictionary:
 	return BayFormation.from_world_bay(d)
 
 
-## Pilots in the crew (players and hangar bots): Session.crew() in a crew, this machine's pilots solo. Co-op scaling.
-func crew_size() -> int:
+# --- Crew scale (see CREW SCALE in the header) -----------------------------------------------------------------
+
+## The crew scale in force on THIS machine (1..4): the host's decision (launch params.scale, then each mission.scale from
+## its `at`); 1 solo. Every crew-scaled gameplay value reads this and nothing else (AGENTS.md rule 8).
+func crew_scale() -> int:
+	return _scale
+
+
+## HOST ONLY: the one derivation of the crew scale from a crew: `members` = the launch crew entries (mission.launch
+## params.crew, hangar bots included: NetMission.launch_scale) at the launch, the members still in the crew
+## (TestDrive.crew_members(): players and hangar bots alike) on a retire. 1..4.
+static func host_crew_scale(members: Array) -> int:
+	return clampi(members.size(), 1, 4)
+
+
+## The crew scale a launch carries (params.scale, the host's), 1 when it carries none (a solo launch). Never recomputed from
+## the params' crew list.
+static func launch_scale(params: Dictionary) -> int:
+	if params.is_empty():
+		return 1
+	if not params.has("scale"):
+		push_warning("[mission] the launch carries no crew scale: 1")
+		return 1
+	return clampi(int(params["scale"]), 1, 4)
+
+
+## Start this mission's scale from `params` (a crew mission's launch params; {} solo: 1). Forgets any schedule.
+func init_scale(params: Dictionary) -> void:
+	_scale = MissionFlow.launch_scale(params) if crew else 1
+	scale_at = -INF
+	_scale_due = []
+	_scale_last_at = -INF
+	scale_log = []
+	scale_dups = 0
+
+
+## The newest scale decided ({} when none since the launch): what mission.state carries as "scale": [n, at].
+func scale_state() -> Array:
+	if _scale_last_at == -INF:
+		return []
+	return [_scale_target(), _scale_last_at]
+
+
+## The newest decided scale (the last change due, else the one in force).
+func _scale_target() -> int:
+	return int((_scale_due.back() as Dictionary)["n"]) if not _scale_due.is_empty() else _scale
+
+
+## The host's leaver hook (TestDrive.member_retired, after crew_members() stopped listing the pilot; a hangar bot counts the
+## same). Host only (no-op on clients and solo): forget the pilot's bookkeeping, recompute host_crew_scale from the members
+## still in the crew and, if it changed, decide it for every machine: mission.scale {n, at} with at = shared clock +
+## SCALE_LEAD (before the release: now, so the start value just changes), applied here at `at` too.
+func on_member_retired(pilot_id: int) -> void:
+	if not crew or not deciding() or drive == null:
+		return
+	_forget_pilot(pilot_id)
+	var n := MissionFlow.host_crew_scale(drive.crew_members())
+	var cur := _scale_target()
+	if n == cur:
+		return
+	var t := now()
+	var at := maxf(t + SCALE_LEAD if released else t, _scale_last_at + SCALE_STEP)
+	var change := {"n": n, "at": at, "from": cur, "reason": "leave", "pilot": pilot_id}
+	print("[mission] scale decided %d -> %d at %.3f (pilot %d left)" % [cur, n, at, pilot_id])
 	var sess := Net.session()
-	if crew and sess != null and sess.has_method("crew"):
-		return clampi(sess.crew().size(), 1, 4)
-	if drive != null and drive.has_method("crew_members"):
-		return clampi(drive.crew_members().size(), 1, 4)
-	return 1
+	if sess != null:
+		sess.send_mission_scale(change)
+	receive_scale(change, false)
 
 
-static func _has_static(s: GDScript, method: String) -> bool:
-	for m: Dictionary in s.get_script_method_list():
-		if str(m.get("name", "")) == method:
-			return true
-	return false
+## Session.mission_scale (a client): the host's change.
+func _on_scale_msg(change: Dictionary) -> void:
+	if deciding():
+		return
+	receive_scale(change)
 
 
-## Host / tests: the defend relay `id`'s health (0..1). Weapons' relay target calls damage_asset (TODO Weapons).
+## A change {n, at, from?, reason?, pilot?} for this machine's schedule (the host's own decision, mission.scale, the
+## state's "scale"): ignored when its `at` is not newer than the newest known here (a duplicate, a late copy; counted in
+## scale_dups when `count`); otherwise applied by _tick_scale once the mission clock reaches `at`.
+func receive_scale(change: Dictionary, count: bool = true) -> void:
+	var at := float(change.get("at", NAN))
+	var n := int(change.get("n", 0))
+	if is_nan(at) or is_inf(at) or n < 1 or n > 4:
+		return
+	if at <= _scale_last_at:
+		if count:
+			scale_dups += 1
+		return
+	_scale_last_at = at
+	_scale_due.append({"n": n, "at": at, "from": int(change.get("from", _scale_target())),
+		"reason": str(change.get("reason", "")), "pilot": int(change.get("pilot", 0))})
+
+
+## mission.state's "scale": [n, at] (a late state, a barrier latecomer): scheduled like a mission.scale, never counted.
+func apply_scale_state(v: Variant) -> void:
+	if v is Array and (v as Array).size() >= 2:
+		receive_scale({"n": int(v[0]), "at": float(v[1]), "reason": "state"}, false)
+
+
+## Apply every change whose `at` has come (every machine, every physics step and at setup).
+func _tick_scale() -> void:
+	while not _scale_due.is_empty() and now() >= float((_scale_due[0] as Dictionary)["at"]):
+		_apply_scale(_scale_due.pop_front())
+
+
+## The crew scale becomes change.n here, at change.at: the director rescales (PacingDirector.rescale), the relay's max HP
+## follows through asset_max_hp() while asset_hp (its fraction) stays (destroyed stays destroyed), depot cores and the
+## garrison stay. Logged ([mission] scale a -> b, CombatLog `scale`). Going up is accepted with a warning.
+func _apply_scale(change: Dictionary) -> void:
+	var old := _scale
+	var n := clampi(int(change["n"]), 1, 4)
+	var at := float(change["at"])
+	scale_at = at
+	if n == old:
+		return
+	if n > old:
+		push_warning("[mission] crew scale goes UP %d -> %d (no mid-mission join exists): accepted" % [old, n])
+	_scale = n
+	if director != null:
+		director.rescale(n)
+	var reason := str(change.get("reason", ""))
+	var pilot := int(change.get("pilot", 0))
+	scale_log.append({"from": old, "to": n, "at": at, "t": now(), "reason": reason, "pilot": pilot})
+	print("[mission] scale %d -> %d (reason %s, pilot %d, at %.3f)" % [old, n, reason, pilot, at])
+	CombatLog.note_scale(old, n, reason, pilot, at)
+
+
+## Host: pilot `pilot_id` left: no per-pilot entry of it stays in the director (intensity, engagement), the fight facts or
+## the depots' claim bookkeeping.
+func _forget_pilot(pilot_id: int) -> void:
+	if director != null:
+		director.forget_pilot(pilot_id)
+	if pacing != null:
+		pacing.forget_pilot(pilot_id)
+	if depots != null:
+		depots.forget_pilot(pilot_id)
+
+
+## Host / tests: the defend relay `id`'s health (0..1). Weapons' relay target reports hits through damage_asset.
 func set_asset_hp(id: String, hp: float) -> void:
 	if not asset_hp.has(id) or not deciding():
 		return
 	asset_hp[id] = clampf(hp, 0.0, 1.0)
 
 
-## A defend relay's hit points for this crew (ASSET_MAX_HP x ASSET_HP_SCALE[pilots - 1]); every machine computes the same
-## from the launch's crew.
+## A defend relay's hit points at the crew scale (ASSET_MAX_HP x ASSET_HP_SCALE[crew_scale() - 1]); every machine computes
+## the same from the host's scale. asset_hp is the FRACTION, so a rescale keeps it and only the hit points change.
 func asset_max_hp() -> float:
-	var n := director.crew_n if director != null else 1
-	return ASSET_MAX_HP * float(ASSET_HP_SCALE[clampi(n, 1, 4) - 1])
+	return ASSET_MAX_HP * float(ASSET_HP_SCALE[clampi(crew_scale(), 1, 4) - 1])
 
 
 ## Host: Weapons' AssetTarget reports an applied hit (`amount` in hit points, ASSET_MAX_HP for a full relay). Ignored
@@ -837,10 +988,10 @@ func _sync_asset_targets() -> void:
 		if t != null and is_instance_valid(t) and (t as Object).has_method("set_hp"):
 			var hp := float(asset_hp.get(id, 1.0)) * asset_max_hp()
 			var mx := asset_max_hp()
-			_push("asset_target:" + id, hp, func() -> void: (t as Object).call("set_hp", hp, mx))
+			_push("asset_target:" + id, [hp, mx], func() -> void: (t as Object).call("set_hp", hp, mx))   # a rescale moves mx
 
 
-# --- Plan mode: presentation on every machine ------------------------------------------------------------------
+# --- Presentation on every machine ------------------------------------------------------------------------------
 
 func _tick_world(dt: float) -> void:
 	if world != null and is_instance_valid(world):
@@ -947,8 +1098,8 @@ func source_words(id: String) -> String:
 ## or {}, banner: {title, reason, won} or {}}; plan mode adds plan: true, deck, lines, waves [released, total],
 ## markers [{pos, label, role, state, kind}], rings [PackedVector3Array], zone {label, progress, total, contested,
 ## countdown (hold: seconds left), percent (flag: whole percent)} or {}, panel (MissionRules.panel() for this pilot's
-## deck and position, plus extra: [the depot line]; its route_at, while "Proceed to the next floor" shows, is also the
-## waypoint "RAMP DOWN" / "SHAFT DOWN" when there is no extraction waypoint),
+## deck and position, plus extra: [the depot line]; its route_at, while a lead line ("Proceed to deck n", "Return to
+## deck n") shows, is also the waypoint "RAMP DOWN" / "SHAFT DOWN" when there is no extraction waypoint),
 
 ## alerts [{text, pos: Vector3 or null, left: s to the door}].
 func hud_state() -> Dictionary:
@@ -965,8 +1116,6 @@ func hud_state() -> Dictionary:
 		if rules.outcome == "lost" and LOST_TITLES.has(rules.reason):
 			title = str(LOST_TITLES[rules.reason])
 		var why := str(REASONS.get(rules.reason, rules.reason))
-		if plan != null and PLAN_REASONS.has(rules.reason):
-			why = str(PLAN_REASONS[rules.reason])
 		out["banner"] = {"title": title, "reason": why, "won": rules.outcome == "won"}
 	if plan != null and drive.stack != null and drive.mech != null:
 		_plan_hud(out)
@@ -984,7 +1133,7 @@ func _plan_hud(out: Dictionary) -> void:
 		(out["lines"] as Array).insert(mini((out["lines"] as Array).size(), MissionHud.LIST_MAX - 1), core_line)
 	out["panel"] = _panel(here, core_line)
 	var to: Dictionary = (out["panel"] as Dictionary).get("route_at", {})
-	if (out["waypoint"] as Dictionary).is_empty() and not to.is_empty():   # "Proceed to the next floor": the way there
+	if (out["waypoint"] as Dictionary).is_empty() and not to.is_empty():   # a lead line ("Proceed to deck n"): the way
 		out["waypoint"] = {"pos": drive.stack.from_deck_arc(int(to["deck"]), float(to["x"]), float(to["s"]), WAYPOINT_H),
 			"deck": int(to["deck"]), "label": "%s %s" % [str(to["kind"]).to_upper(), "DOWN" if int(to["dir"]) > 0 else "UP"]}
 	var wv: Array = director.state()["waves"]
@@ -1033,7 +1182,7 @@ func _panel(here: Dictionary, core_line: String) -> Dictionary:
 	var sec := drive.stack.section
 	if _hud_deck != k and sec != null:   # the same top-down point on the held deck (decks are concentric)
 		s *= sec.radius_of(_hud_deck) / maxf(sec.radius_of(k), 1.0)
-	var pn := rules.panel(_hud_deck, Vector2(float(here["x"]), s), MissionHud.ascii_arrows())
+	var pn := rules.panel(_hud_deck, Vector2(float(here["x"]), s))
 	pn["extra"] = [core_line] if core_line != "" else []
 	return pn
 

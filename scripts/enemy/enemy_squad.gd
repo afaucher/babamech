@@ -254,7 +254,7 @@ func add_enemy(e: EnemyBase) -> void:
 
 
 func remove_enemy(e: EnemyBase) -> void:
-	_slots.erase(e.target_id)
+	_revoke_slot(e.target_id, e)
 	enemies.erase(e)
 	_wrecks.erase(e)
 	if e is EnemyTrooper and (e as EnemyTrooper).fireteam != null:
@@ -472,11 +472,6 @@ func send_garrison_hunt(deck: int, n: int, near: Vector3) -> int:
 	if sent > 0:
 		note_deck_activity(deck)
 	return sent
-
-
-## Host: wave ids with units still waiting in a closed bay.
-func staged_waves() -> Array:
-	return _staged.keys()
 
 
 func _asset_target_by_id(asset_id: String) -> AssetTarget:
@@ -967,7 +962,7 @@ func request_dropship(target_pos: Vector3, deck: int) -> EnemyDropDrone:
 		ds.configure_air_arrival(air)
 	add_enemy(ds)
 	if not air.is_empty():
-		var now := world.now
+		var now := air_door_clock()
 		ds.air_ordered_at = now
 		order_air_door(str(air["id"]), deck, now + EnemyDropDrone.AIR_ORDER_LEAD, EnemyDropDrone.AIR_ARRIVE_HOLD)
 	return ds
@@ -1028,6 +1023,15 @@ func order_air_door(id: String, deck: int, open_at: float, hold: float) -> void:
 	var mw := mission_world()
 	if mw != null:
 		mw.call("open_source", id, open_at, hold)
+
+
+## The clock air door times are on: the mission world's (MissionWorld.now: the mission clock, MissionFlow.now()), NOT
+## CombatWorld.now, which runs from another start (orders and holds on the combat clock left a door open far too long).
+func air_door_clock() -> float:
+	var mw := mission_world()
+	if mw != null:
+		return float(mw.get("now"))
+	return world.now if world != null else 0.0
 
 
 ## The door state of air door `id` (MissionWorld.source_state) or {} without a mission world.
@@ -1465,16 +1469,25 @@ func prune_attack_slots(now: float) -> void:
 		return
 	var by_id := {}
 	for e in enemies:
-		if is_instance_valid(e) and not e.destroyed():
+		if is_instance_valid(e):
 			by_id[e.target_id] = e
 	for eid: String in _slots.keys():
 		var e: EnemyBase = by_id.get(eid)
-		var keep := e != null and e._is_awake() and e._target_id == str(_slots[eid])
+		var keep := e != null and not e.destroyed() and e._is_awake() and e._target_id == str(_slots[eid])
 		var busy: bool = e != null and e.ai_state in [EnemyBase.STATE_TELEGRAPH, EnemyBase.STATE_FIRE, EnemyBase.STATE_COOLDOWN]
 		if keep and not busy and now - float(_last_slot_time.get(eid, now)) > SLOT_STALE:
 			keep = false
 		if not keep:
-			_slots.erase(eid)
+			_revoke_slot(eid, e)
+
+
+## The one place a slot is taken away from its holder (pruned, or the unit left the squad): erases it here AND clears
+## the holder's own flag (EnemyBase.slot_revoked), so the unit must request again instead of firing on a slot it no
+## longer holds (it used to keep _has_slot and fire on top of max_attackers after its deck slept and woke).
+func _revoke_slot(eid: String, e: EnemyBase) -> void:
+	_slots.erase(eid)
+	if e != null and is_instance_valid(e):
+		e.slot_revoked()
 
 
 func release_attack_slot(enemy_id: String) -> void:
@@ -1665,14 +1678,6 @@ func deck_cuts(deck: int = -1) -> Array[Rect2]:
 static func seg_crosses_cuts(a: Vector2, b: Vector2, cuts: Array[Rect2]) -> bool:
 	for o: Rect2 in cuts:
 		if _segment_hits_rect(a, b, o.grow(CUT_PATH_MARGIN)):
-			return true
-	return false
-
-
-## True when arc point p lies inside a floor cut of deck deck, grown by margin.
-func in_floor_cut(p: Vector2, deck: int = -1, margin: float = 0.0) -> bool:
-	for o: Rect2 in deck_cuts(deck):
-		if o.grow(margin).has_point(p):
 			return true
 	return false
 

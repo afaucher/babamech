@@ -70,8 +70,8 @@ func setup() -> void:
 	finish()
 
 
-## The bay's shoulder clamps and brace arms (HangarBay.fit_clamps) clear every crew mech's measured box: open in prep,
-## mid-swing, and closed in alert (where they must also actually reach it: at most CLOSE_MAX off). A crew of four with
+## The bay's shoulder clamps and brace arms (HangarBay.fit_clamps) clear every crew mech's measured box: open (Launch),
+## mid-swing, and closed (stored) (where they must also actually reach it: at most CLOSE_MAX off). A crew of four with
 ## the widest weapons, in the chicken-leg stance and the forward one.
 const CLEAR_TOL := 0.01     ## m of overlap still counted as touching (box rounding)
 const CLOSE_MAX := 0.2      ## m: a closed clamp's pad stops at most this far from the mech
@@ -92,10 +92,8 @@ func _clamps_clear(stage: MechStage) -> void:
 			m.rebuild()
 		bay.fit_clamps()
 		var legs := "chicken" if bend < 0.0 else "forward"
-		for phase: String in ["prep", "mid", "alert"]:
-			bay.set_alert(phase != "prep")
-			bay._alert_k = {"prep": 0.0, "mid": 0.5, "alert": 1.0}[phase]
-			bay._apply_lights()
+		for phase: String in ["open", "mid", "closed"]:
+			bay.set_clamps({"open": 0.0, "mid": 0.5, "closed": 1.0}[phase])   # stored = closed; Launch opens them
 			await frames(2)
 			var worst := INF
 			var widest := 0.0
@@ -104,12 +102,10 @@ func _clamps_clear(stage: MechStage) -> void:
 				for g: float in bay.pad_gaps(i):
 					widest = maxf(widest, g)
 			check(worst > -CLEAR_TOL, "bay %s legs, %s: clamps and brace arms clear the mechs (closest %.3f m)" % [legs, phase, worst])
-			if phase == "alert":
-				check(widest <= CLOSE_MAX, "bay %s legs, alert: every clamp closes onto its mech (farthest %.3f m)" % [legs, widest])
+			if phase == "closed":
+				check(widest <= CLOSE_MAX, "bay %s legs, closed: every clamp closes onto its mech (farthest %.3f m)" % [legs, widest])
 			print("clamp clearance %s %s: closest mesh %.3f m, farthest pad %.3f m" % [legs, phase, worst, widest])
-	bay.set_alert(false)
-	bay._alert_k = 0.0
-	bay._apply_lights()
+	bay.set_clamps(1.0)
 
 
 ## Back-mount equipment in the hangar (docs/design/back-equipment.md): the back slot offers the mortar AND every

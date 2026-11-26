@@ -32,7 +32,6 @@ func _probe_seed1_wave_closing() -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = 1
-	td.objectives = true
 	add_child(td)
 	await frames(6)
 	td.drive_override = true
@@ -196,7 +195,6 @@ func _probe_seed1_cross_deck() -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = 1
-	td.objectives = true
 	add_child(td)
 	await frames(6)
 	td.drive_override = true
@@ -309,7 +307,6 @@ func _probe_seed1_ramp_turnaround() -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = 1
-	td.objectives = true
 	add_child(td)
 	await frames(6)
 	td.drive_override = true
@@ -428,7 +425,6 @@ func _probe_seed7_abandoned_defend() -> void:
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	td.city_mode = TestDrive.MODE_STACK
 	td.seed_value = 7
-	td.objectives = true
 	add_child(td)
 	await frames(6)
 	td.drive_override = true

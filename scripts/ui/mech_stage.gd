@@ -1,7 +1,7 @@
 class_name MechStage
 extends SubViewportContainer
-## The 3D preview beside the menus: its own SubViewport and World3D holding one mech on a turntable (the main menu,
-## settings) in an observation hall before a hull window onto the ring habitat (MenuBackdrop), or, in bay mode (the
+## The 3D preview beside the menus: its own SubViewport and World3D holding one mech standing on the deck (the main
+## menu, settings; still, idling; drag to turn it) in an observation hall before a hull window onto the ring habitat (MenuBackdrop), or, in bay mode (the
 ## hangar screen), the crew's mechs in their alcoves along one wall of the assault boat's vehicle bay (HangarBay,
 ## docs/design/hangar.md), framed from this viewport's real size (HangarBay.camera_frame) so every mech fits the
 ## preview at any window shape. Drag to turn (in the bay: a small orbit, clamped to HangarBay.ORBIT_MAX so it never
@@ -13,7 +13,7 @@ var viewport: SubViewport
 var camera: Camera3D
 var turntable: Node3D
 var models: Array[MechModel] = []
-var spin := 0.35            ## rad/s while nobody drags
+var spin := 0.0             ## rad/s while nobody drags (0: the menu mech stands still, no turntable since 2026-11-25)
 var _yaw := 0.6
 var _drag := false
 var _last_key := ""
@@ -98,15 +98,16 @@ func show_mechs(entries: Array, in_bay_: bool = false) -> void:
 			tag.outline_size = 12
 			tag.position = m.position + Vector3(0, HangarBay.tag_height(m), 0)
 			turntable.add_child(tag)
-	spin = 0.35 if n <= 1 else 0.0
+	spin = 0.0   # no turntable: the mech stands on the deck (drag still turns it to show its sides)
 	_yaw = 0.6 if n <= 1 else 0.0
 	_place_camera()
 
 
-## The bay's launch alert (beacons, strobes, clamps open). Only in bay mode.
-func set_alert(on: bool) -> void:
+## The bay's launch: alert lights and the egress (every mech walks out of its alcove through its airlock), paced to
+## take `seconds` (the launch alert; <= 0: natural pace). Only in bay mode. Cosmetic: the mission load cuts it off.
+func set_alert(on: bool, seconds: float = -1.0) -> void:
 	if bay != null and in_bay:
-		bay.set_alert(on)
+		bay.set_alert(on, seconds)
 
 
 func _set_bay(on: bool) -> void:

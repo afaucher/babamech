@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Real-physics enemy effectiveness & anti-bug audit (use_physics = true, real CityDistrict geometry):
 ##   1. Predictable straight walker vs. evasive dodger (proves velocity lead threatens lazy walking while dodges work).
 ##   2. True LKP memory, cover-flushing mortar & anti-wallhack in a real CityDistrict (proves zero wallhack behind walls).

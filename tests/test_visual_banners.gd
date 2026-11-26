@@ -1,4 +1,5 @@
 extends TestCase
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## VISUAL: the invader banners (docs/design/banners.md). Shots in test_logs/shots/:
 ##   banners_lab_close     the lab subject straight on from 12 m (compare art/renders/enemy_colour_r3/F2c3_banner_close.png)
 ##   banners_lab_torn      the same after the tear: fringe on the bar, heap at the foot

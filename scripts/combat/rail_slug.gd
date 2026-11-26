@@ -88,6 +88,12 @@ func on_hit(h: Dictionary, e: float) -> bool:
 	return false
 
 
+## A dropped slug (CombatWorld.drop_shot) only ever stopped in a target on the deciding machine (world stops are never
+## announced, props never stop it): show the same orange target burst that machine saw, not the grey world one.
+func drop_at(point: Vector3, normal: Vector3, _color: Color = MechMeshes.GREY) -> bool:
+	return super.drop_at(point, normal, MechMeshes.ORANGE)
+
+
 ## Where the flight line leaves the hit sphere it entered at `p` (the exit burst).
 func _exit_point(target: CombatTarget, p: Vector3, fdir: Vector3) -> Vector3:
 	var best := INF

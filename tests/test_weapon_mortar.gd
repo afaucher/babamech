@@ -160,11 +160,12 @@ func _cadence_and_heat() -> void:
 		for r in m.update(1.0 / 60.0, true, h, t, ORIGIN, Vector3(0, 0, -120)):
 			times.append(float(r["t"]))
 		t += 1.0 / 60.0
-	eq(int(st["ammo"]), 3, "3 shells a mission")
-	eq(times.size(), 3, "one shell per 3.5 s until the 3 shells are gone (20 s held)")
-	if times.size() >= 3:
+	eq(int(st["ammo"]), 6, "6 shells a mission")
+	eq(times.size(), 6, "one shell per 3.5 s until the 6 shells are gone (20 s held)")
+	if times.size() >= 6:
 		near(times[2] - times[1], 3.5, 0.002, "3.5 s between shells")
-	near(h.value, 3.0 * 18.0, 0.001, "18 heat a shell")
+		near(times[5] - times[0], 5.0 * 3.5, 0.002, "the sixth shell 17.5 s after the first")
+	near(h.value, 6.0 * 18.0, 0.001, "18 heat a shell")
 	eq(m.ammo, 0, "out of shells")
 
 

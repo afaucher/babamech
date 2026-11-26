@@ -1,8 +1,10 @@
 extends TestCase
 ## Shared body of test_bot_nav_seed*: the mission bot (MissionBot, `--bot veteran`) ALONE in a solo stack mission on one
 ## seed, `--dev-fast-clear` on (CombatWorld.dev_enemy_damage 10x), `--dev-bot-travel` OFF: it has to WALK the whole
-## mission through BotRoutePlanner's routes (ramps, shafts, glides over atriums). Checked within LIMIT s of game time:
-## the mission is won, every deck was stood on, the extraction objective is done, no DEV jump happened and every deck
+## mission through BotRoutePlanner's routes (ramps, shafts, glides over atriums). The real objectives mode (the only
+## one) with a forced all-sweep plan (PLAN: every deck a sweep, the closest to the old "clear every deck", no reserve
+## waves, a 3 s hold at the extraction portal). Checked within LIMIT s of game time:
+## the mission is won, every deck was stood on, the hold is done, no DEV jump happened and every deck
 ## change was planned (ramp / shaft / glide, no "unplanned"). Prints per objective the time it finished and every deck
 ## change with how (the report's per-seed numbers), and no trap: no roof escape over TRAP_MAX s, no pushing without getting
 ## 2 m anywhere over twice that. Test speed: the drones and striders die at the start (`thin`), the sim runs at SPEED x.
@@ -13,6 +15,7 @@ var limit := 400.0
 var ramps_only := false    ## plan with ramps only (MissionBot.ramps_only): every deck change must be a ramp
 var thin := true           ## kill the drones and striders at the start (test speed; see setup)
 const TRAP_MAX := 6.0      ## s: the longest roof escape allowed (and twice that pushing against something)
+const PLAN := {"primary": "sweep", "bonus_max": 0, "waves_per_deck": 0, "hold": 3.0}   ## MissionFlow.test_plan
 
 
 ## Test speed: the sim runs at SPEED x (Engine.time_scale; physics steps of SPEED/60 s). 2x keeps the walking, ramps,
@@ -34,13 +37,15 @@ func setup() -> void:
 	TestDrive.solo_launch = {"seed": seed_n, "mode": TestDrive.MODE_STACK}
 	TestDrive.bot_profile = "veteran"
 	TestDrive.dev_bot_travel = false
+	MissionFlow.test_plan = PLAN
 	MissionBot.ramps_only = ramps_only
 	CombatWorld.dev_enemy_damage = TestDrive.DEV_FAST_CLEAR
 	Engine.time_scale = speed()
 	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
 	add_child(td)
 	await frames(4)
-	if not check(td.bot != null and td.mission != null and td.stack != null, "the solo stack drive runs the mission bot"):
+	if not check(td.bot != null and td.mission != null and td.stack != null and td.mission.plan != null,
+			"the solo stack drive runs the mission bot on the plan"):
 		_restore()
 		finish()
 		return
@@ -95,7 +100,7 @@ func setup() -> void:
 		float(st["roof_max"]), float(st["stall_max"])])
 	check(rules.outcome == "won", "seed %d: the bot wins the mission within %.0f s (state %s, bot %s)" % [seed_n, limit,
 		str(rules.state()), td.bot.goal_text])
-	check((rules.state().get("done", []) as Array).has("extract"), "seed %d: extraction reached" % seed_n)
+	check((rules.state().get("done", []) as Array).has("hold"), "seed %d: the extraction hold is done" % seed_n)
 	check(stood.size() == n, "seed %d: it stood on every deck (%s of %d)" % [seed_n, str(stood.keys()), n])
 	eq(int(st["dev_jumps"]), 0, "seed %d: no DEV travel jump" % seed_n)
 	check(float(st["roof_max"]) <= TRAP_MAX, "seed %d: never on a roof longer than %.0f s (longest %.1f s)" % [seed_n, TRAP_MAX,
@@ -115,3 +120,4 @@ func _restore() -> void:
 	TestDrive.dev_bot_travel = false
 	CombatWorld.dev_enemy_damage = 1.0
 	MissionBot.ramps_only = false
+	MissionFlow.test_plan = {}

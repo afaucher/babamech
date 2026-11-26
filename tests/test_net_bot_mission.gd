@@ -1,8 +1,9 @@
 extends NetTest
 ## One full crew mission played by bots (MissionBot, `--bot`) on a host and a client, with the DEV aids the LAN soak uses:
 ## `--dev-fast-clear` (CombatWorld.dev_enemy_damage 10x) and `--dev-bot-travel` (MissionBot jumps between decks when its
-## walk can't get there). Seed 4 (ramps between every deck). Checked: every deck is cleared, extraction reached and the
-## mission won on the host, the same objective list on the client, and the host's end flow (MissionFlow -> mission.end)
+## walk can't get there). Seed 4 (ramps between every deck). The real objectives mode (the only one) with a forced
+## all-sweep plan (PLAN: every deck a sweep, no reserve waves, a 3 s hold, set on both machines: it joins the plan
+## checksum). Checked: every deck's sweep done, the extraction hold done and the mission won on the host, the same objective list on the client, and the host's end flow (MissionFlow -> mission.end)
 ## reaching the client. Restores the DEV statics at the end.
 
 const PEERS := 2
@@ -16,6 +17,8 @@ const WIN_TIMEOUT := 620.0   # re-measured 2026-11-23 (Engine subagent): won at 
 #                              worst. Was 400 (measured 2026-11-22: dev travel on 213 s, off ~275 s). Re-measure when it
 #                              gets close: the test prints both bots' stats.
 
+const PLAN := {"primary": "sweep", "bonus_max": 0, "waves_per_deck": 0, "hold": 3.0}   ## MissionFlow.test_plan
+
 var td: TestDrive
 
 
@@ -24,12 +27,14 @@ func _configure() -> void:
 	TestDrive.bot_profile = "veteran"
 	TestDrive.dev_bot_travel = OS.get_environment("BABAMECH_BOT_DEV_TRAVEL") != "0"   # "0": walk only (MissionBot routes)
 	CombatWorld.dev_enemy_damage = TestDrive.DEV_FAST_CLEAR
+	MissionFlow.test_plan = PLAN
 
 
 func _restore() -> void:
 	TestDrive.bot_profile = ""
 	TestDrive.dev_bot_travel = false
 	CombatWorld.dev_enemy_damage = 1.0
+	MissionFlow.test_plan = {}
 
 
 func run_host() -> void:
@@ -49,7 +54,14 @@ func run_host() -> void:
 		_restore()
 		return
 	eq(str(st.get("current", "?")), "", "every objective is done (%s)" % str(st.get("done", [])))
-	check((st.get("done", []) as Array).has("extract"), "extraction was reached")
+	var sweeps := 0
+	for o: Dictionary in td.mission.plan.objectives:
+		if str(o["type"]) == "sweep" and (st.get("done", []) as Array).has(o["id"]):
+			sweeps += 1
+	var want := td.mission.plan.primary_types().count("sweep")
+	check(want > 0 and sweeps == want, "every deck's sweep is done (%d of %d; primaries %s)" % [sweeps, want,
+		str(td.mission.plan.primary_types())])
+	check((st.get("done", []) as Array).has("hold"), "the extraction hold is done")
 	check(await until(func() -> bool: return Session.mission.phase == NetMission.IDLE, 20.0),
 		"the host's end flow ends the mission for the crew")
 	if check(await wait_reports("mission", 1, 30.0), "the client reports its mission"):

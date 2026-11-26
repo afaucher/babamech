@@ -1,4 +1,5 @@
 extends NetTest
+const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Downed, revive, respawn across machines (DownedRules, PlayerTarget, RepairDrone's revive beam, the mech snapshot's
 ## downed / redeploying / revive / aid fields: NetMechCodec), a real crew mission of 3, once per link (off, coast).
 ## Host A, client c1 = B (carries a repair drone), client c2 = C (goes down).

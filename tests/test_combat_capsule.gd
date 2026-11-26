@@ -1,9 +1,9 @@
 extends TestCase
 ## Shots meet a mech through its PlayerTarget hit spheres, never its MechController capsule (CombatWorld.shot_ray excludes
-## registered targets' bodies). The capsule (radius 2.2 m, 8 m tall) is wider than the torso sphere (2.05 m) and covers
-## gaps between the leg / torso spheres, so before the fix an off-centre shot struck the capsule as world geometry and did
+## registered targets' bodies). The capsule (radius 2.2 m, 8 m tall) covers gaps between the hit spheres (the 2026-11-24
+## refit: 43 body spheres, first the hull at 6.9 m), so before the fix an off-centre shot struck the capsule as world geometry and did
 ## no damage. Here, with world physics on and a wall 15 m behind the mech:
-## 1. a ray 1.8 m off the axis at chest height (inside the torso sphere, past the capsule's edge first) hits the torso;
+## 1. a ray 1.6 m off the axis under the shoulder pods (5.9 m, inside the capsule) hits the torso;
 ## 2. a ray through the capsule that misses every hit sphere passes through and stops at the wall;
 ## 3. a real enemy shell fired along ray 1 damages the torso; the same after the mech is unregistered hits the wall instead
 ##    of nothing (the exclude list follows register / unregister).
@@ -33,13 +33,13 @@ func setup() -> void:
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 
-	var a1 := Vector3(-1.8, 4.4, 20)
-	var b1 := Vector3(-1.8, 4.4, -30)
+	var a1 := Vector3(-1.6, 5.9, 20)
+	var b1 := Vector3(-1.6, 5.9, -30)
 	var h1 := world.first_hit(a1, b1, 0.0, "enemy_x")
 	check(not h1.is_empty() and h1["target"] == pt, "an off-centre chest shot hits the PlayerTarget, not the capsule (%s)" % str(h1))
 	if not h1.is_empty() and h1["target"] == pt:
 		eq(str(h1["component"]), "torso", "on the torso")
-	var h2 := world.first_hit(Vector3(2, 3, 20), Vector3(2, 3, -30), 0.0, "enemy_x")
+	var h2 := world.first_hit(Vector3(2.1, 5.0, 20), Vector3(2.1, 5.0, -30), 0.0, "enemy_x")
 	check(not h2.is_empty() and h2["target"] == null and absf((h2["point"] as Vector3).z - (-14.5)) < 0.05,
 		"a shot through the capsule missing every sphere hits the wall behind (%s)" % str(h2))
 
