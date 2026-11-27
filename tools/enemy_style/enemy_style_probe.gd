@@ -97,7 +97,7 @@ func _arg(key: String, def: String) -> String:
 func _run() -> void:
 	_args = OS.get_cmdline_user_args()
 	var root := get_tree().root
-	GraphicsQuality.apply_viewport(root, CityQuality.HIGH)
+	GraphicsQuality.apply_viewport(root, GraphicsQuality.HIGH)
 	var out_dir := _arg("--out", "res://art/renders/enemy_colour_r1")
 	if out_dir.begins_with("res://") or out_dir.begins_with("user://"):
 		out_dir = ProjectSettings.globalize_path(out_dir)
@@ -384,7 +384,7 @@ func _build_city(seed: int, lighting: String) -> void:
 	_district.set_backdrop_visible(true)
 	if _district.rig != null:
 		_district.rig.apply(lighting)
-		_district.rig.set_quality(CityQuality.HIGH)
+		_district.rig.set_quality(GraphicsQuality.HIGH)
 	var plan := _district.plan
 	var av := plan.avenue_x()
 	# Cross street nearest the district's middle.

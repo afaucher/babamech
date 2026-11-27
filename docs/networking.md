@@ -18,11 +18,11 @@ took, what it changed, and what is still to build.
 |---|---|---|
 | Session autoload: ENet + Steam transports, hello handshake, roster (max **4**), refusals, leave / host left, kick | `scripts/net/net_session.gd` | ported, cut down (no shared run, seats, snapshots, world, objects, casts, orders yet) |
 | Pilot profile in the handshake: `name`, `head`, `chassis`, `accent`, `loadout` in `sys.hello`; changes later via `sys.profile`; the host makes each loadout valid for its chassis (`NetSession.clean_loadout`) | `net_session.gd` | new (cast carried `character`) |
-| Shared mission start (co-op step 1): host Launch, load barrier on the city checksum, desync / slow-load send-out, one mech per crew member | `net_mission.gd` (child "Mission" of Session), `scripts/game/test_drive.gd`, `scripts/game/mech_spawn.gd` | cast's M1 (`crew_flow.gd`), cut down to launch + barrier |
-| The city stack in the mission (W2): the launch carries `mode` (always `stack`; the district mode was cut 2026-11-25); every machine builds the multi-deck section (`SectionPlan` + `CityStack`) from the seed, the barrier compares `CityStack.checksum()`, the crew spawns on the entry road | `net_mission.gd`, `scripts/game/test_drive.gd` | new |
+| Shared mission start (co-op step 1): host Launch, load barrier on the city checksum, desync / slow-load send-out, one mech per crew member | `net_mission.gd` (child "Mission" of Session), `scripts/mission/mission_scene.gd`, `scripts/mission/sync/mech_spawn.gd` | cast's M1 (`crew_flow.gd`), cut down to launch + barrier |
+| The city stack in the mission (W2): the launch carries `mode` (always `stack`; the district mode was cut 2026-11-25); every machine builds the multi-deck section (`SectionPlan` + `CityStack`) from the seed, the barrier compares `CityStack.checksum()`, the crew spawns on the entry road | `net_mission.gd`, `scripts/mission/mission_scene.gd` | new |
 | Relayed broadcast: `Session.broadcast_event(kind, data)` (a client's goes through the host, the others hear the real sender and stamp) | `net_session.gd` | new |
-| Mech snapshots (co-op step 2): the owner streams its mech on `T_SNAP` at 30 Hz, the host forwards; puppets interpolated ~100 ms behind the shared clock | `net_mech_stream.gd` (child "Mechs" of Session), `net_mech_codec.gd`, `net_puppet_buffer.gd`, `net_mech_state.gd`; game side `scripts/game/crew_sync.gd`, `mech_puppet.gd` | cast's M2 (`NetSnapshot`, `NetCodec`, `NetInterp`) |
-| Enemies in co-op (W4): host-only spawn and AI, manifest + T_ENEMY stream + reliable "enemy.*" events, client puppets, enemy fire records on every machine | `net_enemy_stream.gd` (child "Enemies" of Session), `net_enemy_codec.gd`, `net_enemy_buffer.gd`, `net_enemy_state.gd`; game side `scripts/game/enemy_sync.gd` | cast's M3 (host-owned actors) |
+| Mech snapshots (co-op step 2): the owner streams its mech on `T_SNAP` at 30 Hz, the host forwards; puppets interpolated ~100 ms behind the shared clock | `net_mech_stream.gd` (child "Mechs" of Session), `net_mech_codec.gd`, `net_puppet_buffer.gd`, `net_mech_state.gd`; game side `scripts/mission/sync/crew_sync.gd`, `mech_puppet.gd` | cast's M2 (`NetSnapshot`, `NetCodec`, `NetInterp`) |
+| Enemies in co-op (W4): host-only spawn and AI, manifest + T_ENEMY stream + reliable "enemy.*" events, client puppets, enemy fire records on every machine | `net_enemy_stream.gd` (child "Enemies" of Session), `net_enemy_codec.gd`, `net_enemy_buffer.gd`, `net_enemy_state.gd`; game side `scripts/mission/sync/enemy_sync.gd` | cast's M3 (host-owned actors) |
 | Reliable events + unreliable sequenced packets (7-byte header, stale drop, u16 wrap) | `net_wire.gd` | verbatim |
 | Shared clock (NTP-style bounds, slewed) | `net_clock.gd` | verbatim |
 | Link simulator (off / coast / rough) on ENet; Steam FakePacket config | `net_link.gd`, `net_steam_link.gd` | verbatim |
@@ -85,7 +85,7 @@ host -> crew     mission.end    {reason}                the host left the missio
   road), holds its own still, and reports `MissionScene.mission_checksum()` (`CityStack.checksum()` + "/" + the
   `MissionPlan` checksum; the stack's alone under the TEST-ONLY quiet fixture).
   `CityStack.checksum()` covers the section (`SectionPlan.checksum()`) and, for every deck, its plan
-  (`CityPlan.checksum()`), its street-prop layout (`CityProps.layout_checksum`: props are host-arbitrated by index and
+  (`CityPlan.checksum()`), its street-prop layout (`CityPropLayout.checksum`: props are host-arbitrated by index and
   block shots) and its air doors (`MissionWorld.air_checksum`), so a layout difference in any of them is a desync.
   Restore paths that take a peer's buffer validate it and ignore a malformed one instead of reading past its end or
   allocating by the peer's count: `CityProps.restore` (`valid_snapshot`), `LifeCrowd` / `LifeFleet` / `LifeTram.restore`,
@@ -169,7 +169,7 @@ client, back from its stall, heard nothing and ended 6 s later with "The host le
 `test_net_load_stall` with ENet's default timeouts (host: "c1 dropped: lost the link while loading").
 
 - **Stepped load (the game's crew mission in the stack):** `MissionScene._load_stepped` runs `CityStack.build_step(8 ms)`
-  once per frame (behind the loading screen, `scripts/ui/loading_screen.gd`, docs/design/hud.md; mechs not simulated), then sets up the
+  once per frame (behind the loading screen, `scripts/ui/menu/loading_screen.gd`, docs/design/hud.md; mechs not simulated), then sets up the
   scene, then `AmbientLife.setup_step(8 ms)` once per frame, and only then reports `mission.ready` (so `mission.go` waits
   for every machine's whole load). `MissionScene.loading` is true meanwhile (no input, no physics). Events that arrive
   during the load are dispatched as usual: EnemySync pulls its manifest after setup, life replays what it heard while
@@ -207,9 +207,9 @@ start / done, checksum ok / mismatch, mission_go, first enemy contact, enemy kil
 mission won, mission_ended, back in hangar. A hands-off two-mission run (scratch export, ENet):
 `host: --net-host --net-port P --bot --dev-fast-clear --dev-bot-travel --auto-launch 2 --auto-relaunch --auto-quit`,
 `client: --net-join 127.0.0.1:P --bot --dev-fast-clear --dev-bot-travel --auto-quit`. `--bot` = MissionBot
-(scripts/game/mission_bot.gd); DEV ONLY: `--dev-fast-clear` (enemies take 10x, on the machine deciding the hit: pass it to
+(scripts/bots/crew/mission_bot.gd); DEV ONLY: `--dev-fast-clear` (enemies take 10x, on the machine deciding the hit: pass it to
 every instance), `--dev-bot-travel` (the bot jumps where its walk can't get it; logged "dev travel"). CrewAuto
-(scripts/ui/crew_auto.gd) launches when every client's "crew.hangar" heartbeat shows it back in the hangar. Verified
+(scripts/app/crew_auto.gd) launches when every client's "crew.hangar" heartbeat shows it back in the hangar. Verified
 2026-11-22, seeds 4 (ramps) and 9 (lifts): two full missions each, both instances quit. Test: `test_net_bot_mission`.
 
 ## Mission progress (W6, win side)
@@ -218,7 +218,7 @@ host -> crew     mission.state  {state}      reliable, on every change: MissionR
 host -> crew     mission.go     {start_at, state?}   carries the latest state (if any) for a member that reaches the barrier late
 ```
 - Every machine builds the same `MissionRules.make(section)` (no overrides: extraction on, crew-wipe loss off) in
-  `MissionFlow` (`scripts/game/mission_flow.gd`, child "MissionFlow" of the test drive). The objectives are the plan's
+  `MissionFlow` (`scripts/mission/mission_flow.gd`, child "MissionFlow" of the test drive). The objectives are the plan's
   (below, "The plan"); the evaluation, end and solo rules here apply to them.
 - **The host decides** (a host alone too): about 4 times a second (`EVAL_INTERVAL` 0.25 s) it feeds
   `{"t": Session.host_time(), "enemies": td.enemies_alive_per_deck(), "crew": [{peer, downed, deck, x, s}]}` to
@@ -347,7 +347,7 @@ host -> client   T_SNAP  the host's mech + the other clients' (<= 173 B)  each f
 - **Puppet accuracy:** a bot's puppet holds the same bound as a player's (test_net_hangar_bots: <= 0.5 m at render
   time, measured 0.040-0.049 m max / 0.02 m mean while the bot ran 88 m). The earlier 2.3 m was the test comparing on
   host_time() at poll time instead of the snapshot stamps (the step clock eases toward host_time, up to 0.25 s apart).
-- **Friendly fire:** `BotFireGuard` (scripts/game/bot_fire_guard.gd), called last every physics frame by MissionBot for
+- **Friendly fire:** `BotFireGuard` (scripts/bots/crew/bot_fire_guard.gd), called last every physics frame by MissionBot for
   the local `--bot` and every hangar bot: per slot, the shot from its real muzzle over the weapon's whole range (spread,
   splash, flak fuse, missile curve, mortar landing + descent, crew motion over the travel time) against every crew mech
   in `MissionScene.mechs`; unsafe slots are held, flying missiles are led away from a mate.

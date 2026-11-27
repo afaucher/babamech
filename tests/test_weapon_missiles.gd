@@ -1,5 +1,5 @@
 extends TestCase
-## Guided Missiles (scripts/combat/weapons/missiles.gd, scripts/combat/missile.gd, scripts/combat/missile_laser.gd,
+## Guided Missiles (scripts/combat/weapons/missiles.gd, scripts/combat/missile.gd, scripts/combat/fx/missile_laser.gd,
 ## docs/design/weapons.md §3.6): a press launches 3 over 0.9 s at any frame step, then 5 s reload; 18 then dry; heat per
 ## salvo. Each missile steers toward world.designators[shooter].dot while `on` (at most 120°/s, 35 -> 55 m/s) and flies
 ## straight while off; it bends onto a target 40° off, follows a moved dot, self-destructs at 9 s, hits for direct +

@@ -48,7 +48,7 @@ const ALWAYS := 1 | (1 << 19)
 var preset := "day"
 var env: Environment
 var sun: DirectionalLight3D
-var quality := CityQuality.HIGH  ## local presentation (CityQuality): set_quality
+var quality := GraphicsQuality.HIGH  ## local presentation (CityQuality): set_quality
 
 var _world: WorldEnvironment
 var _fills: Node3D
@@ -177,12 +177,12 @@ func apply(id: String) -> void:
 
 # --- Quality (CityQuality: local presentation) -----------------------------------------------------------------
 
-## Draw level q (CityQuality.LOW / MEDIUM / HIGH). `shown`: per deck of setup_decks, whether it is drawn (empty: all);
+## Draw level q (GraphicsQuality.LOW / MEDIUM / HIGH). `shown`: per deck of setup_decks, whether it is drawn (empty: all);
 ## `active`: the deck the daylight is on. Fills of a deck not shown are hidden; the active deck keeps every
 ## `fill_every`-th fill, other shown decks every `other_fill_every`-th; the ambient rises for the active deck's fills
 ## switched off; shadows, splits, SSAO and glow follow the level. HIGH restores exactly what apply() sets.
 func set_quality(q: int, shown: Array = [], active: int = 0) -> void:
-	quality = CityQuality.clamp_level(q)
+	quality = GraphicsQuality.clamp_level(q)
 	_shown = shown.duplicate()
 	_active = active
 	_apply_quality()

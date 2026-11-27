@@ -2,7 +2,7 @@ class_name NetEnemyState
 extends RefCounted
 ## One sample of a host-owned enemy, as the host streams it (W4, co-op enemies; cast's M3 host-owned actors): what a
 ## client's puppet needs to pose and show it. Plain data; NetEnemyCodec packs it, NetEnemyBuffer interpolates it, the
-## game fills it from EnemyBase.puppet_state() and writes it back with EnemyBase.puppet_apply() (scripts/game/enemy_sync.gd).
+## game fills it from EnemyBase.puppet_state() and writes it back with EnemyBase.puppet_apply() (scripts/mission/sync/enemy_sync.gd).
 ##
 ## `yaw` is the hull's heading in the ring's local frame (the game converts, as for mechs), so the net layer never needs
 ## the ring. `state` is an index into NetEnemyCodec.STATES.

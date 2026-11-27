@@ -1,5 +1,5 @@
 extends TestCase
-## ShaderWarmup (scripts/app/shader_warmup.gd), headless: what it would draw. One copy per look (material, vertex format,
+## ShaderWarmup (scripts/mission/shader_warmup.gd), headless: what it would draw. One copy per look (material, vertex format,
 ## shadow casting, mesh / multimesh layout): two meshes with the same look make one copy, a different material or a
 ## shadow-less instance another, hidden nodes count, a MultiMesh gets a one-instance copy of its layout; the extras cover
 ## the shared materials, the FX caches, the trail, the rail ribbon, the enemy tag and every pilot head. should_run() is

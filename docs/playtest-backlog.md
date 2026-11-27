@@ -7,6 +7,13 @@ route each item to its owner and move it out of here. Newest batch first.
 | # | Feedback | Likely owner |
 |---|---|---|
 | R2.1 | The repair drone doesn't repair destroyed weapons. | Weapons (repair_drone) |
+| R2.24 | Troops appeared on the ground with no drop-ship, near an INBOUND marker that wasn't at any door. Suspected causes: the drop-ship's in-deck fallback (used when a deck has no usable air door) spawning troops without a visible ship, or the ship not syncing or rendering. Fix: (1) check drop-ship sync (host and clients see the ship arrive, unload and leave); (2) drop-ships always arrive and leave through air doors, so guarantee every deck at least one usable air door and remove the in-deck fallback; (3) no unit ever appears in the open with no visible source. The INBOUND marker should then always sit at a real opening (door, lift, air door, ramp, shaft). | Missions (drop-ship AI, sources) + Environment (air-door placement) + Engine (sync) |
+| R2.25 | **Next milestone (user, 2026-11-26): getting stuck, both fixes.** (a) A collision survey: run the `test_ramp_stuck` harness over every collider kind (props, depots, plinths, barriers, signs, ramp ends, gate frames), looking for collision that sticks out past the visible mesh, step-height boxes a mech climbs onto and can't leave, and inside corners that wedge the capsule; fix what it finds (this absorbs R2.19 and R2.23). (b) A safety net in the mech controller: if the player pushes against something without moving for about a second, nudge the mech free. Keep it deterministic and owner-side (owner authority), with no teleporting through walls. Bots already have a version. | Environment (survey) + Mech (controller) + Missions (depot collision) |
+| R2.23 | Stuck on a supply depot: the user's mech ended up on or against the depot kiosk and couldn't move off it. Screenshot: `C:\Users\alexa\AppData\Local\Temp\claude\90b5a00aafa79186\14f6db35-c9b4-4539-a32f-21058a6abbc4\images\4.webp`. Fix the depot collision (likely the box the game adds around the kiosk, or a low ledge that pins the capsule); a mech must never get trapped on or beside one. Same class of bug as the ramp-end snag; do it with the low-corner survey (R2.19), which this makes higher priority. | Missions (depot collision) + Environment (survey harness) |
+| R2.26 | Remove the "STAGGER", "OVERHEAT" and "DROP" text and the heat bar over enemies (user, 2026-11-26). Keep the HP bar. Tags are set in `enemy_base.gd:2472`, `enemy_drone.gd:585` and `enemy_drop_drone.gd:814`, and drawn by `EnemyStatusBar`. Overheating must then read from the unit itself (see R2.27). | Missions (enemy looks) |
+| R2.27 | **Approved by the user 2026-11-26.** Diegetic enemy overheat, replacing the text and heat bar. Mirror the player mech: its "heat" radiator surfaces glow with heat, and on shutdown it slumps (MechRig sag). For enemies: (1) the always-lit VENT_GLOW fins brighten with heat (dim when cool, white-hot near shutdown); (2) on shutdown, optics and lamps go dark, striders and troopers sag, turret and tank barrels droop, drones and gunships wobble or sink, with heat shimmer or steam venting from the fins; (3) on reboot, lights flicker back and the barrel comes up. Sound comes from the unit (power-down whine, spin-up). Keep it readable from the play camera. | Missions (enemy looks) + Weapons (audio) |
+| R2.21 | Remove the dark green circle drawn on the ground around a mech while it's being repaired. | Weapons (repair drone look) |
+| R2.22 | Lift doors get a real interior: enemies spawn inside the lift car's space and walk out when it opens, like the gate staging bays (seeded loose formation, staged dormant until the doors open). | Missions (staging) + Environment (lift geometry) |
 | R2.20 | The repair drone's tether to its owner should be longer, so you can repair nearby mechs without standing right next to them. | Weapons (repair_drone) |
 | R2.18 | Bulwark balance against gunships and snipers (from bot runs, 2026-11-26). A Bulwark bot wins seed 22's defend, but the full mission times out at 950 s; deck 2's sweep took 600 s with 5 deaths. Damage taken: gunships 2177, snipers 1805, breachers 494, tanks 463. Possibly made worse by antigravity's new enemy anti-air (gunships now altitude-match). Also from Missions: a defend relay can sit in an 8 m alley, too tight for wide mechs. | Missions (enemy tuning) + Mech (Bulwark) |
 | R2.19 | Survey other low box corners (props, depots, plinths) for the hidden-collision pinning flaw found at a seed 9 ramp end (now fixed there): a read-only sweep with the `test_ramp_stuck` harness, fixes proposed afterwards. | Environment |
@@ -28,6 +35,14 @@ route each item to its owner and move it out of here. Newest batch first.
 | R2.8 | Door language (proposed, waiting on the user): barricades only on doors that never open; wave bays visibly marked; sealing a bay as an earnable objective. Background: blast doors, wave bays, portals, the former rubble gate, air doors and lift doors as catalogued 2026-11-25. Today's cordon blocks sit in front of wave bays too, and the mission-section.md fiction is stale. | Missions + Environment, once decided |
 | R2.6 | Bot teammates don't wait for help. A hurt bot doesn't hold still or stay near a crewmate's repair drone, and a downed bot redeploys instead of waiting for a revive when a crewmate with a drone can reach it. | Engine (MissionBot) |
 
+## Mission variety phase 2 (next after the refactor; design refresh first)
+Per mission-objectives.md §7: Heavy artillery, Help the local defense forces, reserve turrets and site doors. Refresh
+the design against decisions made since phase 1 (the pacing director replaced fixed waves; no non-diegetic enemy
+indicators; the friendly-fire guard and bots), with 3x3 grids for the artillery gun and the friendly defenders.
+- **Artillery impact (user, 2026-11-26):** match the mortar's impact warning for now (same telegraph as the
+  enemy and player mortar shell), not a new marked circle.
+- Phase 3 (political center, military output, evacuate VIPs) stays queued; the APC escort question is still open.
+
 ## Queued next for Mech (after its playtest batch)
 - **Wasp (drone-style hover chassis):** iterate on the body and the idea until the user is happy: 3x3 grids, user
   picks, in-engine reviews. Hover movement, networking and AI are designed with Engine and Missions before gameplay
@@ -46,7 +61,7 @@ the large-file splits (audit 1, item 7).
 **User, 2026-11-26:** "Once everything is stable, let's do 7 + the new code audit in one sweep." Sequence: a clean full
 run → commit → the sweep (folder layout needs the user's agreement first).
 
-## Code audit (2026-11-25; independent, not authoritative; everything in it is worth checking)
+## Code audit (2026-11-25): DONE except item 7, which the refactor sweep (tiers 1-3) is now doing with the org audit
 Full text: [code-audit-2026-11.md](code-audit-2026-11.md). It was reviewed statically at 3dbbb31, without running the
 tests, so verify each finding before fixing it. The audit's top items, in its order:
 1. **The leaver decoy:** a player who drops mid-mission leaves a frozen, unkillable mech that enemies keep shooting.
@@ -88,7 +103,7 @@ There are also about 20 medium and low bugs, including:
 
 Plus the dead-code, maintainability and organization sections.
 
-## 2026-11-25 (collected, not started)
+## 2026-11-25, round 1: DONE (all 11 built in the 9a103cb milestone)
 | # | Feedback (user's words, lightly edited) | Likely owner |
 |---|---|---|
 | 1 | The legs can get in sync so you wind up hopping instead of walking. A normal walk should be one foot planted, one moving. | Mech (Gait) |

@@ -91,7 +91,7 @@ func setup() -> void:
 func _goldens() -> void:
 	eq(CityPlan.make({"seed": 1}).checksum(), "bd1d848c575e85df", "downtown 0: the seed 1 plan checksum (golden)")
 	eq(CityPlan.make({"seed": 1, "walls": 1.0}).checksum(), "3eb0728c9b4cffa2", "downtown 0: the walled plan checksum (golden)")
-	eq(CityProps.layout_checksum(CityProps.layout(CityPlan.make({"seed": 1}))), "f321076ebd6e98f1", "downtown 0: the props layout (golden)")
+	eq(CityPropLayout.checksum(CityPropLayout.layout(CityPlan.make({"seed": 1}))), "f321076ebd6e98f1", "downtown 0: the props layout (golden)")
 	check(CityPlan.make({"seed": 1}).downtown_blocks().is_empty(), "no zone on its own by default")
 
 

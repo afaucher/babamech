@@ -50,10 +50,17 @@ var NET_RULES := [
 ]
 
 ## 5. Crew scaling. Function names are constants so a rename is one edit.
-const SCALE_FILE := "res://scripts/game/mission_flow.gd"
+const SCALE_FILE := "res://scripts/mission/mission_flow.gd"
 const SCALE_PATH := "crew_scale"              ## MissionFlow.crew_scale(): the one read of the crew scale
 const HOST_SCALE_PATH := "host_crew_scale"    ## MissionFlow.host_crew_scale(): the host's decision (recomputed on a retire)
-const SCALE_SCOPE := ["res://scripts/game/", "res://scripts/world/section/", "res://scripts/enemy/", "res://scripts/combat/"]
+## Tier-3 folder moves (docs/refactor-plan.md §2): the old scope was game/, world/section/, enemy/, combat/. Those files
+## now live in mission/ (and its pacing/, depots/, downed/, sync/, world/), bots/crew/, camera/, plus what stayed in
+## world/section/, enemy/ (now with units/, squad/, looks/) and combat/ (now with fx/, equipment/). The new folders also
+## hold a few files that moved in from outside the old scope (mission/shader_warmup.gd, the mission_* world pieces and
+## site_fit from world/city/, the depot kiosk / meshes / lab from world/depot/, bots/crew/mission_bot_pilot.gd from ai/):
+## all mission gameplay code, so the scope covers whole folders rather than a file list.
+const SCALE_SCOPE := ["res://scripts/mission/", "res://scripts/bots/crew/", "res://scripts/camera/", "res://scripts/world/section/",
+	"res://scripts/enemy/", "res://scripts/combat/"]
 const SCALE_PENDING := "pending Missions crew_scale"
 ## Direct crew counts.
 const SCALE_COUNT := "\\.crew\\(\\)\\.size\\(\\)|\\broster\\.(size|keys|values)\\(|\\bspawn_order\\.size\\(\\)|crew_members\\(\\)\\.size\\(\\)|\\bcrew_bots\\.size\\(\\)|bot_ids\\(\\)\\.size\\(\\)"
@@ -61,11 +68,11 @@ const SCALE_COUNT := "\\.crew\\(\\)\\.size\\(\\)|\\broster\\.(size|keys|values)\
 const SCALE_SOURCE := "^\\s*var\\s+(\\w+)\\s*(?::[^=]*)?=.*(\\.crew\\(\\)|\\broster\\b|\\bspawn_order\\b|crew_members\\(\\)|\\bcrew_bots\\b|bot_ids\\(\\))"
 ## "file:function" -> reason. Not scaling (counts for bookkeeping, spawn slots, logs) or SCALE_PENDING.
 const SCALE_ALLOW := {
-	"res://scripts/game/mission_flow.gd:_pacing_facts": "pairs each pilot with its facts by index (PacingFacts per-pilot intensity): no value is sized by the count",
-	"res://scripts/game/test_drive.gd:spawn_enemies": "the pre-play garrison, built from the seed + launch crew before play on the host and checksummed",
-	"res://scripts/game/test_drive.gd:build_city": "spawning the mechs: one entry slot per launch-crew mech (spawn layout, not a gameplay value)",
-	"res://scripts/game/test_drive.gd:_spawn_crew": "spawning the mechs: a seat fallback for a launch entry without one",
-	"res://scripts/game/mission_bot.gd:_dev_jump_arrival": "DEV jump to this mech's entry slot (spawn layout, dev only)",
+	"res://scripts/mission/mission_flow.gd:_pacing_facts": "pairs each pilot with its facts by index (PacingFacts per-pilot intensity): no value is sized by the count",
+	"res://scripts/mission/mission_scene.gd:spawn_enemies": "the pre-play garrison, built from the seed + launch crew before play on the host and checksummed",
+	"res://scripts/mission/mission_scene.gd:build_city": "spawning the mechs: one entry slot per launch-crew mech (spawn layout, not a gameplay value)",
+	"res://scripts/mission/mission_scene.gd:_spawn_crew": "spawning the mechs: a seat fallback for a launch entry without one",
+	"res://scripts/bots/crew/mission_bot.gd:_dev_jump_arrival": "DEV jump to this mech's entry slot (spawn layout, dev only)",
 }
 ## [code, function, expected hit?] for the scan's own regexes.
 const SCALE_SAMPLES := [
@@ -145,18 +152,18 @@ func _check_script(path: String) -> void:
 
 ## Class name -> script, for the carrier check.
 const CARRIER_SCRIPTS := {
-	"MechController": "res://scripts/mech/mech_controller.gd",
-	"MechRig": "res://scripts/mech/mech_rig.gd",
+	"MechController": "res://scripts/mech/motion/mech_controller.gd",
+	"MechRig": "res://scripts/mech/motion/mech_rig.gd",
 	"PlayerTarget": "res://scripts/combat/player_target.gd",
 	"WeaponMount": "res://scripts/combat/weapon_mount.gd",
 }
 
 ## Enemy classes the host's stream carries state of (W4): each var NetEnemyCodec.ENEMY_FIELDS names must be OWNER.
 const ENEMY_SCRIPTS := {
-	"EnemyBase": "res://scripts/enemy/enemy_base.gd",
-	"EnemyTurret": "res://scripts/enemy/enemy_turret.gd",
-	"EnemyTank": "res://scripts/enemy/enemy_tank.gd",
-	"EnemyStrider": "res://scripts/enemy/enemy_strider.gd",
+	"EnemyBase": "res://scripts/enemy/units/enemy_base.gd",
+	"EnemyTurret": "res://scripts/enemy/units/enemy_turret.gd",
+	"EnemyTank": "res://scripts/enemy/units/enemy_tank.gd",
+	"EnemyStrider": "res://scripts/enemy/units/enemy_strider.gd",
 }
 
 

@@ -5,7 +5,7 @@ extends RefCounted
 ## one seeded generator, so every machine builds the same district and `checksum()` proves it (AGENTS.md rule 4, game
 ## design 3.5). Looks that don't affect play (window patterns, colours, fixed street furniture) are rolled later by the
 ## meshers from `cosmetic_seed()`, a separate stream, and are not in the checksum. Skylights, the office plant room and
-## the civic portico are solid, so they are plan data here; loose roof units are CityProps (CityProps.layout).
+## the civic portico are solid, so they are plan data here; loose roof units are CityProps (CityPropLayout.layout).
 ##
 ## Coordinates are arc coordinates of the deck: x along the ring axis (level), s along the spin direction (the floor
 ## curves up), heights above the floor. A Rect2 is (x, s) position + size. The origin is the crossing of the central
@@ -88,10 +88,13 @@ var section: SectionPlan         ## the mission section this deck belongs to (nu
 var deck := -1                   ## which of its decks
 var ramps: Array = []
 var alleys: Array = []           ## service alleys cut through blocks: [{block, rect, axis}] (city-variety.md; axis 0: runs along x)
-var forms: Dictionary = {}       ## road segment key (seg_key) -> lane | pedestrian | none; absent = street (city-variety.md)
+var forms: Dictionary = {}       ## road segment key (RoadForms.seg_key) -> lane | pedestrian | none; absent = street (city-variety.md)
 var raised: Array = []           ## ground raised to the sidewalk by a road form: [{rect, kind: court | band, seg}] (solid)
 
 var _rng := RandomNumberGenerator.new()
+## SiteFit's reachability mask of this plan (a SiteFit.FitMask: SiteFit.mask() builds it once and keeps it here, so it lives
+## exactly as long as the plan). A cache derived from plan data; not in checksum().
+var fit_mask: RefCounted = null
 
 
 func net_fields() -> Dictionary:
@@ -105,6 +108,7 @@ func net_fields() -> Dictionary:
 		"alleys": Net.LOCAL, "forms": Net.LOCAL, "raised": Net.LOCAL,     # from the seed (and the section), in checksum()
 		"extent": Net.LOCAL,     # recomputed from params on every machine, verified by checksum()
 		"_rng": Net.LOCAL,
+		"fit_mask": Net.LOCAL,   # SiteFit.mask()'s cache, derived from the plan on every machine; not in checksum()
 	}
 
 
@@ -123,7 +127,7 @@ func cosmetic_seed() -> int:
 	return int(p("seed")) * 7919 + 104729
 
 
-## The base of the street props' layout streams (CityProps.layout: +1 street props, +2 roof units). GAMEPLAY, unlike the
+## The base of the street props' layout streams (CityPropLayout.layout: +1 street props, +2 roof units). GAMEPLAY, unlike the
 ## looks above: props are host-arbitrated by index and stop shots, so their layout joins the load checksum
 ## (CityStack.checksum). The same value as cosmetic_seed() (2026-11-25: named apart so that intent is visible; changing
 ## either alone would move every prop).
@@ -425,7 +429,7 @@ func avenue_x() -> Vector2:
 ## False where nothing may stand: in a floor hole (or on its curb) or on ground kept clear.
 func clear_at(pt: Vector2) -> bool:
 	for o in site.floor_holes:
-		if o.grow(CityStreets.HOLE_CURB + 0.1).has_point(pt):
+		if o.grow(CityDims.HOLE_CURB + 0.1).has_point(pt):
 			return false
 	for k in site.keep_clear:
 		if k.has_point(pt):
@@ -932,7 +936,7 @@ const ROOF_INSET := 2.6                 ## roof units stand at least this far in
 const ROOF_MARGIN := 0.6                ## and this far clear of anything standing on the same roof
 
 ## Which tiers of building i carry roof units and which kinds: [[tier index, kinds]]. Skylights are solid plan
-## geometry (_skylights); the other kinds (tank, ac, vent, planter) are knockable CityProps (CityProps.layout).
+## geometry (_skylights); the other kinds (tank, ac, vent, planter) are knockable CityProps (CityPropLayout.layout).
 func roof_slots(i: int) -> Array:
 	var b: Dictionary = buildings[i]
 	var tiers: Array = b["tiers"]
@@ -1322,7 +1326,7 @@ func _dt_clear(r: Rect2) -> bool:
 		if k.intersects(r):
 			return false
 	for o in site.floor_holes:
-		if o.grow(CityStreets.HOLE_CURB + 0.5).intersects(r):
+		if o.grow(CityDims.HOLE_CURB + 0.5).intersects(r):
 			return false
 	return true
 
@@ -1379,7 +1383,7 @@ func _dt_room(u: Dictionary, units: Array) -> Rect2:
 	for o: Rect2 in site.openings:
 		if room.size.x <= 0.0 or room.size.y <= 0.0:
 			break
-		var f := CityStreets.ceiling_opening(o).grow(CityStreets.RIM + CityStreets.DROP_PANEL + 0.5)
+		var f := CityDims.ceiling_opening(o).grow(CityDims.RIM + CityDims.DROP_PANEL + 0.5)
 		var g := Rect2(f.position.x, cy + (f.position.y - cy) / kc, f.size.x, f.size.y / kc)
 		if not g.intersects(room):
 			continue
@@ -2190,12 +2194,12 @@ func perch_heights(bi: int) -> Array[float]:
 func ceiling_heads() -> Array[Rect2]:
 	var out: Array[Rect2] = []
 	for q: Dictionary in site.pillars:
-		var m := float(q["half"]) + CityStreets.DROP_PANEL
+		var m := float(q["half"]) + CityDims.DROP_PANEL
 		out.append(Rect2(float(q["x"]) - m, float(q["s"]) - m, m * 2.0, m * 2.0))
 	for i in buildings.size():
 		for t: Dictionary in buildings[i]["tiers"]:
 			if str(t.get("kind", "")) == "tower":
-				out.append(shaft_head(i, t).grow(CityStreets.DROP_PANEL))
+				out.append(shaft_head(i, t).grow(CityDims.DROP_PANEL))
 	return out
 
 
@@ -2366,7 +2370,7 @@ func _alley_clear(rect: Rect2) -> bool:
 		if k.intersects(rect.grow(1.0)):
 			return false
 	for o in site.floor_holes:
-		if o.grow(CityStreets.HOLE_CURB + 1.5).intersects(rect):
+		if o.grow(CityDims.HOLE_CURB + 1.5).intersects(rect):
 			return false
 	for r: Dictionary in ramps:
 		var s0 := minf(float(r["s_top"]), float(r["s_foot"]))
@@ -2431,7 +2435,7 @@ func alley_side(li: int) -> int:
 
 # --- Road forms (docs/design/city-variety.md sections 1, 3b) ----------------------------------------------
 
-# A SEGMENT is one stretch of a road between two neighbouring crossings, keyed as SectionPlan.seg_key: axis "s" line i
+# A SEGMENT is one stretch of a road between two neighbouring crossings, keyed as RoadForms.seg_key: axis "s" line i
 # index j is roads_x[i] between roads_s[j] and roads_s[j + 1]; axis "x" line j index i is roads_s[j] between roads_x[i]
 # and roads_x[i + 1] (in section mode these are exactly the section's segments). Its FORM says what is drawn in its strip
 # (the strip never moves): street (absent from `forms`), lane (an 8 m one-lane carriageway, the rest of the strip a raised
@@ -2440,19 +2444,14 @@ func alley_side(li: int) -> int:
 # from both crossings across the strip's whole width). In a section the forms are the SectionPlan's; on its own the plan
 # rolls them (`road_variety`) from a generator of its own with the same rules.
 
-const LANE_W := 8.0              ## a lane's carriageway (SectionPlan.FORM_WIDTH["lane"])
 const BAND_END := 6.0            ## a lane's raised bands stop this far from each crossing (the zebra and stop line stay)
 const FORM_MIX := {"lane": 0.20, "pedestrian": 0.10, "none": 0.08}     ## relative shares of the forms (the section's mix)
 const CLOSED_PER := 6            ## on its own: at most one pedestrian / none segment per this many blocks
 
 
-static func seg_key(axis: String, line: int, index: int) -> int:
-	return (65536 if axis == "x" else 0) + line * 256 + index
-
-
 ## The form of a segment: street | lane | pedestrian | none.
 func seg_form(axis: String, line: int, index: int) -> String:
-	return str(forms.get(seg_key(axis, line, index), "street"))
+	return str(forms.get(RoadForms.seg_key(axis, line, index), "street"))
 
 
 ## Vehicles drive the segment (street or lane).
@@ -2477,22 +2476,22 @@ func block_side_form(bi: int, side: int) -> String:
 	return str(forms.get(block_side_seg(bi, side), "street"))
 
 
-## The key (seg_key) of the segment beside side `side` of block bi.
+## The key (RoadForms.seg_key) of the segment beside side `side` of block bi.
 func block_side_seg(bi: int, side: int) -> int:
 	var i := int(blocks[bi]["ix"])
 	var j := int(blocks[bi]["is"])
 	match side:
-		0: return seg_key("s", i + 1, j)
-		1: return seg_key("s", i, j)
-		2: return seg_key("x", j + 1, i)
-	return seg_key("x", j, i)
+		0: return RoadForms.seg_key("s", i + 1, j)
+		1: return RoadForms.seg_key("s", i, j)
+		2: return RoadForms.seg_key("x", j + 1, i)
+	return RoadForms.seg_key("x", j, i)
 
 
 ## Section mode: the section's forms (SectionPlan.segments; all `street` while its defaults are dormant).
 func _section_forms() -> void:
 	for sg: Dictionary in section.segments(deck):
 		if str(sg["form"]) != "street":
-			forms[seg_key(str(sg["axis"]), int(sg["line"]), int(sg["index"]))] = str(sg["form"])
+			forms[RoadForms.seg_key(str(sg["axis"]), int(sg["line"]), int(sg["index"]))] = str(sg["form"])
 	_make_raised()
 
 
@@ -2547,7 +2546,7 @@ func _roll_forms(special: Dictionary) -> void:
 					form = "lane" if form != "lane" else "pedestrian"
 					if seg_form(axis, line - 1, index) == form or seg_form(axis, line + 1, index) == form:
 						continue
-				forms[seg_key(axis, line, index)] = form
+				forms[RoadForms.seg_key(axis, line, index)] = form
 	# A district on its own is small (about 16 blocks): every closed segment (pedestrian / none) takes the vehicle loop of
 	# both blocks beside it (LifeTraffic), so keep at most one closed segment per CLOSED_PER blocks (the last ones rolled
 	# go back to streets).
@@ -2594,7 +2593,7 @@ func _repair_forms() -> void:
 		drawn.resize(n)
 		for sg: Array in segs:
 			if seg_drives(sg[0], sg[1], sg[2]):
-				_uf_join(parent, sg[3], sg[4])
+				RoadForms.uf_join(parent, sg[3], sg[4])
 				deg[sg[3]] += 1
 				deg[sg[4]] += 1
 			if seg_form(sg[0], sg[1], sg[2]) != "none":
@@ -2618,7 +2617,7 @@ func _repair_forms() -> void:
 			var split := false
 			for i in n:
 				if deg[i] > 0:
-					var r := _uf_find(parent, i)
+					var r := RoadForms.uf_find(parent, i)
 					if root < 0:
 						root = r
 					elif r != root:
@@ -2626,7 +2625,7 @@ func _repair_forms() -> void:
 			if split:
 				for k in segs.size():
 					var sg: Array = segs[k]
-					if not seg_drives(sg[0], sg[1], sg[2]) and _uf_find(parent, sg[3]) != _uf_find(parent, sg[4]):
+					if not seg_drives(sg[0], sg[1], sg[2]) and RoadForms.uf_find(parent, sg[3]) != RoadForms.uf_find(parent, sg[4]):
 						fix = k
 						break
 		# A crossing no vehicle reaches (every segment at it closed): its first closed segment back, so the road graph
@@ -2646,7 +2645,7 @@ func _repair_forms() -> void:
 					break
 		if fix < 0:
 			return
-		forms.erase(seg_key(segs[fix][0], segs[fix][1], segs[fix][2]))
+		forms.erase(RoadForms.seg_key(segs[fix][0], segs[fix][1], segs[fix][2]))
 
 
 func _seg_touches_block(sg: Array, bi: int) -> bool:
@@ -2655,20 +2654,6 @@ func _seg_touches_block(sg: Array, bi: int) -> bool:
 	if sg[0] == "s":
 		return (int(sg[1]) == i or int(sg[1]) == i + 1) and int(sg[2]) == j
 	return (int(sg[1]) == j or int(sg[1]) == j + 1) and int(sg[2]) == i
-
-
-static func _uf_find(parent: PackedInt32Array, a: int) -> int:
-	while parent[a] != a:
-		parent[a] = parent[parent[a]]
-		a = parent[a]
-	return a
-
-
-static func _uf_join(parent: PackedInt32Array, a: int, b: int) -> void:
-	var ra := _uf_find(parent, a)
-	var rb := _uf_find(parent, b)
-	if ra != rb:
-		parent[maxi(ra, rb)] = mini(ra, rb)
 
 
 ## The ground the forms raise to the sidewalk (solid, in the checksum): a superblock's court over its segment's inner
@@ -2694,8 +2679,8 @@ func _make_raised() -> void:
 				if a1 - a0 < 2.0:
 					continue
 				for side in 2:
-					var u0 := r.position[across] if side == 0 else mid + LANE_W * 0.5
-					var u1 := mid - LANE_W * 0.5 if side == 0 else r.end[across]
+					var u0 := r.position[across] if side == 0 else mid + RoadForms.LANE_W * 0.5
+					var u1 := mid - RoadForms.LANE_W * 0.5 if side == 0 else r.end[across]
 					if u1 - u0 < 0.5:
 						continue
 					var q := Rect2(u0, a0, u1 - u0, a1 - a0) if across == 0 else Rect2(a0, u0, a1 - a0, u1 - u0)

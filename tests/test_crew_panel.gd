@@ -1,5 +1,5 @@
 extends TestCase
-## The HUD crew panel (scripts/ui/crew_panel.gd, docs/design/hud.md "Crew panel"), headless: no teammates = hidden and
+## The HUD crew panel (scripts/ui/hud/crew_panel.gd, docs/design/hud.md "Crew panel"), headless: no teammates = hidden and
 ## empty; the roster minus yourself makes the cards; status_source drives each card's look (healthy / overheated /
 ## disabled with the revive ring); the Steam avatar badge stays hidden without Steam and shows with an avatar
 ## (SteamAvatar against a fake Steam object); portraits are cached per head id.

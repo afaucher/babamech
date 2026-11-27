@@ -29,7 +29,7 @@ extends RefCounted
 ##                  (walkable_up(k): a ramp; not enforced). Plans that break it are repaired (walk_repairs), no others.
 ##   roads       [{axis: "s" | "x", line, kind: spine | arterial | cross | perimeter, width}]
 ##   forms        per deck: {segment key: street | lane | pedestrian | none}: what stands in each road SEGMENT's strip
-##                  (one stretch of a line between neighbouring crossings = one road-graph edge; key = seg_key(axis,
+##                  (one stretch of a line between neighbouring crossings = one road-graph edge; key = RoadForms.seg_key(axis,
 ##                  line, index)). Geometry never moves with a form. Read through segment_form / line_segments /
 ##                  segments / carriageway (section "Road segments"). Rolled last from a generator of its own.
 ##   entry / extraction   {deck, i, j, col, row}
@@ -82,7 +82,7 @@ const BRIDGE_CLEARANCE := 9.5
 ## Road segment forms (what stands in a segment's reserved strip; the strip itself never moves).
 const FORMS: Array[String] = ["street", "lane", "pedestrian", "none"]
 ## Carriageway width of each form; -1 = the road line's own width.
-const FORM_WIDTH := {"street": -1.0, "lane": 8.0, "pedestrian": 0.0, "none": 0.0}
+const FORM_WIDTH := {"street": -1.0, "lane": RoadForms.LANE_W, "pedestrian": 0.0, "none": 0.0}
 const FORM_CLUSTER := 3.0        ## a lane / pedestrian segment after one of the same form along its line: chance x this
 const CUT_TOUCH := 1.0           ## a segment this close to a floor cut / connector footprint stays a street
 
@@ -113,7 +113,7 @@ var extraction: Dictionary = {}
 var route: Dictionary = {}
 var hooks: Array = []
 var boundaries: Array = []
-var forms: Array = []              ## per deck: segment key (seg_key) -> form, for every road segment of the deck
+var forms: Array = []              ## per deck: segment key (RoadForms.seg_key) -> form, for every road segment of the deck
 var repair_stats := {}             ## {rolled, repaired, stubs}: how many minor segments forms() rolled / gave back to street
 var walk_repairs: Array = []       ## [{deck, how: ramp | restack | shaft, connector}]: what _ensure_walkable_down changed
 
@@ -990,11 +990,11 @@ func _make_cuts() -> void:
 		for j in rows + 1:
 			for i in cols:
 				if _crossing_blocked(k, i, j):
-					cut[seg_key("x", j, i)] = "foot"
+					cut[RoadForms.seg_key("x", j, i)] = "foot"
 		_cut.append(cut)
 	for ci in connectors.size():
 		for j in bridge_lines(ci):
-			_cut[int(connectors[ci]["from"])][seg_key("x", j, _lane_index(connectors[ci]))] = "bridge"
+			_cut[int(connectors[ci]["from"])][RoadForms.seg_key("x", j, _lane_index(connectors[ci]))] = "bridge"
 
 
 # --- Road segments ---------------------------------------------------------------------------------------
@@ -1004,11 +1004,6 @@ func _make_cuts() -> void:
 # vehicles), none (no street: the two blocks either side are one superblock). Spine, perimeter, gate, checkpoint / cordon,
 # ramp head / foot, lift lobby, floor-cut and vehicle-route segments are always streets; the rest (minor) are rolled from
 # a generator of their own, then repaired so vehicles still reach everything (_make_forms).
-
-## Key of a segment within its deck (forms[k]): axis bit * 65536 + line * 256 + index.
-func seg_key(axis: String, line: int, index: int) -> int:
-	return (65536 if axis == "x" else 0) + line * 256 + index
-
 
 func _seg_count(axis: String) -> int:
 	return rows if axis == "s" else cols
@@ -1078,12 +1073,12 @@ func _seg_cells(axis: String, line: int, index: int) -> Array[Vector2i]:
 func _form_of(k: int, axis: String, line: int, index: int) -> String:
 	if k < 0 or k >= forms.size():
 		return "street"
-	return str((forms[k] as Dictionary).get(seg_key(axis, line, index), "street"))
+	return str((forms[k] as Dictionary).get(RoadForms.seg_key(axis, line, index), "street"))
 
 
 ## Vehicles drive this segment: its form keeps them and no ramp cut / foot is in the way.
 func _drives(k: int, axis: String, line: int, index: int) -> bool:
-	if axis == "x" and k < _cut.size() and (_cut[k] as Dictionary).has(seg_key(axis, line, index)):
+	if axis == "x" and k < _cut.size() and (_cut[k] as Dictionary).has(RoadForms.seg_key(axis, line, index)):
 		return false
 	var f := _form_of(k, axis, line, index)
 	return f == "street" or f == "lane"
@@ -1109,7 +1104,7 @@ func carriageway(k: int, a: int, b: int) -> float:
 
 func _seg_dict(k: int, axis: String, line: int, index: int) -> Dictionary:
 	var ab := _seg_nodes(k, axis, line, index)
-	var key := seg_key(axis, line, index)
+	var key := RoadForms.seg_key(axis, line, index)
 	return {"axis": axis, "line": line, "index": index, "a": ab.x, "b": ab.y, "form": _form_of(k, axis, line, index),
 			"rect": seg_rect(k, axis, line, index), "inner": seg_inner(k, axis, line, index),
 			"minor": k < _minor.size() and (_minor[k] as Dictionary).has(key),
@@ -1143,7 +1138,7 @@ func _forced_streets() -> Array:
 		out.append({})
 	var force := func(k: int, axis: String, line: int, index: int) -> void:
 		if line >= 0 and line < _seg_lines(axis) and index >= 0 and index < _seg_count(axis):
-			out[k][seg_key(axis, line, index)] = true
+			out[k][RoadForms.seg_key(axis, line, index)] = true
 	var force_node := func(k: int, i: int, j: int) -> void:
 		force.call(k, "s", i, j - 1)
 		force.call(k, "s", i, j)
@@ -1241,13 +1236,13 @@ func _make_forms() -> void:
 		for axis: String in ["s", "x"]:
 			for line in _seg_lines(axis):
 				for index in _seg_count(axis):
-					var key := seg_key(axis, line, index)
+					var key := RoadForms.seg_key(axis, line, index)
 					if (forced[k] as Dictionary).has(key):
 						f[key] = "street"
 						continue
 					minor[key] = true
 					rolled += 1
-					f[key] = _roll_form(rng, k, axis, line, index, str(f.get(seg_key(axis, line, index - 1), "street")))
+					f[key] = _roll_form(rng, k, axis, line, index, str(f.get(RoadForms.seg_key(axis, line, index - 1), "street")))
 	# A restored stub can strand a street behind pedestrian segments, and a repair can make a stub: until both hold.
 	var repaired := 0
 	var stubs := 0
@@ -1292,20 +1287,6 @@ func _roll_form(rng: RandomNumberGenerator, k: int, axis: String, line: int, ind
 	return "street"
 
 
-func _uf_find(parent: PackedInt32Array, a: int) -> int:
-	while parent[a] != a:
-		parent[a] = parent[parent[a]]
-		a = parent[a]
-	return a
-
-
-func _uf_join(parent: PackedInt32Array, a: int, b: int) -> void:
-	var ra := _uf_find(parent, a)
-	var rb := _uf_find(parent, b)
-	if ra != rb:
-		parent[maxi(ra, rb)] = mini(ra, rb)
-
-
 ## Greedy repair (deterministic): while a guarantee fails, the pedestrian / none segment whose return to street fixes the
 ## most (stranded vehicle nodes + cells without a vehicle side; ties: lowest deck, axis, line, index) becomes a street.
 ## Returns how many segments it gave back.
@@ -1333,7 +1314,7 @@ func _repair_forms() -> int:
 		sides.resize(deck_count * rows * cols)
 		for sg: Array in segs:
 			if _drives(sg[0], sg[1], sg[2], sg[3]):
-				_uf_join(parent, sg[4], sg[5])
+				RoadForms.uf_join(parent, sg[4], sg[5])
 				deg[sg[4]] += 1
 				deg[sg[5]] += 1
 				for cid: int in sg[6]:
@@ -1342,22 +1323,22 @@ func _repair_forms() -> int:
 			if not c["vehicles"] or c["locked"]:
 				continue
 			if c["kind"] == "ramp":
-				_uf_join(parent, node_id(c["top"]["deck"], c["top"]["i"], c["top"]["j"]),
+				RoadForms.uf_join(parent, node_id(c["top"]["deck"], c["top"]["i"], c["top"]["j"]),
 						node_id(c["bottom"]["deck"], c["bottom"]["i"], c["bottom"]["j"]))
 			else:
 				var st: Array = c["stops"]
 				for m in st.size() - 1:
-					_uf_join(parent, node_id(st[m], c["top"]["i"], c["top"]["j"]), node_id(st[m + 1], c["top"]["i"], c["top"]["j"]))
-		var main := _uf_find(parent, entry_node())
+					RoadForms.uf_join(parent, node_id(st[m], c["top"]["i"], c["top"]["j"]), node_id(st[m + 1], c["top"]["i"], c["top"]["j"]))
+		var main := RoadForms.uf_find(parent, entry_node())
 		var cnt := {}       # component root -> nodes with a vehicle segment in it
 		var bad := 0
 		for i in n_nodes:
 			if deg[i] > 0:
-				var r := _uf_find(parent, i)
+				var r := RoadForms.uf_find(parent, i)
 				cnt[r] = int(cnt.get(r, 0)) + 1
 				if r != main:
 					bad += 1
-		if _uf_find(parent, extraction_node()) != main:
+		if RoadForms.uf_find(parent, extraction_node()) != main:
 			bad += 1
 		for cid in sides.size():
 			if sides[cid] == 0:
@@ -1372,14 +1353,14 @@ func _repair_forms() -> int:
 			var form := _form_of(sg[0], sg[1], sg[2], sg[3])
 			if form != "pedestrian" and form != "none":
 				continue
-			if sg[1] == "x" and (_cut[sg[0]] as Dictionary).has(seg_key("x", sg[2], sg[3])):
+			if sg[1] == "x" and (_cut[sg[0]] as Dictionary).has(RoadForms.seg_key("x", sg[2], sg[3])):
 				continue
 			var fix := 0
 			for cid: int in sg[6]:
 				if sides[cid] == 0:
 					fix += 1
-			var ra := _uf_find(parent, sg[4])
-			var rb := _uf_find(parent, sg[5])
+			var ra := RoadForms.uf_find(parent, sg[4])
+			var rb := RoadForms.uf_find(parent, sg[5])
 			var before := (int(cnt.get(ra, 0)) if ra != main else 0) + (int(cnt.get(rb, 0)) if rb != main and rb != ra else 0)
 			var joined := int(cnt.get(ra, 0)) + (int(cnt.get(rb, 0)) if rb != ra else 0) + (1 if deg[sg[4]] == 0 else 0) + (1 if deg[sg[5]] == 0 else 0)
 			var after := 0 if ra == main or rb == main else joined
@@ -1402,7 +1383,7 @@ func _repair_forms() -> int:
 		if best < 0:
 			break
 		var pick: Array = segs[best]
-		forms[pick[0]][seg_key(pick[1], pick[2], pick[3])] = "street"
+		forms[pick[0]][RoadForms.seg_key(pick[1], pick[2], pick[3])] = "street"
 		restored += 1
 	return restored
 
@@ -1428,7 +1409,7 @@ func _restore_stubs() -> int:
 						continue
 					while drawn < 2 and not nones.is_empty():
 						var sg: Array = nones.pop_front()
-						forms[k][seg_key(sg[0], sg[1], sg[2])] = "street"
+						forms[k][RoadForms.seg_key(sg[0], sg[1], sg[2])] = "street"
 						drawn += 1
 						restored += 1
 					changed = true
@@ -1815,7 +1796,7 @@ func checksum() -> String:
 				for index in _seg_count(axis):
 					var f := FORMS.find(_form_of(k, axis, line, index))
 					if f > 0:
-						buf.put_32(seg_key(axis, line, index) + k * 1048576)
+						buf.put_32(RoadForms.seg_key(axis, line, index) + k * 1048576)
 						buf.put_8(f)
 	var ctx := HashingContext.new()
 	ctx.start(HashingContext.HASH_SHA256)

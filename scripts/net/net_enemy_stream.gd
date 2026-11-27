@@ -8,7 +8,7 @@ extends Node
 ##                          keep-alive), MAX_ENTRIES per packet, every entry sampled at the packet's stamp
 ## SHOWING (NetEnemyBuffer, one per net id): a puppet renders `delay` (100 ms or more, adaptive) behind host_time().
 ##
-## The game (scripts/game/enemy_sync.gd) talks to it through a small API and never touches the wire:
+## The game (scripts/mission/sync/enemy_sync.gd) talks to it through a small API and never touches the wire:
 ##   begin()            the mission's enemies exist on this machine (host: it will send; client: it will receive)
 ##   send(states)       host: these samples now (NetEnemyState, t / n filled by the caller)
 ##   pose(n)            client: the state to show for enemy `n` now (interpolated), null before its first sample

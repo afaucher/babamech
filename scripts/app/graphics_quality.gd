@@ -1,7 +1,7 @@
 class_name GraphicsQuality
 extends RefCounted
-## The player's graphics quality (GameSettings "quality": CityQuality.LOW / MEDIUM / HIGH = 0 / 1 / 2) applied to what this
-## machine draws. STRICTLY local presentation, like CityQuality: never a plan, a checksum, a roll or a hit test.
+## The player's graphics quality (GameSettings "quality": LOW / MEDIUM / HIGH = 0 / 1 / 2, below; this class owns the levels)
+## applied to what this machine draws (the city's per-level numbers: CityQuality.LEVELS). STRICTLY local presentation, like CityQuality: never a plan, a checksum, a roll or a hit test.
 ##
 ##   level()                  the level in force: the run-only --quality flag (Boot), else the saved setting (which
 ##                            auto-detects when nothing is saved: an integrated GPU gets LOW, anything else HIGH)
@@ -16,6 +16,11 @@ extends RefCounted
 ## The renderer (Forward+ / Compatibility) is a separate, restart-only choice: see renderer_* below.
 
 const GROUP := "graphics_quality"
+## The levels (saved as these ints in GameSettings "quality"; the --quality flag takes the names).
+const LOW := 0
+const MEDIUM := 1
+const HIGH := 2
+const NAMES := ["low", "medium", "high"]     ## per level
 ## Per level: the 3D render scale (FSR 1 upscale in Forward+ / Mobile, bilinear in Compatibility, which has no FSR),
 ## whether the player's MSAA setting applies (false: MSAA off) and screen-space AA (always off: the project uses none).
 const VIEWPORT := [
@@ -40,23 +45,37 @@ static var _msaa := 1
 static var pretend_integrated := false
 
 
+static func clamp_level(q: int) -> int:
+	return clampi(q, LOW, HIGH)
+
+
+static func name_of(q: int) -> String:
+	return str(NAMES[clamp_level(q)])
+
+
+## The level named `n` ("low", "medium", "high"), or `fallback`.
+static func from_name(n: String, fallback: int = HIGH) -> int:
+	var q := NAMES.find(n.to_lower())
+	return q if q >= 0 else fallback
+
+
 static func level() -> int:
 	if override_level >= 0:
-		return CityQuality.clamp_level(override_level)
+		return GraphicsQuality.clamp_level(override_level)
 	if _setting < 0:
 		_setting = int(GameSettings.load_settings()["quality"])
-	return CityQuality.clamp_level(_setting)
+	return GraphicsQuality.clamp_level(_setting)
 
 
 ## Take the settings (GameSettings.apply calls this): the quality and the MSAA setting the levels build on.
 static func use_settings(d: Dictionary) -> void:
-	_setting = CityQuality.clamp_level(int(d.get("quality", CityQuality.HIGH)))
+	_setting = GraphicsQuality.clamp_level(int(d.get("quality", GraphicsQuality.HIGH)))
 	_msaa = clampi(int(d.get("msaa", 1)), 0, 2)
 
 
 ## The level an unsaved setting starts at on this machine.
 static func detect() -> int:
-	return CityQuality.LOW if integrated_here() else CityQuality.HIGH
+	return GraphicsQuality.LOW if integrated_here() else GraphicsQuality.HIGH
 
 
 ## This machine's GPU counts as integrated (or --dev-pretend-integrated says so).
@@ -98,7 +117,7 @@ static func apply_viewport(vp: Viewport, q: int = -1) -> void:
 		return
 	if q < 0:
 		q = level()
-	var lv: Dictionary = VIEWPORT[CityQuality.clamp_level(q)]
+	var lv: Dictionary = VIEWPORT[GraphicsQuality.clamp_level(q)]
 	var s := float(lv["scale"])
 	vp.scaling_3d_scale = s
 	if s >= 0.999:
@@ -124,11 +143,11 @@ static func apply_environment(env: Environment, q: int = -1) -> void:
 		env.set_meta("gq_orig", {"glow": env.glow_enabled, "ssao": env.ssao_enabled, "ssil": env.ssil_enabled,
 				"ssr": env.ssr_enabled})
 	var orig: Dictionary = env.get_meta("gq_orig")
-	var q_ := CityQuality.clamp_level(q)
-	env.glow_enabled = bool(orig["glow"]) and q_ >= CityQuality.MEDIUM
-	env.ssao_enabled = bool(orig["ssao"]) and q_ >= CityQuality.HIGH
-	env.ssil_enabled = bool(orig["ssil"]) and q_ >= CityQuality.HIGH
-	env.ssr_enabled = bool(orig["ssr"]) and q_ >= CityQuality.HIGH
+	var q_ := GraphicsQuality.clamp_level(q)
+	env.glow_enabled = bool(orig["glow"]) and q_ >= GraphicsQuality.MEDIUM
+	env.ssao_enabled = bool(orig["ssao"]) and q_ >= GraphicsQuality.HIGH
+	env.ssil_enabled = bool(orig["ssil"]) and q_ >= GraphicsQuality.HIGH
+	env.ssr_enabled = bool(orig["ssr"]) and q_ >= GraphicsQuality.HIGH
 
 
 ## After the player changes the setting: take it, apply it to the root viewport (not headless) and tell the group.
@@ -168,7 +187,7 @@ static func renderer_wanted(setting: String) -> String:
 			return "forward_plus"
 		"gl_compatibility":
 			return "gl_compatibility"
-	return "gl_compatibility" if detect() == CityQuality.LOW else "forward_plus"
+	return "gl_compatibility" if detect() == GraphicsQuality.LOW else "forward_plus"
 
 
 static func renderer_label(method: String) -> String:

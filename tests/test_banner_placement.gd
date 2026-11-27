@@ -2,12 +2,12 @@ extends TestCase
 ## Invader banners hang clear of the facade (docs/design/banners.md "Clear of the facade"; user playtest 2026-11-23: a
 ## banner hung through an apartment's balconies). For seeds 1, 4, 7, 403112 and every deck, every wall banner's envelope
 ## (cloth, cross-bar with its end caps, brackets, plus MARGIN) on its face:
-##   - meets no relief box of that face (CityBuildings.relief: balconies, canopies, awnings, blade signs, alley pipes and
+##   - meets no relief box of that face (CityFacade.relief: balconies, canopies, awnings, blade signs, alley pipes and
 ##     hoods, lane lamps and signs: everything standing out RELIEF_MIN or more, deeper than the cloth's back);
 ##   - lies within the face's width and below its tier's top, its cloth at least CLEARANCE above the ground;
 ##   - meets no other tier box (its own building's or a neighbour's), plan solid, park column or pillar core;
 ##   - meets no other banner.
-## Computed here from plan data and CityBuildings.relief, independently of BannerPlan's own search. Prints the counts per
+## Computed here from plan data and CityFacade.relief, independently of BannerPlan's own search. Prints the counts per
 ## seed / deck and the number of offending banners. Before the fix (2026-11-23): 20 of 113 (15 through apartment balconies,
 ## 3 through lane wall lamps, 2 through lane hanging signs); after: 0 of 113, the same count on every deck.
 
@@ -20,7 +20,7 @@ const CLEARANCE := 1.5
 
 func setup() -> void:
 	timeout_sec = 240.0
-	check(CityBuildings.RELIEF_MIN <= BannerPlan.OUT - 0.22 - 0.05, "relief() lists everything deeper than the cloth's back")
+	check(CityFacade.RELIEF_MIN <= BannerPlan.OUT - 0.22 - 0.05, "relief() lists everything deeper than the cloth's back")
 	var bad := 0
 	var total := 0
 	for sd: int in SEEDS:
@@ -63,7 +63,7 @@ func _check_deck(plan: CityPlan, list: Array, tag: String) -> int:
 		var ti := _tier(b)
 		var side := CityPlan.SIDE_N.find(n)
 		var face := at - n * BannerPlan.OUT
-		var fc := CityBuildings.face_coords(plan, bi, ti, side, face)
+		var fc := CityFacade.face_coords(plan, bi, ti, side, face)
 		var t: Dictionary = b["tiers"][ti]
 		var w := (t["size"] as Vector2).y if side < 2 else (t["size"] as Vector2).x
 		var top := float(bn["top"])
@@ -81,7 +81,7 @@ func _check_deck(plan: CityPlan, list: Array, tag: String) -> int:
 		var u1 := fc.x + HALF + MARGIN
 		var v0 := bottom - MARGIN
 		var v1 := top + BAR_UP + MARGIN
-		for rb: Dictionary in CityBuildings.relief(plan, bi, ti)[side]:
+		for rb: Dictionary in CityFacade.relief(plan, bi, ti)[side]:
 			if float(rb["u0"]) < u1 and float(rb["u1"]) > u0 and float(rb["v0"]) < v1 and float(rb["v1"]) > v0:
 				why.append("relief u %.1f..%.1f v %.1f..%.1f %.1f m deep" % [rb["u0"], rb["u1"], rb["v0"], rb["v1"], rb["d"]])
 				break

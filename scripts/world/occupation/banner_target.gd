@@ -1,7 +1,7 @@
 class_name BannerTarget
 extends CombatTarget
 ## One invader banner's cloth as a combat target (docs/design/banners.md): a static, host-owned world object
-## (AGENTS rule 6, shape 3: host-arbitrated). Pattern: AssetTarget (scripts/combat/asset_target.gd).
+## (AGENTS rule 6, shape 3: host-arbitrated). Pattern: AssetTarget (scripts/mission/world/asset_target.gd).
 ##
 ##   target_id "banner_<deck>_<id>", owner_peer 0 (host-owned: CombatWorld.decides puts a client's shot on that client,
 ##   which CombatNet carries to the host as "combat.hit", applied there once), mass_class "static".

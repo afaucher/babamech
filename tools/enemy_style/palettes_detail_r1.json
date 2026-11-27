@@ -1,7 +1,7 @@
 {
  "title": "Enemy detail pass r1",
  "seed": 9,
- "note": "Detail pass on scripts/enemy/enemy_meshes.gd. 'current' = the file's own palette (no remap); L1 = the picked slate / brick livery remapped onto it (an identity remap once the file carries L1).",
+ "note": "Detail pass on scripts/enemy/looks/enemy_meshes.gd. 'current' = the file's own palette (no remap); L1 = the picked slate / brick livery remapped onto it (an identity remap once the file carries L1).",
  "options": [
   {
    "id": "L1",

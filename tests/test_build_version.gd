@@ -1,5 +1,5 @@
 extends TestCase
-## BuildVersion.resolve: the menu's build stamp (see scripts/ui/build_version.gd).
+## BuildVersion.resolve: the menu's build stamp (see scripts/app/build_version.gd).
 
 
 func setup() -> void:

@@ -41,7 +41,7 @@ var seed_value := 0
 var plans: Array = []             ## per deck: BannerPlan.make's list
 var torn: Array = []              ## per deck: {id: t (host clock)}: the host decides, the crew receives it
 var now := 0.0                    ## the banner clock: host_time() online, local seconds offline
-var quality := CityQuality.HIGH
+var quality := GraphicsQuality.HIGH
 var _nodes: Array = []            ## per deck: [{root, anchor, cloth, fringe, heap, shreds: [MeshInstance3D], target, ground, len, seeds}]
 var _holders: Array[Node3D] = []
 var _anim: Dictionary = {}        ## Vector2i(deck, id) -> true while its tear plays
@@ -115,7 +115,7 @@ func setup_step(_budget_ms: float = 8.0) -> bool:
 	if _bk >= stack.decks.size():
 		_bk = -1
 		_built = true
-		now = _clock()
+		now = Net.world_time(now)
 		for p: Array in _pending:
 			_receive(str(p[0]), p[1])
 		_pending.clear()
@@ -199,7 +199,7 @@ func _make_banner(parent: Node3D, ring: RingFrame, k: int, b: Dictionary, layer:
 	var parts := make_parts(anchor, k, int(b["id"]), float(b["len"]), ground, layer)
 	parts["root"] = root
 	parent.add_child(root)
-	if quality <= CityQuality.LOW:
+	if quality <= GraphicsQuality.LOW:
 		(parts["cloth"] as MeshInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	return parts
 
@@ -294,11 +294,6 @@ func checksum() -> String:
 
 # --- Destruction ------------------------------------------------------------------------------------------
 
-func _clock() -> float:
-	var s := Net.session()
-	return s.host_time() if s != null and s.online() else now
-
-
 ## The host (or solo): a banner's HP reached 0. Decide the tear once, play it, tell the crew.
 func _on_cloth_down(deck: int, id: int) -> void:
 	if is_torn(deck, id):
@@ -306,7 +301,7 @@ func _on_cloth_down(deck: int, id: int) -> void:
 	var s := Net.session()
 	if s != null and s.is_client():
 		return       # never: a client owns no banner (owner_peer 0)
-	now = _clock()
+	now = Net.world_time(now)
 	tear(deck, id, now)
 	if s != null and s.online():
 		s.send_event(0, TORN, {"deck": deck, "id": id, "t": now})
@@ -402,7 +397,7 @@ func set_quality(q: int) -> void:
 	for dn: Array in _nodes:
 		for n: Dictionary in dn:
 			(n["cloth"] as MeshInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF \
-					if q <= CityQuality.LOW else GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+					if q <= GraphicsQuality.LOW else GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 
 
 # --- Wire (through Session only) --------------------------------------------------------------------------

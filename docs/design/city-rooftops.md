@@ -81,7 +81,7 @@ structures in four places:
 ## 4. Phase 2 — Destructible / knockable rooftop props (`CityProps`, `CityPropSim`, `CityBuildings`)
 
 Move the 4 loose roof clutter types (`water_tank`, `ac`, `vent`, `planter`) out of static `CityBuildings._clutter()` and into
-`CityProps.layout(plan)` (covered by `CityProps.layout_checksum()`).
+`CityPropLayout.layout(plan)` (covered by `CityPropLayout.checksum()`).
 
 ### 4.1 Proposed rooftop prop types (`CityProps.TYPES`)
 
@@ -138,7 +138,7 @@ Move the 4 loose roof clutter types (`water_tank`, `ac`, `vent`, `planter`) out 
 ## 6. Checksum & test plan
 
 - **Checksums**: adding the civic entablature/gable and office plant room to `CityPlan` will intentionally update
-  `CityPlan.checksum()` (and moving roof clutter to `CityProps` updates `CityProps.layout_checksum()`). Update golden
+  `CityPlan.checksum()` (and moving roof clutter to `CityProps` updates `CityPropLayout.checksum()`). Update golden
   checksum tests only once in the same commit/pass, keeping determinism across runs and machines intact.
 - **Tests to add/extend**:
   - `tests/test_city.gd`: raycast down onto every civic hall's front portico roof (`tiers[1]` forward extension) and gable
@@ -186,11 +186,11 @@ Everything new and solid is data in `CityPlan`, covered by `checksum()`; `CityBu
 
 ### Roof props
 - New `CityPropSim.TYPES` `water_tank`, `planter`, `ac`, `vent` (section 4.1 numbers), appended to `TYPE_ORDER`.
-- `CityProps.layout(plan)` appends them **after** the street props (street ids unchanged) from their own stream
+- `CityPropLayout.layout(plan)` appends them **after** the street props (street ids unchanged) from their own stream
   (`cosmetic_seed() + 2`): per roof slot as many tries as the old clutter, 3.6 m apart, clear of `roof_blockers` by the
   unit's footprint + 0.6 m. Item fields: `building`, `tier`, `lx`, `ly`, `lz` (building frame); `x`, `s`, `h` are the same
   spot in arc coordinates. `layout_checksum` hashes the roof fields too.
-- A roof prop is placed in `CityProps.building_xf()` (the same transform as `CityDistrict.building_frame(i)`), so it
+- A roof prop is placed in `CityPropLayout.building_xf()` (the same transform as `CityDistrict.building_frame(i)`), so it
   sits flush on the flat roof on a curved deck and follows the district's `global_transform` (stacks, moved districts).
 - Its pose `x / s` are roof-local `(lx, lz)` and event directions are in the building frame. **Wire format unchanged**
   (same `prop.req` / `prop.ev` / `prop.sync` payload keys and snapshot bytes); only the meaning of `x / s` in a roof

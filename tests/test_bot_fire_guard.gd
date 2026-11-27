@@ -1,5 +1,5 @@
 extends TestCase
-## BotFireGuard (scripts/game/bot_fire_guard.gd; playtest: hangar bots shot the host with autocannon and missiles): a
+## BotFireGuard (scripts/bots/crew/bot_fire_guard.gd; playtest: hangar bots shot the host with autocannon and missiles): a
 ## shooter engages an enemy 60 m ahead while a crew mech stands in the line of fire, crosses it, stands behind the
 ## enemy, walks onto the mortar's landing point or under its flying missiles. Real CombatWorld shots (no physics), fired
 ## by the guard's rules every frame (slot_safe before each shot, missile_abort leading flying missiles away). With the

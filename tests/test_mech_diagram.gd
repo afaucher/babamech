@@ -1,5 +1,5 @@
 extends TestCase
-## The mech damage diagram options (scripts/ui/mech_diagram.gd), headless: for every view and style, every component id
+## The mech damage diagram options (scripts/ui/hangar/mech_diagram.gd), headless: for every view and style, every component id
 ## (head, torso, both legs, every hardpoint) gets a zone with a real polygon, inside the status panel, inside the heat
 ## arc and above the state text; for the demo loadout, the default one and an empty one. The traced legs bend the
 ## chicken way (knee behind the hip and the ankle in the side view). MechHud draws pick 3 (front / schematic) with

@@ -21,18 +21,18 @@ answers to the sender address the message arrives with). Message the **main coor
 
 Say in the first line what the message is about. This file stays the written record: note the files you change here too.
 
-## Who owns what (2026-11-21)
+## Who owns what (2026-11-26, after the refactor sweep: folders follow features, see AGENTS.md Layout)
 
 | Area | Owner | Files |
 | --- | --- | --- |
-| Weapons, firing, WeaponRack, weapon range lab | Claude "Weapons" session | `scripts/combat/`, `MechCatalog` weapon entries |
-| City generator, destructible props | Claude "Environment" session | `scripts/world/city/` |
-| HUD, menus, settings, hangar | Claude "Engine" session | `scripts/ui/`, `scripts/app/game_settings.gd` |
-| Mech meshes, motion (rig, gait, controller) | Claude "Mech" session + main-session subagents | `scripts/mech/` |
-| Pilot heads (paused) | Claude "Pilots" session | `scripts/mech/mech_head_meshes.gd`, `docs/design/pilot-heads.md` |
-| Section planner (paused) | Claude "Missions" session | `scripts/world/section/` |
-| Test drive, chase camera, thrusters | main session (via subagents) | `scripts/game/`, `scripts/fx/`, `scripts/mech/thruster_fx.gd` |
-| Netcode | everyone via the rules in `AGENTS.md` | `scripts/net/` |
+| Weapons, firing, combat, audio | Claude "Weapons" session | `scripts/combat/` (+ `weapons/`, `fx/`, `equipment/`), `scripts/audio/`, `MechCatalog` weapon entries, `scripts/mission/sync/combat_net.gd`, `scripts/mission/world/asset_target.gd`, `scripts/mission/mission_combat.gd` |
+| City generator, life, banners, mission world objects | Claude "Environment" session | `scripts/world/` (`city/`, `life/`, `occupation/`, `ring_frame.gd`, `plan_hash.gd`), `scripts/mission/world/`, `scripts/mission/depots/depot_kiosk.gd` / `depot_meshes.gd` / `depot_lab.gd` |
+| Net, UI, settings, bots, tests, mission scene | Claude "Engine" session | `scripts/net/`, `scripts/ui/`, `scripts/app/`, `scripts/bots/`, `scripts/mission/mission_scene.gd`, `scripts/mission/downed/`, `scripts/mission/sync/` (except combat_net), `scripts/test_support/`, `tests/` harness |
+| Mission rules, pacing, depots, section plan, enemy AI | Claude "Missions" session (+ antigravity for `scripts/enemy/`) | `scripts/mission/` (flow, plan, rules, hud model, `pacing/`, `depots/` arbitration), `scripts/world/section/`, `scripts/enemy/` |
+| Mech chassis, meshes, motion, art kit | Claude "Mech" session | `scripts/mech/` (+ `motion/`, `meshes/`), `scripts/art/` |
+| Pilot heads | Claude "Pilots" session | `scripts/pilot/`, `scripts/mech/meshes/mech_head_meshes.gd` |
+| Camera | main session (via subagents) | `scripts/camera/` |
+| Netcode rules | everyone via the rules in `AGENTS.md` | `scripts/net/` |
 
 Paused work is listed in `docs/paused/` and resumes around midnight. Baseline commit: `41f65b7`; everything since is
 uncommitted.
@@ -1307,3 +1307,44 @@ Antigravity's finished work was committed in 948ec3e.
   (`scenes/mission.tscn`, `run.ps1 -Mission`, `-TestDrive` kept as alias), `TestDriveCombat` → `MissionCombat`,
   `TestDriveBotPilot` → `MissionBotPilot` (file paths unchanged until tier 3). Not split (not independent): MissionLoader,
   enemy ground mover / perception, the mission bot pieces, life plan pieces (see docs/refactor-plan.md §3).
+- 2026-11-26, Claude "Refactor sweep" tier 3 subagent: **folder moves landed (uncommitted), behaviour identical: only
+  `git mv` + path strings/comments.** 125 scripts (+ their .uid) moved per docs/refactor-plan.md §2: new folders
+  `scripts/mission/` (+ pacing/, depots/, downed/, sync/, world/), `scripts/bots/` (+ crew/, balance/), `scripts/camera/`,
+  `scripts/art/`, `combat/fx|equipment`, `enemy/units|squad|looks`, `mech/motion|meshes`, `ui/menu|hangar|hud`.
+  `scripts/game/`, `scripts/ai/`, `scripts/fx/`, `scripts/world/depot/` are gone. Renamed files: `game/test_drive.gd` ->
+  `mission/mission_scene.gd`, `combat/test_drive_combat.gd` -> `mission/mission_combat.gd`, `ai/test_drive_bot_pilot.gd`
+  -> `bots/crew/mission_bot_pilot.gd`. test_net_contract SCALE_SCOPE is now mission/, bots/crew/, camera/,
+  world/section/, enemy/, combat/ (reason in the comment there).
+- 2026-11-26, Claude "Refactor sweep" tier 3 subagent (class splits): **landed (uncommitted), behaviour and looks
+  identical.** (1) `RepairDroneLook` (new `scripts/combat/equipment/repair_drone_look.gd`, `drone.look`): the flying
+  drone, scan rings, ground ring, scan fit, scan meshes; the drone hands it its state each step (`look.update(state)`),
+  the look writes no repair / flight state. Moved there (use these): `RepairDroneLook.GREEN / FLY_SCALE / SCAN_* /
+  flying_id / pool_plan()`, `drone.look.ring_shown() / scans_shown() / scan_fit() / scan_fraction() / flying_mesh /
+  yaw`. `CombatMeshes._mesh` is now public `CombatMeshes.mesh(key, build)`. (2) MissionDepots: `drive.crew_bots` typed
+  instead of `drive.get("crew_bots")`; the bot core-seeking move to MissionBot NOT done (would change timing / the
+  AI-less bot path; see the refactor report). (3) MenuBackdrop helpers kept (no shared helper gives identical vertices).
+- 2026-11-26, Claude "Refactor sweep" tier 3 couplings subagent: **landed (uncommitted), behaviour identical (every
+  checksum, wall mesh / collision hash and the fit masks dumped for 5 seeds before / after: identical, no re-pins).**
+  (1) No more plan meta: `CityWalls.build(geo, plan, lights, side, part, parts, doors, air)` takes the mission openings;
+  MissionWorld passes them (`_wall_doors` replaces `_meta_decks`; `mw.wall_doors()` feeds `CitySigns.lab_view(list, cam,
+  mission_doors)`). (2) `CityPlan.fit_mask` (Net.LOCAL, not in checksum) is SiteFit's mask cache. (3) New `CityDims`
+  (`EDGE`, `HOLE_CURB`, `GIRDER_PITCH`, `RIB_PITCH`, `PANEL_X/S`, `DROP_PANEL`, `RIM`, `ceiling_opening`): use it, not
+  `CityStreets.*`. (4) New `CityPropLayout` (`layout`, `checksum` (was `CityProps.layout_checksum`), `building_xf`,
+  `ROOF_FOOT`, `ROOF_KIND`). (5) New `CityFacade` (`relief`, `face_coords`, `Face`, `faces_of`, `bay_centres`,
+  `bay_pitch`, `corner_side`, the facade relief constants, `DT_PIER` / `DT_SPANDREL`): CityBuildings and BannerPlan read
+  it. (6) `GraphicsQuality.LOW / MEDIUM / HIGH`, `NAMES`, `clamp_level`, `name_of`, `from_name` (same ints / names);
+  `CityQuality` keeps `LEVELS` (no "name" key now), `level`, `deck_drawn`. **Open:** `scripts/ui/menu/menu_backdrop.gd`
+  (the parallel agent's file) still reads `CityQuality.HIGH / LOW / clamp_level` through three TEMPORARY forwarders at the
+  top of city_quality.gd: retarget those 3 lines to `GraphicsQuality.*` and delete the forwarders.
+- 2026-11-26, Claude "Refactor sweep" tier 3 dedupes subagent: **landed (uncommitted), behaviour identical (city alone /
+  section / per-deck city / mission plan checksums dumped for 12 + 30 seeds, forms on, mixed and default: identical, no
+  re-pins).** (1) New `RoadForms` (`scripts/world/road_forms.gd`): `seg_key`, `uf_find` / `uf_join`, `LANE_W` (was
+  `CityPlan.seg_key` / `LANE_W`, `SectionPlan.seg_key`, both plans' `_uf_*`; `SectionPlan.FORM_WIDTH["lane"]` reads it). The
+  rolls and repairs differ in substance and stay in each plan. (2) Build-queue runner: skipped (four different shapes).
+  (3) `Net.world_time(local)` (was `CityProps._clock`, `OccupationBanners._clock`, `LifeDeck.clock()`) and
+  `Net.moves(body)` (was `_owns` in CityProps and LifeDeck); the Session connect code differs per class, kept. (4) Mission
+  world uses `MissionRules.ZONE_DEPTH`; `REVEAL` / `GATE_CLEAR_PIER` no longer exist (CitySigns' `OVER_CLEAR` stays
+  hand-worked: world/ must not read MissionGateDoor). (5) Typed: `CombatNet.drive: MissionScene`, MissionFlow's squad /
+  world / asset target calls, MissionDepots `Session.is_bot` + `cl is CombatLog`, MechHud reads `MissionCombat.rack` /
+  `MissionFlow.hud_model` (still duck-typed on the drive: tests pass a FakeDrive). `"Rig"` lookups kept (no single owner).
+- 2026-11-26, Claude Mech session subagent (Wasp hover step 1), in flight: approved design docs/design/wasp-hover.md, build order step 1: hover branch in scripts/mech/motion/mech_controller.gd (catalog `move == "hover"`, new `climb_input`, `grounded`, `can_fly()`, `working_fans()`, `altitude()`, `headroom()`), Wasp `movement` block in scripts/mech/mech_catalog.gd (still a draft chassis, not selectable), MechModel hover pose driven from motion (scripts/mech/mech_model.gd), a hover lab subject, new tests/test_hover_*.gd. Not touching bots, enemy, mission, net. Engine / antigravity: hooks per wasp-hover.md section 4 (no hover_ceiling: use headroom()).

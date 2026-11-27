@@ -1,7 +1,7 @@
 # pacing_report
 
 Pacing timeline from a run log: one self-contained HTML file (inline SVG, no CDN, no external files). Reads the combat
-log's `[Flow]` records (`scripts/game/combat_log.gd`, format in `docs/testing.md` "Combat log"). Python 3, standard
+log's `[Flow]` records (`scripts/mission/pacing/combat_log.gd`, format in `docs/testing.md` "Combat log"). Python 3, standard
 library only. Spec: `docs/design/pacing-director.md` section 3; targets: `docs/design/pacing-research.md` 8.2.
 
 ```powershell

@@ -44,7 +44,7 @@ var decks: Array[CityDistrict] = []
 var rig: CityLightRig
 var stats: Dictionary = {}       ## totals over the decks: triangles, shapes, buildings, props, ms (whole build)
 var active_deck := 0
-var quality := CityQuality.HIGH  ## local presentation (CityQuality): set_quality; never touches plans, props or collision
+var quality := GraphicsQuality.HIGH  ## local presentation (CityQuality): set_quality; never touches plans, props or collision
 var _quality_touched := false    ## a level below HIGH was applied since the last HIGH (HIGH then restores every flag)
 
 var mission: MissionWorld        ## the mission's doors, flag, asset and portal (setup_mission); null until fully set up
@@ -260,14 +260,14 @@ func _chunk() -> String:
 
 
 ## What the load barrier compares (MissionScene.mission_checksum): the section checksum + per deck its plan checksum, its
-## street props' layout (CityProps.layout_checksum of the props as built: host-arbitrated by index, they stop shots) and
+## street props' layout (CityPropLayout.checksum of the props as built: host-arbitrated by index, they stop shots) and
 ## its air doors (MissionAirDoors.checksum: wall cuts and dropship entries, placed from plan data alone). Equal on two
 ## machines = the same stack, props and air doors; a build whose prop or air-door rule differs fails the barrier instead
 ## of desyncing by index (2026-11-25, code audit). A mission set up or not changes nothing here.
 func checksum() -> String:
 	var all := section.checksum()
 	for d in decks:
-		all += d.plan.checksum() + CityProps.layout_checksum(d.props.items if d.props != null else CityProps.layout(d.plan)) \
+		all += d.plan.checksum() + CityPropLayout.checksum(d.props.items if d.props != null else CityPropLayout.layout(d.plan)) \
 				+ MissionAirDoors.checksum(d.plan)
 	return all.sha256_text().substr(0, 16)
 
@@ -276,7 +276,7 @@ func checksum() -> String:
 static func sum_of(sec: SectionPlan, plans: Array[CityPlan]) -> String:
 	var all := sec.checksum()
 	for p in plans:
-		all += p.checksum() + CityProps.layout_checksum(CityProps.layout(p)) + MissionAirDoors.checksum(p)
+		all += p.checksum() + CityPropLayout.checksum(CityPropLayout.layout(p)) + MissionAirDoors.checksum(p)
 	return all.sha256_text().substr(0, 16)
 
 
@@ -355,7 +355,7 @@ func _slot_clear(d: CityDistrict, at: Vector2, cuts: Array[Rect2], k: int) -> bo
 				return false
 	var box := Rect2(at - Vector2(SPAWN_R, SPAWN_R), Vector2(SPAWN_R, SPAWN_R) * 2.0)
 	for o in cuts:
-		if o.grow(CityStreets.HOLE_CURB + 0.5).intersects(box):
+		if o.grow(CityDims.HOLE_CURB + 0.5).intersects(box):
 			return false
 	for c in d.plan.site.keep_clear:
 		if (c as Rect2).intersects(box):
@@ -490,12 +490,12 @@ func _process(delta: float) -> void:
 
 # --- Quality (CityQuality: local presentation only) -----------------------------------------------------------------
 
-## Draw level q (CityQuality.LOW / MEDIUM / HIGH): which decks are drawn round the active one, the rig's lights and
+## Draw level q (GraphicsQuality.LOW / MEDIUM / HIGH): which decks are drawn round the active one, the rig's lights and
 ## extras, how far block meshes are drawn. Any time, before or after build(), switchable at runtime; follows the active
 ## deck (set_active_deck re-applies it). Never touches a plan, a prop, a collision shape or anything synced: a hidden
 ## deck keeps its collision, its props simulation and its life. HIGH (the default) is the look before levels existed.
 func set_quality(q: int) -> void:
-	quality = CityQuality.clamp_level(q)
+	quality = GraphicsQuality.clamp_level(q)
 	apply_quality()
 	if mission != null:
 		mission.set_quality(quality)
@@ -556,9 +556,9 @@ func setup_mission_progress() -> float:
 ## Re-apply the current quality to everything built (set_active_deck calls it, so it runs at the end of every build).
 ## Nothing is touched while the level is HIGH and no lower level was ever applied.
 func apply_quality() -> void:
-	if quality == CityQuality.HIGH and not _quality_touched:
+	if quality == GraphicsQuality.HIGH and not _quality_touched:
 		return
-	_quality_touched = quality != CityQuality.HIGH
+	_quality_touched = quality != GraphicsQuality.HIGH
 	var lv := CityQuality.level(quality)
 	var shown: Array = []
 	for k in decks.size():

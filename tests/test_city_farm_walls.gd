@@ -49,7 +49,7 @@ func setup() -> void:
 func _goldens() -> void:
 	eq(CityPlan.make({"seed": 1}).checksum(), "bd1d848c575e85df", "the seed 1 plan checksum (golden)")
 	eq(CityPlan.make({"seed": 1, "walls": 1.0}).checksum(), "3eb0728c9b4cffa2", "the seed 1 walled plan checksum (golden)")
-	eq(CityProps.layout_checksum(CityProps.layout(CityPlan.make({"seed": 1}))), "f321076ebd6e98f1", "the seed 1 props layout (golden)")
+	eq(CityPropLayout.checksum(CityPropLayout.layout(CityPlan.make({"seed": 1}))), "f321076ebd6e98f1", "the seed 1 props layout (golden)")
 
 
 ## Every section window with a backdrop is a farm with none; nothing else changes kind.

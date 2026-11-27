@@ -11,7 +11,7 @@ extends Node3D
 ##
 ## Gameplay shape = plan (seeded, checksummed) -> collision. Looks (colours, windows, clutter, furniture, backdrop) use a
 ## second generator seeded from plan.cosmetic_seed(): cosmetic, but still the same on every machine. The props are laid
-## out from their own generator (CityProps.layout) because they are gameplay objects that move and are synced.
+## out from their own generator (CityPropLayout.layout) because they are gameplay objects that move and are synced.
 
 var plan: CityPlan
 var ring: RingFrame
@@ -471,7 +471,7 @@ func _col_floor() -> void:
 		# The ceiling, left open where the deck above has a hole.
 		var spans := [[e.position.x, e.end.x]]
 		for o: Rect2 in plan.site.openings:
-			var hole := CityStreets.ceiling_opening(o)
+			var hole := CityDims.ceiling_opening(o)
 			if mid < hole.position.y or mid > hole.end.y:
 				continue
 			var cut := []
@@ -527,7 +527,7 @@ func _col_walls() -> void:
 	for rq: Dictionary in plan.raised:
 		for q in CityGeo.cut(rq["rect"], holes):
 			count += _ground_box(body, geo, q, CityPlan.CURB_H - th, CityPlan.CURB_H)
-	var c := CityStreets.HOLE_CURB
+	var c := CityDims.HOLE_CURB
 	for o in holes:
 		var open := plan.ramp_mouth(o)
 		var c0 := 0.0 if open == 3 else c

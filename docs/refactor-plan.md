@@ -248,3 +248,22 @@ paths; `tests/` subfolders; git LFS; `set_anchors_preset` fixes; the bugs in the
 - **Log text.** Bot and pacing tests parse `[Flow]` / combat log lines: format helpers must produce identical strings.
 - **Suite noise.** Known flakes (load-sensitive perf / net) are rerun alone before anything is blamed on the refactor.
 - **Size.** About 110 file moves and ~20 new files. Tiers are independent; the user can stop after any of them.
+
+## 8. Outcome (2026-11-26)
+
+Executed. Full suite green after every tier (268/268); checksums and pins never re-pinned (before/after dumps for
+PlanHash, the tier-2 world splits, the tier-3 couplings and RoadForms). Tiers 1-2 committed as `eb82019`; tier 3 is in
+the working tree. Done as planned, except:
+- Tier 1: `EnemyBase.squad` stays untyped (a test stub assigns a plain Node); the two "engaged" rules differ, so each
+  keeps its formula behind accessors; WeaponRack cooling is a different rule from the catalog's; `_arc_to_world_pos`
+  uses CURB_H.
+- Tier 2: `MissionLoader` not split (the loading phase writes about 20 scene fields); the EnemyMeshes cache stays its
+  own (different body). Extra units the work turned up: `CityFacade` (relief / face geometry shared by buildings and
+  banners), `CityDims`, `CityPropLayout`.
+- Tier 3: depot bot core-seeking stays in `MissionDepots` (bots without a MissionBot use it, and moving it shifts the
+  physics order by a frame; a `ticked(dt)` signal + pilot-locator design is possible but is a design change);
+  MenuBackdrop helpers kept (no shared helper gives identical vertices); one build-queue runner skipped (four different
+  shapes); RoadForms shares only the identical pieces (seg_key, union-find, LANE_W), not the roll / repair; the
+  `"Rig"` name lookups and stand-in-friendly duck typing kept where tests pass stand-ins.
+- `SCALE_SCOPE` in test_net_contract now covers `mission/`, `bots/crew/`, `camera/`, `world/section/`, `enemy/`,
+  `combat/`: slightly wider than before (stricter), reason in the test.

@@ -3,8 +3,8 @@ extends RefCounted
 ## The map's boundary walls (CityPlan.boundary()) as flat-colour meshes: bulkheads, window walls, farm walls, the gates
 ## cut into them and the air-door holes MissionWorld asks for. Static builders, the same on every machine; their
 ## cosmetic generators are seeded per side and part. CityDistrict builds the walls' collision from the same plan data
-## (wall_spans, WALL_THICK, GATE_RECESS). The mission's openings still arrive as plan meta ("mission_doors",
-## "mission_air", set by CityStack.setup_mission).
+## (wall_spans, WALL_THICK, GATE_RECESS). The mission's openings arrive as build()'s `doors` / `air` arguments (from
+## MissionWorld's wall rebuild; a district's own build passes none).
 
 const WALL_THICK := 6.0
 const GATE_RECESS := 6.0     ## m from the wall plane to the back of a portal's recess (CityDistrict seals it there)
@@ -20,7 +20,11 @@ const HULL_SILL := 8.0       ## solid base of the hull's window wall
 ## generators, so the result does not depend on how the sides are split. A farm side can be split further along its
 ## length (`part` of `parts`, each with its own generator; parts > 0 draw only their share of the farm's bays, fins and
 ## racks; part 0 draws everything else).
-static func build(geo: CityGeo, plan: CityPlan, lights: CityGeo = null, only_side: int = -1, part: int = 0, parts: int = 1) -> void:
+## A mission's openings (MissionWorld): `doors` = {"<side>:<a>": true}, the gates whose wave door stands there as its own
+## node (no baked leaf or hazard frame); `air` = {side: [{a, b, y0, y1, fa, fb, fy0, fy1}]}, the air-door holes (below).
+## Both empty (the district's own build): unchanged.
+static func build(geo: CityGeo, plan: CityPlan, lights: CityGeo = null, only_side: int = -1, part: int = 0, parts: int = 1,
+		doors: Dictionary = {}, air: Dictionary = {}) -> void:
 	var e := plan.extent
 	var h := plan.p("ceiling")
 	var look := RandomNumberGenerator.new()
@@ -40,7 +44,7 @@ static func build(geo: CityGeo, plan: CityPlan, lights: CityGeo = null, only_sid
 		var u1 := e.end.x if across else e.end.y
 		var gates: Array = w["gates"]
 		var spans := wall_spans(u0, u1, gates)
-		var holes := _air_holes(plan, side)
+		var holes: Array = air.get(side, [])
 		geo.tag("wall." + str(w["kind"]))
 		if lights != null:
 			lights.tag("farm_light")
@@ -49,7 +53,7 @@ static func build(geo: CityGeo, plan: CityPlan, lights: CityGeo = null, only_sid
 			if part > 0:
 				continue      # the gates are part 0's
 		elif w["kind"] == "bulkhead":
-			var pitch := CityStreets.GIRDER_PITCH if across else CityStreets.RIB_PITCH * 0.5
+			var pitch := CityDims.GIRDER_PITCH if across else CityDims.RIB_PITCH * 0.5
 			var u := floorf(u0 / pitch) * pitch
 			var i := 0
 			while u < u1:
@@ -81,15 +85,13 @@ static func build(geo: CityGeo, plan: CityPlan, lights: CityGeo = null, only_sid
 					_wrect(geo, across, at, inward, 0.25, sp[0], sp[1], t + 0.3, cream, true)
 					_wrect(geo, across, at, inward, 0.25, sp[0], sp[1], t - 0.3, cream, false)
 					t += (h - HULL_SILL) / 3.0
-				var u := ceilf(sp[0] / CityStreets.RIB_PITCH * 2.0) * CityStreets.RIB_PITCH * 0.5
+				var u := ceilf(sp[0] / CityDims.RIB_PITCH * 2.0) * CityDims.RIB_PITCH * 0.5
 				while u <= sp[1]:
 					_wpost(geo, across, at, inward, u, 0.4, (HULL_SILL + h) * 0.5, Vector3(0.9, h - HULL_SILL, 0.8), cream)
-					u += CityStreets.RIB_PITCH * 0.5
+					u += CityDims.RIB_PITCH * 0.5
 			for g: Dictionary in gates:
 				_wface(geo, across, at, g["a"], g["b"], g["h"], h, inward, CityPalette.c("concrete"))
-		# A mission's wave door (MissionWorld) stands in this gate as its own node: no baked leaf there (plan meta
-		# "mission_doors": {"<side>:<a>": true}, set only by CityStack.setup_mission; absent = unchanged).
-		var doors: Dictionary = plan.get_meta("mission_doors", {})
+		# A mission's wave door (MissionWorld) stands in this gate as its own node: no baked leaf there (`doors`).
 		geo.tag("wall.gate")
 		for g: Dictionary in gates:
 			if not doors.is_empty() and doors.has("%d:%.2f" % [side, float(g["a"])]):
@@ -99,15 +101,10 @@ static func build(geo: CityGeo, plan: CityPlan, lights: CityGeo = null, only_sid
 
 
 # --- Air doors (MissionWorld) ------------------------------------------------------------------------------
-# An air door is an opening high on an end wall (MissionWorld, docs/design/city-ramps-and-stack.md "Air doors"). Plan meta
-# "mission_air" = {side: [{a, b, y0, y1, fa, fb, fy0, fy1}]}, set only by CityStack.setup_mission: the opening a..b along
-# the wall, y0..y1 up (left out of the wall's face and a farm's backing), and its frame's rect fa..fb, fy0..fy1 (posts,
-# fins, racks and light bars stop round it). Absent: nothing changes.
-
-static func _air_holes(plan: CityPlan, side: int) -> Array:
-	var m: Dictionary = plan.get_meta("mission_air", {})
-	return m.get(side, [])
-
+# An air door is an opening high on an end wall (MissionWorld, docs/design/city-ramps-and-stack.md "Air doors"). build()'s
+# `air` = {side: [{a, b, y0, y1, fa, fb, fy0, fy1}]}, from MissionWorld only: the opening a..b along the wall, y0..y1 up
+# (left out of the wall's face and a farm's backing), and its frame's rect fa..fb, fy0..fy1 (posts, fins, racks and light
+# bars stop round it). Empty: nothing changes.
 
 ## A wall face u0..u1, h0..h1 less the air openings in it (pieces left, right, below and above each).
 static func _wface_holed(geo: CityGeo, across: bool, at: float, u0: float, u1: float, h0: float, h1: float, inward: float, col: Color,

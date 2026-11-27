@@ -307,7 +307,7 @@ func _audit_isolated_features() -> void:
 
 	# 2. Shop awning: front valance and both side gussets are double-sided so viewing from below never culls them.
 	var aw := CityGeo.new()
-	var f := CityBuildings.Face.new()
+	var f := CityFacade.Face.new()
 	f.xf = Transform3D.IDENTITY
 	f.w = 4.0
 	f.y0 = 0.0

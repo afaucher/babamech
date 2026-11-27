@@ -184,7 +184,7 @@ static func facade_spots(plan: CityPlan, blk: _Blockers = null, gates: Array[Vec
 						if not _rules_ok(plan, blk, gates, inner, b, side, n, u, face):
 							continue
 						if relief.is_empty():
-							relief = CityBuildings.relief(plan, bi, ti)
+							relief = CityFacade.relief(plan, bi, ti)
 						for length: float in ([full, 4.8] if full > 4.8 else [full]):
 							if clear_at_face(plan, blk, relief[side], bi, ti, side, face, top, length):
 								found = {"face": face, "len": length}
@@ -226,11 +226,11 @@ static func _rules_ok(plan: CityPlan, blk: _Blockers, gates: Array[Vector2], inn
 
 ## Whether a wall banner on face `side` of tier `ti` of building `bi`, its bar over wall point `face` at `top` with a
 ## `length` cloth, is clear: its envelope (cloth, bar with its end caps, brackets, + MARGIN; out to the bar + MARGIN)
-## meets none of the face's relief boxes (CityBuildings.relief: all deeper than the cloth's back) and no other tier
+## meets none of the face's relief boxes (CityFacade.relief: all deeper than the cloth's back) and no other tier
 ## box, plan solid, park column or pillar core.
 static func clear_at_face(plan: CityPlan, blk: _Blockers, relief: Array, bi: int, ti: int, side: int, face: Vector2,
 		top: float, length: float) -> bool:
-	var fu := CityBuildings.face_coords(plan, bi, ti, side, face).x
+	var fu := CityFacade.face_coords(plan, bi, ti, side, face).x
 	var u0 := fu - HALF_SPAN - MARGIN
 	var u1 := fu + HALF_SPAN + MARGIN
 	var v0 := top - length - MARGIN

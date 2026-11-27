@@ -1,5 +1,5 @@
 extends TestCase
-## The supply depot model (scripts/world/depot/, docs/design/supply-depot.md "Build"): the scene instantiates with its
+## The supply depot model (scripts/mission/depots/, docs/design/supply-depot.md "Build"): the scene instantiates with its
 ## pieces built in _init; 2 x 2 socket layout on the +Z wall; set_cores state over every (stocked, capacity) incl.
 ## capacity < 4, clamping and idempotence; stock changes only toggle visibility (same mesh instances, no rebuild);
 ## core_taken flourish runs and ends; set_destroyed is reversible and darkens every socket; no collision; no

@@ -30,7 +30,7 @@ heavy, they slide a little when hit again or walked into, and never fly around. 
 
 ## 3. Layout
 
-`CityProps.layout(plan) -> Array` is pure data: `[{id, type, x, s, h, yaw, scale, variant}]`, ids = array index, generated
+`CityPropLayout.layout(plan) -> Array` is pure data: `[{id, type, x, s, h, yaw, scale, variant}]`, ids = array index, generated
 from the plan with its own generator (`plan.props_seed() + 1`, roof units `+ 2`; the same value as `cosmetic_seed()`,
 named apart 2026-11-25 because props are gameplay), so it is the same on every machine and no longer depends on the order
 the meshers draw in. `layout_checksum()` covers it, and **the load barrier compares it**: `CityStack.checksum()` joins

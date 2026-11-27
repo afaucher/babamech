@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pacing timeline from babamech run logs (docs/design/pacing-director.md section 3).
 
-Reads the combat log's "[Flow]" records (scripts/game/combat_log.gd, docs/testing.md "Combat log") from one or more run
+Reads the combat log's "[Flow]" records (scripts/mission/pacing/combat_log.gd, docs/testing.md "Combat log") from one or more run
 logs (one per machine: each logs its own pilot) and writes ONE self-contained HTML file (inline SVG and CSS, a few lines
 of inline JS for hover; no CDN, no external files):
   per pilot over mission time: structure % (total and weakest core), intensity, enemies engaging / in sight / seeing

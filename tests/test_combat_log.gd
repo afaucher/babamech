@@ -1,5 +1,5 @@
 extends TestCase
-## CombatLog (scripts/game/combat_log.gd): hits fed through the real damage path (CombatWorld.resolve_hit -> deliver ->
+## CombatLog (scripts/mission/pacing/combat_log.gd): hits fed through the real damage path (CombatWorld.resolve_hit -> deliver ->
 ## apply_hit -> damaged / hit_landed; fall damage through PlayerTarget.apply_damage; a client's hit through remote_hit),
 ## mission time driven by hand (CombatLog.step), lines captured through `sink`. Asserts dmg_in coalescing and remaining
 ## HP, dmg_out aggregation / kill / est, the 10 s summary (window sums, combat flag off after 6 s quiet, enemies within

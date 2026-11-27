@@ -154,7 +154,7 @@ func _obstacles(p: CityPlan, pieces: Array) -> Array:
 	for col: Dictionary in p.columns:
 		out.append([1, [Vector2(float(col["x"]), float(col["s"])), float(col["ring_r"])]])
 	for o in p.floor_cuts():
-		out.append([0, o.grow(CityStreets.HOLE_CURB)])
+		out.append([0, o.grow(CityDims.HOLE_CURB)])
 	for rp: Dictionary in p.ramps:
 		var s0 := minf(float(rp["s_top"]), float(rp["s_foot"]))
 		var s1 := maxf(float(rp["s_top"]), float(rp["s_foot"]))

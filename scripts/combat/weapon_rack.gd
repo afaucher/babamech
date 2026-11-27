@@ -18,7 +18,7 @@ extends Node
 ##                   (passive equipment: nothing; active equipment toggles like a weapon, see EQUIPMENT)
 ##   left mouse      held: fire every enabled weapon; a fresh press also launches a selected repair drone
 ## The left button only counts while the mouse is captured (the first click just captures it). The rack never reads the
-## right button: that is the chase camera's zoom (test_drive.gd).
+## right button: that is the chase camera's zoom (mission_scene.gd).
 ## UNUSABLE SLOTS: a weapon whose hardpoint component is destroyed (`slot_disabled`, PlayerTarget.is_slot_destroyed) or
 ## whose limited ammo is 0 is deselected automatically (enabled false, slot_changed), and its key can't select it again:
 ## a press or a double tap on it does nothing (soloing another slot still works, and still deselects it). It never fires,

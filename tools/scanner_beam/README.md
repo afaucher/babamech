@@ -1,7 +1,7 @@
 # Repair-drone scanner beam probe
 
 Art-direction render probe for the repair drone's beam ("look more like a spread scanner" instead of the thin line).
-**Not game code:** `scripts/combat/repair_drone.gd` is untouched; this only draws candidate looks.
+**Not game code:** `scripts/combat/equipment/repair_drone.gd` is untouched; this only draws candidate looks.
 
 Scene (`scanner_beam_probe.gd`): city seed 7 under the real day light rig (GraphicsQuality HIGH), a player mech
 (MechModel, scale 2, chicken / strider, ~11.5 m to the top of the head) in the left lane short of an intersection, facing

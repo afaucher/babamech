@@ -155,7 +155,7 @@ func _apartment_shot(f: OccupationBanners, td: MissionScene) -> void:
 		for b: Dictionary in f.plans[k]:
 			if str(b["kind"]) != "wall" or str(plan.buildings[int(b["bi"])]["style"]) != "apartment":
 				continue
-			var score := 0 if CityBuildings.relief(plan, int(b["bi"]), 0)[CityPlan.SIDE_N.find(b["n"])].is_empty() else 1
+			var score := 0 if CityFacade.relief(plan, int(b["bi"]), 0)[CityPlan.SIDE_N.find(b["n"])].is_empty() else 1
 			if score > best:
 				best = score
 				pick = Vector2i(k, int(b["id"]))

@@ -352,7 +352,7 @@ func reset_crowd() -> void:
 
 
 func _apply_quality() -> void:
-	var q := CityQuality.from_name(str(options["quality"]))
+	var q := GraphicsQuality.from_name(str(options["quality"]))
 	life.set_quality(q)
 	if district.rig != null:
 		district.rig.set_quality(q)

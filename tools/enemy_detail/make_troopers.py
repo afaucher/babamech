@@ -1,7 +1,7 @@
 """Compose the trooper look-variant images from the raw shots of tools/enemy_detail/trooper_shots.gd.
 
 usage: python make_troopers.py <raw dir> <out dir>
-The variant choices mirror EnemyMeshes.trooper_look (scripts/enemy/enemy_meshes.gd).
+The variant choices mirror EnemyMeshes.trooper_look (scripts/enemy/looks/enemy_meshes.gd).
 """
 import os
 import sys

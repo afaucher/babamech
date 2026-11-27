@@ -25,13 +25,13 @@ func setup() -> void:
 
 
 func _levels() -> void:
-	eq(CityQuality.name_of(CityQuality.LOW), "low", "name_of LOW")
-	eq(CityQuality.name_of(CityQuality.MEDIUM), "medium", "name_of MEDIUM")
-	eq(CityQuality.name_of(CityQuality.HIGH), "high", "name_of HIGH")
-	eq(CityQuality.from_name("Medium"), CityQuality.MEDIUM, "from_name")
-	eq(CityQuality.name_of(9), "high", "a level out of range clamps")
-	eq(stack.quality, CityQuality.HIGH, "the default is HIGH")
-	eq(int(CityQuality.level(CityQuality.HIGH)["life_draw_r"]), int(LifeDeck.DRAW_R), "HIGH draws life as far as before")
+	eq(GraphicsQuality.name_of(GraphicsQuality.LOW), "low", "name_of LOW")
+	eq(GraphicsQuality.name_of(GraphicsQuality.MEDIUM), "medium", "name_of MEDIUM")
+	eq(GraphicsQuality.name_of(GraphicsQuality.HIGH), "high", "name_of HIGH")
+	eq(GraphicsQuality.from_name("Medium"), GraphicsQuality.MEDIUM, "from_name")
+	eq(GraphicsQuality.name_of(9), "high", "a level out of range clamps")
+	eq(stack.quality, GraphicsQuality.HIGH, "the default is HIGH")
+	eq(int(CityQuality.level(GraphicsQuality.HIGH)["life_draw_r"]), int(LifeDeck.DRAW_R), "HIGH draws life as far as before")
 
 
 # --- Same game at every level ----------------------------------------------------------------------------------
@@ -40,7 +40,7 @@ func _game_sig(s: CityStack) -> String:
 	var parts := PackedStringArray([s.checksum()])
 	for d in s.decks:
 		var shapes := (d.get_node("Collision") as Node).get_child_count()
-		parts.append("%d:%d:%d:%s" % [d.geometry_digest(), shapes, d.props.items.size(), CityProps.layout_checksum(d.props.items)])
+		parts.append("%d:%d:%d:%s" % [d.geometry_digest(), shapes, d.props.items.size(), CityPropLayout.checksum(d.props.items)])
 		for it: Dictionary in d.props.items:
 			parts.append(str(d.props.transform_of(int(it["id"])).origin.snapped(Vector3.ONE * 0.001)))
 	parts.append(str(s.entry_transform().origin.snapped(Vector3.ONE * 0.001)))
@@ -49,19 +49,19 @@ func _game_sig(s: CityStack) -> String:
 
 func _same_game() -> void:
 	var high := _game_sig(stack)
-	for q: int in [CityQuality.LOW, CityQuality.MEDIUM, CityQuality.HIGH]:
+	for q: int in [GraphicsQuality.LOW, GraphicsQuality.MEDIUM, GraphicsQuality.HIGH]:
 		stack.set_quality(q)
-		eq(_game_sig(stack), high, "%s: checksum, geometry digests, collision shapes and props unchanged" % CityQuality.name_of(q))
+		eq(_game_sig(stack), high, "%s: checksum, geometry digests, collision shapes and props unchanged" % GraphicsQuality.name_of(q))
 	# A stack whose level is set before it is built builds the same game.
 	var low := CityStack.new()
-	low.set_quality(CityQuality.LOW)
+	low.set_quality(GraphicsQuality.LOW)
 	add_child(low)
 	low.build(SectionPlan.make({"seed": SEED}))
 	eq(_game_sig(low), high, "a stack built at LOW is the same game as one built at HIGH")
 	eq(low.decks_drawn(), [0, 1] as Array[int], "built at LOW: the level is applied at the end of the build")
 	eq(low.rig.fills_on(), 0, "built at LOW: no fill lights")
 	low.queue_free()
-	stack.set_quality(CityQuality.HIGH)
+	stack.set_quality(GraphicsQuality.HIGH)
 
 
 # --- Decks follow the active deck ------------------------------------------------------------------------------
@@ -70,9 +70,9 @@ func _decks_follow() -> void:
 	var n := stack.decks.size()
 	eq(n, 3, "seed 4 has three decks")
 	var want := {
-		CityQuality.LOW: [[0, 1], [1, 2], [2]],
-		CityQuality.MEDIUM: [[0, 1], [0, 1, 2], [1, 2]],
-		CityQuality.HIGH: [[0, 1, 2], [0, 1, 2], [0, 1, 2]],
+		GraphicsQuality.LOW: [[0, 1], [1, 2], [2]],
+		GraphicsQuality.MEDIUM: [[0, 1], [0, 1, 2], [1, 2]],
+		GraphicsQuality.HIGH: [[0, 1, 2], [0, 1, 2], [0, 1, 2]],
 	}
 	for q: int in want:
 		stack.set_quality(q)
@@ -80,10 +80,10 @@ func _decks_follow() -> void:
 			stack.set_active_deck(k)
 			var exp: Array[int] = []
 			exp.assign(want[q][k])
-			eq(stack.decks_drawn(), exp, "%s, active deck %d: decks drawn" % [CityQuality.name_of(q), k])
+			eq(stack.decks_drawn(), exp, "%s, active deck %d: decks drawn" % [GraphicsQuality.name_of(q), k])
 			_lights_match(q, k)
 	# follow(): the deck under the followed node becomes active and the drawn decks move with it.
-	stack.set_quality(CityQuality.LOW)
+	stack.set_quality(GraphicsQuality.LOW)
 	stack.set_active_deck(0)
 	var walker := Node3D.new()
 	add_child(walker)
@@ -108,28 +108,28 @@ func _decks_follow() -> void:
 	var up := stack.ring().up_at(p)
 	var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(p + up * 3.0, p - up * 3.0))
 	check(not hit.is_empty(), "LOW: a hidden deck's floor still collides")
-	stack.set_quality(CityQuality.HIGH)
+	stack.set_quality(GraphicsQuality.HIGH)
 	stack.set_active_deck(0)
 
 
 func _lights_match(q: int, active: int) -> void:
 	var lv := CityQuality.level(q)
 	var r := stack.rig
-	eq(r.sun.shadow_enabled, bool(lv["sun_shadows"]), "%s: daylight shadows" % CityQuality.name_of(q))
-	eq(r.env.ssao_enabled, bool(lv["ssao"]), "%s: SSAO" % CityQuality.name_of(q))
-	eq(r.env.glow_enabled, bool(lv["glow"]), "%s: glow" % CityQuality.name_of(q))
+	eq(r.sun.shadow_enabled, bool(lv["sun_shadows"]), "%s: daylight shadows" % GraphicsQuality.name_of(q))
+	eq(r.env.ssao_enabled, bool(lv["ssao"]), "%s: SSAO" % GraphicsQuality.name_of(q))
+	eq(r.env.glow_enabled, bool(lv["glow"]), "%s: glow" % GraphicsQuality.name_of(q))
 	var on := 0
 	for k in r._deck_fills.size():
 		for l: OmniLight3D in r._deck_fills[k]:
 			if l.visible:
 				on += 1
-				check(stack.decks[k].visible, "%s: a fill of deck %d is on only when that deck is drawn" % [CityQuality.name_of(q), k])
+				check(stack.decks[k].visible, "%s: a fill of deck %d is on only when that deck is drawn" % [GraphicsQuality.name_of(q), k])
 	eq(r.fills_on(), on, "fills_on counts the visible fills")
-	if q == CityQuality.LOW:
+	if q == GraphicsQuality.LOW:
 		eq(on, 0, "LOW: no fill light at all")
 		check(r.sun.light_cull_mask & CityStack.deck_layer(active) != 0, "LOW: the daylight lights the active deck")
 		check(r.env.ambient_light_energy > float(CityLightRig.PRESETS[r.preset]["ambient_energy"]), "LOW: the ambient rises for the missing fills")
-	elif q == CityQuality.MEDIUM:
+	elif q == GraphicsQuality.MEDIUM:
 		var full := 0
 		for k in r._deck_fills.size():
 			if stack.decks[k].visible:
@@ -167,23 +167,23 @@ func _look(s: CityStack) -> String:
 
 
 func _restore() -> void:
-	stack.set_quality(CityQuality.HIGH)
+	stack.set_quality(GraphicsQuality.HIGH)
 	stack.set_active_deck(1)
 	var before := _look(stack)
-	for q: int in [CityQuality.LOW, CityQuality.MEDIUM, CityQuality.LOW]:
+	for q: int in [GraphicsQuality.LOW, GraphicsQuality.MEDIUM, GraphicsQuality.LOW]:
 		stack.set_quality(q)
-		check(_look(stack) != before, "%s changes the look" % CityQuality.name_of(q))
+		check(_look(stack) != before, "%s changes the look" % GraphicsQuality.name_of(q))
 	stack.set_active_deck(2)
 	stack.set_active_deck(1)
-	stack.set_quality(CityQuality.HIGH)
+	stack.set_quality(GraphicsQuality.HIGH)
 	var after := _look(stack)
 	eq(after, before, "HIGH after LOW restores every visibility flag, light, environment flag and range")
 	# The rig's preset changes on top of a level, and the level still holds.
-	stack.set_quality(CityQuality.LOW)
+	stack.set_quality(GraphicsQuality.LOW)
 	stack.rig.apply("dusk")
 	eq(stack.rig.fills_on(), 0, "a preset applied at LOW keeps the fills off")
 	check(not stack.rig.sun.shadow_enabled, "and the shadows off")
-	stack.set_quality(CityQuality.HIGH)
+	stack.set_quality(GraphicsQuality.HIGH)
 	stack.rig.apply("day")
 	eq(_look(stack), before, "HIGH and the day preset again: as before")
 	# A single district's own rig takes a level too (no decks: its fills are the active deck's).
@@ -191,9 +191,9 @@ func _restore() -> void:
 	add_child(d)
 	d.build({"seed": 1.0})
 	var fills := d.rig.fills_on()
-	d.rig.set_quality(CityQuality.LOW)
+	d.rig.set_quality(GraphicsQuality.LOW)
 	eq(d.rig.fills_on(), 0, "a district's rig at LOW: no fills")
-	d.rig.set_quality(CityQuality.HIGH)
+	d.rig.set_quality(GraphicsQuality.HIGH)
 	eq(d.rig.fills_on(), fills, "and HIGH again: every fill")
 	d.queue_free()
 
@@ -226,7 +226,7 @@ func _sig(l: AmbientLife) -> String:
 
 
 func _life() -> void:
-	stack.set_quality(CityQuality.HIGH)
+	stack.set_quality(GraphicsQuality.HIGH)
 	var viewer := Node3D.new()
 	add_child(viewer)
 	var d0 := stack.decks[0]
@@ -234,8 +234,8 @@ func _life() -> void:
 	viewer.global_position = stack.from_deck_arc(0, d0.plan.avenue_x().x, e.position.y + 30.0, 5.0)
 	var hi := _make_life()
 	var lo := _make_life()
-	lo.set_quality(CityQuality.LOW)
-	eq(lo.quality, CityQuality.LOW, "life: set_quality stores the level")
+	lo.set_quality(GraphicsQuality.LOW)
+	eq(lo.quality, GraphicsQuality.LOW, "life: set_quality stores the level")
 	for l: AmbientLife in [hi, lo]:
 		l.add_viewer(viewer)
 		l.advance_to(T0 + 20.0)
@@ -244,7 +244,7 @@ func _life() -> void:
 	# Someone between LOW's draw radius and DRAW_R: drawn at HIGH, not at LOW, and hit the same by a shot.
 	var u_hi := hi.unit(0)
 	var u_lo := lo.unit(0)
-	var r_low := float(CityQuality.level(CityQuality.LOW)["life_draw_r"])
+	var r_low := float(CityQuality.level(GraphicsQuality.LOW)["life_draw_r"])
 	var mid := -1
 	for i in u_hi.count():
 		if not u_hi.visible_now(i) or u_hi.state_of(i) != "calm":
@@ -274,7 +274,7 @@ func _life() -> void:
 		l.advance_to(T0 + 30.0)
 	eq(_sig(lo), _sig(hi), "life: after a kill and a blast LOW and HIGH still agree")
 	# Back to HIGH: the person is drawn again.
-	lo.set_quality(CityQuality.HIGH)
+	lo.set_quality(GraphicsQuality.HIGH)
 	_frames(lo, 2, 0.05)
 	_frames(hi, 2, 0.05)
 	var drawn_hi := 0

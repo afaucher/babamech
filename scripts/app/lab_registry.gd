@@ -19,12 +19,12 @@ extends RefCounted
 
 const SUBJECTS := [
 	{"id": "mech", "label": "Mech (assembled: head, loadout, art)", "path": "res://scripts/mech/mech_model.gd"},
-	{"id": "mech_parts", "label": "Mech parts (low-poly meshes)", "path": "res://scripts/mech/mech_part_gallery.gd"},
-	{"id": "heads", "label": "Pilot heads", "path": "res://scripts/mech/head_gallery.gd"},
-	{"id": "hangar", "label": "Hangar (assault boat bay: prep / alert)", "path": "res://scripts/ui/hangar_bay.gd"},
-	{"id": "menu_bg", "label": "Menu backdrop (observation hall, hull window, ring)", "path": "res://scripts/ui/menu_backdrop.gd"},
-	{"id": "ring_walk", "label": "Ring walk (S1: controller + IK gait)", "path": "res://scripts/world/ring_walk_lab.gd"},
-	{"id": "thrusters", "label": "Thrusters (S2: jump, hover, emergency burn, overheat)", "path": "res://scripts/world/thruster_lab.gd"},
+	{"id": "mech_parts", "label": "Mech parts (low-poly meshes)", "path": "res://scripts/mech/meshes/mech_part_gallery.gd"},
+	{"id": "heads", "label": "Pilot heads", "path": "res://scripts/mech/meshes/head_gallery.gd"},
+	{"id": "hangar", "label": "Hangar (assault boat bay: prep / alert)", "path": "res://scripts/ui/hangar/hangar_bay.gd"},
+	{"id": "menu_bg", "label": "Menu backdrop (observation hall, hull window, ring)", "path": "res://scripts/ui/menu/menu_backdrop.gd"},
+	{"id": "ring_walk", "label": "Ring walk (S1: controller + IK gait)", "path": "res://scripts/mech/motion/ring_walk_lab.gd"},
+	{"id": "thrusters", "label": "Thrusters (S2: jump, hover, emergency burn, overheat)", "path": "res://scripts/mech/motion/thruster_lab.gd"},
 	{"id": "section", "label": "Mission section (decks, zones, pillars, transit)", "path": "res://scripts/world/section/section_lab.gd"},
 	{"id": "city", "label": "City district (pristine urban, seeded)", "path": "res://scripts/world/city/city_lab.gd"},
 	{"id": "life", "label": "Ambient life (civilians: calm, panic, killed)", "path": "res://scripts/world/life/life_lab.gd"},
@@ -34,7 +34,7 @@ const SUBJECTS := [
 	{"id": "audio", "label": "Audio (soundboard, mix, 3D distance, heat, telegraphs)", "path": "res://scripts/audio/audio_lab.gd"},
 	{"id": "pilot", "label": "Pilot expressions (moods, reactions, motion)", "path": "res://scripts/pilot/pilot_lab.gd"},
 	{"id": "banners", "label": "Invader banners (wall + pole, tear)", "path": "res://scripts/world/occupation/banner_lab.gd"},
-	{"id": "depot", "label": "Supply depot (bunker kiosk, 2x2 socket wall)", "path": "res://scripts/world/depot/depot_lab.gd"},
+	{"id": "depot", "label": "Supply depot (bunker kiosk, 2x2 socket wall)", "path": "res://scripts/mission/depots/depot_lab.gd"},
 ]
 
 

@@ -37,6 +37,6 @@ common/physics_ticks_per_second=60
 anti_aliasing/quality/msaa_3d=2
 ; First-run shader stalls: keep compiled shaders (RD and GL) and Vulkan pipelines on disk between runs. Both are Godot's
 ; defaults, pinned on purpose (the second launch / second mission must stay stall-free); the FIRST run is covered by
-; ShaderWarmup (scripts/app/shader_warmup.gd). Godot 4.7 has no switch for Forward+'s ubershaders (always on).
+; ShaderWarmup (scripts/mission/shader_warmup.gd). Godot 4.7 has no switch for Forward+'s ubershaders (always on).
 shader_compiler/shader_cache/enabled=true
 rendering_device/pipeline_cache/enable=true

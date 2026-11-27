@@ -47,13 +47,13 @@ func setup() -> void:
 	await frames(10)
 	print("[Unpair] after life setup: %d" % (_count(log_path) - base))
 	eq(_count(log_path) - base, 0, "no unpair error after the stepped life setup")
-	for q: int in [CityQuality.LOW, CityQuality.MEDIUM, CityQuality.HIGH, CityQuality.LOW]:
+	for q: int in [GraphicsQuality.LOW, GraphicsQuality.MEDIUM, GraphicsQuality.HIGH, GraphicsQuality.LOW]:
 		st.set_quality(q)
 		await frames(5)
 	for k in st.decks.size():
 		st.set_active_deck(k)
 		await frames(4)
-	st.set_quality(CityQuality.HIGH)
+	st.set_quality(GraphicsQuality.HIGH)
 	await frames(5)
 	# First person: a mech's pilot head moves to ChaseCamera.FP_HIDDEN_LAYER (in CityLightRig.ALWAYS).
 	var mech := MechModel.new()

@@ -1,6 +1,6 @@
 extends TestCase
 ## The mission's objectives and end in a SOLO test drive, in the one mission mode (objectives: user 2026-11-25 "Cut the
-## legacy modes."; scripts/game/mission_flow.gd, MissionHud). A forced all-sweep plan without reserve waves (PLAN: the
+## legacy modes."; scripts/mission/mission_flow.gd, MissionHud). A forced all-sweep plan without reserve waves (PLAN: the
 ## closest to the old "clear every deck", fast) so the flow itself is what is tested:
 ## 1. The stack drive builds MissionFlow with the plan's MissionRules (no legacy rules); while the enemies live, the
 ##    current deck's sweep is NOT done (evaluation gated until they spawned), the HUD's objective panel shows its lines.
@@ -77,7 +77,7 @@ func _crew_scale() -> void:
 	mf.free()
 	td.free()
 	# No reader left that sizes from a local count: the old launch-crew path is gone from MissionFlow and MissionDepots.
-	for path: String in ["res://scripts/game/mission_flow.gd", "res://scripts/game/mission_depots.gd"]:
+	for path: String in ["res://scripts/mission/mission_flow.gd", "res://scripts/mission/depots/mission_depots.gd"]:
 		var src := FileAccess.get_file_as_string(path)
 		check(not src.contains("crew_size(") and not src.contains("launch_crew(") and not src.contains("spawn_order.size()"),
 			"%s reads no local crew count (crew_size / launch_crew / spawn_order)" % path.get_file())

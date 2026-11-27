@@ -9,27 +9,27 @@ const OVR := "user://test_graphics_override.cfg"
 
 func setup() -> void:
 	GraphicsQuality.override_level = -1
-	GraphicsQuality.use_settings({"quality": CityQuality.HIGH, "msaa": 2})
+	GraphicsQuality.use_settings({"quality": GraphicsQuality.HIGH, "msaa": 2})
 	var vp := SubViewport.new()
 	add_child(vp)
 	var fsr := GraphicsQuality.fsr_available()
-	GraphicsQuality.apply_viewport(vp, CityQuality.LOW)
+	GraphicsQuality.apply_viewport(vp, GraphicsQuality.LOW)
 	near(vp.scaling_3d_scale, 0.67, 0.001, "LOW: 3D render scale 0.67")
 	eq(vp.scaling_3d_mode, Viewport.SCALING_3D_MODE_FSR if fsr else Viewport.SCALING_3D_MODE_BILINEAR, "LOW: FSR when available")
 	eq(vp.msaa_3d, Viewport.MSAA_DISABLED, "LOW: MSAA off whatever the setting")
 	eq(vp.screen_space_aa, Viewport.SCREEN_SPACE_AA_DISABLED, "LOW: no screen-space AA")
 	check(not vp.use_taa, "LOW: no TAA")
-	GraphicsQuality.apply_viewport(vp, CityQuality.MEDIUM)
+	GraphicsQuality.apply_viewport(vp, GraphicsQuality.MEDIUM)
 	near(vp.scaling_3d_scale, 0.85, 0.001, "MEDIUM: 3D render scale 0.85")
 	eq(vp.msaa_3d, Viewport.MSAA_4X, "MEDIUM: the player's MSAA (4x)")
-	GraphicsQuality.apply_viewport(vp, CityQuality.HIGH)
+	GraphicsQuality.apply_viewport(vp, GraphicsQuality.HIGH)
 	near(vp.scaling_3d_scale, 1.0, 0.001, "HIGH: full resolution")
 	eq(vp.scaling_3d_mode, Viewport.SCALING_3D_MODE_BILINEAR, "HIGH: no upscaler")
 	eq(vp.msaa_3d, Viewport.MSAA_4X, "HIGH: the player's MSAA (4x)")
-	GraphicsQuality.use_settings({"quality": CityQuality.LOW, "msaa": 1})
+	GraphicsQuality.use_settings({"quality": GraphicsQuality.LOW, "msaa": 1})
 	GraphicsQuality.apply_viewport(vp)   # the level in force
 	near(vp.scaling_3d_scale, 0.67, 0.001, "default level: the setting (LOW)")
-	GraphicsQuality.override_level = CityQuality.HIGH
+	GraphicsQuality.override_level = GraphicsQuality.HIGH
 	GraphicsQuality.apply_viewport(vp)
 	near(vp.scaling_3d_scale, 1.0, 0.001, "the --quality override wins")
 	eq(vp.msaa_3d, Viewport.MSAA_2X, "HIGH with the 2x setting")
@@ -41,12 +41,12 @@ func setup() -> void:
 	env.ssao_enabled = true
 	env.ssil_enabled = true
 	env.ssr_enabled = false
-	GraphicsQuality.apply_environment(env, CityQuality.LOW)
+	GraphicsQuality.apply_environment(env, GraphicsQuality.LOW)
 	check(not env.glow_enabled and not env.ssao_enabled and not env.ssil_enabled and not env.ssr_enabled,
 			"LOW: no glow / SSAO / SSIL / SSR")
-	GraphicsQuality.apply_environment(env, CityQuality.MEDIUM)
+	GraphicsQuality.apply_environment(env, GraphicsQuality.MEDIUM)
 	check(env.glow_enabled and not env.ssao_enabled and not env.ssil_enabled, "MEDIUM: glow only")
-	GraphicsQuality.apply_environment(env, CityQuality.HIGH)
+	GraphicsQuality.apply_environment(env, GraphicsQuality.HIGH)
 	check(env.glow_enabled and env.ssao_enabled and env.ssil_enabled and not env.ssr_enabled,
 			"HIGH: the environment's own extras back")
 
@@ -62,7 +62,7 @@ func setup() -> void:
 	check(not GraphicsQuality.is_integrated("", other_t), "unknown (headless) is not integrated")
 	eq(GraphicsQuality.renderer_wanted("forward_plus"), "forward_plus", "explicit Forward+")
 	eq(GraphicsQuality.renderer_wanted("gl_compatibility"), "gl_compatibility", "explicit Compatibility")
-	eq(GraphicsQuality.renderer_wanted("auto"), "gl_compatibility" if GraphicsQuality.detect() == CityQuality.LOW else "forward_plus",
+	eq(GraphicsQuality.renderer_wanted("auto"), "gl_compatibility" if GraphicsQuality.detect() == GraphicsQuality.LOW else "forward_plus",
 			"auto follows the detection")
 	check(not GraphicsQuality.can_switch_renderer(), "a dev run never writes override.cfg")
 

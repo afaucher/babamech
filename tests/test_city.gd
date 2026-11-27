@@ -63,13 +63,13 @@ func _golden() -> void:
 ## top roof have a standable plant room on it.
 func _roof_layout(plan: CityPlan, what: String) -> void:
 	var feet := {}       # building -> [[centre, footprint radius]]
-	for it: Dictionary in CityProps.layout(plan):
+	for it: Dictionary in CityPropLayout.layout(plan):
 		if not CityPropSim.is_roof(it):
 			continue
 		var bi := int(it["building"])
 		var ti := int(it["tier"])
 		var at := Vector2(it["lx"], it["lz"])
-		var foot := float(CityProps.ROOF_FOOT[it["type"]])
+		var foot := float(CityPropLayout.ROOF_FOOT[it["type"]])
 		check(plan.roof_rect(bi, ti).grow(-foot).has_point(at), "%s: roof prop %d (%s) stands inside its tier" % [what, it["id"], it["type"]])
 		near(float(it["ly"]), float(plan.buildings[bi]["tiers"][ti]["y1"]), 1e-4, "%s: roof prop %d at its roof's height" % [what, it["id"]])
 		for q in plan.roof_blockers(bi, ti):
@@ -310,7 +310,7 @@ func _check_deck(section: SectionPlan, deck: int, what: String) -> void:
 		var foot := Rect2((b["center"] as Vector2) - (b["size"] as Vector2) * 0.5, b["size"])
 		for o in no_go:
 			check(not foot.intersects(o), "%s: a %s building stands in a hole or on kept-clear ground" % [what, b["style"]])
-	for it: Dictionary in CityProps.layout(plan):
+	for it: Dictionary in CityPropLayout.layout(plan):
 		for o in no_go:
 			check(not o.has_point(Vector2(it["x"], it["s"])), "%s: prop %d (%s) stands in a hole or on kept-clear ground" % [what, it["id"], it["type"]])
 	# The walls are the section's: kinds and gates.

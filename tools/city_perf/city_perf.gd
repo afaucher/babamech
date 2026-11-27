@@ -338,10 +338,10 @@ func _physics(mech: MechController, ring: RingFrame, label: String) -> void:
 func _quality_cases(seed_: int, which: String) -> void:
 	var levels: Array[int] = []
 	if which == "all":
-		levels.assign([CityQuality.HIGH, CityQuality.MEDIUM, CityQuality.LOW])
+		levels.assign([GraphicsQuality.HIGH, GraphicsQuality.MEDIUM, GraphicsQuality.LOW])
 	else:
 		for part in which.split(",", false):
-			levels.append(CityQuality.clamp_level(int(part)))
+			levels.append(GraphicsQuality.clamp_level(int(part)))
 	# --perf-size WxH: force the window (and so the 3D render, stretch mode canvas_items) to that many pixels; --resolution
 	# alone is scaled by the desktop's DPI on the hidden desktop.
 	var want := Boot.arg_value(OS.get_cmdline_user_args(), "--perf-size").split("x")
@@ -365,8 +365,8 @@ func _quality_cases(seed_: int, which: String) -> void:
 			lab.set_lab_param("deck", float(entry))
 			lab.set_lab_option("camera", view)
 			stack.set_quality(q)
-			rows.append(await _measure_quality("%-6s %-6s" % [view, CityQuality.name_of(q)], stack))
-	if levels.has(CityQuality.LOW):
+			rows.append(await _measure_quality("%-6s %-6s" % [view, GraphicsQuality.name_of(q)], stack))
+	if levels.has(GraphicsQuality.LOW):
 		# Attribution at LOW, from the avenue and the ramp: the deck below (drawn at LOW so holes and ramp mouths are not a
 		# void), and settings outside the city (Engine's): MSAA off, 3D render scale 0.75.
 		var vp := get_viewport()
@@ -374,24 +374,24 @@ func _quality_cases(seed_: int, which: String) -> void:
 		for view: String in ["avenue", "ramp"]:
 			lab.set_lab_param("deck", float(entry))
 			lab.set_lab_option("camera", view)
-			stack.set_quality(CityQuality.LOW)
+			stack.set_quality(GraphicsQuality.LOW)
 			if stack.active_deck + 1 < stack.decks.size():
 				stack.decks[stack.active_deck + 1].visible = false
 				rows.append(await _measure_quality("%-6s low, no deck below" % view, stack))
 				stack.decks[stack.active_deck + 1].visible = true
 		lab.set_lab_option("camera", "avenue")
-		stack.set_quality(CityQuality.LOW)
+		stack.set_quality(GraphicsQuality.LOW)
 		vp.msaa_3d = Viewport.MSAA_DISABLED
 		rows.append(await _measure_quality("avenue low, msaa off  ", stack))
 		vp.scaling_3d_scale = 0.75
 		rows.append(await _measure_quality("avenue low, msaa off, scale 0.75", stack))
 		vp.scaling_3d_scale = 1.0
 		vp.msaa_3d = msaa
-		stack.set_quality(CityQuality.HIGH)
+		stack.set_quality(GraphicsQuality.HIGH)
 		vp.msaa_3d = Viewport.MSAA_DISABLED
 		rows.append(await _measure_quality("avenue high, msaa off ", stack))
 		vp.msaa_3d = msaa
-	stack.set_quality(CityQuality.HIGH)
+	stack.set_quality(GraphicsQuality.HIGH)
 	_say("quality summary (view, level, avg / p95 frame ms, GPU / CPU render ms, draws, primitives, objects, omni fills on, decks drawn, sun shadows):")
 	for r in rows:
 		_say("  " + r)

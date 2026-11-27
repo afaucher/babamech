@@ -29,7 +29,7 @@ func _run() -> void:
 	var method := RenderingServer.get_current_rendering_method()
 	_say("renderer %s, adapter %s (%s), window %s, detected default %s" % [method, GraphicsQuality.adapter_name(),
 			"integrated" if GraphicsQuality.is_integrated(GraphicsQuality.adapter_name(), RenderingServer.get_video_adapter_type()) else "dedicated",
-			str(root.size), CityQuality.name_of(GraphicsQuality.detect())])
+			str(root.size), GraphicsQuality.name_of(GraphicsQuality.detect())])
 	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	for i in 30:
@@ -37,7 +37,7 @@ func _run() -> void:
 	td.drive_override = true
 	var shots := ProjectSettings.globalize_path("res://test_logs/shots")
 	DirAccess.make_dir_recursive_absolute(shots)
-	for q: int in [CityQuality.HIGH, CityQuality.MEDIUM, CityQuality.LOW, CityQuality.HIGH]:
+	for q: int in [GraphicsQuality.HIGH, GraphicsQuality.MEDIUM, GraphicsQuality.LOW, GraphicsQuality.HIGH]:
 		GraphicsQuality.apply_viewport(root, q)
 		if td.stack != null:
 			td.stack.set_quality(q)
@@ -57,14 +57,14 @@ func _run() -> void:
 			if f == WARM - 1:
 				var img := root.get_texture().get_image()
 				if img != null:
-					img.save_png(shots.path_join("quality_%s_%s.png" % [method, CityQuality.name_of(q)]))
+					img.save_png(shots.path_join("quality_%s_%s.png" % [method, GraphicsQuality.name_of(q)]))
 		var avg := 0.0
 		for v in ms:
 			avg += v
 		avg /= ms.size()
 		ms.sort()
 		_say("%-6s scale %.2f %-8s msaa %d | frame avg %6.2f p95 %6.2f ms | gpu %6.2f cpu-render %5.2f ms" % [
-				CityQuality.name_of(q), root.scaling_3d_scale, ["bilinear", "fsr", "fsr2", "metalfx_s", "metalfx_t"][root.scaling_3d_mode],
+				GraphicsQuality.name_of(q), root.scaling_3d_scale, ["bilinear", "fsr", "fsr2", "metalfx_s", "metalfx_t"][root.scaling_3d_mode],
 				root.msaa_3d, avg, ms[int(ms.size() * 0.95)], gpu / MEASURE, cpu / MEASURE])
 	_say("done")
 	get_tree().quit()

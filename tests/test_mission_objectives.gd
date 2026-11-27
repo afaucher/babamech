@@ -1,5 +1,5 @@
 extends TestCase
-## Mission objectives phase 1 in a SOLO stack drive (objectives are the only mode; scripts/game/mission_flow.gd,
+## Mission objectives phase 1 in a SOLO stack drive (objectives are the only mode; scripts/mission/mission_flow.gd,
 ## MissionHud; docs/design/mission-objectives.md §7, §9). Seed 7: deck 1 flag (primary), deck 2 defend, deck 3 defend,
 ## then the extraction hold (shortened by MissionFlow.test_plan; the director's lull / grace shortened too).
 ## A. LOST: the crew reaches deck 2's defend (active), the relay's HP goes to 0 -> "lost" / objective_failed, banner

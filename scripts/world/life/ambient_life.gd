@@ -51,7 +51,7 @@ var time_scale := 1.0         ## offline clock speed (the lab): handed to every 
 var sent: Array = []          ## host: the last events it decided, [kind, data] (tests feed them to another instance)
 var stack: CityStack          ## setup_stack: the stack (null for a district on its own)
 var units: Array[LifeDeck] = []   ## the decks' life (one for a district on its own)
-var quality := CityQuality.HIGH   ## set_quality: local presentation only
+var quality := GraphicsQuality.HIGH   ## set_quality: local presentation only
 var _draw_r := LifeDeck.DRAW_R    ## quality: m from a viewer an agent is drawn (bands, hit tests and events ignore it)
 var _viewers: Array = []      ## registered viewer nodes (Node3D)
 var _stack_pushers: Array = []    ## stack: [body, radius, src, deck it is handed to (-1 none)]
@@ -358,12 +358,12 @@ func _alone_views() -> void:
 
 # --- Quality (CityQuality: drawing only) --------------------------------------------------------------------
 
-## Draw level q (CityQuality.LOW / MEDIUM / HIGH): people, vehicles and the tram are drawn only within
+## Draw level q (GraphicsQuality.LOW / MEDIUM / HIGH): people, vehicles and the tram are drawn only within
 ## CityQuality.level(q).life_draw_r of a viewer (DRAW_R at HIGH). Nothing else changes: the bands (EVAL_R / DRAW_R),
 ## sampling, events, what this machine's shots can hit, the host's decisions and every pose and state stay exactly as at
 ## HIGH. Covers every deck. Any time, before or after setup.
 func set_quality(q: int) -> void:
-	quality = CityQuality.clamp_level(q)
+	quality = GraphicsQuality.clamp_level(q)
 	_draw_r = minf(float(CityQuality.level(quality)["life_draw_r"]), LifeDeck.DRAW_R)
 	var all: Array[LifeDeck] = units.duplicate()
 	all.append_array(_su_units)
@@ -721,7 +721,7 @@ func _on_event(_from: int, kind: String, data: Dictionary, _stamp: float) -> voi
 			var sb: Variant = data.get("bytes", PackedByteArray())
 			if s0 != null and s0.is_client() and sb is PackedByteArray:
 				for u in units:
-					u.now = u.clock()
+					u.now = Net.world_time(u.now)
 				restore(sb)
 			return
 		if not units.is_empty():

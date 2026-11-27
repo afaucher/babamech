@@ -7,7 +7,7 @@ extends RefCounted
 ##                       doors and benches as nodes on it, and a zebra crossing between facing block corners at every
 ##                       junction. edges: [a, b, kind (WALK | CROSS), junction, axis, length]
 ##   doors               one per building front that faces a street: [{id, building, at (on the facade), node, block}]
-##   benches             the street benches of CityProps.layout: [{id, prop, at, yaw, node}]
+##   benches             the street benches of CityPropLayout.layout: [{id, prop, at, yaw, node}]
 ##   junctions           [{id, at, phase}]: a fixed signal cycle on the shared clock, offset per junction. Axis 0 = the
 ##                       crossings that walk along x (across a road running along s), axis 1 = along s.
 ##   people              [{id, period, phase, speed, cloth, build, tall}]
@@ -141,7 +141,7 @@ func build(p: CityPlan, people_count: int = -1, cap: int = PEOPLE_CAP) -> void:
 	if p.section != null:
 		tram = LifeTram.make(p, h(9100, p.deck))
 		for o in p.floor_cuts():
-			_cuts.append(o.grow(CityStreets.HOLE_CURB + 0.4))
+			_cuts.append(o.grow(CityDims.HOLE_CURB + 0.4))
 	_build_junctions()
 	_build_graph()
 	_build_people()
@@ -309,7 +309,7 @@ func _build_graph() -> void:
 	# the park's paved ring, reached by the park paths) and plaza benches (node on the lane of a street side of the plaza
 	# whose straight way in misses the planter).
 	var park_ring := {}            # lot index -> [ring nodes N E S W, chord midpoints (+x+s, +x-s, -x-s, -x+s)]
-	for it: Dictionary in CityProps.layout(plan):
+	for it: Dictionary in CityPropLayout.layout(plan):
 		if int(it.get("building", -1)) >= 0:      # roof props are not on the street
 			continue
 		if it["type"] != "bench":
@@ -697,7 +697,7 @@ func ground_h(x: float, s: float) -> float:
 		best = maxf(best, d)
 	if best <= 0.0:
 		return 0.0
-	return CityPlan.CURB_H * clampf(best / CityStreets.EDGE, 0.0, 1.0)
+	return CityPlan.CURB_H * clampf(best / CityDims.EDGE, 0.0, 1.0)
 
 
 ## The crossing whose zebra band covers (x, s): {edge, junction, axis}, or {} (tests use it).

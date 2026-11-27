@@ -236,7 +236,7 @@ static func _hung(plan: CityPlan, geo: CityGeo, kind: String, xc: float, sc: flo
 	for k: float in [-1.0, 1.0]:
 		var hx := xc + k * (float(s["w"]) * 0.5 - 0.8)
 		for o: Rect2 in plan.site.openings:
-			if CityStreets.ceiling_opening(o).grow(1.0).has_point(Vector2(hx, sc)):
+			if CityDims.ceiling_opening(o).grow(1.0).has_point(Vector2(hx, sc)):
 				return {}
 	s["n"] = Vector2(0.0, facing)
 	s["at"] = Vector2(xc, sc)
@@ -488,8 +488,9 @@ static func _make_glyphs() -> Dictionary:
 
 ## A lab camera on the first sign of a kind on the first district of `list` that has one: {district, eye, target} in arc
 ## coordinates (x, s, h), or {}. sign_road: a gate and its over-gate sign from its road, 80 m back at 10 m up; sign_lift:
-## a lift door and its sign from 45 m; sign_ramp: a ramp's hung sign from 55 m in front of its face.
-static func lab_view(list: Array, cam: String) -> Dictionary:
+## a lift door and its sign from 45 m; sign_ramp: a ramp's hung sign from 55 m in front of its face. `mission_doors`:
+## {district: {"<side>:<a>": true}}, the gates with a MissionWorld door (MissionWorld.wall_doors(); {} without a mission).
+static func lab_view(list: Array, cam: String, mission_doors: Dictionary = {}) -> Dictionary:
 	var want := {"sign_lift": "lift", "sign_ramp": "ramp", "sign_road": "over_gate"}.get(cam, "") as String
 	for d: Variant in list:
 		if d == null or d.plan == null:
@@ -503,7 +504,7 @@ static func lab_view(list: Array, cam: String) -> Dictionary:
 			if want == "over_gate":
 				# ON the road that ends at the gate, 80 m back at 10 m: the first gate whose over-gate sign no building hides
 				# (a gate with a MissionWorld door first, when the mission is on).
-				var doors: Dictionary = d.plan.get_meta("mission_doors", {})
+				var doors: Dictionary = mission_doors.get(d, {})
 				if not doors.is_empty() and not doors.has(str(s["door_key"])):
 					continue
 				var e0 := at + nv * 80.0

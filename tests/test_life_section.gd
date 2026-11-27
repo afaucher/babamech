@@ -236,7 +236,7 @@ func _vehicle_sample(cp: CityPlan, tr: LifeTraffic, what: String) -> void:
 				if at.x > l.x - hw + 0.05 and at.x < l.y + hw - 0.05:
 					bad_lane += 1
 			for o in cuts:
-				if o.grow(CityStreets.HOLE_CURB + hw).has_point(at):
+				if o.grow(CityDims.HOLE_CURB + hw).has_point(at):
 					bad_cut += 1
 			if not e.grow(-hw).has_point(at):
 				bad_out += 1

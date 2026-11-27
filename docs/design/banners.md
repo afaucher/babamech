@@ -64,7 +64,7 @@ far decks at LOW / MEDIUM). This replaces the brief's "fewer banners at LOW".
 
 **Clear of the facade** (2026-11-23, user playtest: a banner hung through an apartment's balconies). A facade spot is
 kept only where the banner's envelope (cloth, the cross-bar with its end caps, the brackets, + `MARGIN` 0.3 m; out to
-the bar + 0.3 m) meets none of its face's relief boxes and no other box. `CityBuildings.relief(plan, building, tier)`
+the bar + 0.3 m) meets none of its face's relief boxes and no other box. `CityFacade.relief(plan, building, tier)`
 lists, per side, everything standing out at least `RELIEF_MIN` 0.4 m (deeper than the cloth's back at 0.48 m):
 balconies (every bay of a balconied face: which bays get them is a cosmetic roll), door canopies, shop awnings (every
 shape), recessed entrances, corner blade signs, downtown awnings and lobby canopies, alley hoods and pipes, lane wall

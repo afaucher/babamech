@@ -1,6 +1,6 @@
 extends NetTest
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
-## The repair drone across machines (docs/design/back-equipment.md, scripts/combat/combat_net.gd "combat.drone") over a
+## The repair drone across machines (docs/design/back-equipment.md, scripts/mission/sync/combat_net.gd "combat.drone") over a
 ## real crew mission of 2, once per link (off, coast). The host (A) launches a drone through CombatWorld.launch_drone (the
 ## call WeaponRack.activate makes; CombatNet sends the one event). Client c1 (B) has damaged its own mech beforehand.
 ## 1. B gets ONE drone with A's launch time t and shooter, and draws it at the same place as A at the same clock times
@@ -72,8 +72,8 @@ func run_host() -> void:
 		return
 	await sleep(1.0)
 	check(d.beamed().has(tb), "on A, a beam goes to B's puppet while its mirrored HP is below full")
-	check(d.ring_shown(), "on A, the ring shows while it repairs")
-	eq(d.scans_shown(), d.beamed().size(), "on A, one scan look per repaired target")
+	check(d.look.ring_shown(), "on A, the ring shows while it repairs")
+	eq(d.look.scans_shown(), d.beamed().size(), "on A, one scan look per repaired target")
 	Session.send_event(0, CombatNet.DRONE, {"t": float(rec["t"]), "hp": "back"})   # the same launch again: dropped
 	await until(func() -> bool: return samples.size() == SAMPLES.size(), 6.0)
 	await sleep(0.4)
@@ -125,7 +125,7 @@ func run_host() -> void:
 		check(not bool(vf["ring_full"]), "on B, no ring once nobody in range needs repair")
 	await sleep(0.5)
 	check(not d.beamed().has(tb), "on A, no beam to B's puppet once its mirrored HP is full")
-	eq(d.scans_shown(), d.beamed().size(), "on A, no scan look without a repaired target")
+	eq(d.look.scans_shown(), d.beamed().size(), "on A, no scan look without a repaired target")
 	# 5b. Home: after LIFE + dock s, A's puppet on B shows the docked drone again.
 	await until(func() -> bool: return world.drone_of(net.local_shooter) == null, LIFE + 4.0)
 	check(world.drone_of(net.local_shooter) == null, "A's drone flew home and was removed on A")
@@ -161,7 +161,7 @@ func run_client() -> void:
 				var dn := world.drone_of("player1")
 				var own := td.combat.player_target
 				report("full", {"repairing": dn != null and dn.repairing(), "beam_damaged": beam_damaged,
-					"beam_full": dn != null and dn.beamed().has(own), "ring_full": dn != null and dn.ring_shown()})
+					"beam_full": dn != null and dn.beamed().has(own), "ring_full": dn != null and dn.look.ring_shown()})
 			"damage":
 				td.combat.player_target.apply_damage(DAMAGE, "torso", "test")
 				hp_after_damage = td.combat.player_target.total_hp()

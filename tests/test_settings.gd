@@ -13,7 +13,7 @@ func setup() -> void:
 	want["quality"] = GraphicsQuality.detect()   # never chosen: auto-detected (LOW on an integrated GPU, else HIGH)
 	eq(d, want, "a missing file gives the defaults (quality auto-detected)")
 	eq(int(GameSettings.DEFAULTS["quality"]), -1, "the quality default is 'never chosen'")
-	check(int(d["quality"]) in [CityQuality.LOW, CityQuality.HIGH], "auto-detect picks LOW or HIGH")
+	check(int(d["quality"]) in [GraphicsQuality.LOW, GraphicsQuality.HIGH], "auto-detect picks LOW or HIGH")
 
 	d["player_name"] = "Clucky"
 	d["head"] = "corn"
@@ -29,25 +29,25 @@ func setup() -> void:
 	near(float(back["sfx"]), 0.25, 0.0001, "sfx round-trips")
 
 	# Graphics quality: persists, broken values fall back to the auto-detected level, the --quality flag beats it.
-	GameSettings.set_value("quality", CityQuality.MEDIUM)
-	eq(int(GameSettings.load_settings()["quality"]), CityQuality.MEDIUM, "quality round-trips")
-	GameSettings.set_value("quality", CityQuality.LOW)
-	eq(int(GameSettings.load_settings()["quality"]), CityQuality.LOW, "quality LOW round-trips")
+	GameSettings.set_value("quality", GraphicsQuality.MEDIUM)
+	eq(int(GameSettings.load_settings()["quality"]), GraphicsQuality.MEDIUM, "quality round-trips")
+	GameSettings.set_value("quality", GraphicsQuality.LOW)
+	eq(int(GameSettings.load_settings()["quality"]), GraphicsQuality.LOW, "quality LOW round-trips")
 	for bad: Variant in [7, -3, "high", 1.5]:
 		GameSettings.set_value("quality", bad)
 		eq(int(GameSettings.load_settings()["quality"]), GraphicsQuality.detect(), "quality %s falls back to auto" % str(bad))
-	GameSettings.set_value("quality", CityQuality.LOW)
+	GameSettings.set_value("quality", GraphicsQuality.LOW)
 	GraphicsQuality.use_settings(GameSettings.load_settings())
-	eq(GraphicsQuality.level(), CityQuality.LOW, "level() follows the setting")
-	eq(Boot.quality_flag(PackedStringArray(["--quality", "high"])), CityQuality.HIGH, "--quality high")
-	eq(Boot.quality_flag(PackedStringArray(["--quality", "Medium"])), CityQuality.MEDIUM, "--quality Medium")
+	eq(GraphicsQuality.level(), GraphicsQuality.LOW, "level() follows the setting")
+	eq(Boot.quality_flag(PackedStringArray(["--quality", "high"])), GraphicsQuality.HIGH, "--quality high")
+	eq(Boot.quality_flag(PackedStringArray(["--quality", "Medium"])), GraphicsQuality.MEDIUM, "--quality Medium")
 	eq(Boot.quality_flag(PackedStringArray(["--quality", "ultra"])), -1, "an unknown --quality is ignored")
 	eq(Boot.quality_flag(PackedStringArray([])), -1, "no --quality flag")
 	GraphicsQuality.override_level = Boot.quality_flag(PackedStringArray(["--quality", "high"]))
-	eq(GraphicsQuality.level(), CityQuality.HIGH, "the flag overrides the saved LOW")
-	eq(int(GameSettings.load_settings()["quality"]), CityQuality.LOW, "the flag is not saved")
+	eq(GraphicsQuality.level(), GraphicsQuality.HIGH, "the flag overrides the saved LOW")
+	eq(int(GameSettings.load_settings()["quality"]), GraphicsQuality.LOW, "the flag is not saved")
 	GraphicsQuality.override_level = -1
-	eq(GraphicsQuality.level(), CityQuality.LOW, "without the flag the setting is back")
+	eq(GraphicsQuality.level(), GraphicsQuality.LOW, "without the flag the setting is back")
 	# Renderer: auto by default, persists, unknown values fall back to auto.
 	GameSettings.set_value("renderer", "gl_compatibility")
 	eq(str(GameSettings.load_settings()["renderer"]), "gl_compatibility", "renderer round-trips")
@@ -106,11 +106,11 @@ func setup() -> void:
 	eq(MechAccent.applied(fe.stage.models[0]), "orange", "orange again: the baked colours are back")
 	# The graphics rows: picking a level saves it and level() follows; the note names the GPU.
 	check(fe.quality_pick != null and fe.renderer_pick != null, "the settings screen has quality and renderer rows")
-	fe.quality_pick.select(CityQuality.MEDIUM)
-	fe.quality_pick.item_selected.emit(CityQuality.MEDIUM)
+	fe.quality_pick.select(GraphicsQuality.MEDIUM)
+	fe.quality_pick.item_selected.emit(GraphicsQuality.MEDIUM)
 	await frames(1)
-	eq(int(GameSettings.load_settings()["quality"]), CityQuality.MEDIUM, "the quality is saved when picked")
-	eq(GraphicsQuality.level(), CityQuality.MEDIUM, "level() follows the picked quality")
+	eq(int(GameSettings.load_settings()["quality"]), GraphicsQuality.MEDIUM, "the quality is saved when picked")
+	eq(GraphicsQuality.level(), GraphicsQuality.MEDIUM, "level() follows the picked quality")
 	check(fe.quality_note.text.contains("GPU:"), "the note shows the detected GPU (%s)" % fe.quality_note.text)
 	fe.renderer_pick.select(2)
 	fe.renderer_pick.item_selected.emit(2)

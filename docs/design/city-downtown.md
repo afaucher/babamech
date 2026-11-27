@@ -136,7 +136,7 @@ buildings (`CityDistrict.TOWER_WEIGHT`) and stay out of the top five. Bases over
   building line, blocked by anything spanning 8 m: tiers, shafts, columns, cores). Diagonal views through corner cuts are
   extra, not counted.
 - Plaza furniture: the two planters are fixed and cosmetic (no collision), like an open plaza's; loose props come only
-  in open plaza lots (corner plazas, mid-block gaps) through `CityProps.layout`.
+  in open plaza lots (corner plazas, mid-block gaps) through `CityPropLayout.layout`.
 - Enemy code treats the arcade roof tier as solid down to the ground (cover / spawn footprints); conservative.
 
 **Not enforced**: "about a third" (zone size is what eligible contiguous blocks allow); the 40 / 60 slab / point mix (a

@@ -1,6 +1,6 @@
 extends NetTest
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
-## Combat across machines (co-op step 3, docs/design/weapons.md §5, scripts/combat/combat_net.gd) over a real crew mission,
+## Combat across machines (co-op step 3, docs/design/weapons.md §5, scripts/mission/sync/combat_net.gd) over a real crew mission,
 ## once per link (off, coast). The host (A) is the shooter; client c1 (B) is the victim; in the 3-machine variant c2 (C)
 ## watches. Shots are fire records handed to the host's CombatWorld.fire (what WeaponRack does), so they go out exactly
 ## like a trigger's.

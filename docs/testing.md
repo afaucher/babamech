@@ -93,13 +93,13 @@ what we are testing."):
   director, so the stack, the crew and the FULL garrison stand, nothing is released, nothing is evaluated and the
   mission never ends (`td.mission.rules == null`). MissionScene honours it too: no plan prebuild in the crew's stepped
   load, the full garrison (share 1.0) in `spawn_enemies`, `mission_checksum()` the stack's alone.
-- **Never from the game**: nothing in `scripts/app`, `scripts/ui` or `scripts/game` references a test-support class
+- **Never from the game**: nothing in `scripts/app`, `scripts/ui`, `scripts/mission`, `scripts/bots/crew` or `scripts/camera` references a test-support class
   (PerfProbe, the bench timer, excepted), `MissionFlow.test_quiet` is written only by `scripts/test_support/` and
   `tests/`, and no flag, setting or menu reaches it: `tests/test_objectives_only.gd` checks all of that.
 
 ## Combat log (damage in playtest logs)
 Every mission run (stack mode, solo or crew) prints `[Flow]` damage lines for THIS machine's player
-(`scripts/game/combat_log.gd`, `CombatLog`; attached by `MissionScene` once `MissionFlow` exists, starts when the mission is
+(`scripts/mission/pacing/combat_log.gd`, `CombatLog`; attached by `MissionScene` once `MissionFlow` exists, starts when the mission is
 released). Off: `--no-combat-log`. Never in the lab. Logging only (all LOCAL, no messages). Format:
 `[Flow] t=<FlowLog clock> <tag> mt=<mission s> peer=<id> key=value ...`, fixed field order, values without spaces
 (`-` = empty), so `grep "\[Flow\]"` gives the whole run's flow and damage together.
@@ -141,7 +141,7 @@ Threat and pacing records (`docs/design/pacing-director.md` section 3; summaries
 - `threat i= src=host|local eng= engaging= near= sees= seen_by= nearest= est= crew_i= crew_eng= deck= alive= tot= core=
   heat= shut=0|1 rays= pilot= bot=0|1` at 1 Hz for the local pilot (pilot = the line's peer) and, on the host, for each hangar bot
   (host-owned pilots with negative ids: `bot=1 pilot=<id>`, own intensity and ray budget). `heat` / `shut` come from the
-  pilot's `MechController` (a bot's too: a bound `PlayerTarget`'s own heat gauge is never ticked). `i` = intensity (`PilotIntensity`, `scripts/game/pilot_intensity.gd`, the
+  pilot's `MechController` (a bot's too: a bound `PlayerTarget`'s own heat gauge is never ticked). `i` = intensity (`PilotIntensity`, `scripts/mission/pacing/pilot_intensity.gd`, the
   1.2 table): the host director's value from mission state `intensity` when present (`src=host`), else computed here.
   Engaged = an enemy fired at the pilot, or was awake within 60 m with it as target, in the last 4 s. `near` = live
   enemies within 200 m; `sees` = awake ones among the 12 nearest in line of sight (p>e rays); `seen_by` = enemies with

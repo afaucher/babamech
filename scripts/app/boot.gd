@@ -16,7 +16,7 @@ extends Node
 ##                         modes."; `--no-objectives` is gone and ignored too)
 ##   --no-renderer-relaunch  this process is the first launch's Compatibility relaunch (GraphicsQuality): don't again
 ##   --dev-pretend-integrated  DEV, hidden: treat the GPU as integrated (exercises that relaunch and the LOW auto quality)
-##   --no-combat-log       no [Flow] damage lines in missions (CombatLog.FLAG, read by scripts/game/combat_log.gd)
+##   --no-combat-log       no [Flow] damage lines in missions (CombatLog.FLAG, read by scripts/mission/pacing/combat_log.gd)
 ##   --net-host, --net-join <ip[:port]>, --net-port <P>, --net-link <preset>, --net-name <name>
 ##                         online dev flags (NetSession); the menu opens on the hangar once the crew is up.
 
@@ -41,7 +41,7 @@ func _ready() -> void:
 		return
 	GameSettings.apply(settings, not args.has("--menu-shot") and not args.has("--crew-shot"))
 	var renderer_note := GraphicsQuality.sync_renderer(str(settings["renderer"]))   # override.cfg for the next launch
-	print("[Graphics] %s, quality %s%s, renderer %s%s" % [GraphicsQuality.adapter_note(), CityQuality.name_of(GraphicsQuality.level()),
+	print("[Graphics] %s, quality %s%s, renderer %s%s" % [GraphicsQuality.adapter_note(), GraphicsQuality.name_of(GraphicsQuality.level()),
 		" (--quality)" if GraphicsQuality.override_level >= 0 else "", GraphicsQuality.renderer_current(),
 		(": " + renderer_note) if renderer_note != "" else ""]
 		+ (" (first-launch relaunch)" if args.has(GraphicsQuality.NO_RELAUNCH_FLAG) else ""))
@@ -60,10 +60,10 @@ static func route(args: PackedStringArray) -> String:
 	return explicit if explicit != "" else MENU_SCENE
 
 
-## The --quality flag's level (CityQuality.LOW / MEDIUM / HIGH), or -1 (none or unknown).
+## The --quality flag's level (GraphicsQuality.LOW / MEDIUM / HIGH), or -1 (none or unknown).
 static func quality_flag(args: PackedStringArray) -> int:
 	var v := arg_value(args, "--quality")
-	return CityQuality.from_name(v, -1) if v != "" else -1
+	return GraphicsQuality.from_name(v, -1) if v != "" else -1
 
 
 ## The value after `key`, or "".

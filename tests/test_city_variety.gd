@@ -80,7 +80,7 @@ func _part_a() -> void:
 		eq(CityPlan.make(o).checksum(), OLD_ALONE[s], "A: alone seed %d plan unchanged by the looks pass" % s)
 	var w := OFF.duplicate()
 	w["seed"] = 1
-	eq(CityProps.layout_checksum(CityProps.layout(CityPlan.make(w))), OLD_PROPS_1, "A: alone seed 1 props layout unchanged")
+	eq(CityPropLayout.checksum(CityPropLayout.layout(CityPlan.make(w))), OLD_PROPS_1, "A: alone seed 1 props layout unchanged")
 	w["walls"] = 1.0
 	eq(CityPlan.make(w).checksum(), OLD_WALLS_1, "A: alone seed 1 walled plan unchanged")
 	for key: String in OLD_SECTION:
@@ -713,7 +713,7 @@ func _forms_built(s: int) -> void:
 		pass
 	eq(d2.geometry_digest(), d.geometry_digest(), "C: stepped build = one-shot build (digest)")
 	eq(_col(d2), _col(d), "C: stepped build = one-shot build (collision)")
-	eq(CityProps.layout_checksum(d2.props.items), CityProps.layout_checksum(d.props.items), "C: stepped build = one-shot build (props)")
+	eq(CityPropLayout.checksum(d2.props.items), CityPropLayout.checksum(d.props.items), "C: stepped build = one-shot build (props)")
 	d.queue_free()
 	d2.queue_free()
 

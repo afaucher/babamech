@@ -8,7 +8,8 @@ extends TestCase
 ## 3. One rules mode: MissionRules.make(sec) without a plan evaluates the section's natural plan (no clear / extract).
 ## 4. The TEST-ONLY quiet fixture (QuietSectionFixture -> MissionFlow.test_quiet) is not reachable from the game: no
 ##    script under scripts/ outside scripts/test_support/ names the fixture, nothing outside scripts/test_support/ and
-##    tests/ writes test_quiet, and scripts/app, scripts/ui and scripts/game reference no test-support class (PerfProbe,
+##    tests/ writes test_quiet, and scripts/app, scripts/ui and the old scripts/game files (now scripts/mission,
+##    scripts/bots/crew, scripts/camera) reference no test-support class (PerfProbe,
 ##    the bench instrumentation, excepted: it is a timer, not a mode).
 ## 5. The fixture does what it says: a solo stack drive with it armed has its section, crew and garrison, and no rules,
 ##    plan or director; nothing is evaluated or released and no outcome comes.
@@ -59,14 +60,14 @@ func _flags() -> void:
 	var mf := MissionFlow.new()
 	check(not mf.has_method("objectives_wanted"), "MissionFlow has no objectives_wanted")
 	mf.free()
-	var consts: Dictionary = (load("res://scripts/game/mission_flow.gd") as GDScript).get_script_constant_map()
+	var consts: Dictionary = (load("res://scripts/mission/mission_flow.gd") as GDScript).get_script_constant_map()
 	check(not consts.has("NO_OBJECTIVES_FLAG"), "MissionFlow has no NO_OBJECTIVES_FLAG")
-	var td_consts: Dictionary = (load("res://scripts/game/test_drive.gd") as GDScript).get_script_constant_map()
+	var td_consts: Dictionary = (load("res://scripts/mission/mission_scene.gd") as GDScript).get_script_constant_map()
 	check(not td_consts.has("MODE_DISTRICT"), "MissionScene has no district mode")
 	check(not (load("res://scripts/net/net_mission.gd") as GDScript).get_script_constant_map().has("MODE_DISTRICT"),
 		"NetMission has no district mode")
 	eq(NetMission.clean_mode("district"), NetMission.MODE_STACK, "an old launch's district mode builds the stack")
-	check(not (load("res://scripts/game/test_drive.gd") as GDScript).get_script_method_list().any(
+	check(not (load("res://scripts/mission/mission_scene.gd") as GDScript).get_script_method_list().any(
 		func(m: Dictionary) -> bool: return str(m["name"]) == "launch_mode"), "MissionScene has no launch_mode")
 	check(not ProjectSettings.get_global_class_list().any(func(c: Dictionary) -> bool: return str(c["class"]) == "LegacyClearRules"),
 		"no LegacyClearRules class")
@@ -92,10 +93,13 @@ func _unreachable() -> void:
 				"%s does not name the quiet fixture" % f)
 			var writes := src.contains("test_quiet =") or src.contains("test_quiet=")
 			check(not writes, "%s does not write MissionFlow.test_quiet" % f)
-		if f.begins_with("res://scripts/app/") or f.begins_with("res://scripts/ui/") or f.begins_with("res://scripts/game/"):
+		# scripts/mission/, scripts/bots/crew/ and scripts/camera/ hold what was scripts/game/ before the tier-3 moves.
+		if (f.begins_with("res://scripts/app/") or f.begins_with("res://scripts/ui/")
+				or f.begins_with("res://scripts/mission/") or f.begins_with("res://scripts/bots/crew/")
+				or f.begins_with("res://scripts/camera/")):
 			for cls: String in ["QuietSectionFixture", "TestCase", "NetTest", "LayoutCheck", "ShotCheck", "test_support/"]:
 				check(not src.contains(cls), "%s references no test-support class (%s)" % [f, cls])
-	for f: String in ["res://scripts/app/boot.gd", "res://scripts/app/game_settings.gd", "res://scripts/ui/front_end.gd"]:
+	for f: String in ["res://scripts/app/boot.gd", "res://scripts/app/game_settings.gd", "res://scripts/ui/menu/front_end.gd"]:
 		check(not _code(FileAccess.get_file_as_string(f)).to_lower().contains("quiet"), "%s has no quiet switch" % f)
 
 

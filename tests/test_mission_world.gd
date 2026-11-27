@@ -1,5 +1,5 @@
 ﻿extends TestCase
-## MissionWorld (scripts/world/city/mission_world.gd, docs/design/city-ramps-and-stack.md "Mission world (phase 1)"):
+## MissionWorld (scripts/mission/world/mission_world.gd, docs/design/city-ramps-and-stack.md "Mission world (phase 1)"):
 ## wave doors as scheduled effects on the shared clock (gate and lift: warn / opening / open / closing / shut at the right
 ## times, collision with them, a late call snaps, a repeat open only extends the hold, hold_source extends, sealed is solid
 ## and final, ramp / shaft / unknown ids are harmless), two instances given the same calls in different frame steppings

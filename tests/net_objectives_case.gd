@@ -1,6 +1,6 @@
 extends NetTest
 ## Mission objectives phase 1 across a crew (the one mission mode, the plan;
-## scripts/game/mission_flow.gd, NetMission "mission.wave" / "mission.state"), once per link. Run with PEERS 2
+## scripts/mission/mission_flow.gd, NetMission "mission.wave" / "mission.state"), once per link. Run with PEERS 2
 ## (test_net_objectives.gd) and 3 (test_net_objectives_3.gd). Seed 7 (deck 1: a flag primary).
 ## 1. Every machine runs plan mode from the launch params; the barrier passed with the plan's checksum joined.
 ## 2. The host kills every enemy; the LAST client stands its mech in deck 1's flag ring: the host's rules count the

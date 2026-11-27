@@ -440,7 +440,7 @@ static func plan_wave(plan: CityPlan, ring: RingFrame, order: Dictionary, wave_d
 	return {"specs": specs, "total_units": total_units, "spawn_count": specs.size(), "pending": pending}
 
 
-## Engine host-loop contract (scripts/game/mission_flow.gd `_spawn_wave`, docs/design/mission-objectives.md §9):
+## Engine host-loop contract (scripts/mission/mission_flow.gd `_spawn_wave`, docs/design/mission-objectives.md §9):
 ## Called once per order when the shared clock reaches `order.open_at` (the door has just opened):
 ##   order  = {wave, deck, source, open_at, max_units}
 ##   wave   = MissionPlan pool wave {id, share, theme, source, trigger}

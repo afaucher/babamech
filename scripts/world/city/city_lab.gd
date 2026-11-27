@@ -177,7 +177,7 @@ func _deck_overrides() -> Dictionary:
 
 ## Option "quality" (CityQuality, local presentation): the stack's decks, lights and ranges, or a district's own rig.
 func _apply_quality() -> void:
-	var q := CityQuality.from_name(str(options["quality"]))
+	var q := GraphicsQuality.from_name(str(options["quality"]))
 	if stack != null:
 		stack.set_quality(q)
 	elif district != null and district.rig != null:
@@ -481,7 +481,8 @@ func _apply_view() -> void:
 		"sign_lift", "sign_ramp", "sign_road":     # deck lettering (CitySigns.lab_view): the deck on show first
 			var sl: Array = [district]
 			sl.append_array(_districts())
-			var sv := CitySigns.lab_view(sl, str(options["camera"]))
+			var doors: Dictionary = stack.mission.wall_doors() if stack != null and stack.mission != null else {}
+			var sv := CitySigns.lab_view(sl, str(options["camera"]), doors)
 			if not sv.is_empty():
 				on = sv["district"]
 				eye = sv["eye"]

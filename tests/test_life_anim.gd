@@ -200,8 +200,8 @@ func _kill_direction() -> void:
 func _low_high() -> void:
 	var hi := _life()
 	var lo := _life()
-	lo.set_quality(CityQuality.LOW)
-	hi.set_quality(CityQuality.HIGH)
+	lo.set_quality(GraphicsQuality.LOW)
+	hi.set_quality(GraphicsQuality.HIGH)
 	check(hi.unit(0).figures.shadows() and not lo.unit(0).figures.shadows(), "shadows at HIGH, none at LOW")
 	hi.advance_to(1500.0)
 	lo.advance_to(1500.0)

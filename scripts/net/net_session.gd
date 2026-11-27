@@ -54,7 +54,7 @@ extends Node
 ##
 ## ENEMIES (W4, cast's M3): NetEnemyStream, child "Enemies" (`enemies`). The host runs every enemy and streams them on
 ##   NetWire.T_ENEMY (unreliable, ACTIVE_RATE / IDLE_RATE); clients show puppets ~100 ms behind host_time(). Spawns,
-##   telegraphs, destruction and enemy fire are reliable "enemy.*" events (scripts/game/enemy_sync.gd).
+##   telegraphs, destruction and enemy fire are reliable "enemy.*" events (scripts/mission/sync/enemy_sync.gd).
 ##
 ## LEAVING. A client leaves: the host drops it from the roster. The host leaves normally (leave(), or its process quits):
 ## sys.bye {reason} (HOST_CLOSED / HOST_ENDED), the transport kept open BYE_LINGER at most until every client has closed

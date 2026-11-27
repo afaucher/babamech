@@ -1,5 +1,5 @@
 extends TestCase
-## Military supply depots (docs/design/pacing-director.md §2; scripts/game/mission_depots.gd, supply_depot.gd,
+## Military supply depots (docs/design/pacing-director.md §2; scripts/mission/depots/mission_depots.gd, supply_depot.gd,
 ## depot_target.gd), single process.
 ## A. The effect of one power core on a damaged mech (a standalone PlayerTarget + WeaponRack): surviving components +50 %
 ##    of their missing HP, a destroyed weapon hardpoint rebuilt at 30 % and its weapon usable again, ammo refilled, heat

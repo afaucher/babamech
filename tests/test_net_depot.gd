@@ -1,6 +1,6 @@
 extends NetTest
 ## Supply depots across a crew of 3 (host + 2 clients), once per link (docs/design/pacing-director.md §2;
-## scripts/game/mission_depots.gd, NetMission "DEPOTS"). Seed 7, plan mode.
+## scripts/mission/depots/mission_depots.gd, NetMission "DEPOTS"). Seed 7, plan mode.
 ## 1. Every machine has the same depots at the same snapped sites, facing the same way, with 3 cores (1 per pilot x 3).
 ## 2. A client out of range claims: denied "range", nothing changes anywhere.
 ## 3. The host takes deck 1 depot's cores down to ONE (its own claims); both clients stand in range and claim the LAST

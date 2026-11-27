@@ -9,7 +9,6 @@ extends RefCounted
 ## At every corner the curb drops in a ramp lined up with the crosswalk.
 
 const CURB := CityPlan.CURB_H
-const EDGE := 1.6            ## curb + furnishing band
 const RAMP_A := 2.1          ## ramp span along the block edge, measured from the corner
 const RAMP_B := 4.5
 ## DECALS (docs/design/city-geometry-audit.md): flat patches and markings without collision lie on their surface in
@@ -24,11 +23,8 @@ const DECAL_PATCH := 0.02
 const DECAL_LINE := 0.04
 const DECAL_TOP := 0.06
 const MARK := DECAL_LINE     ## markings sit this far above the road
-const RIB_PITCH := 24.0
-const GIRDER_PITCH := 14.0
 const BACK_S := 150.0        ## backdrop reach along the arc, each way
 const BACK_X := 120.0
-const HOLE_CURB := 0.5       ## curb round a floor hole: this wide and this high, solid
 const HOLE_RAIL := 1.2       ## railing on that curb (no collision)
 const RAIL_GAUGE := 1.435
 const TREE_LEAVES := [["leaf_dark", "leaf", "leaf_light"], ["leaf_dark", "leaf_dark", "leaf"], ["leaf", "leaf_light", "leaf_light"]]
@@ -196,8 +192,8 @@ static func _form_segment(geo: CityGeo, form: String, a: float, b: float, v0: fl
 	var mid := (a + b) * 0.5
 	match form:
 		"lane":
-			var la := mid - CityPlan.LANE_W * 0.5
-			var lb := mid + CityPlan.LANE_W * 0.5
+			var la := mid - RoadForms.LANE_W * 0.5
+			var lb := mid + RoadForms.LANE_W * 0.5
 			geo.tag("road.gutter")
 			_r(geo, swap, la, la + 0.5, v0, v1, CityPalette.c("asphalt_dark"), DECAL_PATCH)
 			_r(geo, swap, lb - 0.5, lb, v0, v1, CityPalette.c("asphalt_dark"), DECAL_PATCH)
@@ -342,7 +338,7 @@ static func _floor_hole(geo: CityGeo, o: Rect2, slab: float, open: int = -1) -> 
 	var x1 := o.end.x
 	var s0 := o.position.y
 	var s1 := o.end.y
-	var c := HOLE_CURB
+	var c := CityDims.HOLE_CURB
 	var c0 := 0.0 if open == 3 else c      # how far the long sides reach past each end
 	var c1 := 0.0 if open == 2 else c
 	geo.g_wall_x(x0, s0, s1, -slab, 0.0, 1.0, cut)
@@ -383,7 +379,7 @@ static func _floor_hole(geo: CityGeo, o: Rect2, slab: float, open: int = -1) -> 
 static func _soffits(geo: CityGeo, cuts: Array[Rect2], slab: float) -> void:
 	var done: Array[Rect2] = cuts.duplicate()
 	for o in cuts:
-		for q in CityGeo.cut(o.grow(maxf(PANEL_X, PANEL_S)), done):
+		for q in CityGeo.cut(o.grow(maxf(CityDims.PANEL_X, CityDims.PANEL_S)), done):
 			geo.g_rect(q.position.x, q.end.x, q.position.y, q.end.y, 0.05 - slab, CityPalette.c("concrete_dark"), false)
 			done.append(q)
 
@@ -674,31 +670,31 @@ static func _block(geo: CityGeo, r: Rect2, flush: Array[bool] = []) -> void:
 	var band := CityPalette.c("sidewalk_band")
 	var curb := CityPalette.c("curb")
 	var tactile := CityPalette.c("tactile")
-	geo.g_rect(x0 + EDGE, x1 - EDGE, s0 + EDGE, s1 - EDGE, CURB, walk)
+	geo.g_rect(x0 + CityDims.EDGE, x1 - CityDims.EDGE, s0 + CityDims.EDGE, s1 - CityDims.EDGE, CURB, walk)
 	# Corner pads.
-	for cx: float in [x0, x1 - EDGE]:
-		for cs: float in [s0, s1 - EDGE]:
-			geo.g_rect(cx, cx + EDGE, cs, cs + EDGE, CURB, curb)
-	geo.g_wall_x(x0, s0, s0 + EDGE, 0.0, CURB, -1.0, curb)
-	geo.g_wall_x(x0, s1 - EDGE, s1, 0.0, CURB, -1.0, curb)
-	geo.g_wall_x(x1, s0, s0 + EDGE, 0.0, CURB, 1.0, curb)
-	geo.g_wall_x(x1, s1 - EDGE, s1, 0.0, CURB, 1.0, curb)
-	geo.g_wall_s(s0, x0, x0 + EDGE, 0.0, CURB, -1.0, curb)
-	geo.g_wall_s(s0, x1 - EDGE, x1, 0.0, CURB, -1.0, curb)
-	geo.g_wall_s(s1, x0, x0 + EDGE, 0.0, CURB, 1.0, curb)
-	geo.g_wall_s(s1, x1 - EDGE, x1, 0.0, CURB, 1.0, curb)
+	for cx: float in [x0, x1 - CityDims.EDGE]:
+		for cs: float in [s0, s1 - CityDims.EDGE]:
+			geo.g_rect(cx, cx + CityDims.EDGE, cs, cs + CityDims.EDGE, CURB, curb)
+	geo.g_wall_x(x0, s0, s0 + CityDims.EDGE, 0.0, CURB, -1.0, curb)
+	geo.g_wall_x(x0, s1 - CityDims.EDGE, s1, 0.0, CURB, -1.0, curb)
+	geo.g_wall_x(x1, s0, s0 + CityDims.EDGE, 0.0, CURB, 1.0, curb)
+	geo.g_wall_x(x1, s1 - CityDims.EDGE, s1, 0.0, CURB, 1.0, curb)
+	geo.g_wall_s(s0, x0, x0 + CityDims.EDGE, 0.0, CURB, -1.0, curb)
+	geo.g_wall_s(s0, x1 - CityDims.EDGE, x1, 0.0, CURB, -1.0, curb)
+	geo.g_wall_s(s1, x0, x0 + CityDims.EDGE, 0.0, CURB, 1.0, curb)
+	geo.g_wall_s(s1, x1 - CityDims.EDGE, x1, 0.0, CURB, 1.0, curb)
 	var low := 0.03
 	# Edges at constant x (they run along s).
 	for side in 2:
 		var xo := x0 if side == 0 else x1                    # outer (curb) line
-		var xi := x0 + EDGE if side == 0 else x1 - EDGE      # inner line
+		var xi := x0 + CityDims.EDGE if side == 0 else x1 - CityDims.EDGE      # inner line
 		var xc := x0 + 0.3 if side == 0 else x1 - 0.3        # curb / band line
 		var sgn := -1.0 if side == 0 else 1.0
 		if not flush.is_empty() and flush[1 if side == 0 else 0]:
-			geo.g_rect(minf(xi, xo), maxf(xi, xo), s0 + EDGE, s1 - EDGE, CURB, walk)
+			geo.g_rect(minf(xi, xo), maxf(xi, xo), s0 + CityDims.EDGE, s1 - CityDims.EDGE, CURB, walk)
 			continue
-		var spans := [[s0 + EDGE, s0 + RAMP_A, false], [s0 + RAMP_A, s0 + RAMP_B, true], [s0 + RAMP_B, s1 - RAMP_B, false],
-				[s1 - RAMP_B, s1 - RAMP_A, true], [s1 - RAMP_A, s1 - EDGE, false]]
+		var spans := [[s0 + CityDims.EDGE, s0 + RAMP_A, false], [s0 + RAMP_A, s0 + RAMP_B, true], [s0 + RAMP_B, s1 - RAMP_B, false],
+				[s1 - RAMP_B, s1 - RAMP_A, true], [s1 - RAMP_A, s1 - CityDims.EDGE, false]]
 		for sp: Array in spans:
 			var a: float = sp[0]
 			var b: float = sp[1]
@@ -717,14 +713,14 @@ static func _block(geo: CityGeo, r: Rect2, flush: Array[bool] = []) -> void:
 	# Edges at constant s (they run along x).
 	for side in 2:
 		var so := s0 if side == 0 else s1
-		var si := s0 + EDGE if side == 0 else s1 - EDGE
+		var si := s0 + CityDims.EDGE if side == 0 else s1 - CityDims.EDGE
 		var sc := s0 + 0.3 if side == 0 else s1 - 0.3
 		var sgn := -1.0 if side == 0 else 1.0
 		if not flush.is_empty() and flush[3 if side == 0 else 2]:
-			geo.g_rect(x0 + EDGE, x1 - EDGE, minf(si, so), maxf(si, so), CURB, walk)
+			geo.g_rect(x0 + CityDims.EDGE, x1 - CityDims.EDGE, minf(si, so), maxf(si, so), CURB, walk)
 			continue
-		var spans := [[x0 + EDGE, x0 + RAMP_A, false], [x0 + RAMP_A, x0 + RAMP_B, true], [x0 + RAMP_B, x1 - RAMP_B, false],
-				[x1 - RAMP_B, x1 - RAMP_A, true], [x1 - RAMP_A, x1 - EDGE, false]]
+		var spans := [[x0 + CityDims.EDGE, x0 + RAMP_A, false], [x0 + RAMP_A, x0 + RAMP_B, true], [x0 + RAMP_B, x1 - RAMP_B, false],
+				[x1 - RAMP_B, x1 - RAMP_A, true], [x1 - RAMP_A, x1 - CityDims.EDGE, false]]
 		for sp: Array in spans:
 			var a: float = sp[0]
 			var b: float = sp[1]
@@ -809,10 +805,10 @@ static func _open_lot(geo: CityGeo, l: Dictionary) -> void:
 
 # --- Furniture -------------------------------------------------------------------------------------------
 # Only what cannot move: tree pits under the street trees, plaza planters, the park fountain. Trees, lamps, signal poles,
-# signs, benches and bins are CityProps (they fall over), placed by CityProps.layout(); the shapes below are their
+# signs, benches and bins are CityProps (they fall over), placed by CityPropLayout.layout(); the shapes below are their
 # prototypes, drawn upright at the origin of `xf`.
 
-## `items` is CityProps.layout(plan): a pit goes under every street tree, so pits and trees always line up.
+## `items` is CityPropLayout.layout(plan): a pit goes under every street tree, so pits and trees always line up.
 static func furniture(geo: CityGeo, plan: CityPlan, items: Array) -> void:
 	geo.tag("furniture")
 	for it: Dictionary in items:
@@ -937,24 +933,13 @@ static func bin(geo: CityGeo, xf: Transform3D) -> void:
 
 
 # --- Ceiling ---------------------------------------------------------------------------------------------
-# The underside of the deck above (docs/design/ceiling-and-pillars.md). A regular grid: girders along the arc every
-# GIRDER_PITCH, ribs across every RIB_PITCH, panels of half a bay each way in three tones, one long light strip down
+# The underside of the deck above (docs/design/ceiling-and-pillars.md). A regular grid (CityDims): girders along the arc
+# every GIRDER_PITCH, ribs across every RIB_PITCH, panels of half a bay each way in three tones, one long light strip down
 # the middle of each girder bay, a service duct beside every other girder, a few access hatches. Pillars meet it in a
 # drop panel (CityBuildings.capital), where the strips stop. Where the deck above has a hole the ceiling is cut back to
 # whole panels, and you see the thickness of the slab, a rim beam and a rim light.
 
-const PANEL_X := GIRDER_PITCH * 0.5
-const PANEL_S := RIB_PITCH * 0.5
-const DROP_PANEL := 5.0      ## how far a pillar's drop panel reaches past its core
-const RIM := 1.6             ## width of the beam around an opening
 const RIM_DROP := 2.4
-
-
-## An opening snapped outward to whole ceiling panels: what is actually cut.
-static func ceiling_opening(o: Rect2) -> Rect2:
-	var x0 := floorf(o.position.x / PANEL_X) * PANEL_X
-	var s0 := floorf(o.position.y / PANEL_S) * PANEL_S
-	return Rect2(x0, s0, ceilf(o.end.x / PANEL_X) * PANEL_X - x0, ceilf(o.end.y / PANEL_S) * PANEL_S - s0)
 
 
 static func _in_any(rects: Array[Rect2], x: float, s: float) -> bool:
@@ -973,9 +958,9 @@ static func ceiling(geo: CityGeo, strips: CityGeo, area: Rect2, plan: CityPlan, 
 ## How many steps ceiling_range() splits the ceiling over `area` into: one per girder bay (panels, strip, ribs), one per
 ## girder line (girder, duct), one for the openings' edges.
 static func ceiling_steps(area: Rect2) -> int:
-	var x0 := floorf(area.position.x / GIRDER_PITCH) * GIRDER_PITCH
-	var x1 := ceilf(area.end.x / GIRDER_PITCH) * GIRDER_PITCH
-	var nx := int(round((x1 - x0) / GIRDER_PITCH))
+	var x0 := floorf(area.position.x / CityDims.GIRDER_PITCH) * CityDims.GIRDER_PITCH
+	var x1 := ceilf(area.end.x / CityDims.GIRDER_PITCH) * CityDims.GIRDER_PITCH
+	var nx := int(round((x1 - x0) / CityDims.GIRDER_PITCH))
 	return nx + (nx + 1) + 1
 
 
@@ -984,43 +969,43 @@ static func ceiling_steps(area: Rect2) -> int:
 ## positions of the bays in the range (concatenate them).
 static func ceiling_range(geo: CityGeo, strips: CityGeo, area: Rect2, plan: CityPlan, rng: RandomNumberGenerator, from: int, to: int) -> PackedFloat32Array:
 	var height := plan.p("ceiling")
-	var x0 := floorf(area.position.x / GIRDER_PITCH) * GIRDER_PITCH
-	var x1 := ceilf(area.end.x / GIRDER_PITCH) * GIRDER_PITCH
-	var s0 := floorf(area.position.y / RIB_PITCH) * RIB_PITCH
-	var s1 := ceilf(area.end.y / RIB_PITCH) * RIB_PITCH
+	var x0 := floorf(area.position.x / CityDims.GIRDER_PITCH) * CityDims.GIRDER_PITCH
+	var x1 := ceilf(area.end.x / CityDims.GIRDER_PITCH) * CityDims.GIRDER_PITCH
+	var s0 := floorf(area.position.y / CityDims.RIB_PITCH) * CityDims.RIB_PITCH
+	var s1 := ceilf(area.end.y / CityDims.RIB_PITCH) * CityDims.RIB_PITCH
 	var tones := [CityPalette.c("ceil_a"), CityPalette.c("ceil_b"), CityPalette.c("ceil_c")]
-	var nx := int(round((x1 - x0) / GIRDER_PITCH))
-	var ns := int(round((s1 - s0) / RIB_PITCH))
+	var nx := int(round((x1 - x0) / CityDims.GIRDER_PITCH))
+	var ns := int(round((s1 - s0) / CityDims.RIB_PITCH))
 	var strip_x := PackedFloat32Array()
 	var rib := CityPalette.c("rib")
 	var walled := plan.p("walls") >= 0.5      # CityPlan.boundary() is non-empty: the ceiling's strips stop at the walls
 	var holes: Array[Rect2] = []
 	for o: Rect2 in plan.site.openings:
-		holes.append(ceiling_opening(o))
+		holes.append(CityDims.ceiling_opening(o))
 	var pads := plan.ceiling_heads()     # drop panels: no strip runs through a pillar's (or a downtown tower's) head
 	for i in range(clampi(from, 0, nx), clampi(to, 0, nx)):
-		var gx := x0 + float(i) * GIRDER_PITCH
-		var mid_x := gx + PANEL_X
+		var gx := x0 + float(i) * CityDims.GIRDER_PITCH
+		var mid_x := gx + CityDims.PANEL_X
 		strip_x.append(mid_x)
 		for j in ns:
-			var rs := s0 + float(j) * RIB_PITCH
+			var rs := s0 + float(j) * CityDims.RIB_PITCH
 			for a in 2:
 				for b in 2:
-					var px := gx + PANEL_X * float(a)
-					var ps := rs + PANEL_S * float(b)
-					if _in_any(holes, px + PANEL_X * 0.5, ps + PANEL_S * 0.5):
+					var px := gx + CityDims.PANEL_X * float(a)
+					var ps := rs + CityDims.PANEL_S * float(b)
+					if _in_any(holes, px + CityDims.PANEL_X * 0.5, ps + CityDims.PANEL_S * 0.5):
 						continue
 					var tone: Color = tones[(i * 2 + a + (j * 2 + b) * 2 + (i * j) % 2) % 3]
 					geo.tag("ceil.panel")
-					geo.g_rect(px, px + PANEL_X, ps, ps + PANEL_S, height, tone, false)
+					geo.g_rect(px, px + CityDims.PANEL_X, ps, ps + CityDims.PANEL_S, height, tone, false)
 					if rng.randf() < 0.035:      # an access hatch into the deck above
 						geo.tag("ceil.hatch")
-						var cx := px + PANEL_X * 0.5 + 1.2
-						var cs := ps + PANEL_S * 0.5
+						var cx := px + CityDims.PANEL_X * 0.5 + 1.2
+						var cs := ps + CityDims.PANEL_S * 0.5
 						geo.g_rect(cx - 1.5, cx + 1.5, cs - 1.5, cs + 1.5, height - 0.04, CityPalette.c("metal_dark"), false)
 						geo.g_rect(cx - 1.2, cx + 1.2, cs - 1.2, cs + 1.2, height - 0.07, CityPalette.c("concrete_dark"), false)
 			# The light strip in this bay: one long line hung just below the ribs, in facet-long pieces.
-			var br := CityGeo.breaks(rs, rs + RIB_PITCH)
+			var br := CityGeo.breaks(rs, rs + CityDims.RIB_PITCH)
 			geo.tag("ceil.strip_rib")
 			strips.tag("strip")
 			for k in br.size() - 1:
@@ -1043,29 +1028,29 @@ static func ceiling_range(geo: CityGeo, strips: CityGeo, area: Rect2, plan: City
 			# Ribs across, one piece per girder bay so an opening can interrupt them.
 			geo.tag("ceil.rib")
 			for e in 2:
-				var rib_s := rs + RIB_PITCH * float(e)
+				var rib_s := rs + CityDims.RIB_PITCH * float(e)
 				if (e == 1 and j < ns - 1) or _in_any(holes, mid_x, rib_s):
 					continue
 				# A rib ending at an opening's edge has no end face there: it lay in the plane of the opening's inside face
 				# (and of the cut face of the floor hole above), which covers it.
 				var ends := CityGeo.ALL
-				if _in_any(holes, gx + GIRDER_PITCH + 0.5, rib_s):
+				if _in_any(holes, gx + CityDims.GIRDER_PITCH + 0.5, rib_s):
 					ends -= CityGeo.PX
 				if _in_any(holes, gx - 0.5, rib_s):
 					ends -= CityGeo.NX
-				geo.box(geo.frame(mid_x, rib_s, height - 0.3), Vector3.ZERO, Vector3(GIRDER_PITCH, 1.0, 1.2), rib, ends)
+				geo.box(geo.frame(mid_x, rib_s, height - 0.3), Vector3.ZERO, Vector3(CityDims.GIRDER_PITCH, 1.0, 1.2), rib, ends)
 	for i in range(clampi(from - nx, 0, nx + 1), clampi(to - nx, 0, nx + 1)):
-		var gx := x0 + float(i) * GIRDER_PITCH
+		var gx := x0 + float(i) * CityDims.GIRDER_PITCH
 		for j in ns:
 			for half in 2:      # two pieces per bay so the girder follows the curve
-				var mid := s0 + (float(j) + 0.25 + 0.5 * float(half)) * RIB_PITCH
+				var mid := s0 + (float(j) + 0.25 + 0.5 * float(half)) * CityDims.RIB_PITCH
 				if _in_any(holes, gx, mid):
 					continue
 				geo.tag("ceil.girder")
-				geo.box(geo.frame(gx, mid, height - 0.7), Vector3.ZERO, Vector3(1.5, 2.2, RIB_PITCH * 0.505), rib)
+				geo.box(geo.frame(gx, mid, height - 0.7), Vector3.ZERO, Vector3(1.5, 2.2, CityDims.RIB_PITCH * 0.505), rib)
 				if i % 2 == 0 and not _in_any(pads, gx + 1.7, mid):      # service duct
 					geo.tag("ceil.duct")
-					geo.box(geo.frame(gx + 1.7, mid, height - 1.5), Vector3.ZERO, Vector3(1.1, 0.8, RIB_PITCH * 0.505), CityPalette.c("metal"))
+					geo.box(geo.frame(gx + 1.7, mid, height - 1.5), Vector3.ZERO, Vector3(1.1, 0.8, CityDims.RIB_PITCH * 0.505), CityPalette.c("metal"))
 	if from <= 2 * nx + 1 and to > 2 * nx + 1:
 		geo.tag("ceil.opening")
 		strips.tag("rim_light")
@@ -1090,16 +1075,16 @@ static func _opening(geo: CityGeo, strips: CityGeo, o: Rect2, h: float, slab: fl
 	geo.g_wall_s(s0, x0, x1, lo, hi, 1.0, cut)
 	geo.g_wall_s(s1, x0, x1, lo, hi, -1.0, cut)
 	# Rim beam: underside and outer faces.
-	geo.g_rect(x0 - RIM, x0, s0 - RIM, s1 + RIM, lo, beam, false)
-	geo.g_rect(x1, x1 + RIM, s0 - RIM, s1 + RIM, lo, beam, false)
-	geo.g_rect(x0, x1, s0 - RIM, s0, lo, beam, false)
-	geo.g_rect(x0, x1, s1, s1 + RIM, lo, beam, false)
-	geo.g_wall_x(x0 - RIM, s0 - RIM, s1 + RIM, lo, h, -1.0, beam)
-	geo.g_wall_x(x1 + RIM, s0 - RIM, s1 + RIM, lo, h, 1.0, beam)
-	geo.g_wall_s(s0 - RIM, x0 - RIM, x1 + RIM, lo, h, -1.0, beam)
-	geo.g_wall_s(s1 + RIM, x0 - RIM, x1 + RIM, lo, h, 1.0, beam)
+	geo.g_rect(x0 - CityDims.RIM, x0, s0 - CityDims.RIM, s1 + CityDims.RIM, lo, beam, false)
+	geo.g_rect(x1, x1 + CityDims.RIM, s0 - CityDims.RIM, s1 + CityDims.RIM, lo, beam, false)
+	geo.g_rect(x0, x1, s0 - CityDims.RIM, s0, lo, beam, false)
+	geo.g_rect(x0, x1, s1, s1 + CityDims.RIM, lo, beam, false)
+	geo.g_wall_x(x0 - CityDims.RIM, s0 - CityDims.RIM, s1 + CityDims.RIM, lo, h, -1.0, beam)
+	geo.g_wall_x(x1 + CityDims.RIM, s0 - CityDims.RIM, s1 + CityDims.RIM, lo, h, 1.0, beam)
+	geo.g_wall_s(s0 - CityDims.RIM, x0 - CityDims.RIM, x1 + CityDims.RIM, lo, h, -1.0, beam)
+	geo.g_wall_s(s1 + CityDims.RIM, x0 - CityDims.RIM, x1 + CityDims.RIM, lo, h, 1.0, beam)
 	# Rim light under the beam.
-	var m := RIM * 0.5
+	var m := CityDims.RIM * 0.5
 	strips.g_rect(x0 - m - 0.3, x0 - m + 0.3, s0 - m, s1 + m, lo - 0.03, CityPalette.c("strip"), false)
 	strips.g_rect(x1 + m - 0.3, x1 + m + 0.3, s0 - m, s1 + m, lo - 0.03, CityPalette.c("strip"), false)
 	strips.g_rect(x0 - m, x1 + m, s0 - m - 0.3, s0 - m + 0.3, lo - 0.03, CityPalette.c("strip"), false)

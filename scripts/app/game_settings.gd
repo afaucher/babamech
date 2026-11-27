@@ -7,7 +7,7 @@ extends RefCounted
 ## (MechAccent.ACCENTS id: the livery colour that replaces the safety orange; default "orange").
 ## Hangar (the pre-mission choice, remembered): chassis, loadout {hardpoint id: weapon id} (the current chassis'), loadouts
 ## {chassis id: loadout}: the loadout last flown on each other chassis (the hangar brings it back on a chassis switch).
-## Video: fullscreen, vsync, msaa (0 off, 1 2x, 2 4x), quality (CityQuality.LOW / MEDIUM / HIGH = 0 / 1 / 2, GraphicsQuality;
+## Video: fullscreen, vsync, msaa (0 off, 1 2x, 2 4x), quality (GraphicsQuality.LOW / MEDIUM / HIGH = 0 / 1 / 2, GraphicsQuality;
 ## -1 in DEFAULTS = never chosen: load_settings auto-detects, LOW on an integrated GPU, else HIGH), renderer (auto /
 ## forward_plus / gl_compatibility: GraphicsQuality.sync_renderer, takes effect at the next launch).
 ## Audio: master, music, sfx (0..1, linear).
@@ -73,7 +73,7 @@ static func load_settings() -> Dictionary:
 
 ## A saved quality level (0..2), or the auto-detected one for anything else (never chosen, broken).
 static func sanitize_quality(v: Variant) -> int:
-	if v is int and int(v) >= CityQuality.LOW and int(v) <= CityQuality.HIGH:
+	if v is int and int(v) >= GraphicsQuality.LOW and int(v) <= GraphicsQuality.HIGH:
 		return int(v)
 	return GraphicsQuality.detect()
 

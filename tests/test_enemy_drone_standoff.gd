@@ -1,5 +1,5 @@
 extends TestCase
-## Scout drone standoff without the wiggle (scripts/enemy/enemy_drone.gd), in the real game: a solo stack drive in plan
+## Scout drone standoff without the wiggle (scripts/enemy/units/enemy_drone.gd), in the real game: a solo stack drive in plan
 ## mode on seed 403112 (the playtest seed), headless, game time only. The mech is the fixture: it stands still and is
 ## kept standing (repair_all every frame). A wiggle is a 6 s window with a path > WIG_PATH m, a net displacement
 ## < WIG_NET m and >= WIG_REVS reversals of the 0.1 s heading (cos < -0.5): the old drone did that for 40+ s here

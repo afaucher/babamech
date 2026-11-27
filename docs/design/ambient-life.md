@@ -252,7 +252,7 @@ Code in `scripts/world/life/`; tests `tests/test_life.gd`, `tests/test_net_life.
   3 m in from the curb round every block (the walkway is 1.6..4 m), with every door and street bench as a node on it, and a
   zebra crossing between the facing lane corners of neighbouring blocks (inside the drawn zebra band, 1.8..4.8 m from the
   block corner). Doors: one per building whose lot faces a street, 0.3 m out of the middle of its front facade. Benches:
-  the street benches of `CityProps.layout` (park and plaza benches are not used). Lights: a 50 s cycle per junction
+  the street benches of `CityPropLayout.layout` (park and plaza benches are not used). Lights: a 50 s cycle per junction
   (offset from the seed and junction id). Changed in phase 2 to a 60 s cycle: walk 22 s along x, 8 s turn phase (both
   walk signals red), walk 22 s along s, 8 s turn phase. People: 24 for 220 x 240 m, by area,
   cap 60, or the `people` param; clothes / build / height from `plan.cosmetic_seed()`.
@@ -297,7 +297,7 @@ Renders: `docs/design/ambient-life/life_calm.png`, `life_street.png` (default 24
   a vehicle is a host threat (12 m, strength 1, at most once a second per pusher): people step away into doors or crouch,
   vehicles in reach e-stop. There is no local-only sidestep. Park benches (round the fountain, reached by the four park
   paths and a paved ring of 5.5 m) and plaza benches (straight in from a street side when that misses the planter) are
-  timetable destinations now. Roof props in `CityProps.layout` (field `building` >= 0) are ignored.
+  timetable destinations now. Roof props in `CityPropLayout.layout` (field `building` >= 0) are ignored.
 - **`LifeTraffic`** (plan, `checksum()`): 8 pods + 2 carts for 220 x 240 m, by area, caps 12 / 4, params `pods` / `carts`.
   Every vehicle drives a loop round one block with the block on its right, in the lane next to that block's curb (street:
   4.45 m out, beyond the parking strip; avenue: the outer lane, 2.93 m out), so it only ever turns right, along a quarter

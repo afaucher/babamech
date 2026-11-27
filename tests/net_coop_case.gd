@@ -571,7 +571,7 @@ func _city_report() -> Dictionary:
 		layout = "stack:" + str((stack as Object).call("checksum"))
 	else:
 		layout = "district:%s:%d:%s" % [td.city.plan.checksum(), td.city.geometry_digest(),
-			CityProps.layout_checksum(td.city.props.items) if td.city.props != null else "-"]
+			CityPropLayout.checksum(td.city.props.items) if td.city.props != null else "-"]
 	var parts: PackedStringArray = []
 	for p: int in td.spawn_order:
 		var m := td.mech_of(p)

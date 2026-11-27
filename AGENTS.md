@@ -44,18 +44,52 @@ When the test fails, fix the code or the declaration. Don't widen an allowlist w
 one as a design decision to report.
 
 ## Layout
-- `scripts/net/`: everything network and Steam (`NetSession` = the `Session` autoload, `NetWire`, `NetClock`, `NetLink`,
-  `NetSteamLink`, `NetTelemetry`, `SteamLobby`, `SteamIdentity`, `Net`).
-- `scripts/app/`: `Boot` (entry, `--run-test`, flags), `GameSettings` (persisted settings), `Lab` + `LabRegistry`.
-- `scripts/mech/`: `MechCatalog` (heads, chassis, weapons: weight / passive heat / active heat), `MechModel` (the
-  placeholder biped, used by menu, hangar and lab alike), `MechParts` (placeholder meshes), `HeadGallery`.
-- `scripts/ui/`: `FrontEnd` (main / settings / hangar screens, built in code), `MechStage` (the 3D preview), `BuildVersion`.
-- `scripts/world/city/`: the seeded urban district (`docs/design/city-styles.md`): `CitySite` (given structure: pillar points, ceiling openings; from the
-  section plan or a stub, `docs/design/ceiling-and-pillars.md`), `CityPlan` (layout as data, checksummed:
-  the gameplay shape), `CityBuildings` / `CityStreets` (flat-colour meshes via `CityGeo`, colours from `CityPalette`),
-  `CityLightRig` (all lighting, separate from surface colour), `CityDistrict` (nodes + collision), `CityLab` (lab subject).
-- `scripts/test_support/`: `TestCase`, `NetTest` (multi-process net tests).
-- `scenes/`: `boot.tscn`, `menu.tscn`, `lab.tscn` (thin: a root node and its script).
+Folders follow features, not which session owns the code (`docs/refactor-plan.md`, approved 2026-11-26). Rules:
+`world/` is the habitat, generated from a seed with no mission knowledge; `mission/` is anything that only exists in a
+mission (`mission/world/` builds on the city); `bots/` is a pilot that works on any deck (lab, balance harness),
+`bots/crew/` what a bot does in a mission; `art/` holds shared look helpers with no gameplay; runtime code never depends on
+`test_support/`. Split a class only into independent units with a small, clean interface (no line cap).
+- `scripts/app/`: `Boot` (entry, `--run-test`, flags), `GameSettings`, `GraphicsQuality`, `Lab` + `LabRegistry`,
+  `FlowLog` / `HitchLog` / `PerfProbe`, `BuildVersion`, `CrewAuto`.
+- `scripts/net/`: everything network and Steam (`NetSession` = the `Session` autoload, `NetMission` = `Session.mission`,
+  `NetWire`, `NetClock`, `NetLink`, `NetSteamLink`, `NetTelemetry`, mech / enemy streams and codecs, `SteamLobby`,
+  `SteamIdentity`, `Net`).
+- `scripts/mission/`: `MissionScene` (the mission scene, `scenes/mission.tscn`), `MissionFlow` (rules, director tick,
+  crew scale), `MissionHudModel`, `MissionPlan`, `MissionRules`, `MissionCombat` (the scene's combat wiring),
+  `ShaderWarmup`.
+  - `pacing/`: `PacingDirector`, `PacingFacts`, `PacingStats`, `PilotIntensity`, `PilotTrack`, `CombatLog`,
+    `CombatThreatProbe`.
+  - `depots/`: `MissionDepots` (arbitration), `SupplyDepot`, `SupplyDepotView`, `DepotTarget`, `DepotKiosk` /
+    `DepotMeshes`, `DepotLab`.
+  - `downed/`: `DownedCrew`, `DownedRules`. `sync/`: `CrewSync`, `EnemySync`, `MechPuppet`, `MechSpawn`, `CombatNet`.
+  - `world/`: `MissionWorld` (doors, lifts, flags, zones on the city), `MissionGateDoor`, `MissionLiftDoor`,
+    `MissionFlagMast`, `MissionRelayAsset`, `MissionPortal`, `MissionAirDoors`, `SiteFit` (where the widest mech fits),
+    `MissionProps`, `MissionSound`, `AssetTarget`, `MissionLab`.
+- `scripts/bots/`: `PlayerBot`, `PlayerBotSquad`, `BotNavigator`, `BotProfile`, `HoverRoute`. `crew/`: `MissionBot`,
+  `MissionBotPilot`, `CrewBot`, `BotFireGuard`, `BotFit`, `BotLoadout`, `BotRoutePlanner`. `balance/`: the balance harness.
+- `scripts/camera/`: `ChaseCamera`, `CameraClearance`.
+- `scripts/combat/`: `Combat` (rules), `CombatWorld` (the one hit path), targets, `Heat`, `Knockback`, `WeaponRack`,
+  `WeaponMount`, `WeaponRegistry`, projectiles. `weapons/`: weapon behaviours. `fx/`: impact, muzzle, burn, flamer fx,
+  `CombatMeshes`. `equipment/`: `RepairDrone`, `EquipmentLook`.
+- `scripts/enemy/`: `EnemyCatalog`, `EnemySpawner`, `EnemyLab`. `units/`: `EnemyBase` (one state machine),
+  `EnemyFlier` and the unit classes. `squad/`: `EnemySquad`, `EnemyNav` (paths), `BayFormation`. `looks/`: `EnemyMeshes`,
+  `EnemyWreckFx`, debris, gait, stagger, status bar, telegraph fx.
+- `scripts/mech/`: `MechCatalog` (heads, chassis, weapons), `MechModel`, `MechAccent`. `motion/`: `MechController`,
+  `MechRig`, `Gait`, `LegIK`, thrusters, ring-walk / thruster labs. `meshes/`: `MechMeshes` (Strider),
+  `MechWeaponMeshes`, `BulwarkMeshes`, `WaspMeshes`, `ChassisParts`, `MechParts`, galleries.
+- `scripts/art/`: `MeshKit`, `LowPolyPalette` (every colour), `LowPolyMaterials`, `PartCache`, `LowPolyFlame`.
+- `scripts/pilot/`: `PilotHead` / `PilotFace` and the heads. `scripts/audio/`: `AudioDirector` (`Audio`), `SoundBank`,
+  music, combat / mech audio.
+- `scripts/ui/`: `menu/` (`FrontEnd`, `MenuBackdrop`, `MechStage`, `LoadingScreen`), `hangar/`, `hud/` (`MechHud`,
+  `MissionHud`, `CrewPanel`, `WorldAimMarkers`).
+- `scripts/world/`: `RingFrame`, `PlanHash`, `RoadForms` (road-form pieces shared by city and section). `city/`: the seeded urban district (`docs/design/city-styles.md`): `CitySite`,
+  `CityPlan` (layout as data, checksummed), `CityGraphs`, `CityDims` / `CityFacade` / `CityPropLayout` (plan-side
+  dimensions, facade relief and the props layout: plans read these, never a mesher), `CityBuildings` / `CityStreets` /
+  `CityWalls` (flat-colour meshes via `CityGeo`, colours from `CityPalette`), `CityLightRig`, `CityDistrict` (nodes +
+  collision), `CityStack`, `CityProps`, `CityLab`. `section/`: `SectionPlan`, `SectionEncounters`, `SectionMap`, `SectionLab`. `life/`:
+  `AmbientLife` (router) + `LifeDeck` per deck, `LifePlan`, crowds, traffic, tram. `occupation/`: banners.
+- `scripts/test_support/`: `TestCase`, `NetTest`, `LayoutCheck`, `ShotCheck`, fixtures (tests only).
+- `scenes/`: `boot.tscn`, `menu.tscn`, `lab.tscn`, `mission.tscn` (thin: a root node and its script).
 
 ## The lab
 Every scene with tunable params is registered in `LabRegistry.SUBJECTS` and implements the lab contract (header of

@@ -19,7 +19,7 @@ extends Node3D
 ## HITS: an effect asks `first_hit` for its swept path, then calls `resolve_hit` / `splash`. Only a machine that
 ## `decides(target, record.peer)` builds a Hit; `deliver` applies it if this machine `owns(target)`, otherwise emits
 ## `remote_hit` (a client's hit on a host-owned target), which CombatNet carries to the host. A machine that doesn't
-## decide still shows the impact. Fire records cross machines through CombatNet (scripts/combat/combat_net.gd).
+## decide still shows the impact. Fire records cross machines through CombatNet (scripts/mission/sync/combat_net.gd).
 ## SHOT DROPS: when a projectile stops on something this machine decides, `shot_decided` fires (shot_stopped) and
 ## CombatNet tells the crew; each other machine calls `drop_shot(key, point, normal)`, which ends its copy there if it is
 ## still flying (one dictionary lookup), so a shot never lands on two deciders in the common case.

@@ -89,7 +89,7 @@ func _save(name: String) -> void:
 
 
 func _build_city() -> void:
-	GraphicsQuality.apply_viewport(get_tree().root, CityQuality.HIGH)
+	GraphicsQuality.apply_viewport(get_tree().root, GraphicsQuality.HIGH)
 	_district = CityDistrict.new()
 	_district.name = "District"
 	add_child(_district)
@@ -98,7 +98,7 @@ func _build_city() -> void:
 	_district.set_backdrop_visible(true)
 	if _district.rig != null:
 		_district.rig.apply("day")
-		_district.rig.set_quality(CityQuality.HIGH)
+		_district.rig.set_quality(GraphicsQuality.HIGH)
 	var plan := _district.plan
 	var av := plan.avenue_x()
 	var best_s := 0.0

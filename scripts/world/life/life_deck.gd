@@ -126,7 +126,7 @@ var _tram_state := ""
 var _views := PackedVector3Array()  ## this deck's viewers, district-local
 var _cull := false                  ## false: everything is near (no viewer known)
 var _active := true                 ## false: no viewer on this deck (nothing evaluated or drawn)
-var quality := CityQuality.HIGH     ## AmbientLife's draw level (set_draw_quality): local presentation only
+var quality := GraphicsQuality.HIGH     ## AmbientLife's draw level (set_draw_quality): local presentation only
 var _draw_r := DRAW_R               ## quality: m from a viewer an agent is drawn (bands, hit tests and events ignore it)
 # host and local bookkeeping
 var _pending: Array = []            ## host: threats waiting to be sent [x, s, r, st]
@@ -287,7 +287,7 @@ func _setup_people() -> void:
 	_heard.clear()
 	_last_send = -INF
 	_online_clock = Net.online()
-	now = clock()
+	now = Net.world_time(now)
 
 
 func _build_traffic() -> void:
@@ -429,7 +429,7 @@ func set_draw_quality(q: int, r: float) -> void:
 ## The figures' shadows follow the quality: real (posed) shadows at HIGH / MEDIUM, none at LOW. Drawing only.
 func _apply_figure_quality() -> void:
 	if figures != null:
-		figures.set_shadows(quality != CityQuality.LOW)
+		figures.set_shadows(quality != GraphicsQuality.LOW)
 
 
 ## Whether an agent at `p` (district-local) is drawn at this quality: always with no viewer known or at full radius.
@@ -459,14 +459,6 @@ func _show_vehicle(vid: int, want: int, xf: Transform3D) -> void:
 
 # --- Clock -----------------------------------------------------------------------------------------------
 
-## The life clock's source: Session.host_time() online, `now` offline.
-func clock() -> float:
-	var s := Net.session()
-	if s != null and s.online():
-		return s.host_time()
-	return now
-
-
 ## One frame (AmbientLife steps every deck once a frame, after handing it its viewers).
 func step(delta: float) -> void:
 	if _setup_part >= 0:
@@ -476,8 +468,8 @@ func step(delta: float) -> void:
 	var online := Net.online()
 	if online != _online_clock:
 		_online_clock = online
-		_rebase(clock())
-	now = clock() if online else now + delta * time_scale
+		_rebase(Net.world_time(now))
+	now = Net.world_time(now) if online else now + delta * time_scale
 	plan.warm_ahead(now, 1)      # crowd spacing: the hold index of the coming minutes, one person a frame
 	_flush()
 	_pusher_step(delta * (1.0 if online else time_scale))
@@ -1488,7 +1480,7 @@ func _request(id: int, dir: Vector2, src: int) -> bool:
 
 ## Host: kill `id` now if it is outdoors and alive, and tell the crew.
 func _decide_down(id: int, dir: Vector2, src: int) -> bool:
-	now = clock() if Net.online() else now
+	now = Net.world_time(now) if Net.online() else now
 	if not _down(id, now, dir, src, false):
 		return false
 	var ev := {"id": id, "t": now, "dir": dir, "src": src}
@@ -1527,7 +1519,7 @@ func _request_wreck(vid: int, dir: Vector2, src: int, how: int, v0: float) -> bo
 
 ## Host: wreck (or shove a wreck) now, and tell the crew.
 func _decide_wreck(vid: int, dir: Vector2, src: int, how: int, v0: float) -> bool:
-	now = clock() if Net.online() else now
+	now = Net.world_time(now) if Net.online() else now
 	if vid < 0 or vid >= traffic.count() or (fleet.wrecks.has(vid) and how == 0):
 		return false
 	if how == 2 and now - float(_vasked.get(vid, -INF)) < ASK_EVERY and now >= float(_vasked.get(vid, -INF)):
@@ -1580,15 +1572,6 @@ func drop_pusher(body: Variant) -> void:
 			_pushers.remove_at(i)
 
 
-static func _owns(body: Node) -> bool:
-	var s := Net.session()
-	if s == null or not s.online():
-		return true
-	var owner_peer: Variant = body.get("owner_peer")
-	var peer := int(owner_peer) if owner_peer != null else 0
-	return peer == s.local_id() or (peer == 0 and s.is_host())
-
-
 func _pusher_step(delta: float) -> void:
 	_pusher_arc.clear()
 	if _pushers.is_empty() or plan == null:
@@ -1617,7 +1600,7 @@ func _pusher_step(delta: float) -> void:
 		if speed > PROX_SPEED and _decides() and now >= float(p[5]) and _near_life(here):
 			p[5] = now + PROX_EVERY
 			raise_threat(body.global_position, PROX_R, 1)
-		if speed <= FOOT_SPEED or not _owns(body):
+		if speed <= FOOT_SPEED or not Net.moves(body):
 			continue
 		var reach := float(p[1])
 		var dir := v2 / speed
@@ -1715,26 +1698,26 @@ func on_event(_from: int, kind: String, data: Dictionary, _stamp: float) -> void
 	var s := Net.session()
 	if Net.online() != _online_clock:
 		_online_clock = Net.online()          # settle the clock change before an event on the new clock
-		_rebase(clock())
+		_rebase(Net.world_time(now))
 	match kind:
 		"life.req":
 			var id := int(data.get("id", -1))
 			var dir: Variant = data.get("dir")
 			if s != null and s.is_host() and id >= 0 and id < plan.total() and dir is Vector2:
-				now = clock()
+				now = Net.world_time(now)
 				_decide_down(id, dir, int(data.get("src", 0)))
 		"life.wreq":
 			var vid := int(data.get("id", -1))
 			var dir: Variant = data.get("dir")
 			if s != null and s.is_host() and vid >= 0 and vid < traffic.count() and dir is Vector2:
-				now = clock()
+				now = Net.world_time(now)
 				_decide_wreck(vid, dir, int(data.get("src", 0)), clampi(int(data.get("how", 0)), 0, 2), float(data.get("v0", 0.0)))
 		"life.threat", "life.down", "life.wreck":
 			if s != null and s.is_client():
-				now = clock()
+				now = Net.world_time(now)
 				apply_event(kind, data)
 		"life.sync":
 			var b: Variant = data.get("bytes", PackedByteArray())
 			if s != null and s.is_client() and b is PackedByteArray:
-				now = clock()
+				now = Net.world_time(now)
 				restore(b)

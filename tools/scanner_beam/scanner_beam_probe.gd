@@ -1,5 +1,5 @@
 extends Node
-## Repair-drone "spread scanner" beam render probe (art direction, NOT game code: scripts/combat/repair_drone.gd is
+## Repair-drone "spread scanner" beam render probe (art direction, NOT game code: scripts/combat/equipment/repair_drone.gd is
 ## untouched). Builds a seeded city district under the real light rig (CityDistrict + CityLightRig "day", GraphicsQuality
 ## HIGH), stands a player mech (MechModel, scale 2, ~8 m) at a street intersection, hovers the real flying drone mesh
 ## (MechMeshes part weapon_repair_drone_flying, accent tinted, FLY_SCALE 2.1) 6 m above the mech's back and 5 m out to its
@@ -20,8 +20,8 @@ const CELLS := ["current", "A1", "A2", "A3", "B1", "B2", "B3", "C1", "C2", "C3"]
 const SWEEPS := ["A3", "B3", "C3"]
 const STRIP := [-0.8, 0.0, 0.8]
 const MECH_SCALE := 2.0
-const FLY_SCALE := 2.1                ## RepairDrone.FLY_SCALE
-const GREEN := Color(0.25, 1.0, 0.45) ## RepairDrone.GREEN
+const FLY_SCALE := 2.1                ## RepairDroneLook.FLY_SCALE
+const GREEN := Color(0.25, 1.0, 0.45) ## RepairDroneLook.GREEN
 const CORE := Color(0.62, 1.0, 0.72)  ## hot core of the brightest lines (GREEN lightened)
 const RING_GREEN := Color(0.10, 0.38, 0.17)
 const HOVER := 6.0                    ## m above the back mount
@@ -79,7 +79,7 @@ func _arg(key: String, def: String) -> String:
 
 func _run() -> void:
 	_args = OS.get_cmdline_user_args()
-	GraphicsQuality.apply_viewport(get_tree().root, CityQuality.HIGH)
+	GraphicsQuality.apply_viewport(get_tree().root, GraphicsQuality.HIGH)
 	var out_dir := _arg("--out", "res://tools/scanner_beam/shots")
 	if out_dir.begins_with("res://") or out_dir.begins_with("user://"):
 		out_dir = ProjectSettings.globalize_path(out_dir)
@@ -140,7 +140,7 @@ func _build_city(seed: int) -> void:
 	_district.set_backdrop_visible(true)
 	if _district.rig != null:
 		_district.rig.apply("day")
-		_district.rig.set_quality(CityQuality.HIGH)
+		_district.rig.set_quality(GraphicsQuality.HIGH)
 	var plan := _district.plan
 	var av := plan.avenue_x()
 	var best_s := 0.0

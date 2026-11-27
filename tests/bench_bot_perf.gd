@@ -7,7 +7,7 @@ extends TestCase
 ## The host opens a session alone, seats BOT_PERF_BOTS bots (Session.add_bot, skill BOT_PERF_SKILL), launches the stack
 ## mission on BOT_PERF_SEED and waits for mission_go; the bots then play the mission (CrewBot + MissionBot + PlayerBot),
 ## the local mech walks / strafes / fires every weapon at the nearest live enemy (as test_perf_coop). After WARM frames,
-## FRAMES frames are measured with PerfProbe.on (scripts/test_support/perf_probe.gd: flag-guarded timers in the bot,
+## FRAMES frames are measured with PerfProbe.on (scripts/app/perf_probe.gd: flag-guarded timers in the bot,
 ## mech, rig, combat and crew-sync scripts) and CombatWorld.profiling (targets.tick vs effects). Probe nodes at physics
 ## priorities between the game's bands time each band of the physics frame:
 ##   brains  -20 / -19  (MissionBotPilot -> PlayerBot.step, MissionBot)

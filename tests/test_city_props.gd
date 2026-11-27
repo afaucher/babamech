@@ -183,10 +183,10 @@ func _props() -> CityProps:
 ## tinted leaf green stays within the documented ranges (and in the green family), trunks barely move, untinted props
 ## keep plain drawing, and the layout (checksum) and triangle count are what they were.
 func _tree_tint() -> void:
-	var before := CityProps.layout_checksum(CityProps.layout(plan))
+	var before := CityPropLayout.checksum(CityPropLayout.layout(plan))
 	var a := _props()
 	var b := _props()
-	eq(CityProps.layout_checksum(a.items), before, "tree tint: the layout checksum is unchanged")
+	eq(CityPropLayout.checksum(a.items), before, "tree tint: the layout checksum is unchanged")
 	eq(a.tri_count(), b.tri_count(), "tree tint: same triangles from two builds")
 	var trees: Array[int] = []
 	for it: Dictionary in a.items:
@@ -248,10 +248,10 @@ func _first(p: CityProps, type: String) -> int:
 
 
 func _layout() -> void:
-	var a := CityProps.layout(plan)
-	var b := CityProps.layout(CityPlan.make(SMALL))
-	eq(CityProps.layout_checksum(a), CityProps.layout_checksum(b), "same plan, same layout checksum")
-	check(CityProps.layout_checksum(a) != CityProps.layout_checksum(CityProps.layout(CityPlan.make({"seed": 4, "size_x": 100.0, "size_s": 110.0}))),
+	var a := CityPropLayout.layout(plan)
+	var b := CityPropLayout.layout(CityPlan.make(SMALL))
+	eq(CityPropLayout.checksum(a), CityPropLayout.checksum(b), "same plan, same layout checksum")
+	check(CityPropLayout.checksum(a) != CityPropLayout.checksum(CityPropLayout.layout(CityPlan.make({"seed": 4, "size_x": 100.0, "size_s": 110.0}))),
 			"another seed, another layout")
 	var counts := {}
 	for i in a.size():
@@ -304,7 +304,7 @@ func _topple() -> void:
 
 
 func _events() -> Array:
-	var a := CityProps.layout(plan)
+	var a := CityPropLayout.layout(plan)
 	var ids := []
 	for it: Dictionary in a:
 		if it["type"] in ["lamp", "bin", "bench"] and ids.size() < 3:
@@ -499,12 +499,12 @@ func _pusher() -> void:
 
 ## Re-captured 2026-11-23 (city variety: alley bins, road-form furniture; alleys + road forms on by default). Was
 ## 7e78d4e1e3db1a61 (still the layout with alleys 0, road_variety 0).
-const GOLDEN_LAYOUT := "f321076ebd6e98f1"     ## CityProps.layout_checksum of the seed 1 plan (golden: changes it everywhere)
+const GOLDEN_LAYOUT := "f321076ebd6e98f1"     ## CityPropLayout.checksum of the seed 1 plan (golden: changes it everywhere)
 
 
 func _roof() -> void:
 	var p1 := CityPlan.make({"seed": 1})
-	eq(CityProps.layout_checksum(CityProps.layout(p1)), GOLDEN_LAYOUT, "the seed 1 props layout checksum (golden)")
+	eq(CityPropLayout.checksum(CityPropLayout.layout(p1)), GOLDEN_LAYOUT, "the seed 1 props layout checksum (golden)")
 	var d := CityDistrict.new()
 	d.with_rig = false
 	add_child(d)

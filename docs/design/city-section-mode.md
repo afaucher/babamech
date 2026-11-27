@@ -85,7 +85,7 @@ In section mode walls are always on (the `walls` param is ignored).
 
 ## 6. Props, lighting, lab
 
-- `CityProps.layout` must work from the plan in both modes (median trees on the spine's avenue lane; no props in floor
+- `CityPropLayout.layout` must work from the plan in both modes (median trees on the spine's avenue lane; no props in floor
   holes or keep-clear areas).
 - `CityLightRig.setup` gets the deck extent; the fill-light cap stays.
 - Lab cameras use the plan: add `plan.avenue_x() -> Vector2` (the avenue carriageway's x range: [-10, 10] stand-alone,

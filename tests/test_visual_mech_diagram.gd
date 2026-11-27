@@ -1,5 +1,5 @@
 extends TestCase
-## VISUAL: the nine mech damage diagram options (scripts/ui/mech_diagram.gd: view front / side / three x style geometric /
+## VISUAL: the nine mech damage diagram options (scripts/ui/hangar/mech_diagram.gd: view front / side / three x style geometric /
 ## traced / schematic), each inside the real status panel frame (MechDiagram.paint_frame: glass, heat arc, THRUST,
 ## HEAT 46%) at the HUD's bottom-left spot and size (MechHud.STATUS_SIZE), with demo damage: leg_l amber, shoulder_r
 ## destroyed, the rest healthy. Saves test_logs/shots/diagram_<view>_<style>.png cropped to the panel plus a margin.

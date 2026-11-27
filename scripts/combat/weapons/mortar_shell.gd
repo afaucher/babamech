@@ -288,7 +288,7 @@ static func prewarm_mortar(st: Dictionary) -> void:
 
 ## A fat dark shell, 1 m long along -Z (nose at -0.5): a 6-sided lathe, an orange band, four tail fins.
 static func shell_mesh() -> ArrayMesh:
-	return CombatMeshes._mesh("mortar_shell", func(k: MeshKit) -> void:
+	return CombatMeshes.mesh("mortar_shell", func(k: MeshKit) -> void:
 		k.push(MeshKit.xf(Vector3.ZERO, Vector3(-90, 0, 0)))      # lathe +Y -> -Z
 		k.lathe([Vector2(0.13, -0.5), Vector2(0.2, -0.42), Vector2(0.29, -0.2), Vector2(0.3, 0.1), Vector2(0.22, 0.32),
 			Vector2(0.09, 0.46), Vector2(0.0, 0.5)], 6, LowPolyPalette.DARK)

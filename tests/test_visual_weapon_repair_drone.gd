@@ -36,13 +36,13 @@ func setup() -> void:
 	await frames(150)
 	check(r.drone != null and is_instance_valid(r.drone) and r.drone.active(), "a drone is out")
 	if r.drone != null and is_instance_valid(r.drone):
-		check(r.drone.flying_mesh, "drawn with the flying drone mesh")
+		check(r.drone.look.flying_mesh, "drawn with the flying drone mesh")
 		check(r.drone.beamed().size() >= 2, "beams to the lab mech and the repair dummy (%d)" % r.drone.beamed().size())
 		check(r.drone.healed_total > 0.0, "it repairs (%.1f HP)" % r.drone.healed_total)
-		check(r.drone.ring_shown(), "the ground ring shows while it repairs")
-		eq(r.drone.scans_shown(), r.drone.beamed().size(), "a scan look on every repaired target")
+		check(r.drone.look.ring_shown(), "the ground ring shows while it repairs")
+		eq(r.drone.look.scans_shown(), r.drone.beamed().size(), "a scan look on every repaired target")
 		for t: CombatTarget in r.drone.beamed():
-			var fit := r.drone.scan_fit(t)
+			var fit := r.drone.look.scan_fit(t)
 			print("[drone] scan fit %s: h %.2f m, r %.2f m" % [t.target_id, fit["h"], fit["r"]])
 		near(r.drone.orbit_distance(), 5.0, 0.3, "on its orbit 5 m out (%.2f)" % r.drone.orbit_distance())
 	eq(r.world.equipment_look.shown(WeaponRangeLab.SHOOTER), "cradle", "the back mount shows the empty cradle")
@@ -64,7 +64,7 @@ func setup() -> void:
 	await frames(4)
 	var img_s := await sc.grab("weapon_repair_drone_scan")
 	sc.not_blank(img_s, Rect2(0.2, 0.05, 0.6, 0.9), "repair drone scan")
-	await get_tree().create_timer(RepairDrone.SCAN_PERIOD * 0.3).timeout
+	await get_tree().create_timer(RepairDroneLook.SCAN_PERIOD * 0.3).timeout
 	var img_s2 := await sc.grab("weapon_repair_drone_scan2")
 	if img_s != null and img_s2 != null and img_s.get_size() == img_s2.get_size():
 		var diff := 0.0
@@ -84,7 +84,7 @@ func setup() -> void:
 		await frames(3)
 		if is_instance_valid(dr):
 			check(dr.returning(), "flying home (%.2f of the way)" % dr.home_fraction())
-			check(dr.beamed().is_empty() and not dr.ring_shown(), "no green on the way home")
+			check(dr.beamed().is_empty() and not dr.look.ring_shown(), "no green on the way home")
 			eq(r.world.equipment_look.shown(WeaponRangeLab.SHOOTER), "cradle", "the cradle is still empty")
 		var img_r := await sc.grab("weapon_repair_drone_return")
 		sc.not_blank(img_r, Rect2(0.3, 0.05, 0.7, 0.9), "repair drone return")

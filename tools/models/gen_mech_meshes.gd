@@ -1,7 +1,7 @@
 extends SceneTree
-## Regenerate the mech's low-poly part files from the builders in scripts/mech/mech_meshes.gd (the Strider and the part
-## registry), scripts/mech/mech_weapon_meshes.gd (the shared weapons and equipment), scripts/mech/mech_head_meshes.gd
-## (the heads), scripts/mech/bulwark_meshes.gd (the Bulwark's bulwark_* parts) and scripts/mech/wasp_meshes.gd (the
+## Regenerate the mech's low-poly part files from the builders in scripts/mech/meshes/mech_meshes.gd (the Strider and the part
+## registry), scripts/mech/meshes/mech_weapon_meshes.gd (the shared weapons and equipment), scripts/mech/meshes/mech_head_meshes.gd
+## (the heads), scripts/mech/meshes/bulwark_meshes.gd (the Bulwark's bulwark_* parts) and scripts/mech/meshes/wasp_meshes.gd (the
 ## Wasp's wasp_* parts):
 ##   .\tools\models\gen_mech_meshes.ps1                 every part and the shared materials
 ##   .\tools\models\gen_mech_meshes.ps1 --only wasp_    only the parts whose name starts with the prefix (every other file,

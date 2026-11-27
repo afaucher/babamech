@@ -2,7 +2,7 @@ class_name NetMechState
 extends RefCounted
 ## One sample of a mech's OWNER state, as the owner's machine streams it (co-op step 2, cast's NetHeroState): what a
 ## puppet needs to pose believably on another machine. Plain data in world / ring terms; NetMechCodec packs it,
-## NetPuppetBuffer interpolates it, the game reads it (scripts/game/mech_puppet.gd) and writes it (crew_sync.gd).
+## NetPuppetBuffer interpolates it, the game reads it (scripts/mission/sync/mech_puppet.gd) and writes it (crew_sync.gd).
 ##
 ## `yaw` is the body's heading in the ring's local frame (the game converts: crew_sync.gd / mech_puppet.gd), so the net
 ## layer never needs the ring. `heat` is a fraction of the mech's heat_cap (SPAWN, the same everywhere).

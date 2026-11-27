@@ -48,3 +48,23 @@ static func online() -> bool:
 static func crewed() -> bool:
 	var s := session()
 	return s != null and s.online() and s.roster.size() > 1
+
+
+## The shared world clock for host-arbitrated objects (props, life, banners): Session.host_time() online, the caller's own
+## clock `local` offline.
+static func world_time(local: float) -> float:
+	var s := session()
+	if s != null and s.online():
+		return s.host_time()
+	return local
+
+
+## Whether this machine moves `body` (a pusher shoving host-owned things): offline everything; online its owner peer
+## (`owner_peer`; absent or 0 = the host).
+static func moves(body: Node) -> bool:
+	var s := session()
+	if s == null or not s.online():
+		return true
+	var owner_peer: Variant = body.get("owner_peer")
+	var peer := int(owner_peer) if owner_peer != null else 0
+	return peer == s.local_id() or (peer == 0 and s.is_host())

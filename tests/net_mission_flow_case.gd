@@ -1,6 +1,6 @@
 extends NetTest
 ## The mission's win across a crew, in the one mission mode (objectives: user 2026-11-25 "Cut the legacy modes.";
-## scripts/game/mission_flow.gd, NetMission "mission.state"), over a real crew mission, once per link. Run with PEERS 2
+## scripts/mission/mission_flow.gd, NetMission "mission.state"), over a real crew mission, once per link. Run with PEERS 2
 ## (test_net_mission_flow.gd) and 3 (test_net_mission_flow_3.gd). Every machine forces the same all-sweep plan without
 ## reserve waves (PLAN: MissionFlow.test_plan, part of the plan's checksum), so the crew flow itself is what is tested
 ## (the plan's waves, flags and defends across a crew: test_net_objectives*).

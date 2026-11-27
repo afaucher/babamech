@@ -30,7 +30,7 @@ extends Node
 ##   PENDING  Every remaining member reported the host's checksum: mission.go {start_at} (START_LEAD ahead on the shared
 ##            clock, so every machine has it in time).
 ##   RUNNING  start_at reached: mission_go(elapsed) on every machine; the mechs are released.
-##   STATE    The mission's progress (MissionRules.state(), W6; scripts/game/mission_flow.gd): the host evaluates the rules and
+##   STATE    The mission's progress (MissionRules.state(), W6; scripts/mission/mission_flow.gd): the host evaluates the rules and
 ##            sends each change as a reliable mission.state {state} to the crew (host_state); clients keep the latest
 ##            (`state`) and get mission_state_changed(state). mission.go carries the latest state too, so a member that
 ##            (re)joins the barrier late starts from it. An outcome (won / lost) is followed, END_HOLD later, by the
@@ -72,7 +72,7 @@ const HOST_ENDED := "The host ended the mission"
 const MODE_STACK := "stack"          ## the multi-deck mission section (CityStack): the only mode
 ## The crew-scale rule lives game side (MissionFlow.host_crew_scale, the only derivation of the scale): loaded when the
 ## host launches, not at the autoload (no game classes in the net layer's load).
-const SCALE_RULE := "res://scripts/game/mission_flow.gd"
+const SCALE_RULE := "res://scripts/mission/mission_flow.gd"
 
 var phase := IDLE
 ## {seed, mode, start_t, crew, friendly_fire} of the launched mission ({} = none).

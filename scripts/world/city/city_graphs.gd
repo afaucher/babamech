@@ -135,7 +135,7 @@ static func court_open(plan: CityPlan, axis: String, line: int, index: int) -> b
 			return false
 	if plan.site != null:
 		for o in plan.floor_cuts():
-			if o.grow(CityStreets.HOLE_CURB).intersects(corridor):
+			if o.grow(CityDims.HOLE_CURB).intersects(corridor):
 				return false
 	for rp: Dictionary in plan.ramps:
 		var s0 := minf(float(rp["s_top"]), float(rp["s_foot"]))

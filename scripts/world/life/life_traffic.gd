@@ -64,7 +64,7 @@ var vehicles: Array = []   ## [{id, kind, loop, offset}]
 ## Section mode (phase 3): heavy checkpoints by junction ({junction: {x, s}}); every loop with a turn at one of those
 ## junctions holds CHECK_STOP s at that stop line first (a HOLD mark tagged "check", built into the timetable).
 var checks: Dictionary = {}
-var lane_claims: Dictionary = {}   ## lane segment key (CityPlan.seg_key) -> the block whose loop drives it (one per lane)
+var lane_claims: Dictionary = {}   ## lane segment key (RoadForms.seg_key) -> the block whose loop drives it (one per lane)
 
 
 func net_fields() -> Dictionary:
@@ -173,7 +173,7 @@ func _path_ok(pts: PackedVector2Array) -> bool:
 	var e := plan.extent.grow(-1.2)
 	var bad: Array[Rect2] = []
 	for o in plan.floor_cuts():
-		bad.append(o.grow(CityStreets.HOLE_CURB + 1.0))
+		bad.append(o.grow(CityDims.HOLE_CURB + 1.0))
 	for lane: String in ["rail", "ramp_a", "ramp_b"]:
 		var lx := plan.section.lane_x(lane)
 		bad.append(Rect2(lx.x - 1.0, plan.extent.position.y - 50.0, lx.y - lx.x + 2.0, plan.extent.size.y + 100.0))
@@ -432,7 +432,7 @@ func _bin_stops(lo: Dictionary, bi: int, marks: Array) -> void:
 	var r: Rect2 = plan.blocks[bi]["rect"]
 	var pts: PackedVector2Array = lo["pts"]
 	var cum: PackedFloat32Array = lo["cum"]
-	for it: Dictionary in CityProps.layout(plan):
+	for it: Dictionary in CityPropLayout.layout(plan):
 		if it["type"] != "bin" or int(it.get("building", -1)) >= 0:
 			continue
 		var at := Vector2(it["x"], it["s"])

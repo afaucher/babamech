@@ -269,7 +269,7 @@ func _drone() -> void:
 	near(absf(a1.angle_to(a2)), PI * 0.5, 0.06, "a quarter turn in 1.5 s (%.3f rad)" % absf(a1.angle_to(a2)))
 	_run(rack, world, 4.5)
 	near(d.pos.distance_to(p1), 0.0, 0.05, "one full turn in 6 s: back where it was")
-	check(d.beamed().is_empty() and not d.ring_shown(), "the launcher at full HP: no beam, no ring")
+	check(d.beamed().is_empty() and not d.look.ring_shown(), "the launcher at full HP: no beam, no ring")
 	# Follows the launcher (smoothed centre).
 	mech.position = Vector3(10, 0, 0)
 	_run(rack, world, 3.0)
@@ -288,15 +288,15 @@ func _drone() -> void:
 	near(float(me.hp["leg_l"]), leg0, 1e-6, "the less damaged leg waits")
 	eq(float(me.hp["side_l"]), 0.0, "the destroyed hardpoint stays destroyed")
 	check(d.beamed().has(me), "a beam points at the damaged mech")
-	check(d.ring_shown(), "the ground ring shows while it repairs")
-	eq(d.scans_shown(), d.beamed().size(), "one scan look per repaired target")
-	var fit := d.scan_fit(me)
+	check(d.look.ring_shown(), "the ground ring shows while it repairs")
+	eq(d.look.scans_shown(), d.beamed().size(), "one scan look per repaired target")
+	var fit := d.look.scan_fit(me)
 	check(float(fit["h"]) > 1.0 and float(fit["r"]) > 0.5, "the scan fits the mech (h %.2f, r %.2f)" % [fit["h"], fit["r"]])
-	var sf0 := d.scan_fraction(d.t0 + 0.4)
-	near(d.scan_fraction(d.t0 + 0.4), sf0, 0.0, "the scan height is a pure function of the clock")
-	near(d.scan_fraction(d.t0 + RepairDrone.SCAN_PERIOD + 0.4), sf0, 1e-6, "the scan repeats every SCAN_PERIOD")
-	check(absf(d.scan_fraction(d.t0 + RepairDrone.SCAN_PERIOD * 0.5) - RepairDrone.SCAN_HI) < 1e-6
-		and absf(d.scan_fraction(d.t0) - RepairDrone.SCAN_LO) < 1e-6, "it travels the body bottom to top and back")
+	var sf0 := d.look.scan_fraction(d.t0 + 0.4)
+	near(d.look.scan_fraction(d.t0 + 0.4), sf0, 0.0, "the scan height is a pure function of the clock")
+	near(d.look.scan_fraction(d.t0 + RepairDroneLook.SCAN_PERIOD + 0.4), sf0, 1e-6, "the scan repeats every SCAN_PERIOD")
+	check(absf(d.look.scan_fraction(d.t0 + RepairDroneLook.SCAN_PERIOD * 0.5) - RepairDroneLook.SCAN_HI) < 1e-6
+		and absf(d.look.scan_fraction(d.t0) - RepairDroneLook.SCAN_LO) < 1e-6, "it travels the body bottom to top and back")
 	# Only targets this machine owns, not enemies, only within 15 m of the LAUNCHER horizontally.
 	var remote := _target(world, "remote", 2, "player", mech.position + Vector3(4, 0, 0))
 	var enemy := _target(world, "foe", 0, "enemy", mech.position + Vector3(-4, 0, 0))
@@ -327,8 +327,8 @@ func _drone() -> void:
 	# Everyone full: idle orbit, nothing green, no early return.
 	me.repair_all()
 	_run(rack, world, 0.2)
-	check(d.beamed().is_empty() and not d.ring_shown(), "everyone full: no beam, no ring")
-	eq(d.scans_shown(), 0, "everyone full: no scan")
+	check(d.beamed().is_empty() and not d.look.ring_shown(), "everyone full: no beam, no ring")
+	eq(d.look.scans_shown(), 0, "everyone full: no scan")
 	check(d.active(), "and no early return")
 	me.apply_damage(100.0, "torso", "x")
 	# 60 s life, then home to the dock.
@@ -341,8 +341,8 @@ func _drone() -> void:
 	var torso1 := float(me.hp["torso"])
 	_run(rack, world, 0.5)
 	near(float(me.hp["torso"]), torso1, 1e-6, "no repair on the way home")
-	check(d.beamed().is_empty() and not d.ring_shown(), "nothing green on the way home (the launcher is damaged)")
-	eq(d.scans_shown(), 0, "no scan on the way home")
+	check(d.beamed().is_empty() and not d.look.ring_shown(), "nothing green on the way home (the launcher is damaged)")
+	eq(d.look.scans_shown(), 0, "no scan on the way home")
 	var dock := world.equipment_look.dock(world, "medic", "back")
 	var steps := 0
 	while d in world.effects and steps < 200:
@@ -483,7 +483,7 @@ func _drone_looks() -> void:
 		return
 	eq(look.shown("looks"), "cradle", "on launch: the empty cradle at once")
 	check(mi.mesh == MechMeshes.mesh("weapon_repair_drone_cradle"), "the mount mesh is weapon_repair_drone_cradle")
-	check(d.flying_mesh, "the flying drone uses the Mech mesh")
+	check(d.look.flying_mesh, "the flying drone uses the Mech mesh")
 	var body := d.get_node_or_null("weapon_repair_drone_flying") as MeshInstance3D
 	check(body != null and body.mesh == MechMeshes.mesh("weapon_repair_drone_flying"), "body = weapon_repair_drone_flying")
 	if body != null:
@@ -496,11 +496,11 @@ func _drone_looks() -> void:
 	near(d.pos.distance_to(dock["pos"]), 0.0, 0.05, "launch starts at the dock (%s vs %s)" % [d.pos, dock["pos"]])
 	_run(rack, world, 1.0)
 	if body != null:
-		near(body.scale.x, RepairDrone.FLY_SCALE, 1e-3, "full size once risen")
+		near(body.scale.x, RepairDroneLook.FLY_SCALE, 1e-3, "full size once risen")
 	(r["mech"] as MechController).position = Vector3(12, 0, 0)
-	var yaw0 := d.yaw
+	var yaw0 := d.look.yaw
 	_run(rack, world, 1.0)
-	check(absf(angle_difference(yaw0, d.yaw)) > 0.2, "it turns toward travel (yaw %.2f -> %.2f)" % [yaw0, d.yaw])
+	check(absf(angle_difference(yaw0, d.look.yaw)) > 0.2, "it turns toward travel (yaw %.2f -> %.2f)" % [yaw0, d.look.yaw])
 	# A loadout rebuild while the drone is out: the new node shows the cradle too.
 	model.rebuild()
 	world.advance(DT)
@@ -512,7 +512,7 @@ func _drone_looks() -> void:
 	check(d.returning(), "flying home")
 	eq(look.shown("looks"), "cradle", "on its way home: still the empty cradle")
 	if body != null:
-		check(body.scale.x < RepairDrone.FLY_SCALE - 0.1 and body.scale.x > float(dock["scale"]),
+		check(body.scale.x < RepairDroneLook.FLY_SCALE - 0.1 and body.scale.x > float(dock["scale"]),
 			"shrinking toward the docked size (%.2f)" % body.scale.x)
 	_run(rack, world, 0.75 + 2.0 * DT)
 	check(world.drone_of("looks") == null, "the first drone is docked and gone")
@@ -530,13 +530,13 @@ func _drone_looks() -> void:
 	eq(str(rack.slots()[4]["hold"]), "EMPTY", "and the HUD says EMPTY")
 	await _free(r)
 	# Fallback: a missing flying part draws the placeholder quad.
-	var keep := RepairDrone.flying_id
-	RepairDrone.flying_id = "no_such_part"
+	var keep := RepairDroneLook.flying_id
+	RepairDroneLook.flying_id = "no_such_part"
 	var r2 := await _rack({"back": "repair_drone"}, "fallback")
 	(r2["rack"] as WeaponRack).activate(5)
 	var d2 := (r2["world"] as CombatWorld).drone_of("fallback")
-	check(d2 != null and not d2.flying_mesh and d2.get_child_count() > 4, "missing part: the placeholder drone (rotors)")
-	RepairDrone.flying_id = keep
+	check(d2 != null and not d2.look.flying_mesh and d2.get_child_count() > 4, "missing part: the placeholder drone (rotors)")
+	RepairDroneLook.flying_id = keep
 	await _free(r2)
 
 

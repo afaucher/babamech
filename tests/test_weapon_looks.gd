@@ -88,5 +88,5 @@ func _enemy_prewarm() -> void:
 	CombatMeshes._cache.erase("rocket_mesh")
 	WeaponRegistry.prewarm_enemy_weapons()
 	check(CombatMeshes._cache.has("rocket_mesh"), "prewarm_enemy_weapons builds the enemy rocket mesh")
-	check(FileAccess.get_file_as_string("res://scripts/combat/test_drive_combat.gd").contains("WeaponRegistry.prewarm_enemy_weapons()"),
+	check(FileAccess.get_file_as_string("res://scripts/mission/mission_combat.gd").contains("WeaponRegistry.prewarm_enemy_weapons()"),
 		"MissionCombat.setup calls WeaponRegistry.prewarm_enemy_weapons()")
