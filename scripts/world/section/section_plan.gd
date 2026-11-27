@@ -75,14 +75,6 @@ const MIN_COL := 76.0           ## narrowest column: a spine-side or edge cell m
 const MIN_ROW := 60.0            ## shortest row on the top deck
 const MIN_DECKS := 2
 const MAX_DECKS := 5
-const SAFE_RADIUS := 70.0        ## encounter sites closer than this to a deck's arrival get no enemies (§16)
-const FIRST_CONTACT_DIST := 110.0   ## how far past the arrival the first enemy group waits, along the avenue (§16)
-const FIRST_CONTACT_SHARE := 0.4    ## ... but at most this fraction of the deck's arrival -> departure distance along s
-const MERGE_DIST := 40.0        ## encounter sites closer than this are one place (the more specific kind wins)
-## Encounter site kinds, most specific first: on a merge the earlier kind names the site (encounter_sites).
-const SITE_PRIORITY: Array[String] = ["extraction", "departure", "checkpoint", "shaft_exit", "branch_landing", "holding",
-		"station", "patrol", "cordon", "first_contact"]
-const SITE_WEIGHT := {"light": 1.0, "medium": 2.0, "heavy": 4.0}
 
 ## A cross road bridges a ramp's cut only where a mech walking down the ramp clears the bridge's underside by this much
 ## (CityPlan.BRIDGE_CLEAR: mech 8 m + 1.5 m); elsewhere the cut runs on under the road and nothing drives across it.
@@ -1772,166 +1764,6 @@ func _make_hooks() -> void:
 			hooks.append({"kind": "holding", "deck": k, "x": mid.x, "s": mid.y, "col": int(cell["col"]), "row": int(cell["row"])})
 
 
-# --- Encounters (derived) ---------------------------------------------------------------------------------
-# The crossing of each deck as the enemy spawner sees it (docs/design/mission-section.md §16). Pure reads of the plan:
-# no rolls, no stored state, so they can never shift generation or checksum(), and every machine derives the same list.
-
-## Where the crew first sets foot on deck k following the critical path: {deck, kind: portal | ramp | lift | shaft, x, s,
-## connector (id, -1 for the portal)}, in deck k's (x, s). Deck 0: the entry road node on the avenue's centre (where
-## CityStack.entry_transform puts the crew). Below: the landing of the critical connector down from deck k-1 (a ramp's
-## foot end on deck k, a lift's platform centre).
-func arrival(k: int) -> Dictionary:
-	if k <= 0:
-		return _end_point(0, "portal", -1, _avenue_mid(), line_s(0, int(entry["j"])))
-	var ci := _critical_between(k - 1)
-	if ci < 0:
-		return _end_point(k, "portal", -1, _avenue_mid(), 0.0)
-	var c: Dictionary = connectors[ci]
-	var rect := connector_rect(ci, k)
-	if c["kind"] == "ramp":
-		return _end_point(k, "ramp", ci, rect.get_center().x, row_theta[int(c["foot_line"])] * radius_of(k))
-	return _end_point(k, str(c["kind"]), ci, rect.get_center().x, rect.get_center().y)
-
-
-## Where the crew leaves deck k: same shape as arrival(), kind ramp | lift | portal. The head of the critical connector
-## down from deck k (a ramp's top end of its cut on deck k, a lift's platform centre); on the lowest deck the extraction
-## road node, on the avenue's centre like the entry (kind "portal", connector -1).
-func departure(k: int) -> Dictionary:
-	if k >= deck_count - 1:
-		var last := deck_count - 1
-		return _end_point(last, "portal", -1, _avenue_mid(), line_s(last, int(extraction["j"])))
-	var ci := _critical_between(k)
-	if ci < 0:
-		return _end_point(k, "portal", -1, _avenue_mid(), 0.0)
-	var c: Dictionary = connectors[ci]
-	var rect := connector_rect(ci, k)
-	if c["kind"] == "ramp":
-		return _end_point(k, "ramp", ci, rect.get_center().x, row_theta[int(c["top_line"])] * radius_of(k))
-	return _end_point(k, str(c["kind"]), ci, rect.get_center().x, rect.get_center().y)
-
-
-## The places on deck k worth an enemy group, by `progress` ascending: [{deck, kind, x, s, progress, dist, weight, share,
-## safe}] (+ connector and size on a checkpoint, loop on a patrol, connector on a departure). Kinds: first_contact (a
-## synthetic site on the avenue, FIRST_CONTACT_DIST past the arrival), checkpoint / station / patrol / holding / cordon
-## (from hooks), shaft_exit (landing under a shaft from above), branch_landing (stop of a non-critical connector, e.g. the
-## locked express lift), departure (departure(k)) or, on the lowest deck, extraction. Sites closer than MERGE_DIST are one
-## (heavier weight, kind by SITE_PRIORITY). progress: 0..1 projection on arrival -> departure; dist: metres from the
-## arrival; safe: dist < SAFE_RADIUS (nothing spawns there, share 0); share: the site's fraction of the deck's enemy budget
-## (weight 1 / 2 / 4 x (0.6 + 0.8 x progress), normalised over the non-safe sites).
-func encounter_sites(k: int) -> Array[Dictionary]:
-	var a := arrival(k)
-	var d := departure(k)
-	var av := Vector2(float(a["x"]), float(a["s"]))
-	var dv := Vector2(float(d["x"]), float(d["s"]))
-	var raw: Array[Dictionary] = []
-	# First contact: up the avenue toward the way down, short enough to stay in the first third of the crossing.
-	var along := dv.y - av.y
-	var dir := signf(along) if absf(along) > 1.0 else float(_dir(k))
-	var reach := minf(FIRST_CONTACT_DIST, absf(along) * FIRST_CONTACT_SHARE)
-	raw.append({"kind": "first_contact", "x": _avenue_mid(), "s": av.y + dir * reach, "weight": "light"})
-	for h: Dictionary in hooks:
-		if int(h["deck"]) != k:
-			continue
-		match str(h["kind"]):
-			"checkpoint":
-				raw.append({"kind": "checkpoint", "x": float(h["x"]), "s": float(h["s"]), "weight": str(h["size"]),
-						"connector": int(h["connector"]), "size": str(h["size"])})
-			"station", "cordon":
-				raw.append({"kind": str(h["kind"]), "x": float(h["x"]), "s": float(h["s"]), "weight": "light"})
-			"patrol":
-				raw.append({"kind": "patrol", "x": float(h["x"]), "s": float(h["s"]), "weight": "light",
-						"loop": (h["loop"] as Array).duplicate()})
-			"holding":
-				raw.append({"kind": "holding", "x": float(h["x"]), "s": float(h["s"]), "weight": "medium"})
-	for ci in connectors.size():
-		var c: Dictionary = connectors[ci]
-		var mid := connector_rect(ci, k).get_center()
-		if c["kind"] == "shaft":
-			if int(c["to"]) == k:
-				raw.append({"kind": "shaft_exit", "x": mid.x, "s": mid.y, "weight": "medium"})
-		elif c["role"] != "critical" and (c["stops"] as Array).has(k):
-			raw.append({"kind": "branch_landing", "x": mid.x, "s": mid.y, "weight": "medium"})
-	raw.append({"kind": "extraction" if k == deck_count - 1 else "departure", "x": dv.x, "s": dv.y, "weight": "heavy",
-			"connector": int(d["connector"])})
-	# Merge: most specific first; a site within MERGE_DIST of one already kept folds into it.
-	var order := range(raw.size())
-	order.sort_custom(func(i: int, j: int) -> bool:
-		var pi := SITE_PRIORITY.find(str(raw[i]["kind"]))
-		var pj := SITE_PRIORITY.find(str(raw[j]["kind"]))
-		return pi < pj or (pi == pj and i < j))
-	var w := p("width")
-	var arc := arc_of(k)
-	var kept: Array[Dictionary] = []
-	for i: int in order:
-		var site: Dictionary = raw[i]
-		site["x"] = clampf(float(site["x"]), -w * 0.5, w * 0.5)
-		site["s"] = clampf(float(site["s"]), -arc * 0.5, arc * 0.5)
-		var at := Vector2(float(site["x"]), float(site["s"]))
-		var into := -1
-		var best := MERGE_DIST
-		for n in kept.size():
-			var gap := at.distance_to(Vector2(float(kept[n]["x"]), float(kept[n]["s"])))
-			if gap < best:
-				best = gap
-				into = n
-		if into < 0:
-			kept.append(site)
-		elif SITE_WEIGHT[site["weight"]] > SITE_WEIGHT[kept[into]["weight"]]:
-			kept[into]["weight"] = site["weight"]
-	# Place every site on the crossing, then split the budget.
-	var axis := dv - av
-	var len2 := axis.length_squared()
-	var total := 0.0
-	for site in kept:
-		var at := Vector2(float(site["x"]), float(site["s"]))
-		site["deck"] = k
-		site["dist"] = at.distance_to(av)
-		site["progress"] = clampf((at - av).dot(axis) / len2, 0.0, 1.0) if len2 > 1.0 else 0.0
-		site["safe"] = float(site["dist"]) < SAFE_RADIUS
-		site["share"] = 0.0 if site["safe"] else float(SITE_WEIGHT[site["weight"]]) * (0.6 + 0.8 * float(site["progress"]))
-		total += float(site["share"])
-	for site in kept:
-		site["share"] = float(site["share"]) / total if total > 0.0 else 0.0
-	kept.sort_custom(func(x: Dictionary, y: Dictionary) -> bool:
-		if x["progress"] != y["progress"]:
-			return x["progress"] < y["progress"]
-		if x["dist"] != y["dist"]:
-			return x["dist"] < y["dist"]
-		return SITE_PRIORITY.find(str(x["kind"])) < SITE_PRIORITY.find(str(y["kind"])))
-	return kept
-
-
-## The critical (route) connector that takes the crew from deck k down to deck k+1, or -1: one that starts on deck k
-## (a ramp first: a ramp added by the hop-only repair can share its pair with a lift merged into another's pillar), else
-## one passing deck k.
-func _critical_between(k: int) -> int:
-	var any := -1
-	var here := -1
-	for ci in connectors.size():
-		var c: Dictionary = connectors[ci]
-		if c["role"] != "critical" or c["kind"] == "shaft" or int(c["from"]) > k or int(c["to"]) < k + 1:
-			continue
-		if int(c["from"]) == k:
-			if c["kind"] == "ramp":
-				return ci
-			if here < 0:
-				here = ci
-		if any < 0:
-			any = ci
-	return here if here >= 0 else any
-
-
-func _avenue_mid() -> float:
-	var av := lane_x("avenue")
-	return (av.x + av.y) * 0.5
-
-
-func _end_point(k: int, kind: String, ci: int, x: float, s: float) -> Dictionary:
-	var half := arc_of(k) * 0.5
-	return {"deck": k, "kind": kind, "x": clampf(x, -p("width") * 0.5, p("width") * 0.5), "s": clampf(s, -half, half),
-			"connector": ci}
-
-
 # --- Checksum --------------------------------------------------------------------------------------------
 
 ## Hex digest of everything in the plan. Equal on two machines = the same section.
@@ -1939,19 +1771,19 @@ func checksum() -> String:
 	var buf := StreamPeerBuffer.new()
 	for v in [deck_count, cols, rows, spine_line]:
 		buf.put_32(v)
-	_put(buf, [p("radius"), p("pitch"), p("slab"), span * 1000.0])
-	_put(buf, col_x)
+	PlanHash.put(buf, [p("radius"), p("pitch"), p("slab"), span * 1000.0])
+	PlanHash.put(buf, col_x)
 	for t in row_theta:
-		_put(buf, [t * 1000.0])     # micro-radians
+		PlanHash.put(buf, [t * 1000.0])     # micro-radians
 	for dk: Dictionary in decks:
 		for row: Array in dk["zones"]:
 			for z: String in row:
 				buf.put_8(ZONES.find(z))
 		for r: Rect2 in dk["keep_clear"]:
-			_put(buf, [r.position.x, r.position.y, r.size.x, r.size.y])
+			PlanHash.put(buf, [r.position.x, r.position.y, r.size.x, r.size.y])
 	for q: Dictionary in pillars:
 		buf.put_32(int(q["col"]) + int(q["row"]) * 64)
-		_put(buf, [q["x"], float(q["theta"]) * 1000.0])
+		PlanHash.put(buf, [q["x"], float(q["theta"]) * 1000.0])
 		for k: int in q["stops"]:
 			buf.put_8(k)
 	for c: Dictionary in connectors:
@@ -1959,7 +1791,7 @@ func checksum() -> String:
 		for v in [c["from"], c["to"], c["col"], c["row"], c["foot_row"], c["pillar"], c["top_line"], c["foot_line"]]:
 			buf.put_32(int(v))
 		buf.put_8((1 if c["vehicles"] else 0) + (2 if c["two_way"] else 0) + (4 if c["locked"] else 0))
-		_put(buf, [c["x0"], c["x1"], float(c["theta0"]) * 1000.0, float(c["theta1"]) * 1000.0])
+		PlanHash.put(buf, [c["x0"], c["x1"], float(c["theta0"]) * 1000.0, float(c["theta1"]) * 1000.0])
 	for w: Dictionary in route["vehicle"]:
 		buf.put_32(node_id(w["deck"], w["i"], w["j"]))
 	for w: Dictionary in route["mech"]:
@@ -1967,7 +1799,7 @@ func checksum() -> String:
 	for h: Dictionary in hooks:
 		buf.put_utf8_string(str(h["kind"]))
 		buf.put_8(int(h["deck"]))
-		_put(buf, [h["x"], h["s"]])
+		PlanHash.put(buf, [h["x"], h["s"]])
 	for b: Dictionary in boundaries:
 		buf.put_utf8_string("%s:%s" % [b["edge"], b["kind"]])
 		for g: Dictionary in b["gates"]:
@@ -1989,8 +1821,3 @@ func checksum() -> String:
 	ctx.start(HashingContext.HASH_SHA256)
 	ctx.update(buf.data_array)
 	return ctx.finish().hex_encode().substr(0, 16)
-
-
-func _put(buf: StreamPeerBuffer, values: Array) -> void:
-	for v: Variant in values:
-		buf.put_32(int(round(float(v) * 1000.0)))     # millimetres: immune to float formatting

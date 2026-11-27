@@ -630,7 +630,7 @@ func _aboard(vid: int, t: float, crowd: LifeCrowd) -> int:
 	return maxi(int(u["n"]) - out, 0)
 
 
-## The clock source changed (AmbientLife._rebase): every pod that unloaded did so on the old clock, long ago.
+## The clock source changed (LifeDeck._rebase): every pod that unloaded did so on the old clock, long ago.
 func rebase_unloads() -> void:
 	for vid: int in unloads:
 		(unloads[vid] as Dictionary)["doors"] = -INF
@@ -649,7 +649,7 @@ func rebuild_obstacles(t: float, crowd: LifeCrowd) -> void:
 
 
 ## The anchor of vid in the episode that covers time t, or {}.
-func _anchor_at(vid: int, t: float) -> Dictionary:
+func anchor_at(vid: int, t: float) -> Dictionary:
 	var e: Variant = episodes.get(int(tr.vehicles[vid]["loop"]))
 	while e != null and t < float((e as Dictionary)["t"]):
 		e = (e as Dictionary).get("prev")

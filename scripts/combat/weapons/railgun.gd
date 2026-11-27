@@ -42,7 +42,7 @@ func on_shot(m: WeaponMount) -> void:
 
 
 func look() -> Dictionary:
-	return {"color": MechMeshes.TEAL, "trail_color": MechMeshes.TEAL, "width": 0.3, "glow": true}
+	return {"color": LowPolyPalette.TEAL, "trail_color": LowPolyPalette.TEAL, "width": 0.3, "glow": true}
 
 
 func spawn(world: CombatWorld, record: Dictionary, st: Dictionary) -> CombatEffect:

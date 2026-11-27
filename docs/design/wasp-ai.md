@@ -3,7 +3,7 @@
 Companion to `docs/design/chassis-rules.md` (§7.2 Hover / Wasp) and `docs/design/player-ai.md`.
 Covers two halves:
 1. **Enemy Anti-Air (`scripts/enemy/`)** — how enemies aim at, lead, reposition against, and duel an airborne player (Wasp, or jump-jetting Strider/Bulwark). Zero dependency on Wasp's hover controller; built now.
-2. **Wasp Player Bot AI (`scripts/ai/`, `scripts/game/bot_route_planner.gd`, `mission_bot.gd`)** — 3D hover navigation, altitude choice, pre-overheat landing, and damaged-fan fallback, plus the minimal controller contract needed from Main/Mech when Wasp is built.
+2. **Wasp Player Bot AI (`scripts/ai/`, `scripts/game/bot_route_planner.gd`, `mission_bot.gd`)** — 3D hover navigation, altitude choice, and pre-overheat landing onto mini-legs, plus the minimal controller contract agreed with Mech (`docs/design/wasp-hover.md`).
 
 ---
 
@@ -34,26 +34,27 @@ Every ground unit has a realistic upper elevation limit (`_max_aim_pitch()`):
 
 ---
 
-## 2. Wasp Player Bot AI (Planned — Awaits Main/Mech Hover Controller)
+## 2. Wasp Player Bot AI (Planned — Awaits User Approval & Mech's Hover Controller)
 
-### 2.1 Minimal Controller Contract Requested from Main / Mech
-So `PlayerBot`, `MissionBot`, and `BotRoutePlanner` stay chassis-agnostic (matching `chassis-rules.md` §7.3), Wasp's controller (`MechController` hover mode or dedicated hover controller) should expose:
+### 2.1 Minimal Controller Contract (Aligned with Mech's `docs/design/wasp-hover.md`)
+So `PlayerBot`, `MissionBot`, and `BotRoutePlanner` stay chassis-agnostic (matching `chassis-rules.md` §7.3), Wasp's controller (`MechController` hover mode or dedicated hover controller) exposes:
 - **Catalog flag:** `MechCatalog.chassis(id)["move"] == "hover"` (already in `chassis-rules.md` §1.1).
 - **Inputs (written by human or `PlayerBot`):**
   - Existing `move_input: Vector2` (strafe/forward), `aim_yaw`, `running` (sprint/boost).
   - `climb_input: float` in `[-1.0, 1.0]` (`+1` climb / Space, `-1` descend / Ctrl, `0` hold altitude).
 - **Read-only state (read by `PlayerBot` / `MissionBot`):**
   - `grounded: bool` (true when landed on mini-legs).
-  - `can_fly() -> bool` (`working_fans >= 3` and not in heat shutdown).
-  - `working_fans() -> int` (`0..4`, derived from the 4 fan hit components).
-  - `hover_ceiling() -> float` (max cruise height above deck, e.g. `26–30 m`, below deck ceiling).
+  - `altitude() -> float` (m above the ground/roof directly under the Wasp).
+  - `headroom() -> float` (m of free air above the Wasp, up to the slab of the deck above or the roof of an opening — **no artificial altitude cap**).
+  - `can_fly() -> bool` (true when **both** fans are alive and not in heat shutdown).
+  - `working_fans() -> int` (`0..2`, mapped onto the existing `leg_l` / `leg_r` component slots on the wire; hardpoints reuse `side_l` / `side_r` / `belly`).
 
-### 2.2 3D Hover Navigation (`BotRoutePlanner` + `BotNavigator`)
-- **Same-deck travel:** Direct over-roof flight (reusing the `_skim_clear_alt` roof-clearance rule against `CityPlan` tiers, routing laterally only around full-height pillars/towers that reach `hover_ceiling`).
-- **Cross-deck transit:** Prefer `SectionPlan` ceiling openings / vertical shafts (direct climb/descend through the shaft) over long ramp detours whenever a shaft is closer; fall back to ramps cleanly if `not can_fly()` (2+ fans lost).
+### 2.2 3D Hover Navigation (`BotRoutePlanner` + `BotNavigator` + `HoverRoute`)
+- **Same-deck travel:** Direct over-roof flight (`HoverRoute.clear_altitude` against `CityPlan` tiers, keeping safe headroom below the deck slab above), routing laterally only around full-height pillars/towers that reach the slab.
+- **Cross-deck transit (first-class route):** With no artificial altitude cap, two-way vertical flight through `SectionPlan` ceiling openings and shafts (`HoverRoute` `shaft_up` / `shaft_down`) is the primary way to change decks, with ramps (`ramp_fly`) as backup.
 - **Objective zones:** Descend into flag/defend/depot/extraction cylinders as required (hovering low inside the cylinder height so capture/resupply triggers).
 
-### 2.3 Altitude Choice, Heat Landing & Fan-Loss Fallback (`PlayerBot`)
-- **Combat altitude band:** Cruise at `10–18 m` (above ground clutter and tank elevation caps, below ceiling), dipping behind rooftop cover when under sniper/lance/gunship fire.
-- **Pre-overheat safe landing:** When `heat_fraction >= 0.78` (or a high-heat burst is queued) and `altitude > 6.0 m`, smoothly command `climb_input = -1.0` toward the nearest clear street/roof below before shutdown unfolds the mini-legs — avoiding hard-landing fall damage.
-- **Damaged-fan fallback (`working_fans <= 2`):** Treat the Wasp as a grounded turret (`can_fly() == false`): hold fire discipline, call for repair drone / route along ground to nearest supply depot once repaired.
+### 2.3 Altitude Choice, Pre-Overheat Landing & Fan Loss (`PlayerBot`)
+- **Combat altitude band:** Cruise at `10–18 m` with comfortable `headroom()` below the deck slab above (above ground clutter and tank elevation caps), dipping behind rooftop cover when under sniper/lance/gunship fire.
+- **Pre-overheat safe landing (critical — no automatic landing burn):** When `heat_fraction >= 0.78` (or a high-heat burst is queued) and `altitude() > 6.0 m`, smoothly command `climb_input = -1.0` toward `HoverRoute.safe_landing_spot()` (nearest clear street or flat standable roof) before heat shutdown cuts the fans and unfolds the mini-legs — avoiding hard-landing fall damage.
+- **Fan loss (`working_fans() < 2`):** Losing either fan downs the Wasp under the existing `DownedRules` (same as a walker losing a leg: no movement, no weapons, no damage taken; revived by a repair drone or by redeploying). No grounded-turret fallback mode is needed; `can_fly() == false` simply commands `0 m` altitude while downed/shut down.

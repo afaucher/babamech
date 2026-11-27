@@ -562,14 +562,14 @@ func _telegraph_has_line(live_pos: Vector3) -> bool:
 func _has_peek_los(target_pos: Vector3) -> bool:
 	if _has_los:
 		return true
-	if squad == null or not squad.has_method("arc_segment_occluded"):
+	if _nav() == null:
 		return false
 	var my_arc := _world_to_arc2(_world_pos())
 	var th_arc := _world_to_arc2(target_pos)
 	var to_t := (th_arc - my_arc).normalized()
 	var side := Vector2(-to_t.y, to_t.x)
-	return (not bool(squad.arc_segment_occluded(my_arc + side * 3.5, th_arc, spawn_deck))) \
-		or (not bool(squad.arc_segment_occluded(my_arc - side * 3.5, th_arc, spawn_deck)))
+	return (not bool(_nav().arc_segment_occluded(my_arc + side * 3.5, th_arc, spawn_deck))) \
+		or (not bool(_nav().arc_segment_occluded(my_arc - side * 3.5, th_arc, spawn_deck)))
 
 
 func _step_trooper_movement(dt: float, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
@@ -656,9 +656,9 @@ func _steer_with_separation(goal: Vector3, spd: float, dt: float, space: Physics
 
 
 func _find_independent_cover(origin_pos: Vector3, threat_pos: Vector3) -> Vector3:
-	if squad == null or not squad.has_method("deck_occluders"):
+	if _nav() == null:
 		return Vector3(NAN, NAN, NAN)
-	var occs: Array = squad.deck_occluders(spawn_deck)
+	var occs: Array = _nav().deck_occluders(spawn_deck)
 	if occs.is_empty():
 		return Vector3(NAN, NAN, NAN)
 	var d_plan: CityPlan = squad.deck_plan(spawn_deck) if squad.has_method("deck_plan") else (squad.get("plan") as CityPlan)
@@ -685,15 +685,15 @@ func _find_independent_cover(origin_pos: Vector3, threat_pos: Vector3) -> Vector
 				continue
 			if c_pt.distance_to(th_arc) < RUSH_PANIC_DIST:
 				continue
-			if not squad.arc_segment_occluded(c_pt, th_arc, spawn_deck):
+			if not _nav().arc_segment_occluded(c_pt, th_arc, spawn_deck):
 				continue
 			var cw := _arc_to_world_pos(c_pt)
 			if fireteam != null and fireteam.is_cover_taken(cw, target_id):
 				continue
 			var to_th := (th_arc - c_pt).normalized()
 			var side := Vector2(-to_th.y, to_th.x)
-			var peek_open: bool = (not bool(squad.arc_segment_occluded(c_pt + side * 3.5, th_arc, spawn_deck))) \
-				or (not bool(squad.arc_segment_occluded(c_pt - side * 3.5, th_arc, spawn_deck)))
+			var peek_open: bool = (not bool(_nav().arc_segment_occluded(c_pt + side * 3.5, th_arc, spawn_deck))) \
+				or (not bool(_nav().arc_segment_occluded(c_pt - side * 3.5, th_arc, spawn_deck)))
 			# Slight preference toward each trooper's own seeded offset so squadmates fan out naturally!
 			var score := d_me * 0.7 + pref_arc.distance_to(c_pt) * 0.35 + (0.0 if peek_open else 20.0)
 			if score < best_score:

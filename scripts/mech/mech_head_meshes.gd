@@ -93,7 +93,7 @@ static func _chicken(k: MeshKit) -> void:
 	_stern_eyes(k, Vector3(0.2, 0.86, -0.275), Vector3(0.6, 0.05, -0.8), white.darkened(0.1), null, 1.1)
 
 
-static func _pickle_colour(_c: Vector3, n: Vector3) -> Color:
+static func pickle_colour(_c: Vector3, n: Vector3) -> Color:
 	var a := int(floor((atan2(n.x, n.z) + PI) / (TAU / 8.0) + 0.5))
 	return Color(0.4, 0.55, 0.2) if a % 2 == 0 else Color(0.33, 0.48, 0.16)
 
@@ -101,7 +101,7 @@ static func _pickle_colour(_c: Vector3, n: Vector3) -> Color:
 static func _pickle(k: MeshKit) -> void:
 	var green := Color(0.4, 0.55, 0.2)
 	_skull(k, [[0.0, 0.0, 0.27, 0.27], [0.16, 0.0, 0.33, 0.33], [0.5, 0.0, 0.35, 0.35], [0.85, 0.0, 0.35, 0.35],
-		[1.1, 0.0, 0.3, 0.3], [1.24, 0.0, 0.17, 0.17]], _pickle_colour, 2.0)
+		[1.1, 0.0, 0.3, 0.3], [1.24, 0.0, 0.17, 0.17]], pickle_colour, 2.0)
 	_stern_eyes(k, Vector3(0.14, 0.7, -0.325), Vector3(0.3, 0.0, -0.95), green.lightened(0.12), EYE_WHITE, 1.2)
 	# Nose, a closed mouth, warts.
 	k.seg(Vector3(0, 0.66, -0.33), Vector3(0, 0.56, -0.45), Vector2(0.03, 0.03), Vector2(0.07, 0.05), 4, green.lightened(0.08), 2.0, true, 0.0)
@@ -111,7 +111,7 @@ static func _pickle(k: MeshKit) -> void:
 		k.seg(p, p + Vector3(w[0], 0, w[2]).normalized() * 0.08, Vector2(0.05, 0.05), Vector2.ZERO, 3, green.lightened(0.1), 2.0, false)
 
 
-static func _corn_colour(c: Vector3, n: Vector3) -> Color:
+static func corn_colour(c: Vector3, n: Vector3) -> Color:
 	var a := int(floor((atan2(n.x, n.z) + PI) / (TAU / 8.0) + 0.5))
 	var band := int(floor(c.y / 0.14))
 	return Color(0.97, 0.8, 0.25) if (a + band) % 2 == 0 else Color(0.9, 0.7, 0.18)
@@ -121,7 +121,7 @@ static func _corn(k: MeshKit) -> void:
 	var yellow := Color(0.97, 0.8, 0.25)
 	var husk := Color(0.36, 0.56, 0.2)
 	_skull(k, [[0.0, 0.0, 0.2, 0.2], [0.2, 0.0, 0.32, 0.32], [0.5, 0.0, 0.34, 0.34], [0.82, 0.0, 0.31, 0.31],
-		[1.08, 0.0, 0.23, 0.23], [1.26, 0.0, 0.11, 0.11]], _corn_colour, 2.0)
+		[1.08, 0.0, 0.23, 0.23], [1.26, 0.0, 0.11, 0.11]], corn_colour, 2.0)
 	# Husk leaves around the base (none across the face): a creased blade each, outside and inside.
 	for i in 5:
 		var a := TAU * (float(i) + 1.0) / 6.0
@@ -160,7 +160,7 @@ static func _dog(k: MeshKit) -> void:
 
 
 ## Faceted mallard green: alternate light and dark facets around and up the head.
-static func _duck_green(c: Vector3, n: Vector3) -> Color:
+static func duck_green(c: Vector3, n: Vector3) -> Color:
 	var a := int(floor((atan2(n.x, n.z) + PI) / (TAU / 8.0) + 0.5))
 	var band := int(floor(c.y / 0.2))
 	return DUCK_GREEN_LIGHT if (a + band) % 2 == 0 else DUCK_GREEN
@@ -191,7 +191,7 @@ static func _duck(k: MeshKit) -> void:
 	var rings: Array = []
 	for s: Array in DUCK_SECS:
 		rings.append(MeshKit.ring(Vector3(0, s[0], s[1]), s[2], s[3], 8, "y", 2.2))
-	k.loft(rings, [DUCK_BROWN, DUCK_RING, _duck_green], false, true)
+	k.loft(rings, [DUCK_BROWN, DUCK_RING, duck_green], false, true)
 	duck_bill(k, DUCK_BILL_UP, 6, DUCK_BILL)
 	duck_bill(k, DUCK_BILL_LOW, 4, DUCK_BILL.darkened(0.18))
 	duck_nostrils(k)

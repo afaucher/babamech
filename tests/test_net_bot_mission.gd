@@ -19,20 +19,20 @@ const WIN_TIMEOUT := 620.0   # re-measured 2026-11-23 (Engine subagent): won at 
 
 const PLAN := {"primary": "sweep", "bonus_max": 0, "waves_per_deck": 0, "hold": 3.0}   ## MissionFlow.test_plan
 
-var td: TestDrive
+var td: MissionScene
 
 
 func _configure() -> void:
 	net_timeout = float(NET_TIMEOUT) - 5.0
-	TestDrive.bot_profile = "veteran"
-	TestDrive.dev_bot_travel = OS.get_environment("BABAMECH_BOT_DEV_TRAVEL") != "0"   # "0": walk only (MissionBot routes)
-	CombatWorld.dev_enemy_damage = TestDrive.DEV_FAST_CLEAR
+	MissionScene.bot_profile = "veteran"
+	MissionScene.dev_bot_travel = OS.get_environment("BABAMECH_BOT_DEV_TRAVEL") != "0"   # "0": walk only (MissionBot routes)
+	CombatWorld.dev_enemy_damage = MissionScene.DEV_FAST_CLEAR
 	MissionFlow.test_plan = PLAN
 
 
 func _restore() -> void:
-	TestDrive.bot_profile = ""
-	TestDrive.dev_bot_travel = false
+	MissionScene.bot_profile = ""
+	MissionScene.dev_bot_travel = false
 	CombatWorld.dev_enemy_damage = 1.0
 	MissionFlow.test_plan = {}
 
@@ -42,7 +42,7 @@ func run_host() -> void:
 	if not check(await until(func() -> bool: return Session.roster.size() == 2, 30.0), "the crew gathers"):
 		_restore()
 		return
-	check(Session.start_mission(SEED), "the host launches")
+	check(Session.mission.host_launch(SEED), "the host launches")
 	await _load()
 	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING, 40.0), "the barrier passes"):
 		_restore()
@@ -82,7 +82,7 @@ func run_client() -> void:
 		return
 	var ended := [""]
 	Session.mission_ended.connect(func(r: String) -> void: ended[0] = r)
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the launch arrives"):
 		_restore()
 		return
 	await _load()
@@ -95,6 +95,6 @@ func run_client() -> void:
 
 func _load() -> void:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await until(func() -> bool: return td.loaded, 30.0)

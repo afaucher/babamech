@@ -1,8 +1,8 @@
-class_name TestDriveBotPilot
+class_name MissionBotPilot
 extends Node
-## Self-contained spectator / autopilot bridge for TestDrive (docs/design/player-ai.md §6.2).
-## Attach with a single call once TestDrive is ready: `TestDriveBotPilot.attach(test_drive)`.
-##   --bot <rookie|average|veteran|brawler>   start TestDrive in live AI autopilot mode
+## Self-contained spectator / autopilot bridge for MissionScene (docs/design/player-ai.md §6.2).
+## Attach with a single call once MissionScene is ready: `MissionBotPilot.attach(test_drive)`.
+##   --bot <rookie|average|veteran|brawler>   start MissionScene in live AI autopilot mode
 ##   F6                                       toggle live AI autopilot on / off seamlessly
 ##   F7                                       cycle AI skill profile while autopilot is active
 ## Strictly input-only: drives drive.mech, drive.combat.rack, and spectator drive.cam; cleanly restores
@@ -12,7 +12,7 @@ signal toggled(active: bool, profile: String)
 
 var profile_id := "veteran"
 var active := false
-var drive: Node                  ## TestDrive instance (typed loosely so Engine's co-op edits never clash)
+var drive: Node                  ## MissionScene instance (typed loosely so Engine's co-op edits never clash)
 var bot: PlayerBot
 var _bound_seed := -1
 ## Engine (hangar bots, docs/design/hangar-bots.md): drive ANOTHER mech than drive.mech: {mech, rack, pt, id}. Empty =
@@ -27,8 +27,8 @@ func net_fields() -> Dictionary:
 	}
 
 
-static func attach(td: Node) -> TestDriveBotPilot:
-	var pilot := TestDriveBotPilot.new()
+static func attach(td: Node) -> MissionBotPilot:
+	var pilot := MissionBotPilot.new()
 	pilot.name = "BotPilot"
 	pilot.drive = td
 	td.add_child(pilot)
@@ -105,7 +105,7 @@ func _bind_bot() -> void:
 	bot.configure(profile_id, seed_val, "spectator_bot" if body.is_empty() else "crew_bot%d" % int(body.get("id", 0)))
 	bot.bind(mech, rack, pt, world, squad, plan, ring, cam)
 	_bound_seed = seed_val
-	# Run before MechController and TestDriveCombat step each physics frame.
+	# Run before MechController and MissionCombat step each physics frame.
 	process_physics_priority = -20
 
 

@@ -1230,3 +1230,80 @@ Antigravity's finished work was committed in 948ec3e.
 - 2026-11-26, Engine (sub-agent): `MissionBot._plan_local` capsule-fit fallback (agreed with Missions / Environment). The usual pick is unchanged: within STAND_IN x r, roomy. Only when it finds nothing does the bot take any reachable point inside the objective's own radius (a defend: 30 m) that clears body_r + FIT_PAD (0.6 m) all round, nearest the goal point. `_roomy(p, up, dist)` takes an optional reach; new stat `local_fits`. So a Strider's stand points don't move. Bulwark seed 22: d1_p now reached (stand point x -119 s -263, 18 m from the relay) and done at 244.7 s, relay min 51 %. The mission still runs out at 950 s: the deck 2 sweep took 600 s with 5 deaths; damage taken: gunships 2177, turret_sniper 1805. Passing: bot_obj_* (all 4), test_net_bot_objectives, test_bot_depot, test_net_contract.
 - 2026-11-26, Claude Mech session subagent (Wasp art pass 2), in flight: hull slightly longer and a little wider (user), thicker fan rings, orange/white hull read, sturdier legs. Same files as Wasp art phase 1 (wasp_meshes.gd, chassis_parts.gd wasp table, wasp_*.res, Wasp tests, build shots). Still art only, not selectable.
 - 2026-11-26, Mech session subagent (Wasp art pass 2) (Claude): **landed (uncommitted)**: hull longer 4.41 -> 4.94 m and wider 3.69 -> 4.01 m (user), same height; fans 8.41 -> 8.75 m across, moved forward to 0.36 behind the hatch, chunky segmented guard rings; orange/white A1 hull read; legs 1.35x thicker, feet 1.4x, tidier dangle; taller fin; stub swivel pitch-up cut to 45 (catalog DRAFT_CHASSIS wasp only). Files: scripts/mech/wasp_meshes.gd, assets/models/mech/wasp_*.res (Strider/Bulwark .res untouched, hashes checked), scripts/mech/mech_catalog.gd (wasp stub hardpoints), tests/test_mech_parts.gd (Wasp size/joint numbers), docs/design/chassis-rules.md, shots docs/design/chassis-concepts/build/wasp_*.png. Pass: test_clearance_wasp, test_hardpoint_contact_wasp, test_mech_parts, test_geometry_audit, test_lab, test_net_contract, test_layout, test_menu.
+- 2026-11-26, Claude "Refactor sweep" session (code-audit item 7 + code organization audit): **planning only, no code
+  moved yet.** Brought `docs/code-organization-audit.md` into this tree by checking out that one file from
+  `origin/ccr-8e014eac-5544o3` (no merge; untracked, not committed). Writing `docs/refactor-plan.md` (folder layout,
+  move map, large-file splits, tiers). Nothing moves until the user approves the layout; before any file of yours moves
+  or splits, the main session will ask you to pause edits to it. Every move will be logged here.
+- 2026-11-26 11:05, antigravity (`e4955d7c`): updated `docs/design/wasp-ai.md` (design only, zero code edits) to match Mech's two-fan Wasp hover contract (`altitude()`, `working_fans()` 0..2 on `leg_l`/`leg_r`, `can_fly()` = both fans alive & not shut down, `28 m` ceiling, no automatic landing burn, fan loss = downed under `DownedRules`, removed grounded-turret fallback). `HoverRoute.desired_altitude` already takes plain `can_fly: bool` (no 4-fan logic); holding all `scripts/ai/` edits until the refactor sweep publishes its plan.
+- 2026-11-26 11:07, antigravity (`e4955d7c`): updated `docs/design/wasp-ai.md` (design only, zero code edits) to drop `hover_ceiling()` and use `headroom()` (no artificial altitude cap; only physical deck slab above; ceiling-opening/shaft deck changes via `HoverRoute` `shaft_up`/`shaft_down` are first-class routes). Still holding `scripts/ai/` until the refactor sweep clears.
+- 2026-11-26, Claude "Refactor sweep" session: **plan approved** (`docs/refactor-plan.md`: feature folders, `scripts/bots/`,
+  `mission/world/`, `combat/fx` + `combat/equipment`; split only into independent units). Starting **tier 1** (public
+  accessors for private reach-ins, typed `EnemyBase.squad`, RingFrame flat helpers, small dedupes, corrupted-text
+  cleanup; no file moves). Owners are paused per file group through the main session before edits; files listed in the
+  tier-1 landed note.
+- 2026-11-26, Claude "Refactor sweep" session: **tier 1 landed (uncommitted), behaviour identical.** No file moves.
+  New public names (use these, not the privates): `EnemyBase` `current_target_id()`, `is_awake()`, `has_los()`,
+  `shot_index()`, `active_weapon()`, `telegraph_elapsed()`, `unit_cfg()`, `target_aim_center(t)`, `despawn(cause)`,
+  `skip_visuals()`, `is_hunting()`, `start_hunt()`, `step_hunt()`, `step_revealed_idle()`; `PlayerBot.current_target()`;
+  `BotNavigator.all_roofs()`; `MissionRules.obj_total(id)`; `MissionFlow.last_sent_state()`; **`TestDrive._held/_hud/_spawn`
+  renamed `held` / `hud` / `spawn_xf`** (31 tests updated); `PacingStats.times`; `RingFrame.world_to_arc2(ring, p)` /
+  `arc2_to_world(ring, a2, h)` (flat when ring is null); `EnemyFlier._make_part_instance(part, placeholder)`;
+  `CombatWorld.add_effect` / `team_of`; `cached_meshes()` on CombatMeshes / ImpactFx / LowPolyFlame / EnemyMeshes;
+  `RailSlug.ribbon_shader()`; `MechHeadMeshes.corn_colour` / `duck_green` / `pickle_colour`; `MeshKit.joint_cap` /
+  `bolt_ring` (were `MechMeshes._cap` / `_bolt_ring`); `MechMeshes.strider_foot` / `strider_spur`;
+  `AudioDirector.fetch_stream`, `AudioDirector.of(node)`; `SoundBank.is_async_started()`; `MechController.is_rebooting()`;
+  `MechHud.canvas()`; `LabRegistry.param_rows(defs, values)` (9 labs use it); `MechCatalog.loadout_stats` key
+  `cooling_bonus`; `MissionWorld` `door_nodes()` / `flag_nodes()` / `asset_nodes()` / `source_info()` / `portal_node()` /
+  `deck_at(k)`; `MissionProps.plan_blockers` / `in_rects`; `LifePlan.junction_near` / `foot()` / `cuts()`;
+  `LifeFleet.anchor_at`; `NetWire.put_i24` / `get_i24` / `unwrap_stamp` (removed from NetMechCodec / NetMechStream);
+  new `scripts/world/plan_hash.gd` (`PlanHash.put` / `put_rect`, replaces the three checksum `_put` copies; checksums
+  byte-identical, dumped before/after); `CityPlan._reset()`; private palette `_c()` copies replaced by `CityPalette.c`;
+  PilotFace holds `_lerp_sec` / `_tic_age` / `_face_r`. Corrupted text restored (`\` continuations, literal newlines in
+  strings, mojibake comments, test_runner.ps1 comment). Not done (not pure refactors): typing `EnemyBase.squad` (a test
+  stub assigns a plain Node), one "engaged" rule (the two copies differ), WeaponRack cooling (different rule from the
+  catalog's), `_arc_to_world_pos` (uses CURB_H). Files: scripts/enemy (base, squad, spawner, flier, gunship, drop_drone,
+  meshes), scripts/game (test_drive, mission_flow, mission_bot, downed_crew, combat_log, pacing_facts, pacing_stats,
+  enemy_sync, mission_depots, chase_camera), scripts/ai (player_bot, bot_navigator), world/section (mission_rules,
+  section_plan, mission_plan), world/ring_frame, world/city (city_plan, mission_world, mission_lab, mission_props,
+  city_buildings, city_signs, city_streets, city_lab), world/life (life_plan, life_traffic, life_crowd, life_fleet,
+  ambient_life, life_barriers, life_cars, life_pod_variants, life_tram_cars, crowd_lab, life_lab), scripts/net (net_wire,
+  mech/enemy codec + stream), scripts/combat (combat_world, flamer_fx, missile, rocket, flak_shell, combat_meshes,
+  impact_fx, rail_slug, weapon_range_lab), scripts/fx/low_poly_flame, scripts/app (shader_warmup, lab_registry),
+  scripts/audio (audio_director, music_director, sound_bank, combat_audio, mech_audio, audio_lab), scripts/mech
+  (mesh_kit, mech_meshes, bulwark_meshes, wasp_meshes, mech_head_meshes, mech_catalog, mech_controller, mech_model,
+  head_gallery, mech_part_gallery), scripts/pilot (pilot_face, pilot_lab, heads/*), scripts/ui (front_end, mech_hud,
+  mission_hud), world/ring_walk_lab, world/thruster_lab, test_runner.ps1, tests (renames only).
+- 2026-11-26, Claude "Refactor sweep" tier 2 subagent: **landed (uncommitted), behaviour identical, meshes unchanged
+  (test_mech_parts staleness check green, assets/ not regenerated).** (1) Low-poly art kit out of `MechMeshes`: new
+  `scripts/mech/low_poly_palette.gd` (`LowPolyPalette`: WHITE, ORANGE, GREY, DARK, STEEL, GUN, BLACK, AMBER, TEAL,
+  MISSILE_RED, TANK, REPAIR_GREEN, ACCENTS, ACCENT_ORDER), `low_poly_materials.gd` (`LowPolyMaterials`: `materials()`,
+  `make_material`, `accent_material`, `apply_accent`), `part_cache.gd` (`PartCache.mesh/instance(dir, part, builder)`,
+  used by MechMeshes / BulwarkMeshes / WaspMeshes; EnemyMeshes keeps its own cache: different body),
+  `mech_weapon_meshes.gd` (`MechWeaponMeshes.build(k, id)`: weapons + back equipment; the registry lists WEAPONS /
+  EQUIPMENT / DRONE_DOCK stay on MechMeshes). **Use `LowPolyPalette.X` / `LowPolyMaterials.apply_accent`, not
+  `MechMeshes.X`** (no aliases left; ~57 files in scripts/, tests/, tools/ retargeted). (2) Session mission facade
+  removed: call `Session.mission.<x>` (`host_launch`, `params`, `report_built`, `report_loading`, `host_state`,
+  `ready_peers`, `host_wave`, `client_depot_claim`, `host_depot_grant`, `host_depot_deny`, `waves`, `host_scale`,
+  `scales`, `state`, `end`); Session's mission / depot signals unchanged.
+- 2026-11-26, Claude "Refactor sweep" tier 2 subagent (last step): **landed (uncommitted), behaviour identical.**
+  Class renames: `TestDrive` -> `MissionScene`, `TestDriveCombat` -> `MissionCombat`, `TestDriveBotPilot` ->
+  `MissionBotPilot` (every reference in scripts/, tests/, tools/; file paths unchanged until tier 3). Scene
+  `scenes/test_drive.tscn` -> `scenes/mission.tscn` (root node renamed "MissionScene"; nothing looked it up by name),
+  `MissionScene.SCENE` updated. `run.ps1 -Mission` (`-TestDrive` kept as an alias). Docs: networking.md, testing.md.
+- 2026-11-26, Claude "Refactor sweep" session: **tier 2 splits landed (uncommitted), behaviour identical, in place (files
+  move in tier 3).** New units (use these): `EnemyWreckFx` (`e.wreck`: flames, core glow, smoke; `has_active_flame()`
+  moved there), aerial crash now in `EnemyFlier` (`_wreck_falling` etc. live there), `EnemyNav` (`squad.nav`: A*,
+  occluders, cuts; `find_arc_path`, `find_cover_path`, `graph(deck)`, ...); `SiteFit` (fit mask / snap / depot site
+  placement, out of MissionProps + MissionDepots; `MissionDepots.open_face` removed), `MissionGateDoor` /
+  `MissionLiftDoor` / `MissionFlagMast` / `MissionRelayAsset` / `MissionPortal` (were `MissionProps.*` inner classes),
+  geometry helpers in `CityGeo`, `MissionAirDoors` (was `MissionWorld.air_*`), `CityGraphs.road_graph(plan)` /
+  `walk_graph(plan)` (were CityPlan methods), `SectionEncounters` (arrival / departure / encounter sites), `CityWalls`
+  (walls / air holes / farm walls out of CityStreets); `AmbientLife` is now only the router, each deck is a `LifeDeck`
+  (`life.unit(k)` returns it); `CombatThreatProbe` (`combat_log.threat`), `MissionHudModel` (`mission_flow.hud_model.build()`);
+  `LowPolyPalette` (all colours: `LowPolyPalette.GREY`, not `MechMeshes.GREY`), `LowPolyMaterials` (`materials()`,
+  `apply_accent`), `PartCache`, `MechWeaponMeshes`; the Session mission facade is gone: call `Session.mission.*`
+  (`host_launch`, `params`, `report_built`, `client_depot_claim`, ...). **`TestDrive` is now `MissionScene`**
+  (`scenes/mission.tscn`, `run.ps1 -Mission`, `-TestDrive` kept as alias), `TestDriveCombat` → `MissionCombat`,
+  `TestDriveBotPilot` → `MissionBotPilot` (file paths unchanged until tier 3). Not split (not independent): MissionLoader,
+  enemy ground mover / perception, the mission bot pieces, life plan pieces (see docs/refactor-plan.md §3).

@@ -1,7 +1,7 @@
 extends TestCase
 ## Mission assets end to end in a SOLO stack drive (objectives are the only mode; fixture from
 ## tests/test_mission_objectives.gd, seed 7: deck 2's primary is a defend). MissionFlow registers the relay's body through
-## TestDriveCombat.add_asset; enemy-team hits on that AssetTarget go through CombatWorld.resolve_hit (the path a shell's
+## MissionCombat.add_asset; enemy-team hits on that AssetTarget go through CombatWorld.resolve_hit (the path a shell's
 ## direct hit takes) and must reach MissionFlow.damage_asset: asset_hp drops by damage / asset_max_hp() (ASSET_MAX_HP x the crew scale), the target's
 ## mirrored HP follows (set_hp), and a lethal hit ends the mission "lost" / objective_failed. Before its defend is active
 ## the relay is no target and damage_asset does nothing (Missions' playtest: garrisons destroyed unattended relays).
@@ -10,7 +10,7 @@ const SEED := 7
 const PLAN := {"hold": 6.0, "linger": 600.0}
 const DIRECTOR := {"rest_first": 1.5, "rest_last": 1.5, "arrival_rest": 1.0, "grace": 1.5, "follow_gap": 0.5}
 
-var td: TestDrive
+var td: MissionScene
 
 
 func _init() -> void:
@@ -27,8 +27,8 @@ func setup() -> void:
 
 
 func _run() -> void:
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = SEED
 	add_child(td)
 	await frames(4)

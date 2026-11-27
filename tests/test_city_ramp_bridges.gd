@@ -72,7 +72,7 @@ func setup() -> void:
 
 ## No edge of the road graph crosses the inside of a floor cut (an edge may run along a cut's edge: a ramp's mouth).
 func _graph_clear_of_cuts(plan: CityPlan, cuts: Array[Rect2], seed_: int, k: int) -> void:
-	var g := plan.road_graph()
+	var g := CityGraphs.road_graph(plan)
 	for ed: Array in g["edges"]:
 		var p: Vector2 = g["nodes"][int(ed[0])]
 		var q: Vector2 = g["nodes"][int(ed[1])]

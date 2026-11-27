@@ -14,7 +14,7 @@ const SEED := 7
 const PLAN := {"hold": 6.0}
 const DIRECTOR := {"rest_first": 1.5, "rest_last": 1.5, "arrival_rest": 1.0, "grace": 1.5, "follow_gap": 0.5}
 
-var td: TestDrive
+var td: MissionScene
 
 
 func _init() -> void:
@@ -32,8 +32,8 @@ func setup() -> void:
 
 
 func _drive() -> MissionFlow:
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = SEED
 	add_child(td)
 	await frames(4)
@@ -61,7 +61,7 @@ func _lost() -> void:
 	eq(mf.rules.outcome, "lost", "the failed primary loses the mission")
 	eq(mf.rules.reason, "objective_failed", "reason objective_failed")
 	eq(mf.rules.text(), "Objective failed", "the objective line says so")
-	var hs := mf.hud_state()
+	var hs := mf.hud_model.build()
 	eq(str(hs["banner"].get("title", "")), "MISSION FAILED", "banner MISSION FAILED")
 	eq(str(hs["banner"].get("reason", "")), "Objective failed", "banner reason Objective failed")
 	eq(mf.end_reason(), "Objective failed", "mission.end would say Objective failed")
@@ -158,7 +158,7 @@ func _won() -> void:
 		return
 	eq(rules.outcome, "won", "won (%s)" % str(rules.state()))
 	await _seconds(0.3)
-	eq(str(mf.hud_state()["banner"].get("title", "")), "MISSION COMPLETE", "banner MISSION COMPLETE")
+	eq(str(mf.hud_model.build()["banner"].get("title", "")), "MISSION COMPLETE", "banner MISSION COMPLETE")
 	check(float(mf.world.portal_progress) >= 0.99, "the portal is fully charged")
 	print("objectives: %d wave orders" % mf.opened.size())
 	var order := {"wave": "d1_w2", "deck": 1, "source": "d1_gate_s0_1", "open_at": 1234.56, "max_units": 8}

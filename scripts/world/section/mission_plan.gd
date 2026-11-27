@@ -28,7 +28,7 @@ extends RefCounted
 ##                 centre of the ramp end on that deck, 4 m beyond it along the lane; shaft: the landing's centre).
 ##                 toward: a POINT ~20 m further along the walking direction, clamped inside the deck.
 ##                 connector: SectionPlan connector id (-1 for gates); edge: the gate's wall ("" otherwise).
-##                 Never within SectionPlan.SAFE_RADIUS of the deck's arrival. ids "d<k>_gate_<edge>_<line>",
+##                 Never within SectionEncounters.SAFE_RADIUS of the deck's arrival. ids "d<k>_gate_<edge>_<line>",
 ##                 "d<k>_lift_<connector>", "d<k>_ramp_<connector>", "d<k>_shaft_<connector>".
 ##   pools       [{deck, garrison: 0.5 | 1.0, reserve: [{id: "d<k>_w<n>", share, theme: light | mixed | heavy, source,
 ##                 for: "" | objective id}]}]   (docs/design/pacing-director.md 1.1)
@@ -78,7 +78,7 @@ const DOOR_GAP := 4.0            ## lift lobby / ramp end: this far beyond the d
 const TOWARD := 20.0             ## `toward` lies this much further along the walking direction
 const OFF_ROUTE_KINDS: Array[String] = ["departure", "extraction", "first_contact"]
 const SNAP := 45.0               ## how far the world may move a flag mast / defend asset to clear ground (record "snap")
-const BONUS_GAP := SectionPlan.MERGE_DIST * 2.0 + SNAP   ## bonuses this far from the primary and each other (125 m)
+const BONUS_GAP := SectionEncounters.MERGE_DIST * 2.0 + SNAP   ## bonuses this far from the primary and each other (125 m)
 const FLAG_SOURCE_GAP := 60.0    ## a flag site at least this far from every source on its deck, where the deck allows
 const FLAG_WAVE_NEAR := 80.0     ## a flag's start wave comes preferably from a source FLAG_WAVE_NEAR..FLAG_WAVE_FAR m away
 const FLAG_WAVE_FAR := 200.0
@@ -331,8 +331,8 @@ func _add_source(sec: SectionPlan, per_deck: Array, k: int, kind: String, id: St
 		connector: int, edge: String) -> void:
 	var ext := _extent(sec, k)
 	var pt := Vector2(clampf(at.x, ext.position.x, ext.end.x), clampf(at.y, ext.position.y, ext.end.y))
-	var arr := sec.arrival(k)
-	if pt.distance_to(Vector2(float(arr["x"]), float(arr["s"]))) < SectionPlan.SAFE_RADIUS:
+	var arr := SectionEncounters.arrival(sec, k)
+	if pt.distance_to(Vector2(float(arr["x"]), float(arr["s"]))) < SectionEncounters.SAFE_RADIUS:
 		return
 	var inner := ext.grow(-1.0)
 	var tw := pt + dir * TOWARD
@@ -367,8 +367,8 @@ func _make_objectives(sec: SectionPlan, replay: Array = []) -> void:
 		if k < replay.size():
 			_rng.state = int(replay[k])
 		_deck_states.append(_rng.state)
-		var sites := sec.encounter_sites(k)
-		var dep := sec.departure(k)
+		var sites := SectionEncounters.sites(sec, k)
+		var dep := SectionEncounters.departure(sec, k)
 		# Waves this deck can still tie to an objective (the extraction deck keeps its last for the hold).
 		var room := wave_count(k) - (1 if k == ex_deck and wave_count(k) > 0 else 0)
 		var site := _primary_site(sites)
@@ -388,9 +388,9 @@ func _make_objectives(sec: SectionPlan, replay: Array = []) -> void:
 		# A forced primary type replaces the roll where the deck allows it (same conditions as the candidates above).
 		# A sweep's site is the departure: forced only where that is outside the arrival bubble.
 		var forced := str(options["primary"])
-		var arr := sec.arrival(k)
+		var arr := SectionEncounters.arrival(sec, k)
 		var dep_ok := Vector2(float(dep["x"]), float(dep["s"])).distance_to(Vector2(float(arr["x"]), float(arr["s"]))) \
-				>= SectionPlan.SAFE_RADIUS
+				>= SectionEncounters.SAFE_RADIUS
 		if (forced == "sweep" and dep_ok) or (forced == "flag" and not site.is_empty()) or (forced == "defend"
 				and not site.is_empty() and _source_near(k, site) and room >= 2):
 			ptype = forced
@@ -553,8 +553,8 @@ static func _primary_site(sites: Array[Dictionary]) -> Dictionary:
 	for st: Dictionary in sites:
 		if st["safe"] or OFF_ROUTE_KINDS.slice(0, 2).has(str(st["kind"])) or float(st["progress"]) < 0.5:
 			continue
-		if best.is_empty() or SectionPlan.SITE_WEIGHT[st["weight"]] > SectionPlan.SITE_WEIGHT[best["weight"]] \
-				or (SectionPlan.SITE_WEIGHT[st["weight"]] == SectionPlan.SITE_WEIGHT[best["weight"]] \
+		if best.is_empty() or SectionEncounters.SITE_WEIGHT[st["weight"]] > SectionEncounters.SITE_WEIGHT[best["weight"]] \
+				or (SectionEncounters.SITE_WEIGHT[st["weight"]] == SectionEncounters.SITE_WEIGHT[best["weight"]] \
 				and float(st["progress"]) > float(best["progress"])):
 			best = st
 	if not best.is_empty():
@@ -570,8 +570,8 @@ static func _primary_site(sites: Array[Dictionary]) -> Dictionary:
 ## Bonus candidates: non-safe sites that are not on the avenue route (departure, extraction, first contact), farthest
 ## from the arrival -> departure line first.
 static func _off_route(sites: Array[Dictionary], sec: SectionPlan, k: int) -> Array[Dictionary]:
-	var a := sec.arrival(k)
-	var d := sec.departure(k)
+	var a := SectionEncounters.arrival(sec, k)
+	var d := SectionEncounters.departure(sec, k)
 	var av := Vector2(float(a["x"]), float(a["s"]))
 	var dv := Vector2(float(d["x"]), float(d["s"]))
 	var out: Array[Dictionary] = []
@@ -692,13 +692,13 @@ func _make_depots(sec: SectionPlan, replay: Array = []) -> void:
 		var roll := rng.randi_range(1, 2)    # drawn on every deck, so one deck's rule never shifts the next's
 		var want := 2 if two else roll
 		var cands: Array[Dictionary] = []
-		var arr := sec.arrival(k)
+		var arr := SectionEncounters.arrival(sec, k)
 		var arr_at := Vector2(float(arr["x"]), float(arr["s"]))
-		for st: Dictionary in sec.encounter_sites(k):
+		for st: Dictionary in SectionEncounters.sites(sec, k):
 			if bool(st["safe"]):
 				continue
 			var lot := depot_site_for(sec, k, Vector2(float(st["x"]), float(st["s"])))
-			if lot.distance_to(arr_at) < SectionPlan.SAFE_RADIUS:
+			if lot.distance_to(arr_at) < SectionEncounters.SAFE_RADIUS:
 				continue
 			var c := st.duplicate()
 			c["x"] = lot.x
@@ -809,39 +809,34 @@ func checksum(with_depots: bool = true) -> String:
 	for o: Dictionary in objectives:
 		buf.put_utf8_string("%s:%s:%s:%s" % [o["id"], o["type"], o["role"], ",".join(PackedStringArray(o["needs"]))])
 		buf.put_32(int(o["deck"]))
-		_put(buf, [o["site"]["x"], o["site"]["s"], o["radius"], o.get("snap", 0.0)])
+		PlanHash.put(buf, [o["site"]["x"], o["site"]["s"], o["radius"], o.get("snap", 0.0)])
 		var keys: Array = (o["params"] as Dictionary).keys()
 		keys.sort()
 		for key: String in keys:
 			buf.put_utf8_string(key)
 			var v: Variant = o["params"][key]
 			if v is Rect2:
-				_put(buf, [v.position.x, v.position.y, v.size.x, v.size.y])
+				PlanHash.put(buf, [v.position.x, v.position.y, v.size.x, v.size.y])
 			else:
-				_put(buf, [v])
+				PlanHash.put(buf, [v])
 	for s: Dictionary in sources:
 		buf.put_utf8_string("%s:%s:%s" % [s["id"], s["kind"], s["edge"]])
 		for v in [s["deck"], s["load"], s["connector"]]:
 			buf.put_32(int(v))
-		_put(buf, [s["x"], s["s"], s["toward"]["x"], s["toward"]["s"]])
+		PlanHash.put(buf, [s["x"], s["s"], s["toward"]["x"], s["toward"]["s"]])
 	for p: Dictionary in pools:
 		buf.put_32(int(p["deck"]))
-		_put(buf, [p["garrison"]])
+		PlanHash.put(buf, [p["garrison"]])
 		for g: Dictionary in p["reserve"]:
 			buf.put_utf8_string("%s:%s:%s:%s" % [g["id"], g["theme"], g["source"], g["for"]])
-			_put(buf, [g["share"]])
+			PlanHash.put(buf, [g["share"]])
 	if with_depots:
 		for dp: Dictionary in depots:
 			buf.put_utf8_string("depot:" + str(dp["id"]))
 			buf.put_32(int(dp["deck"]))
 			buf.put_32(int(dp["cores"]))
-			_put(buf, [dp["site"]["x"], dp["site"]["s"], dp["snap"]])
+			PlanHash.put(buf, [dp["site"]["x"], dp["site"]["s"], dp["snap"]])
 	var ctx := HashingContext.new()
 	ctx.start(HashingContext.HASH_SHA256)
 	ctx.update(buf.data_array)
 	return ctx.finish().hex_encode().substr(0, 16)
-
-
-func _put(buf: StreamPeerBuffer, values: Array) -> void:
-	for v: Variant in values:
-		buf.put_32(int(round(float(v) * 1000.0)))

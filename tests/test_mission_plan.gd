@@ -140,14 +140,14 @@ func _forced_primary() -> void:
 						continue
 					fell += 1
 					# A fallback only where the deck cannot have the type.
-					var site := MissionPlan._primary_site(sec.encounter_sites(k))
+					var site := MissionPlan._primary_site(SectionEncounters.sites(sec, k))
 					var room := mp.wave_count(k) - (1 if k == int(sec.extraction["deck"]) and mp.wave_count(k) > 0 else 0)
 					match forced:
 						"sweep":
-							var a := sec.arrival(k)
-							var d := sec.departure(k)
+							var a := SectionEncounters.arrival(sec, k)
+							var d := SectionEncounters.departure(sec, k)
 							check(Vector2(float(d["x"]), float(d["s"])).distance_to(Vector2(float(a["x"]), float(a["s"])))
-								< SectionPlan.SAFE_RADIUS, tag + ": deck %d fell back from sweep with its departure clear" % k)
+								< SectionEncounters.SAFE_RADIUS, tag + ": deck %d fell back from sweep with its departure clear" % k)
 						"flag":
 							check(site.is_empty(), tag + ": deck %d fell back from flag with a site" % k)
 						"defend":
@@ -259,7 +259,7 @@ func _check(sec: SectionPlan, mp: MissionPlan, tag: String) -> void:
 	near(float(hold["params"]["hold"]), 60.0, 0.001, tag + ": hold seconds")
 	for k in n:
 		var ext := MissionPlan._extent(sec, k).grow(0.01)
-		var arr := sec.arrival(k)
+		var arr := SectionEncounters.arrival(sec, k)
 		var av := Vector2(float(arr["x"]), float(arr["s"]))
 		var objs := mp.deck_objectives(k)
 		var prim := 0
@@ -269,7 +269,7 @@ func _check(sec: SectionPlan, mp: MissionPlan, tag: String) -> void:
 			var at := Vector2(float(o["site"]["x"]), float(o["site"]["s"]))
 			check(ext.has_point(at), tag + ": %s site inside deck %d" % [o["id"], k])
 			if o["type"] != "hold":
-				check(at.distance_to(av) >= SectionPlan.SAFE_RADIUS - 0.01,
+				check(at.distance_to(av) >= SectionEncounters.SAFE_RADIUS - 0.01,
 						tag + ": %s outside the arrival bubble (%.1f m)" % [o["id"], at.distance_to(av)])
 			if o["role"] == "primary" and o["type"] != "hold":
 				prim += 1
@@ -277,7 +277,7 @@ func _check(sec: SectionPlan, mp: MissionPlan, tag: String) -> void:
 				eq(o["id"], "d%d_p" % k, tag + ": primary id")
 				if o["type"] == "sweep":
 					near(float(o["radius"]), 0.0, 0.001, tag + ": sweep radius 0")
-					var dep := sec.departure(k)
+					var dep := SectionEncounters.departure(sec, k)
 					near(at.x, float(dep["x"]), 0.01, tag + ": sweep site is the departure")
 				if k == 0 and mp.options["primary"] != "defend":   # a forced defend ignores the first-deck rule
 					check(o["type"] != "defend", tag + ": the first deck's primary is not a defend")
@@ -334,8 +334,8 @@ func _check_sources(sec: SectionPlan, mp: MissionPlan, tag: String) -> void:
 		check(ext.grow(0.01).has_point(at), tag + ": source %s inside the deck" % id)
 		check(ext.grow(0.01).has_point(tw), tag + ": source %s toward inside the deck" % id)
 		check(tw.distance_to(at) > 1.0, tag + ": source %s toward is a point away from the door" % id)
-		var arr := sec.arrival(k)
-		check(at.distance_to(Vector2(float(arr["x"]), float(arr["s"]))) >= SectionPlan.SAFE_RADIUS,
+		var arr := SectionEncounters.arrival(sec, k)
+		check(at.distance_to(Vector2(float(arr["x"]), float(arr["s"]))) >= SectionEncounters.SAFE_RADIUS,
 				tag + ": source %s outside the arrival bubble" % id)
 		eq(int(s["load"]), int(MissionPlan.LOAD[s["kind"]]), tag + ": load")
 		for q: Dictionary in sec.pillars:
@@ -362,9 +362,9 @@ func _check_sources(sec: SectionPlan, mp: MissionPlan, tag: String) -> void:
 				var s := mp.source(id)
 				if s.is_empty():
 					var k := int(b["deck"])
-					var arr := sec.arrival(k)
+					var arr := SectionEncounters.arrival(sec, k)
 					var gx := float(g["x"])
-					check(Vector2(gx, float(g["s"])).distance_to(Vector2(float(arr["x"]), float(arr["s"]))) < SectionPlan.SAFE_RADIUS + 20.0,
+					check(Vector2(gx, float(g["s"])).distance_to(Vector2(float(arr["x"]), float(arr["s"]))) < SectionEncounters.SAFE_RADIUS + 20.0,
 							tag + ": gate %s missing only when near the arrival" % id)
 
 
@@ -487,7 +487,7 @@ func _flag_placement() -> void:
 					for b: Dictionary in mp.deck_objectives(k):
 						if b["role"] == "bonus" and b["type"] == "flag" and b["id"] != o["id"]:
 							others.append(Vector2(float(b["site"]["x"]), float(b["site"]["s"])))
-					for st: Dictionary in MissionPlan._off_route(sec.encounter_sites(k), sec, k):
+					for st: Dictionary in MissionPlan._off_route(SectionEncounters.sites(sec, k), sec, k):
 						var sp := Vector2(float(st["x"]), float(st["s"]))
 						if mp.source_clearance(k, sp) < MissionPlan.FLAG_SOURCE_GAP:
 							continue
@@ -500,7 +500,7 @@ func _flag_placement() -> void:
 				if o["role"] == "primary":
 					close_primary += 1
 					var best := 0.0
-					for st: Dictionary in sec.encounter_sites(k):
+					for st: Dictionary in SectionEncounters.sites(sec, k):
 						if st["safe"] or str(st["kind"]) in ["departure", "extraction"]:
 							continue
 						best = maxf(best, mp.source_clearance(k, Vector2(float(st["x"]), float(st["s"]))))
@@ -581,12 +581,12 @@ func _depots() -> void:
 				var list := mp.deck_depots(k)
 				# The candidates as the plan sees them: each non-safe encounter site moved into its nearest lot (off the roads).
 				var cands: Array[Dictionary] = []
-				var arr0 := sec.arrival(k)
-				for st: Dictionary in sec.encounter_sites(k):
+				var arr0 := SectionEncounters.arrival(sec, k)
+				for st: Dictionary in SectionEncounters.sites(sec, k):
 					if bool(st["safe"]):
 						continue
 					var lot := MissionPlan.depot_site_for(sec, k, Vector2(float(st["x"]), float(st["s"])))
-					if lot.distance_to(Vector2(float(arr0["x"]), float(arr0["s"]))) < SectionPlan.SAFE_RADIUS:
+					if lot.distance_to(Vector2(float(arr0["x"]), float(arr0["s"]))) < SectionEncounters.SAFE_RADIUS:
 						continue
 					var c := st.duplicate()
 					c["x"] = lot.x
@@ -616,7 +616,7 @@ func _depots() -> void:
 					var at := Vector2(float(st["x"]), float(st["s"]))
 					if mp.source_clearance(k, at) >= MissionPlan.DEPOT_SOURCE_GAP and _obj_gap(mp, k, at) >= MissionPlan.DEPOT_OBJECTIVE_GAP:
 						ok_both = true
-				var arr := sec.arrival(k)
+				var arr := SectionEncounters.arrival(sec, k)
 				var prev := Vector2(INF, INF)
 				for i in list.size():
 					var d: Dictionary = list[i]
@@ -634,7 +634,7 @@ func _depots() -> void:
 						if (sg["rect"] as Rect2).grow(MissionPlan.DEPOT_LOT_INSET - 0.05).has_point(at):
 							check(false, dt + ": off road segment %s %d/%d (%s), by the footprint + margin" % [sg["axis"],
 								int(sg["line"]), int(sg["index"]), str(sg["form"])])
-					check(at.distance_to(Vector2(float(arr["x"]), float(arr["s"]))) >= SectionPlan.SAFE_RADIUS,
+					check(at.distance_to(Vector2(float(arr["x"]), float(arr["s"]))) >= SectionEncounters.SAFE_RADIUS,
 						dt + ": outside the arrival's SAFE_RADIUS")
 					var sc := mp.source_clearance(k, at)
 					if best_src >= MissionPlan.DEPOT_SOURCE_GAP:

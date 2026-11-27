@@ -8,7 +8,7 @@ extends CombatTarget
 ##   a client's shot on that client, which CombatNet carries to the host as "combat.hit", applied there once).
 ##
 ## On the owner (host / solo) an applied hit subtracts nothing here: it emits `asset_damaged(asset_id, amount, src)` with
-## the hit's damage (TestDriveCombat.add_asset forwards it to MissionFlow.damage_asset). No knockback, no heat, no
+## the hit's damage (MissionCombat.add_asset forwards it to MissionFlow.damage_asset). No knockback, no heat, no
 ## repair (heal returns 0, and the inherited hp / max_hp stay full so RepairDrone.repairable is false), never destroyed by
 ## combat: the mission layer pushes the host's HP to every machine with set_hp, and once it is <= 0 the asset is no longer
 ## hittable (shots pass, enemies stop targeting it). Before the first set_hp it is hittable.
@@ -17,7 +17,7 @@ extends CombatTarget
 ## the replicated objective state) it is not hittable either, so nothing targets or damages it before the defend starts.
 ##
 ## Hit spheres: stacked up `height` from the parent's origin, the first one at mid-height (EnemyBase aims at the first
-## sphere's centre). Place it as a child of the asset's node (TestDriveCombat.add_asset does): position comes from there.
+## sphere's centre). Place it as a child of the asset's node (MissionCombat.add_asset does): position comes from there.
 ## Looks: none (the mission layer owns the model); impacts on it are the normal target-hit burst.
 ##
 ## The parent's `damaged(amount, component, src)` signal is also emitted ("body") so generic listeners see the hit.

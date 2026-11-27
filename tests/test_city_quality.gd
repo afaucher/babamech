@@ -31,7 +31,7 @@ func _levels() -> void:
 	eq(CityQuality.from_name("Medium"), CityQuality.MEDIUM, "from_name")
 	eq(CityQuality.name_of(9), "high", "a level out of range clamps")
 	eq(stack.quality, CityQuality.HIGH, "the default is HIGH")
-	eq(int(CityQuality.level(CityQuality.HIGH)["life_draw_r"]), int(AmbientLife.DRAW_R), "HIGH draws life as far as before")
+	eq(int(CityQuality.level(CityQuality.HIGH)["life_draw_r"]), int(LifeDeck.DRAW_R), "HIGH draws life as far as before")
 
 
 # --- Same game at every level ----------------------------------------------------------------------------------
@@ -205,17 +205,13 @@ func _make_life() -> AmbientLife:
 	add_child(l)
 	l.set_process(false)
 	l.setup_stack(stack)
-	for u in l.units:
-		u.set_process(false)
 	l.advance_to(T0)
 	return l
 
 
 func _frames(l: AmbientLife, n: int, dt: float) -> void:
 	for i in n:
-		l._process(dt)
-		for u in l.units:
-			u._process(dt)
+		l._process(dt)      # (steps every deck)
 
 
 func _sig(l: AmbientLife) -> String:
@@ -254,7 +250,7 @@ func _life() -> void:
 		if not u_hi.visible_now(i) or u_hi.state_of(i) != "calm":
 			continue
 		var dist := u_hi.pose_of(i).origin.distance_to(viewer.global_position)
-		if dist > r_low + 10.0 and dist < AmbientLife.DRAW_R - 30.0:
+		if dist > r_low + 10.0 and dist < LifeDeck.DRAW_R - 30.0:
 			mid = i
 			break
 	check(mid >= 0, "life: someone outdoors between LOW's draw radius and DRAW_R")

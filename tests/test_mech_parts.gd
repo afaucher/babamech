@@ -42,8 +42,8 @@ func setup() -> void:
 		check(_accent_surface(MechMeshes.mesh(part)) >= 0, "%s has an accent surface" % part)
 	for h: String in MechMeshes.HEADS:
 		check(_accent_surface(MechMeshes.mesh("head_" + h)) < 0, "head_%s has no accent surface" % h)
-	eq(MechMeshes.ACCENT_ORDER.size(), MechMeshes.ACCENTS.size(), "every accent id is in the order")
-	check((MechMeshes.ACCENTS["orange"] as Color).is_equal_approx(MechMeshes.ORANGE), "the default accent is the orange")
+	eq(LowPolyPalette.ACCENT_ORDER.size(), LowPolyPalette.ACCENTS.size(), "every accent id is in the order")
+	check((LowPolyPalette.ACCENTS["orange"] as Color).is_equal_approx(LowPolyPalette.ORANGE), "the default accent is the orange")
 
 	# The assembled mech, per head.
 	for head: String in MechCatalog.HEAD_ORDER:
@@ -97,7 +97,7 @@ func setup() -> void:
 	# Accent: none by default, a tinted material after set_accent, kept through a rebuild, cleared by the orange.
 	var blue := Color(0.16, 0.42, 0.85)
 	m2.configure("chicken", "strider", {})
-	var base: Material = MechMeshes.materials()[2]
+	var base: Material = LowPolyMaterials.materials()[2]
 	for n: String in ["Torso", "ShoulderPod_l"]:
 		var o := _accent_override(m2, n)
 		check(o == null or o == base, "default mech: no accent override on %s" % n)
@@ -105,14 +105,14 @@ func setup() -> void:
 	for n: String in ["Torso", "ShoulderPod_l"]:
 		var o := _accent_override(m2, n) as StandardMaterial3D
 		check(o != null and o.albedo_color.is_equal_approx(blue), "set_accent tints %s's accent surface" % n)
-	check((base as StandardMaterial3D).albedo_color.is_equal_approx(MechMeshes.ORANGE), "the shared accent material stays orange")
+	check((base as StandardMaterial3D).albedo_color.is_equal_approx(LowPolyPalette.ORANGE), "the shared accent material stays orange")
 	m2.configure("pickle", "strider", {})
 	var o2 := _accent_override(m2, "Torso") as StandardMaterial3D
 	check(o2 != null and o2.albedo_color.is_equal_approx(blue), "the accent survives a rebuild")
 	m2.set_lab_option("accent", "orange")
 	var o3 := _accent_override(m2, "Torso")
 	check(o3 == null or o3 == base, "set_accent(orange) restores the default")
-	m2.set_accent(MechMeshes.ORANGE)
+	m2.set_accent(LowPolyPalette.ORANGE)
 	check(_accent_override(m2, "ShoulderPod_l") == null, "the orange clears the override")
 	m2.configure("chicken", "strider", {})
 	m2.set_lab_option("art", "placeholder")

@@ -83,10 +83,6 @@ static func _cross_road(plan: CityPlan, s: float) -> Dictionary:
 	return best
 
 
-static func _c(id: String) -> Color:
-	return CityPalette.C[id]
-
-
 ## Everything in items(plan), into `geo` (deck-local, on the road).
 static func build(geo: CityGeo, plan: CityPlan) -> void:
 	for it: Dictionary in items(plan):
@@ -121,17 +117,17 @@ static func build(geo: CityGeo, plan: CityPlan) -> void:
 
 ## A low guard booth: cream walls, a dark window band all round, a terracotta roof slab.
 static func _booth(geo: CityGeo, xf: Transform3D) -> void:
-	geo.box(xf, Vector3(0.0, 0.05, 0.0), Vector3(BOOTH.x + 0.2, 0.1, BOOTH.z + 0.2), _c("concrete_dark"))
-	geo.box(xf, Vector3(0.0, 0.55, 0.0), Vector3(BOOTH.x, 0.9, BOOTH.z), _c("cream"))
-	geo.box(xf, Vector3(0.0, 1.4, 0.0), Vector3(BOOTH.x - 0.04, 0.8, BOOTH.z - 0.04), _c("glass_dark"))
-	geo.box(xf, Vector3(0.0, 1.95, 0.0), Vector3(BOOTH.x, 0.3, BOOTH.z), _c("cream"))
-	geo.box(xf, Vector3(0.0, 2.2, 0.0), Vector3(BOOTH.x + 0.3, 0.2, BOOTH.z + 0.3), _c("terracotta"))
+	geo.box(xf, Vector3(0.0, 0.05, 0.0), Vector3(BOOTH.x + 0.2, 0.1, BOOTH.z + 0.2), CityPalette.c("concrete_dark"))
+	geo.box(xf, Vector3(0.0, 0.55, 0.0), Vector3(BOOTH.x, 0.9, BOOTH.z), CityPalette.c("cream"))
+	geo.box(xf, Vector3(0.0, 1.4, 0.0), Vector3(BOOTH.x - 0.04, 0.8, BOOTH.z - 0.04), CityPalette.c("glass_dark"))
+	geo.box(xf, Vector3(0.0, 1.95, 0.0), Vector3(BOOTH.x, 0.3, BOOTH.z), CityPalette.c("cream"))
+	geo.box(xf, Vector3(0.0, 2.2, 0.0), Vector3(BOOTH.x + 0.3, 0.2, BOOTH.z + 0.3), CityPalette.c("terracotta"))
 
 
 ## A barrier arm across the road from x0 (its post) to x1 at s: red and white stripes, 0.8 m each.
 static func _arm(geo: CityGeo, x0: float, x1: float, s: float) -> void:
 	var post := geo.frame(x0, s, 0.0)
-	geo.box(post, Vector3(0.0, (ARM_H + 0.15) * 0.5, 0.0), Vector3(0.3, ARM_H + 0.15, 0.3), _c("metal_dark"))
+	geo.box(post, Vector3(0.0, (ARM_H + 0.15) * 0.5, 0.0), Vector3(0.3, ARM_H + 0.15, 0.3), CityPalette.c("metal_dark"))
 	var dir := signf(x1 - x0)
 	var length := absf(x1 - x0)
 	var n := maxi(int(round(length / 0.8)), 1)
@@ -139,12 +135,12 @@ static func _arm(geo: CityGeo, x0: float, x1: float, s: float) -> void:
 	for i in n:
 		var xc := x0 + dir * (piece * (float(i) + 0.5))
 		geo.box(geo.frame(xc, s, 0.0), Vector3(0.0, ARM_H, 0.0), Vector3(piece, 0.14, 0.14),
-				_c("terracotta") if i % 2 == 0 else _c("marking"))
-	geo.box(geo.frame(x1, s, 0.0), Vector3(0.0, (ARM_H - 0.07) * 0.5, 0.0), Vector3(0.08, ARM_H - 0.07, 0.08), _c("metal_dark"))
+				CityPalette.c("terracotta") if i % 2 == 0 else CityPalette.c("marking"))
+	geo.box(geo.frame(x1, s, 0.0), Vector3(0.0, (ARM_H - 0.07) * 0.5, 0.0), Vector3(0.08, ARM_H - 0.07, 0.08), CityPalette.c("metal_dark"))
 
 
 ## A concrete barrier block, a yellow band near its top (local X along the line).
 static func _block(geo: CityGeo, xf: Transform3D) -> void:
-	geo.box(xf, Vector3(0.0, 0.2, 0.0), Vector3(BLOCK.x, 0.4, BLOCK.z), _c("concrete"))
-	geo.box(xf, Vector3(0.0, 0.55, 0.0), Vector3(BLOCK.x, 0.3, BLOCK.z * 0.7), _c("concrete"))
-	geo.box(xf, Vector3(0.0, 0.775, 0.0), Vector3(BLOCK.x, 0.15, BLOCK.z * 0.5), _c("marking_yellow"))
+	geo.box(xf, Vector3(0.0, 0.2, 0.0), Vector3(BLOCK.x, 0.4, BLOCK.z), CityPalette.c("concrete"))
+	geo.box(xf, Vector3(0.0, 0.55, 0.0), Vector3(BLOCK.x, 0.3, BLOCK.z * 0.7), CityPalette.c("concrete"))
+	geo.box(xf, Vector3(0.0, 0.775, 0.0), Vector3(BLOCK.x, 0.15, BLOCK.z * 0.5), CityPalette.c("marking_yellow"))

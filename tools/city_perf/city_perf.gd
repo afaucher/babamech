@@ -93,7 +93,7 @@ func _measure(label: String) -> void:
 ## The headless test drive in one city mode, driven like tests/test_perf.gd (walk / run / strafe, no firing): frame
 ## wall time, and the city's own per-tick work timed by hand (every CityProps.step; the stack's follow is a 0.25 s timer).
 func _drive_case(mode: String) -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	td.city_mode = mode
 	add_child(td)
 	for i in 30:

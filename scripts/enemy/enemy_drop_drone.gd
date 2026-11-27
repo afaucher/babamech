@@ -8,7 +8,7 @@ extends EnemyFlier
 ##       DEPLOY (spawns a variable-sized fireteam of 3-5 individual EnemyTrooper units via squad.add_enemy +
 ##       staggered deploy_from_air) -> EXFIL (climbs to 28 m & despawns).
 ##   - Navigation (no clipping): each leg (in to the drop point, out to the exit point) is planned ONCE over the deck's
-##     plan data (EnemySquad.deck_occluders: building tiers with heights, pillars, downtown towers; CityPlan.ramps) at the
+##     plan data (EnemyNav.deck_occluders: building tiers with heights, pillars, downtown towers; CityPlan.ramps) at the
 ##     lowest route height with a way (ROUTE_ALT, else ROUTE_ALT_HIGH_GAP under the ceiling); what is still in the way
 ##     (pillars / towers to the ceiling) is routed round over the walk graph's street crossings, then string-pulled. It
 ##     climbs / descends only in place (where it is, or over the drop point). The hull box is swept against the
@@ -156,7 +156,7 @@ static func placeholder_mesh(part: String) -> ArrayMesh:
 		"dropship_bay": _build_bay_mesh(k)
 		_:
 			k.box(Vector3.ONE, EnemyMeshes.ARMOR_DARK)
-	var m := k.commit(MechMeshes.materials())
+	var m := k.commit(LowPolyMaterials.materials())
 	_placeholder_cache[part] = m
 	return m
 
@@ -202,26 +202,17 @@ static func _build_bay_mesh(k: MeshKit) -> void:
 	k.glow = false
 
 
-static func _make_part_instance(part: String) -> MeshInstance3D:
-	if has_art_mesh(part):
-		return EnemyMeshes.instance(part)
-	var mi := MeshInstance3D.new()
-	mi.name = part
-	mi.mesh = placeholder_mesh(part)
-	return mi
-
-
 func _build_visuals() -> void:
 	_body_pivot = Node3D.new()
 	_body_pivot.name = "BodyPivot"
 	add_child(_body_pivot)
-	_hull_mi = _make_part_instance("dropship_hull")
+	_hull_mi = _make_part_instance("dropship_hull", placeholder_mesh)
 	_body_pivot.add_child(_hull_mi)
 	_register_comp_mesh("hull", _hull_mi)
-	_rotors_mi = _make_part_instance("dropship_rotors")
+	_rotors_mi = _make_part_instance("dropship_rotors", placeholder_mesh)
 	_body_pivot.add_child(_rotors_mi)
 	_register_comp_mesh("rotors", _rotors_mi)
-	_bay_mi = _make_part_instance("dropship_bay")
+	_bay_mi = _make_part_instance("dropship_bay", placeholder_mesh)
 	_body_pivot.add_child(_bay_mi)
 	_register_comp_mesh("hull", _bay_mi)
 
@@ -357,7 +348,8 @@ func _step_fly_to(goal_w: Vector3, spd: float, dt: float, tilt_forward: bool, sp
 		# The hull would enter geometry: climb straight up if that is clear, else hold (never interpenetrate).
 		_guard_blocks += 1
 		var lift := pos + up * minf(spd * dt, 2.0)
-		var lift_ok := lift_ok_when_blocked and (ring == null or ring.height(lift) < _ceiling_h() - HULL_SIZE.y) 			and _hull_clear(space, lift)
+		var lift_ok := lift_ok_when_blocked and (ring == null or ring.height(lift) < _ceiling_h() - HULL_SIZE.y) \
+			and _hull_clear(space, lift)
 		next_pos = lift if lift_ok else pos
 		step_d = next_pos.distance_to(pos)
 	ground_y = next_pos.dot(up)
@@ -385,10 +377,7 @@ func _step_fly_to(goal_w: Vector3, spd: float, dt: float, tilt_forward: bool, sp
 
 
 func _arc2(p: Vector3) -> Vector2:
-	if ring != null:
-		var a := ring.world_to_arc(p)
-		return Vector2(a.x, a.y)
-	return Vector2(p.x, p.z)
+	return RingFrame.world_to_arc2(ring, p)
 
 
 func _deck_plan() -> CityPlan:
@@ -423,8 +412,8 @@ func _hull_clear(space: PhysicsDirectSpaceState3D, at: Vector3, basis_at: Varian
 ## pillars and towers (to the ceiling), park columns and ramps.
 func _obstacles(alt: float, clear: float = CLEAR_H) -> Array[Rect2]:
 	var out: Array[Rect2] = []
-	if squad != null and squad.has_method("deck_occluders"):
-		for item: Dictionary in squad.deck_occluders(spawn_deck):
+	if _nav() != null:
+		for item: Dictionary in _nav().deck_occluders(spawn_deck):
 			if float(item["h"]) + CLEAR_V > alt:
 				out.append((item["rect"] as Rect2).grow(clear))
 	var pl := _deck_plan()
@@ -440,7 +429,7 @@ func _obstacles(alt: float, clear: float = CLEAR_H) -> Array[Rect2]:
 
 
 static func _seg_clear(a: Vector2, b: Vector2, obs: Array[Rect2]) -> bool:
-	return not EnemySquad._arc_seg_occluded_rects(a, b, obs)
+	return not EnemyNav.arc_seg_occluded_rects(a, b, obs)
 
 
 ## Plans leg `leg` from here to `goal` (arc): the lowest route height that has a way, then its waypoints.
@@ -482,13 +471,10 @@ func _route_over(a: Vector2, b: Vector2, obs_in: Array[Rect2]) -> Array[Vector2]
 		return [b] as Array[Vector2]
 	var nodes: Array[Vector2] = []
 	var adj: Array = []
-	var graphs: Variant = squad.get("_deck_graphs") if squad != null else null
-	if graphs is Dictionary and (graphs as Dictionary).has(spawn_deck):
-		nodes = (graphs as Dictionary)[spawn_deck][0]
-		adj = (graphs as Dictionary)[spawn_deck][1]
-	elif squad != null and squad.get("_graph_nodes") != null:
-		nodes = squad.get("_graph_nodes")
-		adj = squad.get("_graph_adj")
+	if _nav() != null:
+		var g := _nav().graph(spawn_deck)
+		nodes = g[0]
+		adj = g[1]
 	var n := nodes.size()
 	if n == 0:
 		return [] as Array[Vector2]

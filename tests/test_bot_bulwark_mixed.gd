@@ -1,7 +1,7 @@
 extends TestCase
 ## MIXED CREW (docs/design/chassis-rules.md "Bulwark world fit"): a Bulwark and a Strider on the SAME solo plan-mode
 ## mission, each driven by its own MissionBot: the local mech is a Bulwark (settings file of the test's own, as
-## tests/bulwark_bot_case.gd) with the `--bot` MissionBot; the offline crew's second mech (TestDrive.offline_crew 2, a
+## tests/bulwark_bot_case.gd) with the `--bot` MissionBot; the offline crew's second mech (MissionScene.offline_crew 2, a
 ## Strider) is taken off puppet and driven by a CrewBot (PlayerTarget, WeaponRack, MissionBot.attach_crew) like a
 ## hangar bot on the host. Enemies take DEV_FAST_CLEAR damage (the check is about getting places, not the fight).
 ## Checked within LIMIT s of game time: BOTH mechs stood inside the zone of the same flag / defend / hold objective, and
@@ -29,14 +29,14 @@ func setup() -> void:
 	d["chassis"] = "bulwark"
 	d["loadout"] = BotProfile.get_loadout("bulwark")
 	GameSettings.save_settings(d)
-	TestDrive.solo_launch = {"seed": SEED, "mode": TestDrive.MODE_STACK}
-	TestDrive.bot_profile = "veteran"
-	TestDrive.dev_bot_travel = false
-	TestDrive.offline_crew = 2
+	MissionScene.solo_launch = {"seed": SEED, "mode": MissionScene.MODE_STACK}
+	MissionScene.bot_profile = "veteran"
+	MissionScene.dev_bot_travel = false
+	MissionScene.offline_crew = 2
 	MissionBot.bonuses = true
-	CombatWorld.dev_enemy_damage = TestDrive.DEV_FAST_CLEAR
+	CombatWorld.dev_enemy_damage = MissionScene.DEV_FAST_CLEAR
 	Engine.time_scale = SPEED
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	var w := 0.0
 	while not td.loaded and w < 60.0:
@@ -107,11 +107,11 @@ func setup() -> void:
 	_restore(td)
 
 
-func _restore(td: TestDrive) -> void:
+func _restore(td: MissionScene) -> void:
 	Engine.time_scale = 1.0
-	TestDrive.bot_profile = ""
-	TestDrive.offline_crew = 0
-	TestDrive.dev_bot_travel = false
+	MissionScene.bot_profile = ""
+	MissionScene.offline_crew = 0
+	MissionScene.dev_bot_travel = false
 	CombatWorld.dev_enemy_damage = 1.0
 	GameSettings.path = _saved_path
 	if td != null:

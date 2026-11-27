@@ -10,7 +10,7 @@ const PEERS := 2
 const LINKS := ["off"]
 const SEED := 11
 
-var td: TestDrive
+var td: MissionScene
 var world: CombatWorld
 var sync: EnemySync
 var revealed_events: Array[String] = []
@@ -20,7 +20,7 @@ func run_host() -> void:
 	net_timeout = 90.0
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	for e in td.combat.squad.enemies:
@@ -30,7 +30,7 @@ func run_host() -> void:
 
 	# Find a turret (for reveal test) and an airborne drone (for falling aerial wreck test).
 	var turret: EnemyBase = null
-	var drone: EnemyBase = null
+	var drone: EnemyFlier = null
 	for e in td.combat.squad.enemies:
 		if turret == null and e.enemy_type.begins_with("turret"):
 			turret = e
@@ -79,7 +79,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "mission launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "mission launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -101,7 +101,7 @@ func run_client() -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t on shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.enemy_sync != null and td.stack != null, "crew mission runs EnemySync in stack"):
@@ -114,7 +114,7 @@ func _load_and_go() -> bool:
 			if u is EnemyBase:
 				revealed_events.append((u as EnemyBase).target_id)
 	)
-	return check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	return check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 		"load barrier passes")
 
 
@@ -130,7 +130,7 @@ func _state() -> Dictionary:
 		rev[e.target_id] = e.revealed
 		dead[e.target_id] = e.destroyed()
 		heights[e.target_id] = r.height(e.global_position)
-		falling[e.target_id] = e._wreck_falling
+		falling[e.target_id] = e is EnemyFlier and (e as EnemyFlier)._wreck_falling
 	return {"revealed": rev, "rev_events": revealed_events.duplicate(), "dead": dead, "heights": heights, "falling": falling}
 
 

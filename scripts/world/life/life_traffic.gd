@@ -94,7 +94,7 @@ func build(life_plan: LifePlan, pod_count: int = -1, cart_count: int = -1) -> vo
 	if plan.section != null:
 		for hk: Dictionary in plan.section.hooks:
 			if hk["kind"] == "checkpoint" and int(hk["deck"]) == plan.deck and hk.get("size", "") == "heavy":
-				checks[lp._junction_near(Vector2(hk["x"], hk["s"]))] = {"x": float(hk["x"]), "s": float(hk["s"])}
+				checks[lp.junction_near(Vector2(hk["x"], hk["s"]))] = {"x": float(hk["x"]), "s": float(hk["s"])}
 	var order: Array = []
 	for bi in plan.blocks.size():
 		order.append([lp.h(5001, bi), bi])
@@ -276,7 +276,7 @@ func _make_loop(bi: int, kind: String) -> int:
 		for step in range(1, 7):
 			var th := PI * 0.5 * float(step) / 6.0
 			add.call(c + CityPlan.SIDE_N[nxt] * on * sin(th) + CityPlan.SIDE_N[side] * o * cos(th), minf(V_TURN, v_of.call(nxt)))
-		var j := lp._junction_near(c + (CityPlan.SIDE_N[side] + CityPlan.SIDE_N[nxt]) * 4.0)
+		var j := lp.junction_near(c + (CityPlan.SIDE_N[side] + CityPlan.SIDE_N[nxt]) * 4.0)
 		marks.append({"u": u_box - STOP_LINE - half_len, "type": WAIT, "j": j, "clear": float(u[0]) + CLEAR})
 		if checks.has(j):
 			marks.append({"u": u_box - STOP_LINE - half_len - 0.01, "type": HOLD, "dur": CHECK_STOP, "check": j})

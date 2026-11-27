@@ -315,6 +315,11 @@ func reset_heat() -> void:
 		_reboot()
 
 
+## Shut down and cooled to reboot_heat: the reboot countdown is running (the HUD's REBOOTING, the reboot spool sound).
+func is_rebooting() -> bool:
+	return shutdown and heat <= reboot_heat
+
+
 ## Reboot rule: shut down at heat_cap; the countdown runs only while heat is at or under reboot_heat, and any step over it
 ## restarts it, so control returns after reboot_time spent cool enough (never early, never at once when heat drops).
 func _update_heat(delta: float) -> void:

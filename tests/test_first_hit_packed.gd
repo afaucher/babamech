@@ -270,7 +270,7 @@ func _fuzz_first_hit() -> void:
 func _ref_first_hit(a: Vector3, b: Vector3, r: float, shooter: String, skip: Array, query: bool) -> Dictionary:
 	var best := {}
 	var best_f := 2.0
-	var sh_team := world._team_of(shooter)
+	var sh_team := world.team_of(shooter)
 	for t in world.targets:
 		if not is_instance_valid(t) or not t.is_hittable() or t.target_id == shooter or t.target_id in skip:
 			continue
@@ -283,7 +283,7 @@ func _ref_first_hit(a: Vector3, b: Vector3, r: float, shooter: String, skip: Arr
 				var p := a.lerp(b, f)
 				best_f = f
 				best = {"target": t, "component": s["component"], "point": p, "normal": (p - c).normalized(), "frac": f,
-					"color": MechMeshes.GREY}
+					"color": LowPolyPalette.GREY}
 			elif f >= 0.0 and f == best_f:
 				ties += 1
 	return best
@@ -372,7 +372,7 @@ func _ref_splash(record: Dictionary, st: Dictionary, point: Vector3, exclude: Co
 	var rad := float(st["splash_radius"])
 	var dmg := float(st["splash_damage"])
 	var sh := str(record["shooter"])
-	var sh_team := world._team_of(sh, str(record["team"]))
+	var sh_team := world.team_of(sh, str(record["team"]))
 	for t in world.targets:
 		if t == exclude or not is_instance_valid(t) or not t.is_hittable():
 			continue

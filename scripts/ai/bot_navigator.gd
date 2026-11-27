@@ -73,6 +73,11 @@ func set_arena_roofs(roofs: Array[Dictionary]) -> void:
 		_roofs.append({"center_w": c, "arc2": Vector2(c.x, c.z), "roof_h": h, "size": sz, "is_city": false})
 
 
+## Every roof this navigator knows: {center_w, arc2, roof_h, size: Vector2, is_city: bool}. Read only.
+func all_roofs() -> Array[Dictionary]:
+	return _roofs
+
+
 func reset_stuck(pos: Vector3) -> void:
 	_stuck_t = 0.0
 	_stuck_anchor = pos
@@ -81,16 +86,11 @@ func reset_stuck(pos: Vector3) -> void:
 
 
 func world_to_arc2(p: Vector3) -> Vector2:
-	if ring != null:
-		var a := ring.world_to_arc(p)
-		return Vector2(a.x, a.y)
-	return Vector2(p.x, p.z)
+	return RingFrame.world_to_arc2(ring, p)
 
 
 func arc2_to_world(a2: Vector2, h: float = 0.0) -> Vector3:
-	if ring != null:
-		return ring.arc_to_world(a2.x, a2.y, h)
-	return Vector3(a2.x, h, a2.y)
+	return RingFrame.arc2_to_world(ring, a2, h)
 
 
 func height_of(p: Vector3) -> float:
@@ -102,7 +102,7 @@ func height_of(p: Vector3) -> float:
 func _build_city_graph() -> void:
 	# Where a mech can walk (streets, lanes, pedestrian streets, open courts), not road_graph()'s vehicle graph (Engine
 	# 2026-11-23, for the road forms: docs/design/city-variety.md "Graphs"; same nodes / edges shape).
-	var rg: Dictionary = plan.walk_graph() if plan.has_method("walk_graph") else plan.road_graph()
+	var rg: Dictionary = CityGraphs.walk_graph(plan)
 	for n: Vector2 in rg["nodes"]:
 		_nodes.append(n)
 		_adj.append([])

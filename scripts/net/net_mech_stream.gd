@@ -260,7 +260,7 @@ func _on_packet(from: int, type: int, _seq: int, stamp_ms: int, payload: PackedB
 	stats["in_packets"] = int(stats["in_packets"]) + 1
 	stats["in_bytes"] = int(stats["in_bytes"]) + NetWire.HEADER + payload.size()
 	var arrival := _now()
-	var stamp := _unwrap_stamp(stamp_ms, arrival)
+	var stamp := NetWire.unwrap_stamp(stamp_ms, arrival)
 	for s in NetMechCodec.decode(payload, _peers, stamp):
 		stats["in_entries"] = int(stats["in_entries"]) + 1
 		# Never our own mech; on the host, a client may only send its own.
@@ -269,15 +269,6 @@ func _on_packet(from: int, type: int, _seq: int, stamp_ms: int, payload: PackedB
 			continue
 		if not (_buffers[s.peer] as NetPuppetBuffer).push(s, arrival):
 			stats["in_refused"] = int(stats["in_refused"]) + 1
-
-
-## The wire stamps packets with host_time in ms mod 2^32 (49.7 days); put it back on the seconds timeline nearest `now`.
-static func _unwrap_stamp(stamp_ms: int, now: float) -> float:
-	var now_ms := int(now * 1000.0)
-	var d := (stamp_ms - now_ms) & 0xFFFFFFFF
-	if d >= 0x80000000:
-		d -= 0x100000000
-	return float(now_ms + d) / 1000.0
 
 
 func _now() -> float:

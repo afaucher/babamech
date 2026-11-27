@@ -221,12 +221,7 @@ func lab_own_lighting() -> bool:
 
 
 func lab_params() -> Array:
-	var out := []
-	for p: Dictionary in PARAMS:
-		var q := p.duplicate()
-		q["value"] = params[p["id"]]
-		out.append(q)
-	return out
+	return LabRegistry.param_rows(PARAMS, params)
 
 
 func set_lab_param(id: String, value: float) -> void:
@@ -426,7 +421,7 @@ func _apply_view() -> void:
 				var u1 := e.end.x if side >= 2 else e.end.y
 				var um := (u0 + u1) * 0.5
 				var longest := 0.0
-				for sp: Array in CityStreets.wall_spans(u0, u1, w["gates"]):     # the middle of the longest stretch without a gate
+				for sp: Array in CityWalls.wall_spans(u0, u1, w["gates"]):     # the middle of the longest stretch without a gate
 					if float(sp[1]) - float(sp[0]) > longest:
 						longest = float(sp[1]) - float(sp[0])
 						um = (float(sp[0]) + float(sp[1])) * 0.5

@@ -6,7 +6,7 @@ extends WeaponBehaviour
 
 
 func look() -> Dictionary:
-	return {"color": MechMeshes.WHITE, "trail_color": MechMeshes.MISSILE_RED, "width": 0.18}
+	return {"color": LowPolyPalette.WHITE, "trail_color": LowPolyPalette.MISSILE_RED, "width": 0.18}
 
 
 func spawn(world: CombatWorld, record: Dictionary, st: Dictionary) -> CombatEffect:

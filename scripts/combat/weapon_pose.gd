@@ -17,7 +17,7 @@ extends RefCounted
 const REST_META := &"weapon_pose_rest"
 ## Weapons whose barrel does NOT lie along the model's -Z: the point their shots leave the UNTURNED model, in the
 ## hardpoint's frame (model units, before the body scale). The mortar's tube rises up and forward from its base plate
-## (MechMeshes._weapon_mortar: from (0, 0.12, 0.14) to the muzzle ring at (0, 1.22, -0.3), the ring's face 0.025 further
+## (MechWeaponMeshes._weapon_mortar: from (0, 0.12, 0.14) to the muzzle ring at (0, 1.22, -0.3), the ring's face 0.025 further
 ## along it), so its shells leave the tube's mouth above and behind the pilot, never `muzzle` ahead of the back mount
 ## (which on the Strider is inside the pilot's head). Every other weapon: `muzzle` straight ahead (rest_offset).
 const MUZZLE_TIPS := {"mortar": Vector3(0, 1.2432, -0.3093)}

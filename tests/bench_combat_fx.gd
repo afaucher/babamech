@@ -38,7 +38,7 @@ func _bench() -> void:
 	if audio != null:
 		audio.bank.clear_cache()
 		audio.bank.start_async_prewarm()
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	if audio != null and audio.music != null:
 		audio.music.set_ambience("city")
@@ -178,8 +178,8 @@ func _bench() -> void:
 
 ## test_perf's placement: the road crossing of deck `k` whose distance to the nearest live enemy of that deck is closest
 ## to `want` m; the mech goes there, keeping its heading.
-func _place_near_garrison(td: TestDrive, k: int, want: float) -> void:
-	var nodes: Array = td.stack.decks[k].plan.road_graph()["nodes"]
+func _place_near_garrison(td: MissionScene, k: int, want: float) -> void:
+	var nodes: Array = CityGraphs.road_graph(td.stack.decks[k].plan)["nodes"]
 	var best := td.mech.global_position
 	var best_err := INF
 	var best_d := INF

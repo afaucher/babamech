@@ -1,11 +1,11 @@
-class_name TestDriveCombat
+class_name MissionCombat
 extends Node
 ## Combat in the test drive: one CombatWorld (the combat clock, advanced every physics frame after the rack), one
 ## WeaponRack on the player's mech (keys 1-5 pick, LMB fire; RMB is the camera zoom), one PlayerTarget bridging enemy fire
 ## onto MechController / MechHud / WeaponRack, and one host-owned EnemySquad populated deterministically from the
 ## city seed by EnemySpawner (rooftop turrets, street skirmishers, avenue/checkpoint siege tanks).
 ##
-##   var combat := TestDriveCombat.new()
+##   var combat := MissionCombat.new()
 ##   add_child(combat)
 ##   combat.setup(test_drive)
 ##   # On new city seed: combat.rebuild_encounters(test_drive)
@@ -42,7 +42,7 @@ func substitutions() -> Array[String]:
 	return rack.substitutions() if rack != null else ([] as Array[String])
 
 
-func setup(td: TestDrive) -> void:
+func setup(td: MissionScene) -> void:
 	_drive = td
 	world = CombatWorld.new()
 	world.name = "CombatWorld"
@@ -95,8 +95,8 @@ func setup(td: TestDrive) -> void:
 	_bind_hud.call_deferred(td)
 
 
-## Rebuild the deterministic enemy encounters for the current city plan (called on setup and when TestDrive changes seed).
-func rebuild_encounters(td: TestDrive) -> void:
+## Rebuild the deterministic enemy encounters for the current city plan (called on setup and when MissionScene changes seed).
+func rebuild_encounters(td: MissionScene) -> void:
 	if world == null or squad == null or td == null or td.city == null:
 		return
 	world.mission_seed = td.seed_value
@@ -107,7 +107,7 @@ func rebuild_encounters(td: TestDrive) -> void:
 	squad.setup(world, td.city.plan, td.city.ring)
 	if player_target != null:
 		player_target.repair_all()
-	enemies = td.spawn_enemies(world, squad)   # solo: EnemySpawner as before; crew: host only (W4, TestDrive.spawn_enemies)
+	enemies = td.spawn_enemies(world, squad)   # solo: EnemySpawner as before; crew: host only (W4, MissionScene.spawn_enemies)
 
 
 ## MISSION ASSETS (weapons.md §5 "Mission assets"): the mission layer calls this on EVERY machine with the same id. Makes

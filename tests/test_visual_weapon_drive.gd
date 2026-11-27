@@ -15,7 +15,7 @@ func setup() -> void:
 		print("test_visual_weapon_drive needs a renderer: run .\test_runner.ps1 -Visual")
 		finish()
 		return
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(10)
 	var rack := td.combat.rack

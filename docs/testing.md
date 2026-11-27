@@ -72,10 +72,10 @@ the measured numbers and why).
 - The stack is the only city (the single-district mode was cut 2026-11-25); `td.city_mode` is always `MODE_STACK`
   (a test may still set it; nothing else is built). Command line: `--seed N`; `--stack` and `--objectives` are
   accepted and ignored. A test that needs a bare district builds a `CityDistrict` itself (`test_enemy_effectiveness`).
-- `TestDrive.offline_crew = N` (static, set before the scene enters the tree; reset it after) or `--offline-crew N`: a
+- `MissionScene.offline_crew = N` (static, set before the scene enters the tree; reset it after) or `--offline-crew N`: a
   solo test drive with N mechs and no session, for headless perf runs. Mechs 2..N are idle puppets (`puppet` on, no
-  MechPuppet, no input or physics) with fake owner peers `TestDrive.OFFLINE_PEER + seat`, placed in the crew slots
-  (`TestDrive.entry_spawn`); their rigs, gait, FX and audio run. `test_stack_drive` checks it.
+  MechPuppet, no input or physics) with fake owner peers `MissionScene.OFFLINE_PEER + seat`, placed in the crew slots
+  (`MissionScene.entry_spawn`); their rigs, gait, FX and audio run. `test_stack_drive` checks it.
 
 ## Fixtures (one mission mode; TEST-ONLY isolation)
 The game has one mission mode, the objectives (user 2026-11-25: "Cut the legacy modes."). Which mode a test runs depends
@@ -91,7 +91,7 @@ what we are testing."):
   `const QUIET_SECTION := true` in the test or in the shared case it extends; `TestCase._ready` arms it in every process
   (net tests: host and clients) before `setup()`. It sets `MissionFlow.test_quiet`: MissionFlow builds no rules, plan or
   director, so the stack, the crew and the FULL garrison stand, nothing is released, nothing is evaluated and the
-  mission never ends (`td.mission.rules == null`). TestDrive honours it too: no plan prebuild in the crew's stepped
+  mission never ends (`td.mission.rules == null`). MissionScene honours it too: no plan prebuild in the crew's stepped
   load, the full garrison (share 1.0) in `spawn_enemies`, `mission_checksum()` the stack's alone.
 - **Never from the game**: nothing in `scripts/app`, `scripts/ui` or `scripts/game` references a test-support class
   (PerfProbe, the bench timer, excepted), `MissionFlow.test_quiet` is written only by `scripts/test_support/` and
@@ -99,7 +99,7 @@ what we are testing."):
 
 ## Combat log (damage in playtest logs)
 Every mission run (stack mode, solo or crew) prints `[Flow]` damage lines for THIS machine's player
-(`scripts/game/combat_log.gd`, `CombatLog`; attached by `TestDrive` once `MissionFlow` exists, starts when the mission is
+(`scripts/game/combat_log.gd`, `CombatLog`; attached by `MissionScene` once `MissionFlow` exists, starts when the mission is
 released). Off: `--no-combat-log`. Never in the lab. Logging only (all LOCAL, no messages). Format:
 `[Flow] t=<FlowLog clock> <tag> mt=<mission s> peer=<id> key=value ...`, fixed field order, values without spaces
 (`-` = empty), so `grep "\[Flow\]"` gives the whole run's flow and damage together.

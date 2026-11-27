@@ -137,7 +137,7 @@ func on_hit(h: Dictionary, e: float) -> bool:
 		world.resolve_hit(record, stats, target, str(h["component"]), h["point"], h["normal"], flight_dir(e),
 			float(stats.get("damage", 0.0)) * Combat.falloff(stats, flight_dist(e)))
 	world.hit_prop(record, stats, h, flight_dir(e))
-	detonate(h["point"], h["normal"], target, h.get("color", MechMeshes.GREY))
+	detonate(h["point"], h["normal"], target, h.get("color", LowPolyPalette.GREY))
 	return true
 
 
@@ -149,7 +149,7 @@ func detonate(point: Vector3, normal: Vector3, exclude: CombatTarget, surface: C
 
 ## Out of range: air burst where it is.
 func on_expire() -> void:
-	detonate(flight_pos(end_time), -flight_dir(end_time), null, MechMeshes.GREY)
+	detonate(flight_pos(end_time), -flight_dir(end_time), null, LowPolyPalette.GREY)
 
 
 # --- Look --------------------------------------------------------------------------------------------
@@ -188,21 +188,21 @@ static func pool_plan() -> Array:
 
 static func rocket_mesh() -> ArrayMesh:
 	var key := "rocket_mesh"
-	if CombatMeshes._cache.has(key):
-		return CombatMeshes._cache[key]
+	if CombatMeshes.cached_meshes().has(key):
+		return CombatMeshes.cached_meshes()[key]
 	var k := MeshKit.new()
 	k.push(Transform3D(Basis(Vector3.RIGHT, -PI * 0.5), Vector3.ZERO))      # lathe +Y -> -Z (the nose)
-	k.lathe([Vector2(0.075, -0.42), Vector2(0.11, -0.36), Vector2(0.11, 0.2)], 6, MechMeshes.WHITE, true, false)
-	k.lathe([Vector2(0.11, 0.2), Vector2(0.07, 0.36), Vector2(0.0, 0.5)], 6, MechMeshes.ORANGE, false, false)
-	k.lathe([Vector2(0.075, -0.42), Vector2(0.085, -0.5)], 6, MechMeshes.DARK, false, true)
+	k.lathe([Vector2(0.075, -0.42), Vector2(0.11, -0.36), Vector2(0.11, 0.2)], 6, LowPolyPalette.WHITE, true, false)
+	k.lathe([Vector2(0.11, 0.2), Vector2(0.07, 0.36), Vector2(0.0, 0.5)], 6, LowPolyPalette.ORANGE, false, false)
+	k.lathe([Vector2(0.075, -0.42), Vector2(0.085, -0.5)], 6, LowPolyPalette.DARK, false, true)
 	for f in 4:
 		var a := TAU * float(f) / 4.0 + PI * 0.25
 		k.push(Transform3D(Basis(Vector3.UP, a), Vector3.ZERO))
-		k.box(Vector3(0.13, 0.2, 0.025), MechMeshes.DARK, Vector3(0.15, -0.3, 0.0))
+		k.box(Vector3(0.13, 0.2, 0.025), LowPolyPalette.DARK, Vector3(0.15, -0.3, 0.0))
 		k.pop()
 	k.pop()
-	var m := k.commit(MechMeshes.materials())
-	CombatMeshes._cache[key] = m
+	var m := k.commit(LowPolyMaterials.materials())
+	CombatMeshes.cached_meshes()[key] = m
 	return m
 
 

@@ -19,7 +19,7 @@ const POS_TOL := 1.0              ## m: a puppet vs its owner (both standing sti
 const HP_TOL := 0.012             ## component fraction: one snapshot step (1/254) plus rounding
 const LIFE := 8.0                 ## s: the drone's life here (overrides the catalog's 60 on every machine)
 
-var td: TestDrive
+var td: MissionScene
 var world: CombatWorld
 var revives := 0                  ## player_revived on this machine's OWN target
 var puppet_revives := 0           ## player_revived on any puppet target here (must stay 0)
@@ -30,7 +30,7 @@ func run_host() -> void:
 	net_timeout = 120.0
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	if not check(await wait_reports("ready", peers - 1, 40.0), "the clients are ready"):
@@ -139,7 +139,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -194,7 +194,7 @@ func run_client() -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.crew_sync != null and td.combat.net != null and td.downed != null, "the crew mission runs with DownedCrew"):
@@ -207,7 +207,7 @@ func _load_and_go() -> bool:
 	world.overrides["repair_drone"] = {"life": LIFE}
 	td.combat.player_target.player_revived.connect(func(_by: String, _t: float) -> void: revives += 1)
 	td.combat.player_target.player_respawned.connect(func(_t: float, _held: bool) -> void: respawns += 1)
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	if not check(await until(func() -> bool: return td.crew_sync.puppets.size() == peers - 1, 10.0), "the puppets exist"):

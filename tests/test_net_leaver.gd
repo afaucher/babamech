@@ -4,11 +4,11 @@ const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "
 ## mission of 3 in the stack, once per link (off, coast). Host A, client c1 = B (stays), client c2 = C (leaves).
 ## 1. Every machine has C's puppet and its PlayerTarget registered in CombatWorld (an enemy could pick it).
 ## 2. C goes down (a revive target), then quits (Session.leave: its transport closes, no bye).
-## 3. On A and B: C's PlayerTarget leaves CombatWorld and is freed, its puppet and mech are gone (TestDrive.mechs,
+## 3. On A and B: C's PlayerTarget leaves CombatWorld and is freed, its puppet and mech are gone (MissionScene.mechs,
 ##    crew_members, crew facts), C is no longer listed as downed (no DOWN marker), and Session.mechs no longer buffers it.
 ## 4. A's enemies run their live AI for a few seconds: none of them holds a target owned by C, no hit lands on C, and
 ##    the mission keeps running (phase RUNNING, no outcome) with the crew of 2.
-## 5. The host's leaver hook: TestDrive.crew_member_left(C) fires once on the host (never on B), when crew_members() no
+## 5. The host's leaver hook: MissionScene.crew_member_left(C) fires once on the host (never on B), when crew_members() no
 ##    longer lists C, and MissionFlow.on_member_retired(C) is called (checked through a stub MissionFlow until MissionFlow
 ##    has the method).
 
@@ -16,7 +16,7 @@ const PEERS := 3
 const SEED := 11
 const WATCH := 4.0                ## s of live enemy AI after the leave
 
-var td: TestDrive
+var td: MissionScene
 var world: CombatWorld
 var leaver_hits := 0              ## hits that landed on a target owned by the leaver after it left
 var left_signals: Array = []      ## [pilot id, listed in crew_members() at that moment] per crew_member_left here
@@ -34,7 +34,7 @@ func run_host() -> void:
 	net_timeout = 120.0
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	if not check(await wait_reports("ready", peers - 1, 40.0), "the clients are ready"):
@@ -78,7 +78,7 @@ func run_host() -> void:
 	check(not is_instance_valid(mc), "C's mech is freed on A")
 	check(_no_target_of(c), "no CombatWorld target on A is owned by C")
 	check(not td.crew_sync.puppets.has(c) and not td.crew_sync.targets.has(c), "A's CrewSync forgot C")
-	check(not td.mechs.has(c), "A's TestDrive.mechs has no C")
+	check(not td.mechs.has(c), "A's MissionScene.mechs has no C")
 	check(not _in_members(c), "A's crew_members() has no C")
 	eq(td.crew_members().size(), 2, "A's crew is 2")
 	if td.mission != null:
@@ -120,7 +120,7 @@ func run_host() -> void:
 		var vb: Dictionary = reported(b, "look")
 		check(bool(vb["retired"]), "B retired C's mech")
 		check(bool(vb["target_gone"]), "B's CombatWorld has no target owned by C")
-		check(bool(vb["mech_gone"]), "B's TestDrive.mechs has no C, and C's mech is freed")
+		check(bool(vb["mech_gone"]), "B's MissionScene.mechs has no C, and C's mech is freed")
 		check(not bool(vb["member"]), "B's crew_members() has no C")
 		check(not bool(vb["down"]), "B no longer lists C as downed")
 		eq(int(vb["crew"]), 2, "B's crew is 2")
@@ -137,7 +137,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -173,7 +173,7 @@ func run_client() -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.crew_sync != null and td.downed != null, "the crew mission runs with CrewSync"):
@@ -184,7 +184,7 @@ func _load_and_go() -> bool:
 	td.combat.player_target.auto_respawn_delay = -1.0
 	if not is_host():
 		td.crew_member_left.connect(func(id: int) -> void: left_signals.append([id, _in_members(id)]))
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	if not check(await until(func() -> bool: return td.crew_sync.puppets.size() == peers - 1, 10.0), "the puppets exist"):

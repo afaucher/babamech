@@ -57,7 +57,7 @@ static func note(w: CombatWorld, record: Dictionary, st: Dictionary) -> FlamerFx
 		var rec := {"shooter": record.get("shooter", ""), "hardpoint": record.get("hardpoint", ""),
 			"weapon": record.get("weapon", ""), "t": record.get("t", w.now)}   # no shot_index: remove_shot never drops it
 		fx.start(w, rec, st)
-		w._add_effect(fx)
+		w.add_effect(fx)
 	fx._take(record)
 	return fx
 

@@ -4,7 +4,7 @@ extends Node3D
 ##   - Shared last-known-position target board fed ONLY by real LOS sightings.
 ##   - Delayed alert propagation (0.45 s relay from spotter to squadmates within RELAY_RADIUS).
 ##   - Attack-slot arbiter (max `max_attackers` firing at one target simultaneously, fair priority rotation).
-##   - Lightweight A* pathfinder over CityPlan.walk_graph() (alleys off) in 2D arc (x, s) space.
+##   - Owns the enemies' path service `nav` (EnemyNav: per-deck walk graphs, occluders, floor cuts, A*).
 ##   - Unified Audio event bus: joins group "enemy_squad" and emits `enemy_event(kind, enemy, payload)`.
 
 const RELAY_RADIUS := 60.0        ## m (perception pass: a block's width; was 52)
@@ -14,14 +14,11 @@ const MAX_WRECKS := 10            ## LRU cap on persistent charred/flaming wreck
 ## Hearing (host / solo only): an un-alerted live enemy hears PLAYER fire and alerts toward the shooter (hear_fire).
 const HEAR_SHOT_RADIUS := 25.0    ## m from its eye to a shot's path (origin -> aim point, clamped to range)
 const HEAR_IMPACT_RADIUS := 30.0  ## m (+ the splash radius) from its eye to an impact / blast / hit on a squadmate
-const COVER_EXPOSURE_PENALTY := 140.0     ## m A* penalty for road nodes in open LOS of the threat (beats side-street detour)
-const COVER_MID_EXPOSURE_PENALTY := 70.0  ## m A* penalty when edge midpoint is exposed to the threat
 const WAVE_PLAYER_CLEAR := 25.0           ## m min distance from standing player mech before wave units emerge from a source
 const WAVE_PROXIMITY_MAX_DELAY := 8.0     ## s max hold if a player camps a wave door (< PacingDirector.GRACE = 10 s)
 ## Per-deck last-enemy hunt / reveal / anti-soft-lock thresholds (host-only, docs/design/enemies.md §5, mission-section.md §15):
 ## Never hunt or reveal while > HUNT_MAX_REMAINING enemies remain on a deck (including queued wave units) or before
 ## the crew has actually had combat contact on that deck.
-const CUT_PATH_MARGIN := 2.0              ## m: paths keep a body's width clear of floor cuts (ramp mouths, holes)
 const RAMP_ENTRY_BACK := 5.0              ## m in front of a ramp (before its mouth / past its foot) a transiting wave unit aims for
 const RAMP_EXIT_PAST := 8.0               ## m past a ramp's far end on the next deck where its transit ends
 const HUNT_MAX_REMAINING := 3             ## hard cap: never trigger last-enemy hunt/reveal while > 3 remain on deck
@@ -48,21 +45,11 @@ var _wrecks: Array[EnemyBase] = []
 var _slots: Dictionary = {}        ## enemy_id -> target_id
 var _last_slot_time: Dictionary = {} ## enemy_id -> combat clock when it last held a slot
 var _slot_ready_at := 0.0          ## combat clock when the next attack slot may be granted
-var _graph_nodes: Array[Vector2] = []
-var _graph_adj: Array = []
-var _occluders: Array = []         ## [{rect: Rect2, h: float}] tall building tiers (>= 6 m) & pillar cores in arc space
-var _occluder_rects: Array[Rect2] = [] ## flat Rect2 cache parallel to _occluders (zero Dictionary lookups in cover A*)
-## Multi-deck stack (W4): deck k -> [nodes, adj] (that deck's road graph, add_deck_nav), and `deck_of` (world position ->
-## deck index, CityStack.deck_at). Enemies path on their own deck's graph and only engage / hear about targets on it.
-var _deck_graphs: Dictionary = {}
+var nav := EnemyNav.new()          ## the enemies' path service (walk graphs, occluders, floor cuts per deck)
+## Multi-deck stack (W4): deck k's plan / ring (add_deck_nav, add_enemy), and `deck_of` (world position -> deck index,
+## CityStack.deck_at). Enemies path on their own deck's graph (nav) and only engage / hear about targets on it.
 var _deck_plans: Dictionary = {}     ## deck k -> CityPlan (for multi-deck Drop Ship drop-zone selection)
 var _deck_rings: Dictionary = {}     ## deck k -> RingFrame (learned on add_enemy / add_deck_nav for cross-deck re-homing)
-var _deck_occluders: Dictionary = {} ## deck k -> Array of {rect: Rect2, h: float}
-var _deck_occluder_rects: Dictionary = {} ## deck k -> Array[Rect2]
-## Floor cuts (ramp mouths and floor holes, CityPlan.floor_cuts) in arc space: walkable-looking openings a ground unit
-## must not step into (a ramp mouth has no railing). Not LOS occluders: they only shape paths and steering.
-var _cut_rects: Array[Rect2] = []
-var _deck_cut_rects: Dictionary = {}      ## deck k -> Array[Rect2]
 var _deck_drops: Dictionary = {}     ## deck k -> int count of Drop Ships called in on deck k
 var max_drops_per_deck := 1          ## cap per deck (1 solo, 2 in 3-4p co-op) so deck-clear never drags on
 var drops_enabled := true            ## host toggle for Scout Drone -> Drop Ship call-ins
@@ -109,9 +96,8 @@ func net_fields() -> Dictionary:
 	return {"world": Net.LOCAL, "plan": Net.SPAWN, "ring": Net.SPAWN, "max_attackers": Net.SPAWN,
 		"slot_stagger": Net.SPAWN, "enemies": Net.LOCAL, "debris_field": Net.LOCAL, "known_targets": Net.OWNER,
 		"_wrecks": Net.LOCAL, "_slots": Net.OWNER, "_last_slot_time": Net.PRIVATE, "_slot_ready_at": Net.PRIVATE,
-		"_graph_nodes": Net.LOCAL, "_graph_adj": Net.LOCAL, "_occluders": Net.LOCAL, "_occluder_rects": Net.LOCAL,
-		"_deck_graphs": Net.LOCAL, "_deck_plans": Net.LOCAL, "_deck_rings": Net.LOCAL, "_deck_occluders": Net.LOCAL,
-		"_deck_occluder_rects": Net.LOCAL, "_cut_rects": Net.LOCAL, "_deck_cut_rects": Net.LOCAL, "_deck_drops": Net.OWNER, "max_drops_per_deck": Net.SPAWN,
+		"nav": Net.LOCAL, "_deck_plans": Net.LOCAL, "_deck_rings": Net.LOCAL,
+		"_deck_drops": Net.OWNER, "max_drops_per_deck": Net.SPAWN,
 		"drops_enabled": Net.SPAWN, "air_doors_enabled": Net.LOCAL, "air_door_hook": Net.LOCAL, "_drop_seq": Net.PRIVATE, "_cover_repath_at": Net.PRIVATE,
 		"deck_of": Net.LOCAL, "_awake": Net.PRIVATE, "_awake_at": Net.PRIVATE,
 		"_awake_targets_n": Net.PRIVATE, "_crew_pos_by_deck": Net.PRIVATE, "_live_assets": Net.LOCAL,
@@ -146,12 +132,8 @@ func setup(w: CombatWorld, p: CityPlan = null, r: RingFrame = null) -> void:
 			world.hit_landed.connect(_on_hit_landed)
 	_ensure_debris_field()
 	EnemyMeshes.prewarm()
-	_deck_graphs.clear()
 	_deck_plans.clear()
 	_deck_rings.clear()
-	_deck_occluders.clear()
-	_deck_occluder_rects.clear()
-	_deck_cut_rects.clear()
 	_deck_drops.clear()
 	_deck_quiet.clear()
 	_deck_engaged.clear()
@@ -170,7 +152,7 @@ func setup(w: CombatWorld, p: CityPlan = null, r: RingFrame = null) -> void:
 	_transit_refresh = 0.0
 	_drop_seq = 0
 	_cover_repath_at = -INF
-	_build_nav_graph()
+	nav.reset(plan)
 
 
 func _ensure_debris_field() -> EnemyDebrisField:
@@ -606,7 +588,7 @@ func _step_deck_rehome() -> void:
 		var pos := e.global_position if e.is_inside_tree() else e.position
 		# 1. Fell completely out below the lowest deck -> cull so it never counts toward the mission!
 		if lowest_ring != null and lowest_ring.height(pos) < -18.0:
-			e._kill("fell_out")
+			e.despawn("fell_out")
 			continue
 		# 2. Crossed to another deck (e.g. knocked down a shaft or drone traversing decks) -> re-home dynamically!
 		if deck_of.is_valid():
@@ -619,7 +601,7 @@ func _step_deck_rehome() -> void:
 					# A wave unit arriving on a crewed deck (ramp transit, knocked down a shaft) hunts at once.
 					var pt := _nearest_player_on_deck(pos, cur_d)
 					if pt != null:
-						var tp := e._target_aim_center(pt)
+						var tp := e.target_aim_center(pt)
 						var cr := deck_ring(cur_d)
 						known_targets[pt.target_id] = {
 							"target": pt, "pos": tp, "arc": cr.world_to_arc(tp) if cr != null else Vector3(tp.x, tp.z, tp.y),
@@ -633,7 +615,7 @@ func _step_deck_rehome() -> void:
 		if dp != null and dr != null:
 			var a3 := dr.world_to_arc(pos)
 			if not dp.extent.grow(28.0).has_point(Vector2(a3.x, a3.y)):
-				e._kill("fell_out")
+				e.despawn("fell_out")
 
 
 ## Host-only, 1 Hz: wave units never sleep (EnemyBase._is_awake). A mobile ground wave unit on a deck with no standing crew
@@ -777,7 +759,7 @@ func _step_hunt_and_reveal(dt: float) -> void:
 		var total_remaining := list.size() + _queued_wave_units_on_deck(d)
 		var any_hunting := false
 		for e: EnemyBase in list:
-			if e._hunting and e.is_mobile():
+			if e.is_hunting() and e.is_mobile():
 				any_hunting = true
 		var straggler_eligible := total_remaining <= hunt_max_remaining and bool(_deck_engaged.get(d, false))
 		var step1_active := false
@@ -787,9 +769,7 @@ func _step_hunt_and_reveal(dt: float) -> void:
 			if quiet >= hunt_last_quiet_s:
 				step1_active = true
 				for e: EnemyBase in list:
-					if not e._hunting:
-						e._hunting = true
-						e._hunt_t = 0.0
+					e.start_hunt()
 					if e.is_mobile():
 						any_hunting = true
 		else:
@@ -801,12 +781,12 @@ func _step_hunt_and_reveal(dt: float) -> void:
 				_deck_hunt_refresh[d] = 2.0
 				var now := world.now
 				for e: EnemyBase in list:
-					if not e._hunting or not e.is_mobile():
+					if not e.is_hunting() or not e.is_mobile():
 						continue
 					var pt := _nearest_target(e.global_position if e.is_inside_tree() else e.position, players)
 					if pt == null:
 						continue
-					var tp := e._target_aim_center(pt)
+					var tp := e.target_aim_center(pt)
 					var d_ring := deck_ring(d)
 					var arc := d_ring.world_to_arc(tp) if d_ring != null else Vector3(tp.x, tp.z, tp.y)
 					known_targets[pt.target_id] = {
@@ -820,17 +800,12 @@ func _step_hunt_and_reveal(dt: float) -> void:
 		for e: EnemyBase in list:
 			if e.destroyed():
 				continue
-			if step1_active and e._hunting and not e.revealed:
-				if e._has_los:
-					e._hunt_t = 0.0
-				else:
-					e._hunt_t += dt
-					if e._hunt_t >= reveal_hunt_delay_s:
-						e.set_revealed(true)
+			if step1_active and e.is_hunting() and not e.revealed:
+				if e.step_hunt(dt, reveal_hunt_delay_s):
+					e.set_revealed(true)
 			if e.revealed and not e.destroyed():
-				e._revealed_idle_t += dt
-				if e._revealed_idle_t >= cull_idle_s:
-					e._kill("timeout")
+				if e.step_revealed_idle(dt, cull_idle_s):
+					e.despawn("timeout")
 
 
 func _alive_players_on_deck(deck: int) -> Array[CombatTarget]:
@@ -1004,7 +979,7 @@ func pick_air_door(deck: int, near: Vector2, hidden_from_crew: bool) -> Dictiona
 		var out2 := Vector2(oa.x, oa.y)
 		var score := out2.distance_to(near)
 		for c: Vector2 in crew:
-			if c.distance_to(out2) <= AIR_SEEN_R and not arc_segment_occluded(c, out2, deck):
+			if c.distance_to(out2) <= AIR_SEEN_R and not nav.arc_segment_occluded(c, out2, deck):
 				score += AIR_SEEN_PENALTY
 				break
 		if score < best_score:
@@ -1059,9 +1034,9 @@ func _pick_drop_zone(d_plan: CityPlan, d_ring: RingFrame, target_pos: Vector3, d
 	var lane := (d_plan.avenue_x().x + d_plan.avenue_x().y) * 0.5
 	# Dropships only drop on road-graph-connected, open street/plaza ground (is_roof = false) so deployed squads
 	# can never land on shadowed/enclosed rooftops unreachable to ground mechs or bots.
-	var reachable := _reachable_graph_nodes(t2, deck)
+	var reachable := nav.reachable_nodes(t2, deck)
 	if reachable.is_empty():
-		var rg := d_plan.walk_graph()   # its nodes are road_graph()'s
+		var rg := CityGraphs.walk_graph(d_plan)   # its nodes are road_graph()'s
 		for n: Vector2 in rg["nodes"]:
 			reachable.append(n)
 		for l: Dictionary in d_plan.lots:
@@ -1111,7 +1086,7 @@ func _pick_drop_zone(d_plan: CityPlan, d_ring: RingFrame, target_pos: Vector3, d
 ## building / pillar / tower footprint and ramp of `deck` by EnemyDropDrone.CLEAR_H: where a dropship may appear.
 func _air_clear_point(at: Vector2, deck: int, ext: Rect2) -> Vector2:
 	var blocks: Array[Rect2] = []
-	for item: Dictionary in deck_occluders(deck):
+	for item: Dictionary in nav.deck_occluders(deck):
 		blocks.append((item["rect"] as Rect2).grow(EnemyDropDrone.CLEAR_H))
 	var d_plan := deck_plan(deck)
 	if d_plan != null:
@@ -1156,36 +1131,6 @@ static func _valid_ground_drop_point(d_plan: CityPlan, pt: Vector2) -> bool:
 		if rr.has_point(pt):
 			return false
 	return true
-
-
-## All road/plaza graph nodes on `deck` reachable via graph edges from the node nearest `start_arc`.
-func _reachable_graph_nodes(start_arc: Vector2, deck: int) -> Array[Vector2]:
-	var nodes: Array[Vector2] = (_deck_graphs[deck][0] as Array[Vector2]) if _deck_graphs.has(deck) else _graph_nodes
-	var adj: Array = (_deck_graphs[deck][1] as Array) if _deck_graphs.has(deck) else _graph_adj
-	var out: Array[Vector2] = []
-	if nodes.is_empty():
-		return out
-	var start := 0
-	var best_d := INF
-	for i in nodes.size():
-		var d := start_arc.distance_squared_to(nodes[i])
-		if d < best_d:
-			best_d = d
-			start = i
-	var visited := PackedByteArray()
-	visited.resize(nodes.size())
-	visited[start] = 1
-	var queue: Array[int] = [start]
-	var head := 0
-	while head < queue.size():
-		var cur := queue[head]
-		head += 1
-		out.append(nodes[cur])
-		for nxt: int in adj[cur]:
-			if visited[nxt] == 0:
-				visited[nxt] = 1
-				queue.append(nxt)
-	return out
 
 
 ## True when `pos` is on deck `k` (always true without a deck_of: one district).
@@ -1321,7 +1266,7 @@ func _shooter_of(sid: String, peer: int) -> CombatTarget:
 
 
 func _hear_radius_for(e: EnemyBase, base_r: float, bonus: float = 0.0) -> float:
-	var ext := float(e._cfg.get("hear_radius", 0.0))
+	var ext := float(e.unit_cfg().get("hear_radius", 0.0))
 	return maxf(base_r, ext) + bonus
 
 
@@ -1473,7 +1418,7 @@ func prune_attack_slots(now: float) -> void:
 			by_id[e.target_id] = e
 	for eid: String in _slots.keys():
 		var e: EnemyBase = by_id.get(eid)
-		var keep := e != null and not e.destroyed() and e._is_awake() and e._target_id == str(_slots[eid])
+		var keep := e != null and not e.destroyed() and e.is_awake() and e.current_target_id() == str(_slots[eid])
 		var busy: bool = e != null and e.ai_state in [EnemyBase.STATE_TELEGRAPH, EnemyBase.STATE_FIRE, EnemyBase.STATE_COOLDOWN]
 		if keep and not busy and now - float(_last_slot_time.get(eid, now)) > SLOT_STALE:
 			keep = false
@@ -1498,7 +1443,7 @@ func release_attack_slot(enemy_id: String) -> void:
 		_slot_ready_at = maxf(_slot_ready_at, now + gap)
 
 
-# --- Separation & CityPlan Road-Graph A* ------------------------------------------------------------------
+# --- Separation, Deck Registry & Cover-Path Budget (paths: EnemyNav) -------------------------------------------
 
 func separation_vector(self_e: EnemyBase) -> Vector3:
 	var acc := Vector3.ZERO
@@ -1517,96 +1462,10 @@ func separation_vector(self_e: EnemyBase) -> Vector3:
 	return acc
 
 
-func _build_nav_graph() -> void:
-	_graph_nodes.clear()
-	_graph_adj.clear()
-	_occluders.clear()
-	_occluder_rects.clear()
-	_cut_rects = [] as Array[Rect2]
-	if plan == null:
-		return
-	if plan.site != null:
-		_cut_rects = plan.floor_cuts()
-	# Where a walker goes (CityPlan.walk_graph, alleys off): every road edge, pedestrian streets and crossable courts,
-	# never across a floor cut. Every ground unit (tanks too) walks it; road_graph() is the vehicles' (ambient traffic).
-	var rg := plan.walk_graph()
-	for n: Vector2 in rg["nodes"]:
-		_graph_nodes.append(n)
-		_graph_adj.append([])
-	for ed: Array in rg["edges"]:
-		var a := int(ed[0])
-		var b := int(ed[1])
-		if b in (_graph_adj[a] as Array):
-			continue
-		(_graph_adj[a] as Array).append(b)
-		(_graph_adj[b] as Array).append(a)
-	# Also link park / plaza centers to their nearest road crossing so patrols can traverse open lots.
-	for l: Dictionary in plan.lots:
-		if str(l["kind"]) == "open" and str(l.get("open", "")) in ["park", "plaza"]:
-			var c: Vector2 = (l["rect"] as Rect2).get_center()
-			var near := _nearest_node(c)
-			if near >= 0:
-				var idx := _graph_nodes.size()
-				_graph_nodes.append(c)
-				_graph_adj.append([near])
-				(_graph_adj[near] as Array).append(idx)
-	# Pre-cache 2D solid building footprints (tiers >= 6 m) & pillar cores for O(N) cover-path & drone clearance queries.
-	for b: Dictionary in plan.buildings:
-		var bc: Vector2 = b["center"]
-		for t: Dictionary in b.get("tiers", []):
-			var y1 := float(t["y1"])
-			if y1 < 6.0:
-				continue
-			var sz: Vector2 = t["size"]
-			var tc := bc + (t["off"] as Vector2)
-			var rr := Rect2(tc - sz * 0.5, sz)
-			_occluders.append({"rect": rr, "h": y1 + CityPlan.CURB_H})
-			_occluder_rects.append(rr)
-		if bool(b.get("pillar", false)):
-			var core: Dictionary = b["core"]
-			var csz: Vector2 = core["size"]
-			var cc := Vector2(float(core["x"]), float(core["s"]))
-			var cr := Rect2(cc - csz * 0.5, csz)
-			_occluders.append({"rect": cr, "h": 99.0})
-			_occluder_rects.append(cr)
-
-
-func _nearest_node(p: Vector2) -> int:
-	var best := -1
-	var best_d := INF
-	for i in _graph_nodes.size():
-		var d := p.distance_squared_to(_graph_nodes[i])
-		if d < best_d:
-			best_d = d
-			best = i
-	return best
-
-
-## Stack deck k's road graph & 2D occluders (its own plan, in its own arc coordinates) for find_arc_path / find_cover_path.
+## Registers stack deck k: its plan (deck_plan) and its walk graph / occluders / cuts in `nav`.
 func add_deck_nav(k: int, deck_plan: CityPlan) -> void:
-	var keep_n := _graph_nodes
-	var keep_a := _graph_adj
-	var keep_o := _occluders
-	var keep_r := _occluder_rects
-	var keep_c := _cut_rects
-	var keep_p := plan
-	_graph_nodes = [] as Array[Vector2]
-	_graph_adj = []
-	_occluders = []
-	_occluder_rects = [] as Array[Rect2]
-	plan = deck_plan
-	_build_nav_graph()
-	_deck_graphs[k] = [_graph_nodes, _graph_adj]
+	nav.add_deck(k, deck_plan)
 	_deck_plans[k] = deck_plan
-	_deck_occluders[k] = _occluders
-	_deck_occluder_rects[k] = _occluder_rects
-	_deck_cut_rects[k] = _cut_rects
-	_graph_nodes = keep_n
-	_graph_adj = keep_a
-	_occluders = keep_o
-	_occluder_rects = keep_r
-	_cut_rects = keep_c
-	plan = keep_p
 
 
 ## Per-frame AI budget gate: allows at most 1 cover-path A* solve per combat clock tick so enemies alerted on the same
@@ -1632,370 +1491,3 @@ func deck_ring(deck: int = -1) -> RingFrame:
 		return _deck_rings[deck] as RingFrame
 	return ring
 
-
-## Nearest road-graph node in 2D arc space for deck `deck` (used by ground unstick recovery).
-## Prefers real road crossings (degree >= 2) at least `min_dist` away so unsticking never picks a dead-end or own feet.
-func nearest_road_point(arc2: Vector2, deck: int = -1, min_dist: float = 0.0) -> Vector2:
-	var nodes: Array[Vector2] = (_deck_graphs[deck][0] as Array[Vector2]) if _deck_graphs.has(deck) else _graph_nodes
-	var adj: Array = (_deck_graphs[deck][1] as Array) if _deck_graphs.has(deck) else _graph_adj
-	if nodes.is_empty():
-		return Vector2(NAN, NAN)
-	var min_d2 := min_dist * min_dist
-	var best := Vector2(NAN, NAN)
-	var best_d := INF
-	var fallback := nodes[0]
-	var fallback_d := INF
-	for i in nodes.size():
-		var d := arc2.distance_squared_to(nodes[i])
-		if d < fallback_d:
-			fallback_d = d
-			fallback = nodes[i]
-		if d < min_d2:
-			continue
-		var deg := (adj[i] as Array).size() if i < adj.size() else 0
-		var score := d + (4000.0 if deg < 2 else 0.0)
-		if score < best_d:
-			best_d = score
-			best = nodes[i]
-	return best if not is_nan(best.x) else fallback
-
-
-## Cached 2D building occluders [{rect: Rect2, h: float}] for deck `deck` (or single-district default).
-func deck_occluders(deck: int = -1) -> Array:
-	if _deck_occluders.has(deck):
-		return _deck_occluders[deck] as Array
-	return _occluders
-
-
-## Floor cuts of deck deck (or the single-district default) in arc space: ramp mouths and floor holes.
-func deck_cuts(deck: int = -1) -> Array[Rect2]:
-	if _deck_cut_rects.has(deck):
-		return _deck_cut_rects[deck] as Array[Rect2]
-	return _cut_rects
-
-
-## True when segment a-b (arc space) passes within CUT_PATH_MARGIN of a floor cut in cuts.
-static func seg_crosses_cuts(a: Vector2, b: Vector2, cuts: Array[Rect2]) -> bool:
-	for o: Rect2 in cuts:
-		if _segment_hits_rect(a, b, o.grow(CUT_PATH_MARGIN)):
-			return true
-	return false
-
-
-func _deck_occ_rects(deck: int = -1) -> Array[Rect2]:
-	if _deck_occluder_rects.has(deck):
-		return _deck_occluder_rects[deck] as Array[Rect2]
-	return _occluder_rects
-
-
-## Fast 2D arc-space LOS occlusion check against tall building tiers (>= 6 m) and pillar cores.
-func arc_segment_occluded(a: Vector2, b: Vector2, deck: int = -1) -> bool:
-	return _arc_seg_occluded_rects(a, b, _deck_occ_rects(deck))
-
-
-static func _arc_seg_occluded_rects(a: Vector2, b: Vector2, rects: Array[Rect2]) -> bool:
-	var min_x := minf(a.x, b.x)
-	var max_x := maxf(a.x, b.x)
-	var min_y := minf(a.y, b.y)
-	var max_y := maxf(a.y, b.y)
-	for r: Rect2 in rects:
-		if max_x < r.position.x or min_x > r.end.x or max_y < r.position.y or min_y > r.end.y:
-			continue
-		if _segment_hits_rect(a, b, r):
-			return true
-	return false
-
-
-static func _segment_hits_rect(a: Vector2, b: Vector2, r: Rect2) -> bool:
-	var d := b - a
-	var t0 := 0.0
-	var t1 := 1.0
-	if absf(d.x) < 1e-6:
-		if a.x < r.position.x or a.x > r.end.x:
-			return false
-	else:
-		var inv := 1.0 / d.x
-		var tx1 := (r.position.x - a.x) * inv
-		var tx2 := (r.end.x - a.x) * inv
-		if tx1 > tx2:
-			var tmp := tx1
-			tx1 = tx2
-			tx2 = tmp
-		t0 = maxf(t0, tx1)
-		t1 = minf(t1, tx2)
-		if t0 > t1:
-			return false
-	if absf(d.y) < 1e-6:
-		if a.y < r.position.y or a.y > r.end.y:
-			return false
-	else:
-		var inv := 1.0 / d.y
-		var ty1 := (r.position.y - a.y) * inv
-		var ty2 := (r.end.y - a.y) * inv
-		if ty1 > ty2:
-			var tmp := ty1
-			ty1 = ty2
-			ty2 = tmp
-		t0 = maxf(t0, ty1)
-		t1 = minf(t1, ty2)
-		if t0 > t1:
-			return false
-	return true
-
-
-func find_arc_path(from_arc: Vector2, to_arc: Vector2, deck: int = -1) -> Array[Vector2]:
-	var rects := _deck_occ_rects(deck)
-	var cuts := deck_cuts(deck)
-	if _deck_graphs.has(deck):
-		var keep_n := _graph_nodes
-		var keep_a := _graph_adj
-		_graph_nodes = _deck_graphs[deck][0]
-		_graph_adj = _deck_graphs[deck][1]
-		var r := _find_arc_path(from_arc, to_arc, rects, cuts)
-		_graph_nodes = keep_n
-		_graph_adj = keep_a
-		return r
-	return _find_arc_path(from_arc, to_arc, rects, cuts)
-
-
-## Pick nearest navigable road crossing to `p`, avoiding 1-degree park/plaza dead-end spurs (which cause backtracking
-## on straight avenues) and preferring un-occluded crossings; optionally restricted to nodes in `allowed` (non-zero).
-func _nearest_nav_node(p: Vector2, rects: Array[Rect2], allowed: PackedByteArray = PackedByteArray(),
-		cuts: Array[Rect2] = []) -> int:
-	var n_count := _graph_nodes.size()
-	var use_mask := allowed.size() == n_count
-	var best := -1
-	var best_score := INF
-	for i in n_count:
-		if use_mask and allowed[i] == 0:
-			continue
-		var np := _graph_nodes[i]
-		var d2 := p.distance_squared_to(np)
-		var deg := (_graph_adj[i] as Array).size()
-		# Penalize 1-degree park/plaza spurs and occluded crossings behind building blocks.
-		var score := d2
-		if deg < 2:
-			score += 2500.0
-		if score >= best_score:
-			continue   # cannot win: skip the segment tests below
-		if not rects.is_empty() and d2 > 36.0 and _arc_seg_occluded_rects(p, np, rects):
-			score += 3600.0
-		# A crossing reached only across a floor cut (a ramp mouth, a hole) is not the one to walk to first.
-		if score < best_score and not cuts.is_empty() and d2 > 36.0 and seg_crosses_cuts(p, np, cuts):
-			score += 3600.0
-		if score < best_score:
-			best_score = score
-			best = i
-	if best >= 0:
-		return best
-	return _nearest_node(p)
-
-
-## Mark all nodes reachable from `root` in `_graph_adj` (used as fallback when a floor cut splits the road graph).
-func _component_mask(root: int) -> PackedByteArray:
-	var mask := PackedByteArray()
-	mask.resize(_graph_nodes.size())
-	if root < 0 or root >= _graph_nodes.size():
-		return mask
-	mask[root] = 1
-	var q: Array[int] = [root]
-	var head := 0
-	while head < q.size():
-		var cur := q[head]
-		head += 1
-		for nb: int in _graph_adj[cur]:
-			if mask[nb] == 0:
-				mask[nb] = 1
-				q.append(nb)
-	return mask
-
-
-## Clean up a reconstructed road path: prepend start node `s` when walking directly to `rev[0]` crosses a building,
-## and drop any leading waypoint that lies behind `from_arc` relative to the next open waypoint (eliminates U-turns).
-func _finalize_arc_path(from_arc: Vector2, s: int, rev: Array[Vector2], rects: Array[Rect2],
-		cuts: Array[Rect2] = []) -> Array[Vector2]:
-	if rev.is_empty():
-		return rev
-	var s_pt := _graph_nodes[s]
-	if from_arc.distance_to(s_pt) > 6.5 and not rects.is_empty() and _arc_seg_occluded_rects(from_arc, rev[0], rects):
-		rev.push_front(s_pt)
-	elif not cuts.is_empty() and rev[0] != s_pt and seg_crosses_cuts(from_arc, rev[0], cuts):
-		# The straight line to the first waypoint runs over a floor cut (e.g. diagonally across a ramp mouth, which has
-		# no railing): walk to the start crossing first, along the road.
-		rev.push_front(s_pt)
-	while rev.size() >= 2:
-		var v0 := rev[0] - from_arc
-		var v1 := rev[1] - rev[0]
-		if v0.dot(v1) < 0.0 and (rects.is_empty() or not _arc_seg_occluded_rects(from_arc, rev[1], rects)) \
-				and (cuts.is_empty() or not seg_crosses_cuts(from_arc, rev[1], cuts)):
-			rev.pop_front()
-		else:
-			break
-	return rev
-
-
-## Cover-weighted road-graph A* (docs/design/enemy-tactics-and-drones.md §4.2): penalizes nodes and edge midpoints
-## that sit in open 2D LOS of `threat_arc` outside `engage_range * 0.75`, steering flankers down occluded side streets.
-func find_cover_path(from_arc: Vector2, to_arc: Vector2, threat_arc: Vector2, deck: int = -1,
-		engage_range: float = 60.0) -> Array[Vector2]:
-	var rects := _deck_occ_rects(deck)
-	var cuts := deck_cuts(deck)
-	if rects.is_empty():
-		return find_arc_path(from_arc, to_arc, deck)
-	if _deck_graphs.has(deck):
-		var keep_n := _graph_nodes
-		var keep_a := _graph_adj
-		_graph_nodes = _deck_graphs[deck][0]
-		_graph_adj = _deck_graphs[deck][1]
-		var r := _find_cover_path_internal(from_arc, to_arc, threat_arc, rects, engage_range, cuts)
-		_graph_nodes = keep_n
-		_graph_adj = keep_a
-		return r
-	return _find_cover_path_internal(from_arc, to_arc, threat_arc, rects, engage_range, cuts)
-
-
-func _find_cover_path_internal(from_arc: Vector2, to_arc: Vector2, threat_arc: Vector2, rects: Array[Rect2],
-		engage_range: float, cuts: Array[Rect2] = []) -> Array[Vector2]:
-	var out: Array[Vector2] = []
-	var n_count := _graph_nodes.size()
-	if n_count == 0 or from_arc.distance_to(to_arc) < 22.0:
-		return out
-	var s := _nearest_nav_node(from_arc, rects, PackedByteArray(), cuts)
-	var g := _nearest_nav_node(to_arc, rects, PackedByteArray(), cuts)
-	if s < 0 or g < 0 or s == g:
-		return out
-	var safe_band2 := (engage_range * 0.75) * (engage_range * 0.75)
-	var node_exp := PackedByteArray()  # 0 = unseen, 1 = occluded, 2 = exposed
-	node_exp.resize(n_count)
-	var closed := PackedByteArray()
-	closed.resize(n_count)
-	var open: Array[int] = [s]
-	var came := {}
-	var g_score := {s: 0.0}
-	var goal_p := _graph_nodes[g]
-	var f_score := {s: _graph_nodes[s].distance_to(goal_p)}
-	while not open.is_empty():
-		var best_i := 0
-		var best_f := float(f_score.get(open[0], INF))
-		for k in range(1, open.size()):
-			var fk := float(f_score.get(open[k], INF))
-			if fk < best_f:
-				best_f = fk
-				best_i = k
-		var cur := open[best_i]
-		if cur == g:
-			var rev: Array[Vector2] = []
-			var node := cur
-			while came.has(node):
-				rev.append(_graph_nodes[node])
-				node = int(came[node])
-			rev.reverse()
-			return _finalize_arc_path(from_arc, s, rev, rects, cuts)
-		open.remove_at(best_i)
-		closed[cur] = 1
-		var cur_p := _graph_nodes[cur]
-		var cur_exp := node_exp[cur]
-		if cur_exp == 0:
-			cur_exp = 1 if (cur_p.distance_squared_to(threat_arc) <= safe_band2 or _arc_seg_occluded_rects(cur_p, threat_arc, rects)) else 2
-			node_exp[cur] = cur_exp
-		for nb: int in _graph_adj[cur]:
-			if closed[nb] != 0:
-				continue
-			var nb_p := _graph_nodes[nb]
-			var step_cost := cur_p.distance_to(nb_p)
-			var nb_exp := node_exp[nb]
-			if nb_exp == 0:
-				nb_exp = 1 if (nb_p.distance_squared_to(threat_arc) <= safe_band2 or _arc_seg_occluded_rects(nb_p, threat_arc, rects)) else 2
-				node_exp[nb] = nb_exp
-			if nb_exp == 2:
-				step_cost += COVER_EXPOSURE_PENALTY
-			if cur_exp == 2 or nb_exp == 2:
-				var mid := (cur_p + nb_p) * 0.5
-				if mid.distance_squared_to(threat_arc) > safe_band2 and not _arc_seg_occluded_rects(mid, threat_arc, rects):
-					step_cost += COVER_MID_EXPOSURE_PENALTY
-			var tent := float(g_score[cur]) + step_cost
-			if tent < float(g_score.get(nb, INF)):
-				came[nb] = cur
-				g_score[nb] = tent
-				f_score[nb] = tent + nb_p.distance_to(goal_p)
-				if not nb in open:
-					open.append(nb)
-	return out
-
-
-func _find_arc_path(from_arc: Vector2, to_arc: Vector2, rects: Array[Rect2] = [], cuts: Array[Rect2] = []) -> Array[Vector2]:
-	var out: Array[Vector2] = []
-	if _graph_nodes.is_empty() or from_arc.distance_to(to_arc) < 22.0:
-		return out
-	var s := _nearest_nav_node(from_arc, rects, PackedByteArray(), cuts)
-	var g := _nearest_nav_node(to_arc, rects, PackedByteArray(), cuts)
-	if s < 0 or g < 0:
-		return out
-	if s == g:
-		return _same_node_path(from_arc, to_arc, g, rects, cuts)
-	var res := _astar_arc(from_arc, s, g, rects, cuts)
-	if not res.is_empty():
-		return res
-	# Fallback when a ramp floor cut splits `s` into a disconnected stub: re-pick `s` inside `g`'s connected component.
-	var comp := _component_mask(g)
-	var s2 := _nearest_nav_node(from_arc, rects, comp, cuts)
-	if s2 >= 0 and s2 != s:
-		if s2 == g:
-			return _same_node_path(from_arc, to_arc, g, rects, cuts)
-		res = _astar_arc(from_arc, s2, g, rects, cuts)
-		if not res.is_empty():
-			return res
-	return out
-
-
-## Start and goal snap to the same crossing `g` (they can still be 50-60 m apart: both near one big crossing): reachable.
-## Straight to the goal when that line crosses no building and no floor cut (no detour back to the crossing), else via
-## the crossing. Like every path here it ends at (or near) the goal; callers steer the last stretch to the goal itself.
-func _same_node_path(from_arc: Vector2, to_arc: Vector2, g: int, rects: Array[Rect2], cuts: Array[Rect2]) -> Array[Vector2]:
-	var out: Array[Vector2] = []
-	if (rects.is_empty() or not _arc_seg_occluded_rects(from_arc, to_arc, rects)) \
-			and (cuts.is_empty() or not seg_crosses_cuts(from_arc, to_arc, cuts)):
-		out.append(to_arc)
-	else:
-		out.append(_graph_nodes[g])
-	return out
-
-
-func _astar_arc(from_arc: Vector2, s: int, g: int, rects: Array[Rect2], cuts: Array[Rect2] = []) -> Array[Vector2]:
-	var out: Array[Vector2] = []
-	# Small graph (~25-60 crossings): clean deterministic A*.
-	var open: Array[int] = [s]
-	var came := {}
-	var g_score := {s: 0.0}
-	var f_score := {s: _graph_nodes[s].distance_to(_graph_nodes[g])}
-	var closed := {}
-	while not open.is_empty():
-		var best_i := 0
-		var best_f := float(f_score.get(open[0], INF))
-		for k in range(1, open.size()):
-			var fk := float(f_score.get(open[k], INF))
-			if fk < best_f:
-				best_f = fk
-				best_i = k
-		var cur := open[best_i]
-		if cur == g:
-			var rev: Array[Vector2] = []
-			var node := cur
-			while came.has(node):
-				rev.append(_graph_nodes[node])
-				node = int(came[node])
-			rev.reverse()
-			return _finalize_arc_path(from_arc, s, rev, rects, cuts)
-		open.remove_at(best_i)
-		closed[cur] = true
-		for nb: int in _graph_adj[cur]:
-			if closed.has(nb):
-				continue
-			var tent := float(g_score[cur]) + _graph_nodes[cur].distance_to(_graph_nodes[nb])
-			if tent < float(g_score.get(nb, INF)):
-				came[nb] = cur
-				g_score[nb] = tent
-				f_score[nb] = tent + _graph_nodes[nb].distance_to(_graph_nodes[g])
-				if not nb in open:
-					open.append(nb)
-	return out

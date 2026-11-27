@@ -342,3 +342,87 @@ func instance(node_name: String, material: Material = null) -> MeshInstance3D:
 	if audit and not _tag_at.is_empty():
 		mi.set_meta("audit_tags", [_tag_at, _tag_names])
 	return mi
+
+
+# --- Drawing helpers (flat colour per face; mission props) ----------------------------------------------------------
+
+## A convex polygon `poly` (counter-clockwise in local x / y as seen from +Z) extruded from z0 to z1 (z0 < z1) in frame xf.
+## Edge i (poly[i] -> poly[i + 1]) gets no side face when listed in `skip`; the +Z cap (front) and -Z cap (back) optional.
+func extrude(xf: Transform3D, poly: Array[Vector2], z0: float, z1: float, col: Color, front: bool = true,
+		back: bool = false, skip: Array = [], side_col: Variant = null) -> void:
+	var n := poly.size()
+	var sc: Color = col if side_col == null else (side_col as Color)
+	for i in n:
+		if skip.has(i):
+			continue
+		var a := poly[i]
+		var b := poly[(i + 1) % n]
+		quad(xf * Vector3(a.x, a.y, z0), xf * Vector3(b.x, b.y, z0), xf * Vector3(b.x, b.y, z1), xf * Vector3(a.x, a.y, z1), sc)
+	for i in range(1, n - 1):
+		if front:
+			tri(xf * Vector3(poly[0].x, poly[0].y, z1), xf * Vector3(poly[i].x, poly[i].y, z1), xf * Vector3(poly[i + 1].x, poly[i + 1].y, z1), col)
+		if back:
+			tri(xf * Vector3(poly[0].x, poly[0].y, z0), xf * Vector3(poly[i + 1].x, poly[i + 1].y, z0), xf * Vector3(poly[i].x, poly[i].y, z0), col)
+
+
+## Convex polygon `poly` clipped to rect r (Sutherland-Hodgman).
+static func clip_rect(poly: Array, r: Rect2) -> Array:
+	var out: Array = poly
+	for e in 4:
+		var inp: Array = out
+		out = []
+		for i in inp.size():
+			var p: Vector2 = inp[i]
+			var q: Vector2 = inp[(i + 1) % inp.size()]
+			var pin := _inside(p, r, e)
+			if pin:
+				out.append(p)
+			if pin != _inside(q, r, e):
+				out.append(_cut_edge(p, q, r, e))
+	return out
+
+
+static func _inside(p: Vector2, r: Rect2, e: int) -> bool:
+	match e:
+		0: return p.x >= r.position.x
+		1: return p.x <= r.end.x
+		2: return p.y >= r.position.y
+	return p.y <= r.end.y
+
+
+static func _cut_edge(p: Vector2, q: Vector2, r: Rect2, e: int) -> Vector2:
+	var t: float
+	match e:
+		0: t = (r.position.x - p.x) / (q.x - p.x)
+		1: t = (r.end.x - p.x) / (q.x - p.x)
+		2: t = (r.position.y - p.y) / (q.y - p.y)
+		_: t = (r.end.y - p.y) / (q.y - p.y)
+	return p.lerp(q, t)
+
+
+## Dark diagonal stripes `stripe` m wide (as wide gaps between) over rect r, flat at z facing +Z in frame xf, rising to the
+## right when dir > 0, to the left when dir < 0 (draw them 2.5 cm in front of a yellow face).
+func stripes(xf: Transform3D, r: Rect2, z: float, stripe: float, dir: float, col: Color) -> void:
+	var h := r.size.y
+	var u := r.position.x - h - stripe * 2.0
+	while u < r.end.x + h:
+		var poly: Array
+		if dir > 0.0:
+			poly = [Vector2(u, r.position.y), Vector2(u + stripe, r.position.y), Vector2(u + stripe + h, r.end.y), Vector2(u + h, r.end.y)]
+		else:
+			poly = [Vector2(u + h, r.position.y), Vector2(u + h + stripe, r.position.y), Vector2(u + stripe, r.end.y), Vector2(u, r.end.y)]
+		var c := clip_rect(poly, r)
+		for i in range(1, c.size() - 1):
+			tri(xf * Vector3(c[0].x, c[0].y, z), xf * Vector3(c[i].x, c[i].y, z), xf * Vector3(c[i + 1].x, c[i + 1].y, z), col)
+		u += stripe * 2.0
+
+
+## A ConvexPolygonShape3D of `points` (in frame xf) under `body`.
+static func convex_shape(body: StaticBody3D, xf: Transform3D, points: PackedVector3Array) -> CollisionShape3D:
+	var cs := CollisionShape3D.new()
+	var s := ConvexPolygonShape3D.new()
+	s.points = points
+	cs.shape = s
+	cs.transform = xf
+	body.add_child(cs)
+	return cs

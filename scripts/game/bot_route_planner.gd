@@ -330,17 +330,17 @@ func _add_edge(a: int, b: int, kind: String, cost: float, pts: Array, connector:
 ## walkable (the planner walks every road line: CityPlan.walk_graph()'s edges, not road_graph()'s vehicle edges).
 static func _closed_segments(plan: CityPlan) -> Array[Rect2]:
 	var out: Array[Rect2] = []
-	if not plan.has_method("seg_form") or not plan.has_method("court_open"):
+	if not plan.has_method("seg_form"):
 		return out
 	var nx := plan.roads_x.size()
 	var ns := plan.roads_s.size()
 	for i in nx:
 		for j in ns - 1:
-			if plan.seg_form("s", i, j) == "none" and not plan.court_open("s", i, j):
+			if plan.seg_form("s", i, j) == "none" and not CityGraphs.court_open(plan, "s", i, j):
 				out.append(plan.seg_inner("s", i, j))
 	for j in ns:
 		for i in nx - 1:
-			if plan.seg_form("x", j, i) == "none" and not plan.court_open("x", j, i):
+			if plan.seg_form("x", j, i) == "none" and not CityGraphs.court_open(plan, "x", j, i):
 				out.append(plan.seg_inner("x", j, i))
 	return out
 

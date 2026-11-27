@@ -1,8 +1,8 @@
 extends TestCase
-## Mission assets (docs/design/weapons.md §5 "Mission assets"): AssetTarget through TestDriveCombat.add_asset, single
-## process, no physics. TestDriveCombat is used WITHOUT setup() (that needs a full TestDrive): the test gives it a
+## Mission assets (docs/design/weapons.md §5 "Mission assets"): AssetTarget through MissionCombat.add_asset, single
+## process, no physics. MissionCombat is used WITHOUT setup() (that needs a full MissionScene): the test gives it a
 ## CombatWorld (`world`) and a stand-in drive (`_drive`, a Node with a `mission` var holding a stub with damage_asset);
-## add_asset's wiring is exactly what runs in the game. The TestDriveCombat is never added to the tree (its
+## add_asset's wiring is exactly what runs in the game. The MissionCombat is never added to the tree (its
 ## _physics_process steps a rack it doesn't have here); the test advances the world itself.
 ## 1. Enemy fire on the asset emits asset_damaged with the weapon's damage and reaches mission.damage_asset(id, amount).
 ## 2. A shell's direct hit counts once (its splash skips the struck target); splash alone near it counts once.
@@ -27,7 +27,7 @@ class StubDrive extends Node:
 
 
 var world: CombatWorld
-var tdc: TestDriveCombat
+var tdc: MissionCombat
 var mission: StubMission
 var drive: StubDrive
 var site: Node3D
@@ -45,7 +45,7 @@ func setup() -> void:
 	drive.mission = mission
 	add_child(drive)
 	drive.add_child(mission)
-	tdc = TestDriveCombat.new()
+	tdc = MissionCombat.new()
 	tdc.world = world
 	tdc._drive = drive
 	site = Node3D.new()

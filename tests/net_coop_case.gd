@@ -2,7 +2,7 @@ extends NetTest
 ## W9, the end-to-end co-op scenario (docs/coordination/integration-plan.md, docs/testing.md "Co-op end-to-end test"):
 ## a whole crew plays one mission from launch to end, and at EVERY step every machine reports what it has and the host
 ## (the judge, NetTest) asserts that they all agree. Steps:
-##   a launch   the host's Session.start_mission(seed); every machine loads the test drive at start_t and passes the
+##   a launch   the host's Session.mission.host_launch(seed); every machine loads the test drive at start_t and passes the
 ##              barrier: same seed, crew (NetTest.roster_signature) and build checksum (Session.mission.local_sum)
 ##   b city     the multi-deck stack once Engine's W2 puts it in the mission scene (td.stack), the single district until
 ##              then: same layout checksum (plan, geometry digest, props layout) and every crew mech spawned (the local one
@@ -10,7 +10,7 @@ extends NetTest
 ##   c walk     every machine drives its own mech forward at the same shared-clock moment, stops, settles; every machine
 ##              shows each remote puppet within WALK_TOL of where its owner says it stopped
 ##   d fire     at one shared-clock moment every machine holds the trigger with every weapon (aimed ahead and away from
-##              the other column); through W1's CombatNet (TestDriveCombat.net) every machine receives exactly every other
+##              the other column); through W1's CombatNet (MissionCombat.net) every machine receives exactly every other
 ##              machine's fire records (compared by Combat.shot_key) and fires them here (remote_fired)
 ##   e kill     with W4's host-owned enemies (Session.enemies, td.enemy_sync; the host idles their AI for the test), a
 ##              client fires every weapon at a live enemy (its machine decides, CombatNet carries hits to the host), then
@@ -52,12 +52,12 @@ const FIRE_SETTLE := 1.5           ## s after the trigger for the last records t
 
 ## Runtime probes for the co-op features still in flight. Each lists names the feature may land under (a Session child
 ## node, a property or a method); the first present one counts.
-const FIRE_API := ["net"]                                                                                 # on TestDriveCombat (W1: CombatNet)
+const FIRE_API := ["net"]                                                                                 # on MissionCombat (W1: CombatNet)
 const ENEMY_API := ["Enemies", "World", "enemies", "world", "enemy_stream"]                                # on Session (W4)
 const PROP_DECK_API := ["deck", "deck_index", "deck_id"]                                                  # on CityProps (W3)
-const STACK_API := ["stack"]                                                                              # on TestDrive (W2)
+const STACK_API := ["stack"]                                                                              # on MissionScene (W2)
 
-var td: TestDrive
+var td: MissionScene
 var done_steps: PackedStringArray = []
 var skipped_steps: PackedStringArray = []
 var _ended_mission := false
@@ -79,7 +79,7 @@ func run_host() -> void:
 			"the crew gathers (%d of %d)" % [Session.roster.size(), peers]):
 		return
 	# a. launch
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	if not await _judge_step("launch", _launch_report()):
@@ -105,7 +105,7 @@ func run_host() -> void:
 	# d. fire
 	var fire_net := _fire_net()
 	if fire_net == null:
-		_skip("d fire", "no fire-record bridge (TestDriveCombat.net, CombatNet with remote_fired) in the crew mission", "Weapons")
+		_skip("d fire", "no fire-record bridge (MissionCombat.net, CombatNet with remote_fired) in the crew mission", "Weapons")
 	else:
 		at = Session.host_time() + LEAD
 		for p in _clients():
@@ -120,7 +120,7 @@ func run_host() -> void:
 	# e. kill an enemy
 	var enemy_api := _probe(Session, ENEMY_API)
 	if enemy_api == "" or _enemy_sync() == null:
-		_skip("e kill an enemy", "no host-owned enemy stream (Session.enemies + TestDrive.enemy_sync) in the crew mission", "Engine")
+		_skip("e kill an enemy", "no host-owned enemy stream (Session.enemies + MissionScene.enemy_sync) in the crew mission", "Engine")
 	elif fire_net == null:
 		_skip("e kill an enemy", "enemy stream '%s' is in, but no fire-record bridge to kill it with" % enemy_api, "Weapons")
 	else:
@@ -139,7 +139,7 @@ func run_host() -> void:
 			"the host's MissionFlow ends the mission after the banner")
 	else:
 		await sleep(0.2)
-		Session.end_mission()
+		Session.mission.end()
 	check(_ended_mission or Session.crew_state == "lobby", "the host's mission ended")
 	var my_end := await _end_report()
 	if check(await wait_reports("end", peers - 1, 20.0), "every client hears the mission end"):
@@ -341,7 +341,7 @@ func _enemy_diffs(mine: Dictionary, k: String, wreck_id: String) -> PackedString
 func _host_win() -> bool:
 	var mf: Node = td.get("mission") if "mission" in td else null
 	if mf == null or mf.get("rules") == null:
-		_skip("x clear + hold + win", "no MissionFlow with rules in the crew mission (TestDrive.mission)", "Engine")
+		_skip("x clear + hold + win", "no MissionFlow with rules in the crew mission (MissionScene.mission)", "Engine")
 		return false
 	if _enemy_sync() == null:
 		_skip("x clear + hold + win", "no host-owned enemies to clear (EnemySync)", "Engine")
@@ -402,13 +402,13 @@ func _host_win() -> bool:
 	if not check(await wait_reports("flow_end", peers - 1, 15.0), "every client reports its mission.state sequence"):
 		return false
 	print("[W9] mission.state (link %s): host %s" % [link, str(mine["seq"])])
-	var ok := check(str(mine["outcome"]) == "won" and str(mine["banner"]) == MissionFlow.TITLES["won"],
+	var ok := check(str(mine["outcome"]) == "won" and str(mine["banner"]) == MissionHudModel.TITLES["won"],
 		"the host is won with the banner (%s, %s)" % [mine["outcome"], mine["banner"]])
 	for p in peers_with("flow_end"):
 		var r: Dictionary = reported(p, "flow_end")
 		ok = eq(str(r["seq"]), str(mine["seq"]), "peer %d went through the host's mission.state sequence" % p) and ok
 		ok = eq(str(r["outcome"]), "won", "peer %d ends won" % p) and ok
-		ok = eq(str(r["banner"]), MissionFlow.TITLES["won"], "peer %d shows the MISSION COMPLETE banner" % p) and ok
+		ok = eq(str(r["banner"]), MissionHudModel.TITLES["won"], "peer %d shows the MISSION COMPLETE banner" % p) and ok
 	if ok:
 		done_steps.append("x clear + hold + win")
 	return true
@@ -477,7 +477,7 @@ func run_client() -> void:
 	Session.mission_ended.connect(func(r: String) -> void:
 		_ended_mission = true
 		_ended_reason = r)
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -537,7 +537,7 @@ func _client_prop(id: int, knock: bool) -> bool:
 ## while enemies are not host-owned (W4): they would shove the walk around differently on every machine.
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.crew_sync != null, "the test drive runs the crew mission with mech snapshots"):
@@ -552,7 +552,7 @@ func _load_and_go() -> bool:
 			e.ai_mode = "idle"
 	else:
 		check(await until(func() -> bool: return bool(_enemy_sync().get("has_manifest")), 20.0), "the host's enemy manifest arrives")
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes (phase %s)" % Session.mission.phase):
 		return false
 	return true
@@ -604,7 +604,7 @@ func _walk(at: float) -> Dictionary:
 	return {"start": _a(start), "own": _a(m.global_position), "seen": seen}
 
 
-## The crew mission's fire-record bridge (W1: TestDriveCombat.net, a CombatNet with remote_fired), or null.
+## The crew mission's fire-record bridge (W1: MissionCombat.net, a CombatNet with remote_fired), or null.
 func _fire_net() -> Node:
 	if td == null or td.combat == null or _probe(td.combat, FIRE_API) == "":
 		return null
@@ -654,7 +654,7 @@ func _fire(at: float) -> Dictionary:
 	return {"own": keys, "recv": got, "stats": (net.get("stats") as Dictionary).duplicate()}
 
 
-## TestDrive.enemy_sync (W4), or null.
+## MissionScene.enemy_sync (W4), or null.
 func _enemy_sync() -> Node:
 	var v: Variant = td.get("enemy_sync") if td != null and "enemy_sync" in td else null
 	return v as Node if v is Node else null
@@ -665,7 +665,7 @@ func _enemy_report() -> Dictionary:
 	var e := {}
 	for en in td.combat.squad.enemies:
 		if is_instance_valid(en):
-			e[en.target_id] = [en.destroyed(), en.core_hp_ratio(), en.destroyed() and en.has_active_flame()]
+			e[en.target_id] = [en.destroyed(), en.core_hp_ratio(), en.destroyed() and en.wreck.has_active_flame()]
 	return {"count": e.size(), "alive": str(td.enemies_alive_per_deck()), "e": e}
 
 
@@ -770,7 +770,7 @@ func _stand_on(k: int) -> void:
 	var here := td.stack.to_deck_arc(td.mech.global_position)
 	if int(here["deck"]) == k and absf(float(here["h"])) < 3.0:
 		return
-	var arr: Dictionary = td.stack.section.arrival(k)
+	var arr: Dictionary = SectionEncounters.arrival(td.stack.section, k)
 	var sx: float = td.stack.section.col_x[td.stack.section.spine_line]
 	var cands := [Vector2(float(arr["x"]), float(arr["s"])), Vector2(sx, 0.0), Vector2(sx, 60.0), Vector2(sx, -60.0),
 		Vector2(sx, 120.0), Vector2(sx, -120.0)]

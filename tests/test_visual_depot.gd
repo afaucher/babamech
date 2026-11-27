@@ -28,7 +28,7 @@ func setup() -> void:
 	floor_k.shade = 0.0
 	floor_k.box(Vector3(160.0, 0.2, 160.0), Color(0.82, 0.74, 0.6), Vector3(0, -0.1, 0))
 	var fl := MeshInstance3D.new()
-	fl.mesh = floor_k.commit(MechMeshes.materials())
+	fl.mesh = floor_k.commit(LowPolyMaterials.materials())
 	add_child(fl)
 	var env := WorldEnvironment.new()
 	var e := Environment.new()

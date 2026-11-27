@@ -13,7 +13,7 @@ var mw: MissionWorld
 var stack: CityStack
 var gate: Variant
 var lift: Variant
-var door: MissionProps.GateDoor
+var door: MissionGateDoor
 var _oa := 0.0          ## the schedule _want() checks against
 var _order := 0.0
 
@@ -27,14 +27,14 @@ func setup() -> void:
 	var ids := mw._doors.keys()
 	ids.sort()
 	for id: Variant in ids:
-		if gate == null and mw._doors[id] is MissionProps.GateDoor:
+		if gate == null and mw._doors[id] is MissionGateDoor:
 			gate = id
-		if lift == null and mw._doors[id] is MissionProps.LiftDoor:
+		if lift == null and mw._doors[id] is MissionLiftDoor:
 			lift = id
 	if not check(gate != null, "a gate source found its door"):
 		finish()
 		return
-	door = mw._doors[gate] as MissionProps.GateDoor
+	door = mw._doors[gate] as MissionGateDoor
 	stack.set_active_deck(int(mw._sources[gate]["deck"]))
 	eq(MissionWorld.ALARM_LEAD, 0.0, "the siren leads the leaves by ALARM_LEAD = 0 s (lead still being settled)")
 	eq(MissionWorld.OPENING, 3.0, "the leaves open over 3 s")
@@ -46,7 +46,7 @@ func setup() -> void:
 	_other_deck()
 	_lift()
 	_sealed()
-	print("[alarm] siren playing reported by this audio driver: %s (tests use GateDoor.siren_on)" % str(_driver_playing))
+	print("[alarm] siren playing reported by this audio driver: %s (tests use MissionGateDoor.siren_on)" % str(_driver_playing))
 	finish()
 
 
@@ -86,9 +86,9 @@ func _sound_setup() -> void:
 	var gates := 0
 	for id: Variant in mw._doors:
 		var n: Node = mw._doors[id]
-		if n is MissionProps.GateDoor:
+		if n is MissionGateDoor:
 			gates += 1
-			check((n as MissionProps.GateDoor).siren != null and (n as MissionProps.GateDoor).siren.get_parent() == n, "%s: a siren on the gate" % str(id))
+			check((n as MissionGateDoor).siren != null and (n as MissionGateDoor).siren.get_parent() == n, "%s: a siren on the gate" % str(id))
 		else:
 			eq(n.find_children("*", "AudioStreamPlayer3D", true, false).size(), 0, "%s: a lift has no siren" % str(id))
 	check(gates > 0, "gates found")

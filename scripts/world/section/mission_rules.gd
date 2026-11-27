@@ -311,6 +311,11 @@ func obj_progress(id: String) -> float:
 	return float(_prog.get(id, 0.0))
 
 
+## The objective's total (the progress that completes it), 0.0 for an unknown id.
+func obj_total(id: String) -> float:
+	return float(_tot.get(id, 0.0))
+
+
 func _lose() -> void:
 	outcome = "lost"
 	reason = "crew_down"

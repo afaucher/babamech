@@ -22,7 +22,7 @@ const KILL_AFTER := 1.0
 const SIM_LIMIT := 300.0
 const SWEEP_MARGIN := 3.0
 
-var td: TestDrive
+var td: MissionScene
 var mf: MissionFlow
 var seen := {}             # enemy instance id -> {t, wave, deck}
 var orders: Array = []     # {t, wave, deck, open_at, follow, reason, bay}
@@ -50,8 +50,8 @@ func setup() -> void:
 
 
 func _play() -> void:
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = SEED
 	add_child(td)
 	await frames(4)
@@ -179,7 +179,7 @@ func _place(o: Dictionary) -> void:
 	if str(o["type"]) == "hold":
 		at = (ro["zone"] as Rect2).get_center()
 	elif str(o["type"]) == "sweep":   # its site is the deck's departure (the way down): stand at the arrival instead
-		var arr: Dictionary = td.stack.section.arrival(k)
+		var arr: Dictionary = SectionEncounters.arrival(td.stack.section, k)
 		at = Vector2(float(arr["x"]), float(arr["s"]))
 	var here := td.stack.to_deck_arc(td.mech.global_position)
 	if int(here["deck"]) != k or Vector2(float(here["x"]), float(here["s"])).distance_to(at) > 5.0:

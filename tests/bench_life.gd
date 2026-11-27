@@ -1,6 +1,6 @@
 extends TestCase
 ## NOT part of -TestAll (no "test_" prefix): headless micro-benchmark of the civilians' per-frame and per-shot costs.
-##   [lifebench] step     AmbientLife._step on the crowd lab district (seed 1, 130 m, no culling), 24 / 60 / 200 people:
+##   [lifebench] step     AmbientLife._step (its deck's step) on the crowd lab district (seed 1, 130 m, no culling), 24 / 60 / 200 people:
 ##                        ms per frame avg / max over 1200 frames (the first 60 frames skipped).
 ##   [lifebench] threat   AmbientLife.raise_threat on the section stack (seed 1, every deck evaluated), 24 / 60 people a
 ##                        deck: usec per call (first call, then median / max of 40 calls 0.3 s apart at people's spots).
@@ -69,8 +69,8 @@ func _step_bench(d: CityDistrict, n: int) -> void:
 	life.advance_to(900.0)
 	# setup warmed the crowd-spacing index for its own clock (0 offline): warm it for the jumped-to time, as a setup at 900
 	# would have
-	for k in AmbientLife.WARM_PARTS:
-		life.plan.warm_ahead(900.0, n, k, AmbientLife.WARM_PARTS)
+	for k in LifeDeck.WARM_PARTS:
+		life.unit(0).plan.warm_ahead(900.0, n, k, LifeDeck.WARM_PARTS)
 	var tot := 0.0
 	var mx_f := 0
 	var mx := 0.0
@@ -108,7 +108,7 @@ func _shot_bench(stack: CityStack, n: int) -> void:
 	# the parts of the very first threat event on deck 0 (first-call costs)
 	var u0 := life.unit(0)
 	var at0: Vector3 = spots[0]
-	var arc0 := u0._ring.world_to_arc(u0._to_world().affine_inverse() * at0)
+	var arc0 := u0._ring.world_to_arc(u0.to_world().affine_inverse() * at0)
 	var ev0 := {"x": arc0.x, "s": arc0.y, "r": 12.0, "st": 1, "t": u0.now}
 	var f0 := Time.get_ticks_usec()
 	u0.crowd.apply_threat(ev0)
@@ -147,7 +147,7 @@ func _shot_bench(stack: CityStack, n: int) -> void:
 		t += 0.3
 		life.advance_to(t)
 		var at: Vector3 = spots[(i * 5) % spots.size()]
-		var arc := u._ring.world_to_arc(u._to_world().affine_inverse() * at)
+		var arc := u._ring.world_to_arc(u.to_world().affine_inverse() * at)
 		var ev := {"x": arc.x, "s": arc.y, "r": 12.0, "st": 1, "t": u.now}
 		var t0 := Time.get_ticks_usec()
 		u.crowd.apply_threat(ev)

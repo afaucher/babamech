@@ -12,15 +12,15 @@ const PEERS := 2
 const LINKS := ["off"]
 const SEED := 5
 
-var td: TestDrive
+var td: MissionScene
 
 
 func run_host() -> void:
 	net_timeout = 120.0
-	TestDrive.stepped_load = true
+	MissionScene.stepped_load = true
 	if not check(await until(func() -> bool: return Session.roster.size() == 2, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches")
+	check(Session.mission.host_launch(SEED), "the host launches")
 	var mine := await _load_and_watch()
 	if not check(await wait_reports("screen", 1, 60.0), "the client reports its loading screen"):
 		return
@@ -39,17 +39,17 @@ func run_host() -> void:
 		check(bool(d["hud_after"]), "%s: the HUD shows after it" % who)
 	check(bool(mine["other_ready"]) or bool(theirs["other_ready"]),
 		"one machine saw the other one READY before the start (host %s, client %s)" % [mine["other_ready"], theirs["other_ready"]])
-	Session.end_mission()
+	Session.mission.end()
 	check(await wait_done(1, 30.0), "the client is done")
 
 
 func run_client() -> void:
 	net_timeout = 120.0
-	TestDrive.stepped_load = true
+	MissionScene.stepped_load = true
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	report("screen", await _load_and_watch())
 	await until(func() -> bool: return Session.mission.phase == NetMission.IDLE or ended, 30.0)
@@ -58,7 +58,7 @@ func run_client() -> void:
 ## Load the mission at start_t as the hangar would and watch the loading screen every frame until it is gone.
 func _load_and_watch() -> Dictionary:
 	await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0)
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	var ls := td.loading_screen
 	var out := {"first_frame": ls != null and ls.covering(), "bad": 0, "hud": 0, "went": false, "rows": 0,

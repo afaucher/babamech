@@ -11,7 +11,7 @@ extends CanvasLayer
 ##                 seconds) and DRONE OUT / EMPTY, or a dim PASSIVE (_draw_equipment_row); it never gets aim pips
 ##   left column   above the status panel, the crew panel (CrewPanel: one card per teammate; `crew_panel`)
 ##   top right     the mission layer (MissionHud, `mission_hud`): the objective panel (top right), the extraction
-##                 waypoint and the end banner, fed by the drive's MissionFlow (`mission.hud_state`)
+##                 waypoint and the end banner, fed by the drive's MissionFlow (`mission.hud_model.build`)
 ##   centre        the crosshair, the aim point, and from each enabled weapon's muzzle a line of pips toward the aim
 ##                 point (lit by its ready fraction; amber when its line of sight is blocked)
 ## Read-only: polls WeaponRack (its HUD contract), MechController and the camera every frame. Never writes them, so it
@@ -45,7 +45,7 @@ const DIAGRAM_STYLE := "schematic"
 var mech: MechController
 var rack: WeaponRack
 var camera: Camera3D
-var drive: Node                     ## a TestDrive: mech / rack / camera are looked up from it until found
+var drive: Node                     ## a MissionScene: mech / rack / camera are looked up from it until found
 var component_source: Callable      ## () -> {component id: health 0..1}; S5 replaces the stub
 var demo := false
 var demo_chassis := "strider"       ## the demo's chassis (layout tests, shots): "bulwark" shows its four rows and diagram
@@ -92,10 +92,10 @@ func _ready() -> void:
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(root)
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	aim_view = _canvas("Aim", _draw_aim)
+	aim_view = canvas("Aim", _draw_aim)
 	root.add_child(aim_view)
 	aim_view.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	status_panel = _canvas("Status", _draw_status)
+	status_panel = canvas("Status", _draw_status)
 	root.add_child(status_panel)
 	status_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
 	status_panel.offset_left = MARGIN
@@ -134,14 +134,15 @@ func _layout_rows(n: int) -> void:
 	weapon_panel.offset_top = -MARGIN - h
 	weapon_panel.offset_bottom = -MARGIN
 	for i in n:
-		var row := _canvas("Slot%d" % (i + 1), _draw_row.bind(i))
+		var row := canvas("Slot%d" % (i + 1), _draw_row.bind(i))
 		weapon_panel.add_child(row)
 		row.position = Vector2(0, i * (ROW_SIZE.y + ROW_GAP))
 		row.size = ROW_SIZE
 		rows.append(row)
 
 
-func _canvas(n: String, painter: Callable) -> Control:
+## A click-through Control named `n` that paints with `painter(control)` on every redraw (MechHud and MissionHud panels).
+static func canvas(n: String, painter: Callable) -> Control:
 	var c := Control.new()
 	c.name = n
 	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -220,7 +221,9 @@ func _find_sources() -> void:
 	if rack == null and "combat" in drive and drive.get("combat") != null:
 		rack = drive.get("combat").get("rack")
 	if not mission_hud.source.is_valid() and "mission" in drive and drive.get("mission") != null:
-		mission_hud.source = Callable(drive.get("mission"), "hud_state")
+		var hm: Variant = drive.get("mission").get("hud_model")
+		if hm is MissionHudModel:
+			mission_hud.source = (hm as MissionHudModel).build
 	if mission_hud.from == null and mech != null:
 		mission_hud.from = mech
 
@@ -256,7 +259,7 @@ func mech_state() -> String:
 	if demo or mech == null:
 		return "THRUST" if demo else ""
 	if mech.shutdown:
-		return "REBOOTING" if mech.heat <= mech.reboot_heat else "SHUTDOWN"
+		return "REBOOTING" if mech.is_rebooting() else "SHUTDOWN"
 	if mech.emergency:
 		return "EMERGENCY BURN"
 	return "THRUST" if mech.thrusting else ""

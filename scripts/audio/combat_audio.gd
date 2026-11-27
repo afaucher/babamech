@@ -128,7 +128,7 @@ func _exit_tree() -> void:
 
 
 func _stop_all_loops() -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null:
 		return
 	for i in 8:
@@ -148,7 +148,7 @@ func _physics_process(delta: float) -> void:
 func step(delta: float) -> void:
 	if delta <= 0.0:
 		return
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null or a.skip_cues():   # headless: no sound, so no scanning for cues either (AudioDirector.silent)
 		return
 	_flush_slot_audio(a)
@@ -253,13 +253,13 @@ func _flush_slot_audio(a: AudioDirector) -> void:
 
 
 func _on_weapon_dry() -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null:
 		a.play_ui("ui.weapon.dry")
 
 
 func _on_fired(record: Dictionary) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null:
 		return
 	var w := str(record.get("weapon", ""))
@@ -314,7 +314,7 @@ func _step_mortar_whistles(a: AudioDirector) -> void:
 # --- Impacts, Hits & Target States ----------------------------------------------------------------------
 
 func _on_impact_spawned(point: Vector3, radius: float, explosive: bool, is_energy: bool) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null:
 		return
 	if is_energy:
@@ -344,7 +344,7 @@ func _on_shake_fallback(strength: float, point: Vector3) -> void:
 
 
 func _on_hit_landed(target: CombatTarget, hit: Hit) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null or hit == null:
 		return
 	if hit.shooter == local_shooter:
@@ -357,7 +357,7 @@ func _on_hit_landed(target: CombatTarget, hit: Hit) -> void:
 
 
 func _on_remote_hit(target_id: String, hit: Hit) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null and hit != null and hit.shooter == local_shooter:
 		a.play_2d("combat.hit.tick", 0.0, 1.0, AudioDirector.BUS_SFX_PLAYER)
 		_local_hits[target_id] = Time.get_ticks_msec()
@@ -431,33 +431,33 @@ func _check_target_transitions(a: AudioDirector, t: CombatTarget, hit: Hit) -> v
 
 ## W8 (Weapons, logged): a repair drone launch, the launcher's own or a crew member's (CombatNet replays it here).
 func _on_drone_launched(_record: Dictionary, d: RepairDrone) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null or d == null:
 		return
 	a.play_3d("mech.thrust.ignite", d.pos, 0.0, 1.35, "weapon", AudioDirector.BUS_SFX_WORLD)
 
 
 func _on_target_staggered(_src: String, t: CombatTarget) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null and is_instance_valid(t):
 		a.play_3d("combat.stagger", t.global_position)
 
 
 func _on_target_slammed(speed: float, _dmg: float, t: CombatTarget) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null and is_instance_valid(t):
 		var db := clampf((speed - 5.0) * 0.4, -2.0, 3.0)
 		a.play_3d("combat.wall_slam", t.global_position, db)
 
 
 func _on_target_overheated(t: CombatTarget) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null and is_instance_valid(t):
 		a.play_3d("enemy.overheat", t.global_position)
 
 
 func _on_target_rebooted(t: CombatTarget) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null and is_instance_valid(t):
 		a.play_3d("enemy.reboot", t.global_position)
 
@@ -465,7 +465,7 @@ func _on_target_rebooted(t: CombatTarget) -> void:
 # --- Street Props ---------------------------------------------------------------------------------------
 
 func _on_prop_moved(_id: int, type: String, kind: int, world_pos: Vector3, speed: float) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null:
 		return
 	var mat := "metal"
@@ -481,7 +481,7 @@ func _on_prop_moved(_id: int, type: String, kind: int, world_pos: Vector3, speed
 # --- EnemySquad & PlayerTarget Contract (docs/design/audio.md §4) ---------------------------------------
 
 func _on_enemy_event(kind: String, _enemy: Node, payload: Dictionary) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null:
 		return
 	var id := str(payload.get("id", ""))
@@ -542,7 +542,7 @@ func _on_enemy_event(kind: String, _enemy: Node, payload: Dictionary) -> void:
 
 
 func _on_player_damaged(amount: float, _component: String, _src: String) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null:
 		var db := clampf((amount - 15.0) * 0.08, -3.0, 2.5)
 		a.play_2d("combat.player.damaged", db, 1.0, AudioDirector.BUS_SFX_PLAYER)
@@ -551,19 +551,19 @@ func _on_player_damaged(amount: float, _component: String, _src: String) -> void
 
 
 func _on_player_staggered(_src: String) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null:
 		a.play_2d("combat.stagger", 0.0, 0.92, AudioDirector.BUS_SFX_PLAYER)
 
 
 func _on_player_part_lost(_component: String) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null:
 		a.play_2d("combat.player.part_lost", 0.0, 1.0, AudioDirector.BUS_SFX_TELEGRAPH)
 
 
 func _on_player_disabled(_cause: String) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null:
 		a.play_2d("combat.player.disabled", 0.0, 1.0, AudioDirector.BUS_SFX_TELEGRAPH)
 
@@ -628,9 +628,3 @@ func _telegraph_audio_kind(tk: String) -> String:
 		"scatter", "troop_rifle": return "rush"
 		"beacon", "dropship": return "pulse"
 	return tk
-
-
-func _audio() -> AudioDirector:
-	if not is_inside_tree():
-		return null
-	return get_tree().root.get_node_or_null("Audio") as AudioDirector

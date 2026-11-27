@@ -125,7 +125,7 @@ func _build_hatch(mount: Node3D) -> void:
 	mount.add_child(MechParts.box(Vector3(1.15, HATCH_TOP - 0.06, 1.05), Color(0.46, 0.48, 0.5),
 		Vector3(0.0, (HATCH_TOP - 0.06) * 0.5, 0.05)))
 	mount.add_child(MechParts.box(Vector3(1.2, 0.06, 1.1), Color(0.3, 0.31, 0.33), Vector3(0.0, HATCH_TOP - 0.03, 0.05)))
-	mount.add_child(MechParts.box(Vector3(1.17, 0.07, 0.02), MechMeshes.ORANGE, Vector3(0.0, HATCH_TOP * 0.55, -0.48)))
+	mount.add_child(MechParts.box(Vector3(1.17, 0.07, 0.02), LowPolyPalette.ORANGE, Vector3(0.0, HATCH_TOP * 0.55, -0.48)))
 
 
 func _apply_settings() -> void:
@@ -340,12 +340,7 @@ func do_lab_action(id: String) -> void:
 # --- lab contract -----------------------------------------------------------------------------------------
 
 func lab_params() -> Array:
-	var out: Array = []
-	for p: Dictionary in PARAMS:
-		var d := p.duplicate()
-		d["value"] = params[p["id"]]
-		out.append(d)
-	return out
+	return LabRegistry.param_rows(PARAMS, params)
 
 
 func set_lab_param(id: String, v: float) -> void:

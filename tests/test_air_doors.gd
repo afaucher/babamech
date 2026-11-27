@@ -1,6 +1,6 @@
 extends TestCase
 ## Air doors (docs/design/city-ramps-and-stack.md "Air doors"): high hangar doors for dropships in the end walls, derived
-## by MissionWorld from the stack (air_spot). Over seeds 1, 4, 7, 403112, every deck: the count (printed as a table), each
+## by MissionWorld from the stack (MissionAirDoors.spot). Over seeds 1, 4, 7, 403112, every deck: the count (printed as a table), each
 ## door in its end wall with its opening at 21 .. 27 m, 12 m wide, clear of every deck sign on its wall, of every gate's
 ## staging bay and span, and a dropship-sized box flies 40 m straight out of the opening into the deck without touching
 ## anything (physics); the air_door dictionary; the door machinery (warn silent, opening with alarm and siren on the active
@@ -45,8 +45,8 @@ func _seed(seed_: int) -> void:
 		if n == 0:
 			table.append("seed %d deck %d: none" % [seed_, k])
 		var signs := CitySigns.layout(d.plan, d.ring)
-		var planned := MissionWorld.air_doors(d.plan)
-		eq(planned.size(), n, "seed %d deck %d: air_doors(plan) gives the doors built" % [seed_, k])
+		var planned := MissionAirDoors.doors(d.plan)
+		eq(planned.size(), n, "seed %d deck %d: MissionAirDoors.doors(plan) gives the doors built" % [seed_, k])
 		_signs_in_keep_outs(d, signs, planned, "seed %d deck %d" % [seed_, k])
 		for i in n:
 			var a := mw.air_door(k, i)
@@ -66,11 +66,11 @@ func _seed(seed_: int) -> void:
 			near(float(a["s"]), float(w["at"]), 0.01, "%s: on the wall plane" % id)
 			var x := float(a["x"])
 			if i < planned.size():
-				near(x, float(planned[i]["c"]), 1e-6, "%s: where air_doors(plan) puts it" % id)
-			check(x - MissionWorld.air_half() > d.plan.extent.position.x and x + MissionWorld.air_half() < d.plan.extent.end.x, "%s: inside its wall" % id)
+				near(x, float(planned[i]["c"]), 1e-6, "%s: where MissionAirDoors.doors(plan) puts it" % id)
+			check(x - MissionAirDoors.half() > d.plan.extent.position.x and x + MissionAirDoors.half() < d.plan.extent.end.x, "%s: inside its wall" % id)
 			table.append("seed %d deck %d %s (%s): x %.1f, avenue %.1f, offset %.1f" % [seed_, k, str(src["edge"]), str(w["kind"]), x, centre, x - centre])
 			# Clear of signs on its wall and of gates' bays.
-			var hole := MissionWorld.air_hole(x)
+			var hole := MissionAirDoors.hole(x)
 			for s: Dictionary in signs:
 				if int(s.get("side", -1)) != side:
 					continue
@@ -79,8 +79,8 @@ func _seed(seed_: int) -> void:
 				check(not overlap, "%s: clear of the %s sign at u %.1f..%.1f y %.1f..%.1f" % [id, s["kind"], float(s["u0"]), float(s["u1"]), float(s["y0"]), float(s["y1"])])
 			for g: Dictionary in w["gates"]:
 				var mid := (float(g["a"]) + float(g["b"])) * 0.5
-				var r := maxf(MissionWorld.bay_half(d, w, g), (float(g["b"]) - float(g["a"])) * 0.5) + MissionProps.GateDoor.PLATE
-				check(absf(x - mid) >= r + MissionWorld.air_half(), "%s: clear of the %s gate at %.0f (%.1f m apart)" % [id, g["kind"], mid, absf(x - mid)])
+				var r := maxf(MissionWorld.bay_half(d, w, g), (float(g["b"]) - float(g["a"])) * 0.5) + MissionGateDoor.PLATE
+				check(absf(x - mid) >= r + MissionAirDoors.half(), "%s: clear of the %s gate at %.0f (%.1f m apart)" % [id, g["kind"], mid, absf(x - mid)])
 			# The flight corridor: a hull-sized box from in front of the frame 40 m into the deck touches nothing.
 			var fr := a["frame"] as Transform3D
 			var q := PhysicsShapeQueryParameters3D.new()
@@ -88,14 +88,14 @@ func _seed(seed_: int) -> void:
 			box.size = HULL
 			q.shape = box
 			q.transform = Transform3D(fr.basis, fr * Vector3(0, 0, 3.0))
-			q.motion = fr.basis.z.normalized() * (MissionWorld.AIR_CORRIDOR - 3.0)
+			q.motion = fr.basis.z.normalized() * (MissionAirDoors.CORRIDOR - 3.0)
 			var r := space.cast_motion(q)
-			check(r[0] >= 1.0, "%s: the flight corridor is clear for %.0f m (stopped at %.0f %%)" % [id, MissionWorld.AIR_CORRIDOR, float(r[0]) * 100.0])
+			check(r[0] >= 1.0, "%s: the flight corridor is clear for %.0f m (stopped at %.0f %%)" % [id, MissionAirDoors.CORRIDOR, float(r[0]) * 100.0])
 			eq(mw.source_bay(id), {"ok": false}, "%s: no staging bay" % id)
 			var sp := mw.source_point(id)
 			check(Vector2(float(sp["x"]), float(sp["s"])).distance_to(Vector2(x, float(w["at"]) + (1.0 if side == 2 else -1.0) * MissionWorld.AIR_HIDE)) < 0.05,
 					"%s: source_point is the hide point in the recess" % id)
-			_no_wall_in_opening(d, mw._doors[id] as MissionProps.GateDoor, id)
+			_no_wall_in_opening(d, mw._doors[id] as MissionGateDoor, id)
 	check(total >= 1, "seed %d: at least one air door on the stack (%d)" % [seed_, total])
 	if total > 0:
 		await _machinery(stack, mw, seed_)
@@ -110,9 +110,9 @@ func _seed(seed_: int) -> void:
 	await frames(2)
 
 
-## The looks fit the gameplay keep-outs (2026-11-25: air doors are placed from plan data alone, MissionWorld.air_spot):
+## The looks fit the gameplay keep-outs (2026-11-25: air doors are placed from plan data alone, MissionAirDoors.spot):
 ## every over-gate deck sign within GATE_SIGN_HALF of its gate's centre line, every hung ramp sign inside its ramp's
-## keep-out (ramp_keep_out) or clear of every door's flight corridor, and no other sign on an end wall over a door's frame
+## keep-out (MissionAirDoors.ramp_keep_out) or clear of every door's flight corridor, and no other sign on an end wall over a door's frame
 ## (the frame check per door, below).
 func _signs_in_keep_outs(d: CityDistrict, signs: Array, planned: Array, what: String) -> void:
 	var walls := d.plan.boundary()
@@ -128,20 +128,20 @@ func _signs_in_keep_outs(d: CityDistrict, signs: Array, planned: Array, what: St
 							var gm := (float(g["a"]) + float(g["b"])) * 0.5
 							if absf(gm - mid) < absf(gate_mid - mid):
 								gate_mid = gm
-				check(absf(mid - gate_mid) < 0.01 and float(s["u1"]) - float(s["u0"]) <= MissionWorld.GATE_SIGN_HALF * 2.0 + 1e-4,
+				check(absf(mid - gate_mid) < 0.01 and float(s["u1"]) - float(s["u0"]) <= MissionAirDoors.GATE_SIGN_HALF * 2.0 + 1e-4,
 						"%s: the over-gate sign (%.1f m wide) fits the band kept over its gate (%.1f m)" % [what, float(s["u1"]) - float(s["u0"]),
-						MissionWorld.GATE_SIGN_HALF * 2.0])
+						MissionAirDoors.GATE_SIGN_HALF * 2.0])
 			"ramp":
 				var at: Vector2 = s["at"]
 				var panel := Rect2(at - Vector2(float(s["w"]) * 0.5, CitySigns.HANG_T), Vector2(float(s["w"]), CitySigns.HANG_T * 2.0))
-				var inside := MissionWorld.ramp_keep_out(d.plan.ramps[int(s["ramp"])]).encloses(panel)
+				var inside := MissionAirDoors.ramp_keep_out(d.plan.ramps[int(s["ramp"])]).encloses(panel)
 				var clear := true
 				for ad: Dictionary in planned:
 					var w: Dictionary = ad["wall"]
 					var inward := -1.0 if int(w["side"]) % 2 == 0 else 1.0
-					var s0 := minf(float(w["at"]), float(w["at"]) + inward * MissionWorld.AIR_CORRIDOR)
+					var s0 := minf(float(w["at"]), float(w["at"]) + inward * MissionAirDoors.CORRIDOR)
 					var c := float(ad["c"])
-					var cor := Rect2(c - MissionWorld.AIR_W * 0.5 - MissionWorld.AIR_MARGIN, s0, MissionWorld.AIR_W + MissionWorld.AIR_MARGIN * 2.0, MissionWorld.AIR_CORRIDOR)
+					var cor := Rect2(c - MissionAirDoors.W * 0.5 - MissionAirDoors.MARGIN, s0, MissionAirDoors.W + MissionAirDoors.MARGIN * 2.0, MissionAirDoors.CORRIDOR)
 					if cor.intersects(panel):
 						clear = false
 				check(inside or clear, "%s: the ramp %d sign at %s lies in its ramp's keep-out or clear of every flight corridor" % [what, int(s["ramp"]), str(at)])
@@ -162,7 +162,7 @@ func _fingerprint(stack: CityStack) -> Array:
 
 ## No triangle of the deck's Walls mesh (wall face, farm backing, racks, fins, bars, posts) lies inside the opening's box
 ## (the wall plane 2 m out to 1.8 m in, the opening less 0.2 m): the opening is clear to see and fly through.
-func _no_wall_in_opening(d: CityDistrict, door: MissionProps.GateDoor, id: String) -> void:
+func _no_wall_in_opening(d: CityDistrict, door: MissionGateDoor, id: String) -> void:
 	var wm := d.get_node("Walls") as MeshInstance3D
 	var arr: Array = wm.mesh.surface_get_arrays(0)
 	var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
@@ -187,7 +187,7 @@ func _machinery(stack: CityStack, mw: MissionWorld, seed_: int) -> void:
 			k = kk
 			break
 	var id := str(mw.air_door(k, 0)["id"])
-	var door := mw._doors[id] as MissionProps.GateDoor
+	var door := mw._doors[id] as MissionGateDoor
 	stack.set_active_deck(k)
 	eq(MissionWorld.passable_after("air"), MissionWorld.OPENING, "air doors open over OPENING s")
 	var base := 100.0

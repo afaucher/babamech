@@ -30,6 +30,10 @@ var _air_steer_yaw := 0.0         ## cached lateral sidestep angle (rad)
 var _air_spd_scale := 1.0         ## cached speed damping while climbing a steep lip
 var _body_pivot: Node3D
 var _hull_mi: MeshInstance3D
+var _wreck_falling := false         ## cosmetic deterministic falling-wreck physics after death (the aerial crash)
+var _wreck_vel := Vector3.ZERO
+var _wreck_spin := Vector3.ZERO
+var _wreck_bounces := 0
 
 
 func net_fields() -> Dictionary:
@@ -39,16 +43,9 @@ func net_fields() -> Dictionary:
 		"_cruise_alt": Net.SPAWN, "_avoid_sign": Net.PRIVATE, "_avoid_t": Net.PRIVATE, "_air_probe_t": Net.PRIVATE,
 		"_air_climb_alt": Net.PRIVATE, "_air_steer_yaw": Net.PRIVATE, "_air_spd_scale": Net.PRIVATE,
 		"_body_pivot": Net.LOCAL, "_hull_mi": Net.LOCAL,
+		"_wreck_falling": Net.LOCAL, "_wreck_vel": Net.LOCAL, "_wreck_spin": Net.LOCAL, "_wreck_bounces": Net.LOCAL,
 	})
 	return f
-
-
-func _is_aerial_wreck() -> bool:
-	return true
-
-
-func _wreck_body_pivot() -> Node3D:
-	return _body_pivot
 
 
 ## Fliers hold their hover plane so Knockback gravity never drags an idle / flying one down.
@@ -65,6 +62,17 @@ static func has_art_mesh(part: String) -> bool:
 	var arrays := m.surface_get_arrays(0)
 	var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX] if not arrays.is_empty() else PackedVector3Array()
 	return verts.size() > 36 or aabb.size.length() > 2.2
+
+
+## A part's mesh instance: the EnemyMeshes art mesh once it exists, else a MeshInstance3D named `part` with
+## `placeholder.call(part)` (the subclass's own static placeholder_mesh).
+static func _make_part_instance(part: String, placeholder: Callable) -> MeshInstance3D:
+	if has_art_mesh(part):
+		return EnemyMeshes.instance(part)
+	var mi := MeshInstance3D.new()
+	mi.name = part
+	mi.mesh = placeholder.call(part)
+	return mi
 
 
 # --- State-machine hooks ------------------------------------------------------------------------------------
@@ -326,9 +334,9 @@ func _hover_station(alt: float, dt: float, look_target: Vector3) -> void:
 func _fly_hunt_path(goal_w: Vector3, want_alt: float, spd: float, dt: float, space: PhysicsDirectSpaceState3D) -> void:
 	_on_air_hunt_path()
 	_path_timer -= dt
-	if (_path_points.is_empty() or _path_timer <= 0.0) and squad != null and squad.has_method("find_arc_path"):
+	if (_path_points.is_empty() or _path_timer <= 0.0) and _nav() != null:
 		_path_timer = 2.5
-		_path_points = squad.find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(goal_w), spawn_deck)
+		_path_points = _nav().find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(goal_w), spawn_deck)
 	var steer_goal := goal_w
 	while not _path_points.is_empty():
 		var wp := _arc_to_world_alt(_path_points[0], want_alt)
@@ -349,18 +357,18 @@ func _on_air_hunt_path() -> void:
 
 ## True when arc segment a-b crosses a building tall enough to stop this flier at its floor height.
 func _tall_line_blocked(a: Vector2, b: Vector2) -> bool:
-	if squad == null or not squad.has_method("deck_occluders"):
+	if _nav() == null:
 		return false
 	var min_h := _air_alt_min() - 1.5
 	var lo := Vector2(minf(a.x, b.x), minf(a.y, b.y))
 	var hi := Vector2(maxf(a.x, b.x), maxf(a.y, b.y))
-	for item: Dictionary in squad.deck_occluders(spawn_deck):
+	for item: Dictionary in _nav().deck_occluders(spawn_deck):
 		if float(item["h"]) < min_h:
 			continue
 		var r: Rect2 = item["rect"]
 		if hi.x < r.position.x or lo.x > r.end.x or hi.y < r.position.y or lo.y > r.end.y:
 			continue
-		if EnemySquad._segment_hits_rect(a, b, r):
+		if EnemyNav.segment_hits_rect(a, b, r):
 			return true
 	return false
 
@@ -372,12 +380,12 @@ func _air_ray_hit(space: PhysicsDirectSpaceState3D, a: Vector3, b: Vector3) -> b
 
 
 func _tall_obstacle_repulsion(arc2: Vector2, cur_alt: float) -> Vector2:
-	if squad == null or not squad.has_method("deck_occluders"):
+	if _nav() == null:
 		return Vector2.ZERO
-	return edge_repulsion(squad.deck_occluders(spawn_deck), arc2, _repel_min_h(cur_alt))
+	return edge_repulsion(_nav().deck_occluders(spawn_deck), arc2, _repel_min_h(cur_alt))
 
 
-## Arc-space push off the occluders (EnemySquad.deck_occluders items {rect, h}) at least `min_h` tall: away from each
+## Arc-space push off the occluders (EnemyNav.deck_occluders items {rect, h}) at least `min_h` tall: away from each
 ## one's NEAREST EDGE with a soft falloff (full at the wall, zero at REPEL_RANGE). It used to push from the centre of a
 ## rect grown by a hard margin: the push switched on / off across that margin and pointed along the wall near a corner,
 ## so a flier held there by its goal jittered in place.
@@ -422,6 +430,117 @@ func _arc_dir_to_world(at: Vector3, d2: Vector2) -> Vector3:
 
 
 func _arc_to_world_alt(arc2: Vector2, alt: float) -> Vector3:
+	return RingFrame.arc2_to_world(ring, arc2, alt)
+
+
+# --- Aerial crash (the falling wreck) -----------------------------------------------------------------------
+
+## Hook: m the wreck's centre rests above the ground it lands on.
+func _wreck_ground_radius() -> float:
+	return 0.75
+
+
+## The wreck falls: a deterministic tumble (seeded from the mission seed and target id), one bounce, then rest.
+func _start_wreck_motion() -> void:
+	_wreck_falling = true
+	_wreck_bounces = 0
+	_wreck_cooled = false
+	var crng := RandomNumberGenerator.new()
+	crng.seed = hash([world.mission_seed if world != null else 1, target_id, "crash"])
+	var up_b := ImpactFx.basis_for_normal(up)
+	var ang := crng.randf_range(0.0, TAU)
+	var horiz := (up_b.x * cos(ang) + up_b.z * sin(ang)).normalized()
+	_wreck_vel = horiz * crng.randf_range(3.5, 6.8) + up * crng.randf_range(-2.2, 1.4)
+	_wreck_spin = Vector3(
+		crng.randf_range(-4.2, 4.2),
+		crng.randf_range(-3.2, 3.2),
+		crng.randf_range(-4.2, 4.2))
+	if _wreck_spin.length_squared() < 2.0:
+		_wreck_spin.x = 2.6
+
+
+func _step_wreck_motion(dt: float, space: PhysicsDirectSpaceState3D) -> bool:
+	if _wreck_falling:
+		var eff_space := space
+		if eff_space == null and world != null and world.use_physics:
+			eff_space = world.space()
+		_step_aerial_crash(dt, eff_space)
+	return _wreck_falling
+
+
+func _step_aerial_crash(dt: float, space: PhysicsDirectSpaceState3D) -> void:
+	if not _wreck_falling:
+		return
+	var pos := _world_pos()
 	if ring != null:
-		return ring.arc_to_world(arc2.x, arc2.y, alt)
-	return Vector3(arc2.x, alt, arc2.y)
+		up = ring.up_at(pos)
+	_wreck_vel -= up * 18.0 * dt
+	var next_pos := pos + _wreck_vel * dt
+	var piv := _body_pivot
+	if piv != null and is_instance_valid(piv):
+		piv.rotation += _wreck_spin * dt
+	var rest_r := _wreck_ground_radius()
+	var hit_found := false
+	var hit_pos := Vector3.ZERO
+	var hit_n := up
+	if space != null:
+		_ray_query.from = pos + up * 0.25
+		_ray_query.to = next_pos - up * rest_r
+		var h := space.intersect_ray(_ray_query)
+		if not h.is_empty():
+			hit_found = true
+			hit_pos = h["position"] as Vector3
+			hit_n = (h["normal"] as Vector3).normalized()
+	else:
+		var cur_h := ring.height(next_pos) if ring != null else next_pos.y
+		if cur_h <= rest_r:
+			hit_found = true
+			hit_pos = next_pos - up * cur_h
+			hit_n = up
+	# Safety floor guard (e.g., crashing above an open shaft or physics-free void).
+	if not hit_found:
+		if ring != null and ring.height(next_pos) < -4.0:
+			hit_found = true
+			hit_pos = next_pos - up * ring.height(next_pos)
+			hit_n = up
+		elif ring == null and next_pos.y < -4.0:
+			hit_found = true
+			hit_pos = Vector3(next_pos.x, 0.0, next_pos.z)
+			hit_n = Vector3.UP
+	if hit_found:
+		var landed := hit_pos + hit_n * rest_r
+		if is_inside_tree():
+			global_position = landed
+		else:
+			position = landed
+		if ring != null:
+			up = ring.up_at(landed)
+		ground_y = landed.dot(up)
+		if _wreck_bounces == 0:
+			_wreck_bounces = 1
+			if world != null:
+				world.spawn_impact(hit_pos + hit_n * 0.15, hit_n, 3.0, EnemyMeshes.CHARRED, false)
+			var vn := _wreck_vel.dot(hit_n)
+			var vt := _wreck_vel - hit_n * vn
+			_wreck_vel = vt * 0.30 + hit_n * maxf(-vn * 0.28, 2.0)
+			_wreck_spin *= 0.45
+		else:
+			_wreck_falling = false
+			_wreck_vel = Vector3.ZERO
+			_wreck_spin = Vector3.ZERO
+	else:
+		if is_inside_tree():
+			global_position = next_pos
+		else:
+			position = next_pos
+		if ring != null:
+			up = ring.up_at(next_pos)
+		ground_y = next_pos.dot(up)
+
+
+func reset_enemy() -> void:
+	super.reset_enemy()
+	_wreck_falling = false
+	_wreck_vel = Vector3.ZERO
+	_wreck_spin = Vector3.ZERO
+	_wreck_bounces = 0

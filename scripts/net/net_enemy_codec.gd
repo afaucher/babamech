@@ -79,7 +79,7 @@ static func _put_entry(b: StreamPeerBuffer, s: NetEnemyState) -> void:
 	if s.dead: flags |= FLAG_DEAD
 	b.put_u8(flags)
 	for c in 3:
-		NetMechCodec._put_i24(b, roundi(s.pos[c] * 1000.0))
+		NetWire.put_i24(b, roundi(s.pos[c] * 1000.0))
 	b.put_u16(roundi(wrapf(s.yaw, 0.0, TAU) / TAU * 65536.0) & 0xFFFF)
 	b.put_16(clampi(roundi(wrapf(s.aim.x, -PI, PI) / PI * 32767.0), -32767, 32767))
 	b.put_16(clampi(roundi(wrapf(s.aim.y, -PI, PI) / PI * 32767.0), -32767, 32767))
@@ -115,7 +115,7 @@ static func decode(payload: PackedByteArray, stamp: float) -> Array[NetEnemyStat
 		s.dead = (flags & FLAG_DEAD) != 0
 		var p := Vector3.ZERO
 		for c in 3:
-			p[c] = float(NetMechCodec._get_i24(b)) / 1000.0
+			p[c] = float(NetWire.get_i24(b)) / 1000.0
 		s.pos = p
 		s.yaw = float(b.get_u16()) / 65536.0 * TAU
 		s.aim = Vector2(float(b.get_16()) / 32767.0 * PI, float(b.get_16()) / 32767.0 * PI)

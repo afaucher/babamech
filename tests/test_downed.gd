@@ -369,9 +369,9 @@ func _log() -> void:
 			cl.step(DT)
 			ml.step(DT)
 	_down(pt)
-	check(cl.intensity.value >= PilotIntensity.DISABLED - 1e-3, "intensity +40 on the down")
+	check(cl.threat.intensity.value >= PilotIntensity.DISABLED - 1e-3, "intensity +40 on the down")
 	steps.call(0.2)
-	var i0 := cl.intensity.value
+	var i0 := cl.threat.intensity.value
 	var downs := _recs(out, "down")
 	eq(downs.size(), 1, "one down line")
 	var help := _recs(out, "help")
@@ -382,7 +382,7 @@ func _log() -> void:
 	var d := _launch("gmed", medic)
 	steps.call(d.rise_time() + DownedRules.REVIVE_TIME + 0.2)
 	check(not pt.disabled, "revived (log case)")
-	check(cl.intensity.value <= i0 + 1e-3, "the revive adds no intensity (+40 once per down)")
+	check(cl.threat.intensity.value <= i0 + 1e-3, "the revive adds no intensity (+40 once per down)")
 	var rv := _recs(out, "revive")
 	if eq(rv.size(), 1, "one revive line"):
 		eq(rv[0].get("by", ""), "gmed", "revive by the medic")
@@ -428,8 +428,8 @@ func _log() -> void:
 # --- H ---------------------------------------------------------------------------------------------------------------
 
 func _drive() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = SEED
 	add_child(td)
 	await frames(4)
@@ -447,7 +447,7 @@ func _drive() -> void:
 	check(hud != null and hud.mission_hud != null and hud.mission_hud.downed_source.is_valid(), "the HUD reads DownedCrew")
 	# Deck 1: put the mech at deck 1's arrival point + 30 m, down it, hold, respawn near the arrival point.
 	var sec := td.stack.section
-	var arr: Dictionary = sec.arrival(1)
+	var arr: Dictionary = SectionEncounters.arrival(sec, 1)
 	var at := td.stack.from_deck_arc(1, float(arr["x"]), float(arr["s"]) + 30.0)
 	td.mech.global_position = at + td.stack.deck_ring(1).up_at(at) * 1.0
 	td.mech.velocity = Vector3.ZERO
@@ -493,7 +493,7 @@ func _drive() -> void:
 	await frames(int(DownedRules.RESPAWN_PENALTY * 60.0) + 10)
 	if check(not pt.disabled and dc.placed.size() >= 2, "respawned again"):
 		var pl2: Array = dc.placed[-1]
-		near((pl2[2] as Transform3D).origin.distance_to(td._spawn.origin), 0.0, 0.01, "on the entry deck: the own spawn slot")
+		near((pl2[2] as Transform3D).origin.distance_to(td.spawn_xf.origin), 0.0, 0.01, "on the entry deck: the own spawn slot")
 	td.queue_free()
 	await frames(2)
 	await _drive_defend()
@@ -504,8 +504,8 @@ func _drive() -> void:
 ## defend is not active, and 60-90 m from the defend site (out of its zone, on clear ground, facing it) while it is.
 ## Prints the walk from the arrival point to the relay (the road route) for the report.
 func _drive_defend() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = SEED
 	add_child(td)
 	await frames(4)
@@ -527,7 +527,7 @@ func _drive_defend() -> void:
 		td.queue_free()
 		return
 	var sec := td.stack.section
-	var arr: Dictionary = sec.arrival(1)
+	var arr: Dictionary = SectionEncounters.arrival(sec, 1)
 	var site := Vector2(float(o["site"]["x"]), float(o["site"]["s"]))
 	var at := td.stack.from_deck_arc(1, float(arr["x"]), float(arr["s"]) + 20.0)
 	td.mech.global_position = at + td.stack.deck_ring(1).up_at(at) * 1.0
@@ -552,7 +552,7 @@ func _drive_defend() -> void:
 	check((-xf.basis.z).dot(face.normalized()) > 0.8, "facing the site")
 	# The walk the old point cost: arrival -> relay along the road graph (the enemy squad's arc path, as the director).
 	var from := Vector2(float(arr["x"]), float(arr["s"]))
-	var path: Array = td.combat.squad.find_arc_path(from, site, 1) if td.combat.squad.has_method("find_arc_path") else []
+	var path: Array = td.combat.squad.nav.find_arc_path(from, site, 1)
 	var route := -1.0
 	if not path.is_empty():
 		route = from.distance_to(path[0])
@@ -579,8 +579,8 @@ func _safe_spots() -> void:
 	var n_spots := 0
 	var kinds := {}
 	for sd in SAFE_SEEDS:
-		var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-		td.city_mode = TestDrive.MODE_STACK
+		var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+		td.city_mode = MissionScene.MODE_STACK
 		td.seed_value = sd
 		add_child(td)
 		await frames(4)
@@ -602,7 +602,7 @@ func _safe_spots() -> void:
 		await frames(2)
 		var spots: Array = []   # [tag, deck, Transform3D]
 		for k in sec.deck_count:
-			var arr := sec.arrival(k)
+			var arr := SectionEncounters.arrival(sec, k)
 			kinds[str(arr["kind"])] = int(kinds.get(str(arr["kind"]), 0)) + 1
 			var mine: Array[Vector2] = []
 			for seat in 4:

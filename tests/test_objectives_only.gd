@@ -2,8 +2,8 @@ extends TestCase
 ## Objectives are the only mission mode (user 2026-11-25: "Cut the legacy modes."; it replaced test_objectives_default):
 ## 1. No mode setting: GameSettings has no "objectives" key; an old settings file that still has crew/objectives (false)
 ##    loads without error, its other crew values still read, and the next save drops the key.
-## 2. No mode switch left in code: TestDrive / NetSession have no `objectives` field, MissionFlow no objectives_wanted /
-##    NO_OBJECTIVES_FLAG, no LegacyClearRules class, no district mode (MODE_DISTRICT, TestDrive.launch_mode); a launch
+## 2. No mode switch left in code: MissionScene / NetSession have no `objectives` field, MissionFlow no objectives_wanted /
+##    NO_OBJECTIVES_FLAG, no LegacyClearRules class, no district mode (MODE_DISTRICT, MissionScene.launch_mode); a launch
 ##    carries no "objectives" param.
 ## 3. One rules mode: MissionRules.make(sec) without a plan evaluates the section's natural plan (no clear / extract).
 ## 4. The TEST-ONLY quiet fixture (QuietSectionFixture -> MissionFlow.test_quiet) is not reachable from the game: no
@@ -52,8 +52,8 @@ func _settings() -> void:
 
 
 func _flags() -> void:
-	var td := TestDrive.new()
-	check(not ("objectives" in td), "TestDrive has no objectives switch")
+	var td := MissionScene.new()
+	check(not ("objectives" in td), "MissionScene has no objectives switch")
 	td.free()
 	check(not ("objectives" in Session), "NetSession has no objectives switch")
 	var mf := MissionFlow.new()
@@ -62,12 +62,12 @@ func _flags() -> void:
 	var consts: Dictionary = (load("res://scripts/game/mission_flow.gd") as GDScript).get_script_constant_map()
 	check(not consts.has("NO_OBJECTIVES_FLAG"), "MissionFlow has no NO_OBJECTIVES_FLAG")
 	var td_consts: Dictionary = (load("res://scripts/game/test_drive.gd") as GDScript).get_script_constant_map()
-	check(not td_consts.has("MODE_DISTRICT"), "TestDrive has no district mode")
+	check(not td_consts.has("MODE_DISTRICT"), "MissionScene has no district mode")
 	check(not (load("res://scripts/net/net_mission.gd") as GDScript).get_script_constant_map().has("MODE_DISTRICT"),
 		"NetMission has no district mode")
 	eq(NetMission.clean_mode("district"), NetMission.MODE_STACK, "an old launch's district mode builds the stack")
 	check(not (load("res://scripts/game/test_drive.gd") as GDScript).get_script_method_list().any(
-		func(m: Dictionary) -> bool: return str(m["name"]) == "launch_mode"), "TestDrive has no launch_mode")
+		func(m: Dictionary) -> bool: return str(m["name"]) == "launch_mode"), "MissionScene has no launch_mode")
 	check(not ProjectSettings.get_global_class_list().any(func(c: Dictionary) -> bool: return str(c["class"]) == "LegacyClearRules"),
 		"no LegacyClearRules class")
 
@@ -121,8 +121,8 @@ func _collect(dir: String, out: Array[String]) -> void:
 
 func _fixture() -> void:
 	QuietSectionFixture.arm()
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	add_child(td)
 	await frames(4)
 	var mf := td.mission
@@ -137,7 +137,7 @@ func _fixture() -> void:
 		eq(mf.opened.size(), 0, "nothing is released")
 		check(mf.end_left < 0.0 and not mf.ended, "no outcome, no end")
 		check(td.combat.squad.enemies.size() <= n0, "no units arrive")
-		eq((mf.hud_state()["objective"] as String), "", "the HUD has no objective")
+		eq((mf.hud_model.build()["objective"] as String), "", "the HUD has no objective")
 	td.queue_free()
 	await frames(2)
 	QuietSectionFixture.disarm()

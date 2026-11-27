@@ -11,13 +11,13 @@ extends NetTest
 ##    a core through the depot code (the host's stand timer + claim_for); every client sees the grant (cores_left, lit
 ##    sockets, last grant to pilot -1). Then a human client and the bot claim a third depot's LAST core together ->
 ##    exactly one grant, cores_left 0 on every machine.
-## 5. The state a barrier latecomer gets (Session.mission_state()'s "depots", what mission.go carries) has the cores.
+## 5. The state a barrier latecomer gets (Session.mission.state's "depots", what mission.go carries) has the cores.
 
 const PEERS := 3   ## + one hangar bot: 4 pilots, so 4 cores per depot
 const SEED := 7
 const PLAN := {"hold": 6.0, "linger": 600.0}
 
-var td: TestDrive
+var td: MissionScene
 
 
 func run_host() -> void:
@@ -27,7 +27,7 @@ func run_host() -> void:
 		return
 	var bot_id := Session.add_bot()
 	check(bot_id < 0, "a hangar bot joins the crew (pilot %d)" % bot_id)
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	var dp := td.mission.depots
@@ -96,7 +96,7 @@ func run_host() -> void:
 			if int(peer) == winner:
 				last = dp._answered[peer]["data"]
 		if check(not last.is_empty(), "the host has the winner's grant"):
-			Session.send_depot_grant(last, 0)
+			Session.mission.host_depot_grant(last, 0)
 			await sleep(0.8)
 			_ask_all("dup")
 			if check(await wait_reports("dup", cl.size(), 15.0), "every client reports after the duplicate"):
@@ -169,7 +169,7 @@ func run_host() -> void:
 					eq(int((str_to_var(str(reported(p, "botcheck"))) as Array)[0]), 0, "client %d: cores_left 0" % p)
 	# 5. The latecomer's state.
 	await sleep(0.6)
-	var st: Dictionary = Session.mission_state().get("depots", {})
+	var st: Dictionary = Session.mission.state.get("depots", {})
 	eq(st.get(id, []), [0, 1], "mission.state (what mission.go carries) has the depot empty and standing")
 	_ask_all("late")
 	if check(await wait_reports("late", cl.size(), 15.0), "every client reports the latecomer state"):
@@ -187,7 +187,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -242,7 +242,7 @@ func run_client() -> void:
 						var fresh := MissionDepots.new()
 						fresh.cores_left = {did: -1}
 						fresh.alive = {did: false}
-						fresh.apply_state(Session.mission_state().get("depots", {}))
+						fresh.apply_state(Session.mission.state.get("depots", {}))
 						report(key, str([int(fresh.cores_left[did]), 1 if fresh.alive[did] else 0]))
 						fresh.free()
 					"bot":
@@ -304,14 +304,14 @@ func _clients() -> Array[int]:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.mission != null and td.mission.depots != null, "the crew mission has depots"):
 		return false
 	td.drive_override = true
 	td.mech.move_input = Vector2.ZERO
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	return await until(func() -> bool: return td.crew_sync.puppets.size() >= peers - 1, 10.0)   # clients also have the bot's puppet

@@ -2,7 +2,7 @@ class_name EnemyGunship
 extends EnemyFlier
 ## Close-Range Valkyrie Rocket Gunship ("gunship"):
 ##   - Aerial swoop-strafer hovering 8.5-15 m above its curved RingFrame deck (distinct from unarmed EnemyDrone).
-##   - Closes from afar via low cover-skim flanking (9.5-11.5 m, 17 m/s, EnemySquad.find_cover_path) into <= 68 m range.
+##   - Closes from afar via low cover-skim flanking (9.5-11.5 m, 17 m/s, EnemyNav.find_cover_path) into <= 68 m range.
 ##   - Attack run: strafes laterally at 8.5-11 m banking into turns, telegraphs 0.70 s, fires 4-rocket alternating
 ##     left/right pod salvo (enemy_gunship_rockets), then breaks off laterally & climbs (15 m/s) during 3.4 s cooldown.
 ##   - Disarmable wing pods (95 HP -> disable_primary + 65 shock dmg + wing stub flame) & critical rear thrusters (85 HP, 1.5x).
@@ -78,7 +78,7 @@ static func placeholder_mesh(part: String) -> ArrayMesh:
 		"gunship_thrusters": _build_thrusters_mesh(k)
 		_:
 			k.box(Vector3.ONE, EnemyMeshes.ARMOR_DARK)
-	var m := k.commit(MechMeshes.materials())
+	var m := k.commit(LowPolyMaterials.materials())
 	_placeholder_cache[part] = m
 	return m
 
@@ -144,26 +144,17 @@ static func _build_thrusters_mesh(k: MeshKit) -> void:
 		k.glow = false
 
 
-static func _make_part_instance(part: String) -> MeshInstance3D:
-	if has_art_mesh(part):
-		return EnemyMeshes.instance(part)
-	var mi := MeshInstance3D.new()
-	mi.name = part
-	mi.mesh = placeholder_mesh(part)
-	return mi
-
-
 func _build_visuals() -> void:
 	_body_pivot = Node3D.new()
 	_body_pivot.name = "BodyPivot"
 	add_child(_body_pivot)
-	_hull_mi = _make_part_instance("gunship_hull")
+	_hull_mi = _make_part_instance("gunship_hull", placeholder_mesh)
 	_body_pivot.add_child(_hull_mi)
 	_register_comp_mesh("hull", _hull_mi)
-	_pods_mi = _make_part_instance("gunship_pods")
+	_pods_mi = _make_part_instance("gunship_pods", placeholder_mesh)
 	_body_pivot.add_child(_pods_mi)
 	_register_comp_mesh("pods", _pods_mi)
-	_thrusters_mi = _make_part_instance("gunship_thrusters")
+	_thrusters_mi = _make_part_instance("gunship_thrusters", placeholder_mesh)
 	_body_pivot.add_child(_thrusters_mi)
 	_register_comp_mesh("thrusters", _thrusters_mi)
 
@@ -304,15 +295,15 @@ func _step_air_search(dt: float, lkp: Vector3, space: PhysicsDirectSpaceState3D)
 func _step_cover_skim(dt: float, target_pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
 	_cover_path_timer -= dt
 	if _cover_path_timer <= 0.0 and squad != null:
-		if _hunting and squad.has_method("find_arc_path"):
+		if _hunting and _nav() != null:
 			_cover_path_timer = 2.0
-			_path_points = squad.find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(target_pos), spawn_deck)
-		elif squad.has_method("find_cover_path"):
+			_path_points = _nav().find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(target_pos), spawn_deck)
+		elif _nav() != null:
 			if not squad.has_method("claim_cover_repath") or squad.claim_cover_repath():
 				_cover_path_timer = COVER_PATH_INTERVAL
 				var cur_arc := _world_to_arc2(_world_pos())
 				var goal_arc := _world_to_arc2(target_pos)
-				_path_points = squad.find_cover_path(cur_arc, goal_arc, goal_arc, spawn_deck, CLOSE_ENGAGE_R)
+				_path_points = _nav().find_cover_path(cur_arc, goal_arc, goal_arc, spawn_deck, CLOSE_ENGAGE_R)
 			else:
 				_cover_path_timer = 0.05
 	var steer_goal := target_pos
@@ -345,18 +336,18 @@ func _step_cover_skim(dt: float, target_pos: Vector3, space: PhysicsDirectSpaceS
 ## crosses (footprints grown 3 m); -1 when that would pass CEILING_CAP - 3 (a tower / pillar): take the street path.
 func _skim_clear_alt(a: Vector2, b: Vector2) -> float:
 	var alt := ALT_SKIM
-	if squad == null or not squad.has_method("deck_occluders"):
+	if _nav() == null:
 		return alt
 	var lo := Vector2(minf(a.x, b.x), minf(a.y, b.y)) - Vector2(4.0, 4.0)
 	var hi := Vector2(maxf(a.x, b.x), maxf(a.y, b.y)) + Vector2(4.0, 4.0)
-	for item: Dictionary in squad.deck_occluders(spawn_deck):
+	for item: Dictionary in _nav().deck_occluders(spawn_deck):
 		var h := float(item["h"])
 		if h < ALT_SKIM - 2.0 or h + 5.0 <= alt:
 			continue
 		var r: Rect2 = item["rect"]
 		if hi.x < r.position.x or lo.x > r.end.x or hi.y < r.position.y or lo.y > r.end.y:
 			continue
-		if EnemySquad._segment_hits_rect(a, b, r.grow(3.0)):
+		if EnemyNav.segment_hits_rect(a, b, r.grow(3.0)):
 			if h + 5.0 > CEILING_CAP - 3.0:
 				return -1.0
 			alt = h + 5.0
@@ -531,7 +522,7 @@ func _on_component_visual_broken(comp_id: String) -> void:
 		if _pods_mi != null and is_instance_valid(_pods_mi):
 			_pods_mi.visible = false
 		if _body_pivot != null and is_instance_valid(_body_pivot):
-			_attach_flame_stream(_body_pivot, Vector3(1.75, -0.15, -0.8), Vector3(0.45, 0.85, 0.3),
+			wreck.attach_flame(_body_pivot, Vector3(1.75, -0.15, -0.8), Vector3(0.45, 0.85, 0.3),
 				2.4, 0.55, 10.0, 5, 0.65, -1.0, "pods_stub")
 
 

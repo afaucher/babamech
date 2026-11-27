@@ -9,7 +9,7 @@ extends RefCounted
 ##
 ## Use: declare `const QUIET_SECTION := true` in the test (or the shared case it extends): TestCase._ready arms it in
 ## every process of the test (net tests: host and clients alike) before setup(). Or call arm() / disarm() directly.
-## TestDrive honours it too: no plan prebuild in the stepped load and the full garrison (share 1.0) in spawn_enemies.
+## MissionScene honours it too: no plan prebuild in the stepped load and the full garrison (share 1.0) in spawn_enemies.
 ##
 ## Never reachable from the game: nothing in scripts/app, scripts/ui or scripts/game references this class, and
 ## MissionFlow.test_quiet is written only here and in tests/ (tests/test_objectives_only.gd checks both).

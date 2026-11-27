@@ -31,7 +31,7 @@ const HULL_AFTER := 0.75           ## torso 400 HP - 100
 const DOWN_T := 6.0                ## s: each owner loses a leg (downed, cause "leg_l")
 const MOUNT_TOL := 3.0             ## deg between the owner's largest barrel yaw and the one its puppet showed
 
-var td: TestDrive
+var td: MissionScene
 var _t0 := 0.0
 
 
@@ -40,7 +40,7 @@ func run_host() -> void:
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0),
 			"the crew gathers (%d of %d)" % [Session.roster.size(), peers]):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	var mine := await _drive_and_record()
@@ -58,7 +58,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -69,14 +69,14 @@ func run_client() -> void:
 ## knocked about or respawned by a turret.
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.crew_sync != null, "the test drive runs the crew mission with mech snapshots"):
 		return false
 	td.combat.squad.clear_enemies()
 	td.combat.enemies.clear()
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes (phase %s)" % Session.mission.phase):
 		return false
 	return true

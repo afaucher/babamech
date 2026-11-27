@@ -65,8 +65,8 @@ func _lab() -> void:
 
 
 func _stack() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = 3
 	add_child(td)
 	await frames(10)
@@ -77,7 +77,7 @@ func _stack() -> void:
 		en.ai_mode = "idle"
 	td.drive_override = true
 	td.mech.move_input = Vector2.ZERO
-	var f := td.banners   # Engine wires them into TestDrive
+	var f := td.banners   # Engine wires them into MissionScene
 	if f == null:
 		f = OccupationBanners.new()
 		td.add_child(f)
@@ -147,7 +147,7 @@ func _stack() -> void:
 
 ## banners_apartment: a wall banner on an apartment face with balconies (docs/design/banners.md "Clear of the facade"),
 ## seen at an angle from across the street, so the balconies beside it show; it must hang clear of them.
-func _apartment_shot(f: OccupationBanners, td: TestDrive) -> void:
+func _apartment_shot(f: OccupationBanners, td: MissionScene) -> void:
 	var pick := Vector2i(-1, -1)
 	var best := -1      # 1: its face has relief (balconies), 0: an apartment banner on a plain side
 	for k in f.plans.size():

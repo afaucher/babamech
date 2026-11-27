@@ -1,7 +1,7 @@
 extends TestCase
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## The mission loading screen (LoadingScreen, docs/design/hud.md "Loading screen") in a SOLO test drive:
-## 1. Covered solo load (TestDrive.cover_solo, the game's solo path): the screen is up and opaque in the same frame the
+## 1. Covered solo load (MissionScene.cover_solo, the game's solo path): the screen is up and opaque in the same frame the
 ##    scene is added (before anything was drawn), every frame until `loaded`, with the HUD hidden; it shows the mission
 ##    and, once known, the section; then it fades out (LoadingScreen.fade_in_tests) and is freed, and the HUD shows.
 ## 2. The tests' synchronous solo load (inside _ready): the screen is up during _ready and gone by the end of it.
@@ -16,15 +16,15 @@ func setup() -> void:
 
 
 func _covered_solo() -> void:
-	TestDrive.cover_solo = true
+	MissionScene.cover_solo = true
 	LoadingScreen.fade_in_tests = true
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = 3
 	add_child(td)
 	var ls := td.loading_screen
 	if not check(ls != null and is_instance_valid(ls), "the loading screen is up as soon as the scene is added"):
-		TestDrive.cover_solo = false
+		MissionScene.cover_solo = false
 		LoadingScreen.fade_in_tests = false
 		return
 	check(ls.covering() and ls.layer >= LoadingScreen.LAYER, "it is opaque and on top from the first frame")
@@ -62,13 +62,13 @@ func _covered_solo() -> void:
 	check(hud2 != null and hud2.visible, "the HUD shows after the screen")
 	td.queue_free()
 	await frames(2)
-	TestDrive.cover_solo = false
+	MissionScene.cover_solo = false
 	LoadingScreen.fade_in_tests = false
 
 
 func _sync_solo() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	var seen := [false]
 	td.child_entered_tree.connect(func(n: Node) -> void:
 		if n is LoadingScreen and td.mech == null:

@@ -199,7 +199,7 @@ func _mortar_blast() -> void:
 # --- Stack (integration W3) ------------------------------------------------------------------------------
 
 ## A CombatWorld, a FakeStack and its two decks' fake props (both in group "city_props", the upper deck's first, so the
-## old "first node in the group" lookup would pick the wrong deck). `inject`: world.stack is set (as TestDriveCombat
+## old "first node in the group" lookup would pick the wrong deck). `inject`: world.stack is set (as MissionCombat
 ## does), else the stack is only in group "city_stack".
 func _stack_scene(upper_at: Vector3, lower_at: Vector3, inject: bool) -> Array:
 	var w := CombatWorld.new()
@@ -221,7 +221,7 @@ func _stack_scene(upper_at: Vector3, lower_at: Vector3, inject: bool) -> Array:
 		w.stack = st
 	else:
 		st.add_to_group("city_stack")
-	w.ring = st.rings[1]     # TestDriveCombat: world.ring = td.city.ring (the deck at the origin)
+	w.ring = st.rings[1]     # MissionCombat: world.ring = td.city.ring (the deck at the origin)
 	return [w, st, upper, lower]
 
 

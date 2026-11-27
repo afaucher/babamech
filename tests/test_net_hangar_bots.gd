@@ -15,7 +15,7 @@ const MOVE_TIMEOUT := 60.0
 const FIRE_TIMEOUT := 150.0
 const DEPOT_TIMEOUT := 90.0
 
-var td: TestDrive
+var td: MissionScene
 var _hist: Array = []          ## host: [t, position] of every bot state fed to the stream (its stamp: the puppet's time base)
 const TRACK_TOL := 0.5         ## m: the puppet at its render time vs the bot then (test_net_snap's off-link bound)
 
@@ -45,7 +45,7 @@ func run_host() -> void:
 	eq(str(Session.bots[id]["skill"]), "veteran", "the skill reaches every bot")
 	check(Session.remove_bot(id2), "the host removes the second bot")
 	eq(Session.crew().size(), 3, "crew: host, bot, client")
-	check(Session.start_mission(SEED), "the host launches")
+	check(Session.mission.host_launch(SEED), "the host launches")
 	eq(Session.remove_bot(id), false, "no bot changes during a mission")
 	await _load()
 	check(not Session.mission.members().has(id), "the load barrier doesn't wait for the bot")
@@ -174,9 +174,9 @@ func run_client() -> void:
 	var b: Dictionary = Session.bots.get(-1, {})
 	report("lobby", {"bots": str(Session.bot_ids()), "bot_seat": int(b.get("seat", 0)), "my_seat": int(Session.local_entry().get("seat", 0)),
 		"bot_name": str(b.get("name", "")), "bot_head": str(b.get("head", "")), "free": Session.seats_free()})
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 60.0), "the launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 60.0), "the launch arrives"):
 		return
-	check(not Session.mission_params()["crew"].filter(func(e: Dictionary) -> bool: return bool(e.get("bot", false))).is_empty(),
+	check(not Session.mission.params["crew"].filter(func(e: Dictionary) -> bool: return bool(e.get("bot", false))).is_empty(),
 		"the launch crew carries the bot")
 	await _load()
 	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING, 40.0), "the barrier passes"):
@@ -216,6 +216,6 @@ func run_client() -> void:
 
 func _load() -> void:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await until(func() -> bool: return td.loaded, 30.0)

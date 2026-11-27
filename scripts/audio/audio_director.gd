@@ -98,6 +98,14 @@ func net_fields() -> Dictionary:
 	}
 
 
+## The game's AudioDirector (the "Audio" autoload under the root) as seen from `node`, or null when `node` is out of
+## the tree or there is none.
+static func of(node: Node) -> AudioDirector:
+	if not node.is_inside_tree():
+		return null
+	return node.get_tree().root.get_node_or_null("Audio") as AudioDirector
+
+
 ## Build the 7-bus hierarchy + Master limiter + SFX glue compressor (idempotent; safe in --headless).
 static func ensure_buses() -> void:
 	for entry: Array in BUS_TREE:
@@ -153,8 +161,8 @@ func _exit_tree() -> void:
 	bank.shutdown_async()
 
 
-func _fetch_stream(cue_id: String) -> AudioStreamWAV:
-	if bank._async_started:
+func fetch_stream(cue_id: String) -> AudioStreamWAV:
+	if bank.is_async_started():
 		return bank.get_stream_nonblocking(cue_id)
 	return bank.get_stream(cue_id)
 
@@ -189,7 +197,7 @@ func sync_user_volumes(music_linear: float, sfx_linear: float) -> void:
 
 func _process(delta: float) -> void:
 	advance_clock(delta)
-	if bank._async_started:
+	if bank.is_async_started():
 		bank.drain_async()
 
 
@@ -274,7 +282,7 @@ func play_2d(cue_id: String, db_offset: float = 0.0, pitch_mult: float = 1.0, bu
 	var slot := _acquire_slot(_pool_2d, prio, Vector3.ZERO, false)
 	if slot.is_empty():
 		return 0
-	var stream := _fetch_stream(cue_id)
+	var stream := fetch_stream(cue_id)
 	if stream == null:
 		return 0
 	var bus := bus_override if bus_override != "" else str(sp.get("bus", BUS_SFX_PLAYER))
@@ -314,7 +322,7 @@ func play_3d(cue_id: String, world_pos: Vector3, db_offset: float = 0.0, pitch_m
 	var slot := _acquire_slot(_pool_3d, prio, world_pos, true)
 	if slot.is_empty():
 		return 0
-	var stream := _fetch_stream(cue_id)
+	var stream := fetch_stream(cue_id)
 	if stream == null:
 		return 0
 	var bus := bus_override if bus_override != "" else str(sp.get("bus", BUS_SFX_WORLD))
@@ -378,7 +386,7 @@ func start_loop(tag: String, cue_id: String, is_3d: bool, pos: Vector3 = Vector3
 			return 0
 		loops_stolen += 1
 		stop_loop(victim)
-	var stream := _fetch_stream(cue_id)
+	var stream := fetch_stream(cue_id)
 	if stream == null:
 		return 0
 	var db := float(sp.get("db", 0.0)) + db_offset
@@ -491,7 +499,7 @@ func play_enemy_telegraph(owner_id: String, kind: String, world_pos: Vector3, du
 	var cue := "enemy.telegraph." + kind
 	if not SoundBank.has_cue(cue):
 		cue = "enemy.telegraph.generic"
-	var stream := _fetch_stream(cue)
+	var stream := fetch_stream(cue)
 	var ref_dur := stream.get_length() if stream != null else 0.55
 	var clamped_dur := clampf(duration, 0.3, 2.5)
 	var pitch := clampf(ref_dur / clamped_dur, 0.5, 2.0)

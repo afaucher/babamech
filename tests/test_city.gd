@@ -426,7 +426,7 @@ func _check_plan(plan: CityPlan, what: String) -> void:
 	if what.begins_with("seed"):
 		check(plan.site.pillars.size() >= 2, "%s: the default district has pillars (%d)" % [what, plan.site.pillars.size()])
 	# Roads: the graph is one piece, with a crossing wherever two roads meet.
-	var g := plan.road_graph()
+	var g := CityGraphs.road_graph(plan)
 	var nodes: Array = g["nodes"]
 	var seen := {0: true}
 	var queue := [0]
@@ -602,7 +602,7 @@ func _section_district() -> void:
 				# 2026-11-23 (map sealed): was "a ray through the portal hits nothing"; a mech walked out that way and
 				# fell off the map. Now the ray goes into the recess and stops at its back plate (test_map_sealed).
 				var beyond := -inward * (ring.world_to_arc(hit["position"]).y - at) if not hit.is_empty() else INF
-				check(not hit.is_empty() and absf(beyond - CityStreets.GATE_RECESS) < 0.3,
+				check(not hit.is_empty() and absf(beyond - CityWalls.GATE_RECESS) < 0.3,
 						"a ray through the portal goes into the recess and stops at its back plate (%.1f m past the wall plane)" % beyond)
 				portal += 1
 			elif g["kind"] == "blast_door":

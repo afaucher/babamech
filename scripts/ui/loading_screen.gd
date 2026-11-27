@@ -2,10 +2,10 @@ class_name LoadingScreen
 extends CanvasLayer
 ## The mission loading screen (docs/design/hud.md "Loading screen"): one OPAQUE layer over everything (above the HUD and
 ## ShaderWarmup's own overlay) from the first frame of the mission scene until the mission starts, then a FADE fade-out.
-## TestDrive puts it up first thing in _ready, before anything is built, so no frame shows the city being built, the
+## MissionScene puts it up first thing in _ready, before anything is built, so no frame shows the city being built, the
 ## camera or the HUD; it comes down at mission_go (crew) or when the solo load and warm-up are done. The 3D viewport keeps
 ## rendering underneath (ShaderWarmup needs its meshes drawn): this only draws on top. It processes ALWAYS (a solo
-## warm-up pauses the tree) and never touches input or the session: TestDrive's keepalive and Session polling go on.
+## warm-up pauses the tree) and never touches input or the session: MissionScene's keepalive and Session polling go on.
 ##
 ## Shows, in the HUD's holo style (MechHud colours, MechHud.draw_glass) on a dark backdrop:
 ##   - the title and the mission ("Section 57036"), then the section (set_section: deck count, entry / extraction deck,
@@ -75,7 +75,7 @@ var column: VBoxContainer
 var title_label: Label
 var mission_label: Label
 var section_label: Label
-## The crew's friendly fire option (TestDrive.friendly_fire): appended to the section line ("Friendly fire on / off").
+## The crew's friendly fire option (MissionScene.friendly_fire): appended to the section line ("Friendly fire on / off").
 var friendly_fire := true
 var card: PanelContainer
 var phase_label: Label

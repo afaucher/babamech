@@ -36,14 +36,16 @@ extends Node
 ## interprets them. `loadout` ({hardpoint id: weapon id}) is the one exception: the host makes it valid for the entry's
 ## chassis on receipt (clean_loadout: MechCatalog.sanitize_loadout), so every machine builds the same weapons.
 ##
-## MISSION (co-op step 1, cast's M1): NetMission, child "Mission". The host's Launch is start_mission(seed, mode): one
+## MISSION (co-op step 1, cast's M1): NetMission, child "Mission" (`mission`: game and UI code call it directly, e.g.
+##   Session.mission.host_launch / params / report_built / end; the signals below stay here). The host's Launch is
+##   mission.host_launch(seed, mode): one
 ##   reliable mission.launch {seed, mode, start_t, crew, friendly_fire, scale} to the crew (mode: always "stack"); every machine (the host too) gets mission_started(params), plays
 ##   the bay alert until start_t on the shared clock, then loads the mission. Each machine reports its city checksum
-##   (report_mission_built), the host compares them behind a load barrier (a mismatch is sent out with DESYNC), then
+##   (mission.report_built), the host compares them behind a load barrier (a mismatch is sent out with DESYNC), then
 ##   mission.go {start_at}: mission_go(elapsed) fires on every machine at start_at. See net_mission.gd.
 ##   The mission plan (the one mode): the host's wave orders go out as reliable mission.wave
-##   {order} (send_mission_wave; mission_wave(order) on every client; mission.go carries the ones still to open).
-##   Supply depots: depot.claim / depot.grant / depot.deny (claim_depot, send_depot_grant, send_depot_deny; signals
+##   {order} (mission.host_wave; mission_wave(order) on every client; mission.go carries the ones still to open).
+##   Supply depots: depot.claim / depot.grant / depot.deny (mission.client_depot_claim / host_depot_grant / host_depot_deny; signals
 ##   depot_claimed / depot_granted / depot_denied), see net_mission.gd "DEPOTS".
 ##
 ## MECH SNAPSHOTS (co-op step 2, cast's M2): NetMechStream, child "Mechs" (`mechs`). Each machine streams its own mech
@@ -69,7 +71,7 @@ extends Node
 ## CREW OPTIONS: chosen by the host in the hangar, shown read-only to the crew: `friendly_fire` (default true; the host's
 ##   GameSettings crew friendly_fire). set_friendly_fire on the host (or offline) sends sys.crew_opts; sys.welcome carries
 ##   the current value; crew_opts_changed fires on every machine. A client's own choice comes back when its session ends.
-##   mission.launch carries it, so every machine plays the mission with the same rule (TestDrive.friendly_fire).
+##   mission.launch carries it, so every machine plays the mission with the same rule (MissionScene.friendly_fire).
 ## INVITES: Steam's join_requested (an overlay invite accepted while the game runs) becomes `pending_invite` and
 ##   invite_received(lobby, inviter). The menu (FrontEnd) asks first: Accept (accept_invite(): leave whatever this is and
 ##   join) or Decline (decline_invite()). With no screen listening (in a mission) nothing is left or joined: the invite
@@ -105,7 +107,7 @@ signal mission_started(params: Dictionary)
 ## The load barrier passed: the mission starts now (`elapsed` seconds past start_at on the shared clock).
 signal mission_go(elapsed: float)
 ## A client: the host ended the mission (mission.end). Back to the hangar. (Not emitted for this machine's own
-## end_mission(), nor when the session itself ends: session_ended covers that.)
+## mission.end(), nor when the session itself ends: session_ended covers that.)
 signal mission_ended(reason: String)
 ## A client: the host decided new mission progress (mission.state, MissionRules.state(): outcome, reason, done, left,
 ## current). Not emitted on the host (it decided it).
@@ -607,91 +609,7 @@ func set_crew_state(s: String) -> void:
 		_publish_lobby()
 
 
-# --- Mission (NetMission does the work; these are the calls game and UI code make) ------------------
-
-## Host: launch a mission for the crew on `seed`, built as `mode` (NetMission.MODE_STACK, the multi-deck section, the
-## only one) (mission.launch, then mission_started on every machine). False on a client, offline (solo play loads
-## the test drive itself), or while a mission is already under way.
-func start_mission(seed_value: int, mode: String = NetMission.MODE_STACK) -> bool:
-	return mission.host_launch(seed_value, mode)
-
-
-## The launched mission's params ({seed, mode, start_t, crew}), {} when none (offline, or between missions).
-func mission_params() -> Dictionary:
-	return mission.params
-
-
-## This machine built the mission behind the load barrier: `checksum` is its city checksum (TestDrive.mission_checksum():
-## CityStack.checksum() for a stack, CityPlan.checksum() for a district).
-## `ms`: how long the build took (telemetry, [Flow] logs).
-func report_mission_built(checksum: String, ms: int = 0) -> void:
-	mission.report_built(checksum, ms)
-
-
-## This machine starts building the launched mission (a long blocking step on a slow machine): tells the host.
-func report_mission_loading() -> void:
-	mission.report_loading()
-
-
-## Host: the mission's progress changed (MissionRules.state()): sent to the crew as a reliable mission.state, and in
-## mission.go for late members. Ignored on a client or offline.
-func send_mission_state(state_: Dictionary) -> void:
-	mission.host_state(state_)
-
-
-## Members of the launched mission that have reported their build (NetMission.ready_peers: the loading screen's crew
-## list). Everyone once the barrier has passed; [] offline.
-func mission_ready_peers() -> Array[int]:
-	return mission.ready_peers()
-
-
-## Host: a reinforcement wave order (PacingDirector.tick, plan mode): sent to the crew as a reliable mission.wave and kept
-## for mission.go (members reaching the barrier late get the orders whose door hasn't opened). Ignored on a client.
-func send_mission_wave(order: Dictionary) -> void:
-	mission.host_wave(order)
-
-
-## Client: ask the host for a power core of supply depot `depot` (reliable depot.claim {depot, n}; n = this pilot's claim
-## counter, re-sent unchanged while unanswered). Ignored on the host (it arbitrates its own claims) or offline.
-func claim_depot(depot: String, n: int) -> void:
-	mission.client_depot_claim(depot, n)
-
-
-## Host: a granted core (depot.grant {depot, peer, seq, cores_left}) to the crew (`to` 0) or one member.
-func send_depot_grant(grant: Dictionary, to: int = 0) -> void:
-	mission.host_depot_grant(grant, to)
-
-
-## Host: a refused claim (depot.deny {depot, reason, n}) to the asker.
-func send_depot_deny(peer: int, data: Dictionary) -> void:
-	mission.host_depot_deny(peer, data)
-
-
-## Every wave order of the mission this machine has (host: sent; client: heard), in order.
-func mission_waves() -> Array:
-	return mission.waves
-
-
-## Host: the crew scale changes (MissionFlow.on_member_retired): {n, at, from, reason, pilot}, `at` on the shared clock;
-## sent to the crew as a reliable mission.scale and kept for mission.go. Ignored on a client or offline.
-func send_mission_scale(change: Dictionary) -> void:
-	mission.host_scale(change)
-
-
-## Every crew-scale change of the mission this machine has (host: sent; client: heard), in order.
-func mission_scales() -> Array:
-	return mission.scales
-
-
-## The latest mission progress the host decided ({} before the first, or between missions).
-func mission_state() -> Dictionary:
-	return mission.state
-
-
-## Leave the mission: the host ends it for the whole crew (mission.end), a client just for itself.
-func end_mission(reason: String = "") -> void:
-	mission.end(reason)
-
+# --- Crew control (kick, options) -------------------------------------------------------------------
 
 ## Host: send a crew member out with a reason. It is told why, dropped at once and disconnected REFUSE_GRACE later.
 func kick(peer: int, reason: String) -> void:

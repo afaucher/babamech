@@ -134,16 +134,16 @@ const MOVEMENT_KEYS := ["walk_speed", "run_speed", "strafe_scale", "accel", "tur
 	"air_control", "thrust_heat", "auto_burn_heat", "walk_heat", "run_heat", "reboot_heat", "reboot_time", "safe_land_speed",
 	"hard_land_speed", "auto_land_speed"]
 
-## Combat stats (docs/design/weapons.md Â§3; first pass, tuned in the `weapon_range` lab). Every weapon has (WEAPON_STATS):
+## Combat stats (docs/design/weapons.md §3; first pass, tuned in the `weapon_range` lab). Every weapon has (WEAPON_STATS):
 ##   kind, damage (per hit), rate (shots/s; inside a salvo for salvo weapons), salvo (shots per trigger cycle), reload
 ##   (s after a salvo), speed (m/s; 0 = instant / ballistic), range (m), falloff_start (m) / falloff_min (share of damage
-##   left at range), spread (deg, cone half-angle), knockback (Î”v m/s along the shot, before the target's mass class),
+##   left at range), spread (deg, cone half-angle), knockback (Δv m/s along the shot, before the target's mass class),
 ##   splash_damage / splash_radius (m), target_heat (heat added to the target per hit), ammo (-1 = unlimited), growth
 ##   (drawn size multiplier) / growth_full (m to reach it), size (m, drawn launch size), trail (s of trail), impact_radius
 ##   (m, ImpactFx R), muzzle (model units ahead of the mount point where shots leave). active_heat is per trigger cycle:
-##   per shot, per salvo for salvo weapons. Optional: max_per_mech, explosive, prop_blast (splash Î”v on city props only,
+##   per shot, per salvo for salvo weapons. Optional: max_per_mech, explosive, prop_blast (splash Δv on city props only,
 ##   default splash_knockback), and the per-weapon extras.
-##   slew (Â°/s): how fast a direct-fire weapon pivots at its mount toward the aim point (weapons.md Â§4.4; default
+##   slew (°/s): how fast a direct-fire weapon pivots at its mount toward the aim point (weapons.md §4.4; default
 ##   Combat.PIVOT_SLEW; pivot range Combat.PIVOT_YAW / _PITCH_DOWN / _PITCH_UP unless the entry sets yaw_arc /
 ##   pitch_down / pitch_up). The mortar does not pivot; the swivel uses its own wide arc.
 const WEAPONS := {
@@ -202,7 +202,7 @@ const WEAPONS := {
 		"falloff_start": 45.0, "falloff_min": 1.0, "spread": 5.0, "knockback": 0.0, "splash_damage": 0.0, "splash_radius": 0.0,
 		"target_heat": 2.2, "ammo": -1, "growth": 6.0, "growth_full": 45.0, "size": 0.25, "trail": 0.0, "impact_radius": 0.0,
 		"muzzle": 0.85, "slew": 180.0},
-	# Flak (weapons.md Â§3.10): a fast straight shell with a proximity fuse. Armed after arm_distance m, it bursts where its
+	# Flak (weapons.md §3.10): a fast straight shell with a proximity fuse. Armed after arm_distance m, it bursts where its
 	# path passes closest to a hit sphere within fuse_radius m of it (any target CombatWorld.spares doesn't spare), on any
 	# contact, and at the end of its range. Direct damage only on an actual strike, on top of the splash. armor_mult: both
 	# direct and splash damage x 0.35 on an armoured target (CombatTarget.armored; CombatWorld.armor_scaled).
@@ -363,13 +363,15 @@ static func sanitize_loadout(chassis_id: String, loadout: Dictionary, drafts: bo
 	return out
 
 
-## Totals for the hangar's readout: weapon weight, passive heat/s, the hottest single use, and the chassis limits.
+## Totals for the hangar's readout: weapon weight, passive heat/s, the hottest single use, the chassis limits, and the
+## equipment's cooling_bonus (heat/s, the radiator; `cooling` stays the chassis value, FrontEnd.hangar_stats adds it).
 static func loadout_stats(chassis_id: String, loadout: Dictionary) -> Dictionary:
 	var c := chassis(chassis_id)
 	var weight := 0.0
 	var passive := 0.0
 	var peak := 0.0
 	var count := 0
+	var bonus := 0.0
 	for w: Variant in loadout.values():
 		var d := weapon(str(w))
 		if d.is_empty():
@@ -378,6 +380,7 @@ static func loadout_stats(chassis_id: String, loadout: Dictionary) -> Dictionary
 		weight += float(d["weight"])
 		passive += float(d["passive_heat"])
 		peak = maxf(peak, float(d["active_heat"]))
+		bonus += float(d.get("cooling_bonus", 0.0))
 	return {"weapons": count, "weight": weight, "max_weight": float(c["max_weight"]), "overweight": weight > float(c["max_weight"]),
 		"passive_heat": passive, "cooling": float(c["cooling"]), "net_cooling": float(c["cooling"]) - passive,
-		"peak_heat": peak, "heat_cap": float(c["heat_cap"])}
+		"peak_heat": peak, "heat_cap": float(c["heat_cap"]), "cooling_bonus": bonus}

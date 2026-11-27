@@ -131,7 +131,7 @@ static func part_mesh(id: String) -> Mesh:
 
 ## The radiator's emission colour (energy folded in by the caller) at heat fraction `f`: black -> ORANGE -> HOT.
 static func heat_glow(f: float) -> Color:
-	var c := Color.BLACK.lerp(MechMeshes.ORANGE, smoothstep(0.05, 0.6, f))
+	var c := Color.BLACK.lerp(LowPolyPalette.ORANGE, smoothstep(0.05, 0.6, f))
 	return c.lerp(HOT, smoothstep(0.6, 1.0, f))
 
 
@@ -206,7 +206,7 @@ func _show_drone(mi: MeshInstance3D, sl: Dictionary, want: String) -> void:
 		for i in mi.get_surface_override_material_count():
 			mi.set_surface_override_material(i, null)
 		var m: Variant = sl["model"]
-		MechMeshes.apply_accent(mi, (m as MechModel).accent if m != null and is_instance_valid(m) else MechMeshes.ORANGE)
+		LowPolyMaterials.apply_accent(mi, (m as MechModel).accent if m != null and is_instance_valid(m) else LowPolyPalette.ORANGE)
 	sl["shown"] = want
 
 

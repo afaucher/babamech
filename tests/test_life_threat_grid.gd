@@ -37,9 +37,7 @@ func _run(stack: CityStack, brute: bool) -> Dictionary:
 	add_child(life)
 	life.set_process(false)
 	life.setup_stack(stack, PEOPLE)
-	life.brute_force = brute
 	for u in life.units:
-		u.set_process(false)
 		u.brute_force = brute
 		u.crowd.brute_force = brute
 		u.fleet.brute_force = brute
@@ -51,9 +49,7 @@ func _run(stack: CityStack, brute: bool) -> Dictionary:
 	var total := 0
 	var threats := 0
 	for f in STEPS:
-		life._step(DT)
-		for u in life.units:
-			u._step(DT)
+		life._step(DT)      # (steps every deck)
 		var ids := life.ids()
 		if f % 15 == 0:
 			var out: Array[int] = []

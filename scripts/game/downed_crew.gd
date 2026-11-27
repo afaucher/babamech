@@ -1,7 +1,7 @@
 class_name DownedCrew
 extends Node
 ## The scene's side of downed / revive / respawn (DownedRules has the numbers and the rules; PlayerTarget runs the state
-## on its owner's machine). One per test drive, child "DownedCrew" (TestDrive._finish_setup, DownedCrew.attach). Reads
+## on its owner's machine). One per test drive, child "DownedCrew" (MissionScene._finish_setup, DownedCrew.attach). Reads
 ## what this machine already knows (its own mech, the host's bots, the puppets' streamed mirrors: PlayerTarget.disabled /
 ## redeploying / revive_progress / aid_charges ride in the owner's mech snapshot) and writes only this machine's OWN
 ## targets (the local pilot's, and on the host its bots'). Nothing here sends anything.
@@ -17,7 +17,7 @@ extends Node
 ##                 drone beams it, and "Hold SPACE to respawn" with the hold bar; then "REDEPLOYING <s>".
 ##   RESPAWN POINT (PlayerTarget.on_respawn -> _place): when the deck the pilot went down on has an ACTIVE defend or
 ##     hold objective, a clear spot 60-90 m from its site (DownedRules.RESPAWN_NEAR_*: out of its zone, clear ground by
-##     MissionProps.snap_site, no live enemy within 40 m if a candidate allows it, facing the site). Otherwise the arrival point (SectionPlan.arrival(k), the enemy spawner's
+##     SiteFit.snap, no live enemy within 40 m if a candidate allows it, facing the site). Otherwise the arrival point (SectionEncounters.arrival(sec, k), the enemy spawner's
 ##     safe bubble) of the deck the crew's LEAD pilot is on (the deepest deck any standing crewmate is on; nobody
 ##     standing: the deck the pilot went down on), offset by crew seat and dropped onto clear floor (arrival_spot: a lift /
 ##     shaft arrival anchors on the nearest walk node clear of the well); on the entry deck (and in a district) the pilot's
@@ -52,7 +52,7 @@ const SPOT_BEARINGS := 12
 const ANCHOR_CLEAR := 8.0
 const SEAT_APART := 2.0 * CityPlan.MECH_R_MAX + 1.0   ## m between two seats' arrival spots (two Bulwarks + 1 m)
 
-var drive: TestDrive
+var drive: MissionScene
 var beacons: Dictionary = {}      ## pilot id -> Node3D beacon on its wreck (cosmetic)
 var placed: Array = []            ## [pilot id, deck, Transform3D, kind] of each respawn placement here (tests, diagnostics)
 var last_kind := ""               ## the last redeploy_transform's pick: objective | arrival | slot
@@ -66,7 +66,7 @@ func net_fields() -> Dictionary:
 		"_t": Net.LOCAL, "_seat_spots": Net.LOCAL}
 
 
-static func attach(td: TestDrive) -> DownedCrew:
+static func attach(td: MissionScene) -> DownedCrew:
 	if td == null or td.combat == null or td.combat.player_target == null:
 		return null
 	var dc := DownedCrew.new()
@@ -80,7 +80,7 @@ func _ready() -> void:
 	process_physics_priority = -5   # before the combat world steps (0): the owner's targets read auto_redeploy / charges
 
 
-func setup(td: TestDrive) -> void:
+func setup(td: MissionScene) -> void:
 	drive = td
 	DownedRules.ensure_input()
 	var me := local_id()
@@ -96,8 +96,8 @@ func setup(td: TestDrive) -> void:
 		cb.target.auto_redeploy = true
 		cb.target.on_respawn = func() -> void: _place(bid, bm)
 		cb.target.revive_wait = func() -> float: return DownedRules.bot_wait(reviver_for(bid))
-	if td._hud != null and td._hud.mission_hud != null:
-		td._hud.mission_hud.downed_source = hud_state
+	if td.hud != null and td.hud.mission_hud != null:
+		td.hud.mission_hud.downed_source = hud_state
 	var cl := td.get_node_or_null("CombatLog") as CombatLog
 	if cl != null:
 		cl.help_fn = help_facts
@@ -114,7 +114,7 @@ func local_id() -> int:
 
 
 ## Every pilot as this machine sees it: [{peer, name, mech, target (PlayerTarget here: own, bot or a puppet's mirror),
-## downed, redeploying, revive (0..1 of the bar), bot, local}] in TestDrive.crew_members order.
+## downed, redeploying, revive (0..1 of the bar), bot, local}] in MissionScene.crew_members order.
 func members() -> Array:
 	var out: Array = []
 	if drive == null or drive.combat == null:
@@ -322,7 +322,7 @@ func redeploy_transform(id: int, m: MechController) -> Transform3D:
 
 
 ## The respawn spot by deck k's arrival for crew seat `seat`: {xf, x, s} or {} when nothing near is safe. ANCHOR: the
-## arrival point (SectionPlan.arrival(k)). The seat's offset (SEAT_OFFS) on top, then rings of SPOT_BEARINGS bearings at
+## arrival point (SectionEncounters.arrival(sec, k)). The seat's offset (SEAT_OFFS) on top, then rings of SPOT_BEARINGS bearings at
 ## SPOT_RINGS m round it, nearest first, the first SAFE spot (_floor_near: plan_safe + spot_problems; a lift platform /
 ## opening is never one) at least SEAT_APART from the lower seats' spots wins; for a lift / shaft arrival with nothing
 ## safe in reach, the same search from the nearest walk-graph node clear of the well by ANCHOR_CLEAR. Plan data + the built deck's static collision: the owner decides, every machine sees
@@ -333,7 +333,7 @@ func arrival_spot(k: int, seat: int, m: MechController) -> Dictionary:
 	if seat_n < cached.size():
 		return cached[seat_n]
 	var sec := drive.stack.section
-	var arr: Dictionary = sec.arrival(k)
+	var arr: Dictionary = SectionEncounters.arrival(sec, k)
 	var anchor := Vector2(float(arr["x"]), float(arr["s"]))
 	var well := str(arr["kind"]) in ["lift", "shaft"]
 	var steps: Array = [Vector2.ZERO]
@@ -365,7 +365,7 @@ func arrival_spot(k: int, seat: int, m: MechController) -> Dictionary:
 ## (`p` itself when the deck has no node).
 func _clear_node(k: int, p: Vector2) -> Vector2:
 	var sec := drive.stack.section
-	var g := (drive.stack.decks[k] as CityDistrict).plan.walk_graph()
+	var g := CityGraphs.walk_graph((drive.stack.decks[k] as CityDistrict).plan)
 	var best := p
 	var best_d := INF
 	for n: Vector2 in g["nodes"]:
@@ -402,7 +402,7 @@ func active_objective(k: int) -> Dictionary:
 ## arrival point); only the enemy check reads live state, and the owner's teleport is what every machine then sees.
 func near_objective(k: int, o: Dictionary, m: MechController) -> Dictionary:
 	var site := Vector2(float(o["site"]["x"]), float(o["site"]["s"]))
-	var arr: Dictionary = drive.stack.section.arrival(k)
+	var arr: Dictionary = SectionEncounters.arrival(drive.stack.section, k)
 	var toward := Vector2(float(arr["x"]), float(arr["s"])) - site
 	var a0 := toward.angle() if toward.length() > 1.0 else -PI * 0.5
 	var dist := drive.stack.decks[k] as CityDistrict
@@ -411,7 +411,7 @@ func near_objective(k: int, o: Dictionary, m: MechController) -> Dictionary:
 		for i in 8:
 			var ang := a0 + float((i + 1) / 2) * PI * 0.25 * (1.0 if i % 2 == 0 else -1.0)
 			var p := site + Vector2.from_angle(ang) * r
-			var sn := MissionProps.snap_site(dist, p, DownedRules.RESPAWN_SNAP_REACH, DownedRules.RESPAWN_CLEAR_R)
+			var sn := SiteFit.snap(dist, p, DownedRules.RESPAWN_SNAP_REACH, DownedRules.RESPAWN_CLEAR_R)
 			if not bool(sn.get("ok", false)):
 				continue
 			var q := Vector2(float(sn["x"]), float(sn["s"]))
@@ -472,10 +472,10 @@ func lead_deck(id: int, m: MechController) -> int:
 
 func _slot_of(id: int) -> Transform3D:
 	if id == local_id():
-		return drive._spawn
+		return drive.spawn_xf
 	if _bot(id) != null:
 		return _bot(id).spawn
-	return drive._spawn
+	return drive.spawn_xf
 
 
 ## A SAFE floor spot near deck k's (x, s), trying `steps` offsets in order: a downward ray (static collision only: lift
@@ -487,7 +487,7 @@ func _floor_near(k: int, x: float, s: float, m: MechController, steps: Array = S
 		return {}
 	var space := m.get_world_3d().direct_space_state
 	var ring := st.deck_ring(k)
-	var fq := MissionProps.fit_mask((st.decks[k] as CityDistrict).plan).query([], 0.6)
+	var fq := SiteFit.mask((st.decks[k] as CityDistrict).plan).query([], 0.6)
 	for off: Vector2 in steps:
 		var px := x + off.x
 		var ps := s + off.y
@@ -517,7 +517,7 @@ func _floor_near(k: int, x: float, s: float, m: MechController, steps: Array = S
 ## The plan-data half of a safe spot at deck k's `p`: off every lift platform / floor opening / floor cut / ramp by the
 ## widest capsule, free on the fit mask, and connected there to the deck's walk graph (`fq`: a FitMask query; not in a
 ## sealed pocket a mech could never leave).
-static func plan_safe(st: CityStack, k: int, p: Vector2, fq: MissionProps.FitQuery) -> bool:
+static func plan_safe(st: CityStack, k: int, p: Vector2, fq: SiteFit.FitQuery) -> bool:
 	var plan: CityPlan = (st.decks[k] as CityDistrict).plan
 	var r := CityPlan.MECH_R_MAX
 	var sec := st.section
@@ -566,7 +566,7 @@ static func spot_problems(st: CityStack, k: int, pos: Vector3, space: PhysicsDir
 		var s1 := maxf(float(rp["s_top"]), float(rp["s_foot"]))
 		if Rect2(float(rp["x0"]), s0, float(rp["x1"]) - float(rp["x0"]), s1 - s0).grow(r).has_point(p):
 			out.append("ramp")
-	var mask := MissionProps.fit_mask(plan)
+	var mask := SiteFit.mask(plan)
 	var c := mask.index_of(p)
 	if c < 0 or mask.free[c] == 0:
 		out.append("fit")
@@ -656,7 +656,7 @@ func _names() -> Dictionary:
 	var out := {}
 	var sess := Net.session()
 	if sess != null and sess.online():
-		for e: Dictionary in sess.mission_params().get("crew", []) as Array:
+		for e: Dictionary in sess.mission.params.get("crew", []) as Array:
 			out[int(e.get("peer", 0))] = str(e.get("name", ""))
 	var me := local_id()
 	if not out.has(me) or str(out[me]) == "":

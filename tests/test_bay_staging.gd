@@ -130,8 +130,8 @@ func _formation() -> void:
 # --- Real stack ---------------------------------------------------------------------------------------------------
 
 func _real_bay() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = 1
 	add_child(td)
 	await frames(6)
@@ -172,7 +172,7 @@ func _real_bay() -> void:
 	var want := door + out * 110.0
 	var node: Vector2 = want
 	var best := INF
-	for rn: Vector2 in td.stack.decks[k].plan.road_graph()["nodes"]:
+	for rn: Vector2 in CityGraphs.road_graph(td.stack.decks[k].plan)["nodes"]:
 		if rn.distance_to(want) < best:
 			best = rn.distance_to(want)
 			node = rn
@@ -283,12 +283,12 @@ func _real_bay() -> void:
 
 
 ## Metres behind the door plane (positive inside the bay, negative out on the deck).
-func _behind(td: TestDrive, k: int, e: Node3D, door: Vector2, out: Vector2) -> float:
+func _behind(td: MissionScene, k: int, e: Node3D, door: Vector2, out: Vector2) -> float:
 	var a := td.stack.to_deck_arc(e.global_position)
 	return -(Vector2(float(a["x"]), float(a["s"])) - door).dot(out)
 
 
-func _stage_drone(td: TestDrive, sq: EnemySquad, w: CombatWorld, k: int, bay: Dictionary, id: String) -> EnemyBase:
+func _stage_drone(td: MissionScene, sq: EnemySquad, w: CombatWorld, k: int, bay: Dictionary, id: String) -> EnemyBase:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 3
 	var sl := BayFormation.layout(bay, ["drone"], rng)

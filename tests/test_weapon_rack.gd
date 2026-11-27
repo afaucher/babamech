@@ -55,7 +55,7 @@ func _paused_drive() -> void:
 	var st := GameSettings.load_settings()
 	st["loadout"] = {"side_l": "flamer", "side_r": "autocannon", "shoulder_l": "railgun", "shoulder_r": "", "back": "mortar"}
 	GameSettings.save_settings(st)
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(10)
 	var rack := td.combat.rack
@@ -388,7 +388,7 @@ func _unusable() -> void:
 
 
 func _test_drive() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(10)
 	if check(td.combat != null and td.combat.rack != null, "the test drive has a weapon rack"):
@@ -397,7 +397,7 @@ func _test_drive() -> void:
 	await frames(2)      # gone before the next section builds a drive (one AmbientLife, no props scanning a freed mech)
 
 
-func _drive_fire(td: TestDrive) -> void:
+func _drive_fire(td: MissionScene) -> void:
 	var rack := td.combat.rack
 	eq(rack.slot_count(), 5, "five slots on the strider")
 	check(td.combat.enemies.size() >= 3, "test drive spawns seeded enemies (%d)" % td.combat.enemies.size())
@@ -436,7 +436,7 @@ func _drive_fire(td: TestDrive) -> void:
 
 ## A TargetDummy on team "enemy" standing on the mech's floor ahead of it (or to a side), at the first candidate spot
 ## where slot 1's muzzle sees it (first_hit from the muzzle meets the dummy first) within the laser's range; else null.
-func _place_target(td: TestDrive, rack: WeaponRack) -> TargetDummy:
+func _place_target(td: MissionScene, rack: WeaponRack) -> TargetDummy:
 	var world := td.combat.world
 	var d := TargetDummy.new()
 	d.target_id = "test_dummy"

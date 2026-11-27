@@ -36,7 +36,7 @@ const C := {
 	# backdrop (far, low-detail blocks: desaturated so the haze reads)
 	"far_a": Color("cfc6b2"), "far_b": Color("c0a89a"), "far_c": Color("a9b7a6"), "far_d": Color("a8bccb"),
 	# mission world (MissionWorld): wave doors, the beacon, the alien banner, ours (the crew's default accent, safety
-	# orange: MechMeshes.ORANGE), the defend relay, the extraction portal; glows use MissionProps' emissive materials
+	# orange: LowPolyPalette.ORANGE), the defend relay, the extraction portal; glows use MissionProps' emissive materials
 	"m_recess": Color("1c1d1f"), "m_leaf": Color("55595a"), "m_scorch": Color("2a2624"), "m_weld": Color("3b3e40"),
 	"m_beacon": Color("ffab2e"), "m_beacon_dead": Color("4a3f30"), "m_alien": Color("3a3a40"), "m_alien_mark": Color("b23a2e"),
 	"m_ours": Color("ee7520"), "m_ours_mark": Color("f4ecd8"), "m_relay": Color("7d8a8f"), "m_relay_band": Color("5fd0e6"),

@@ -14,7 +14,7 @@ const SEED := 7
 const PLAN := {"hold": 6.0}
 const DIRECTOR := {"rest_first": 1.5, "rest_last": 1.5, "arrival_rest": 1.0, "grace": 1.5}
 
-var td: TestDrive
+var td: MissionScene
 
 
 func run_host() -> void:
@@ -23,11 +23,11 @@ func run_host() -> void:
 	MissionFlow.test_director = DIRECTOR
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	# Objectives are the only mode (legacy modes cut 2026-11-26): the launch no longer carries a mode switch; it does
 	# carry the host's crew scale.
-	check(not Session.mission_params().has("objectives"), "the launch carries no objectives switch (the only mode)")
-	check(int(Session.mission_params().get("scale", 0)) == peers, "the launch carries the host's crew scale")
+	check(not Session.mission.params.has("objectives"), "the launch carries no objectives switch (the only mode)")
+	check(int(Session.mission.params.get("scale", 0)) == peers, "the launch carries the host's crew scale")
 	if not await _load_and_go():
 		return
 	if not check(await wait_reports("ready", peers - 1, 30.0), "every client is ready"):
@@ -105,7 +105,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -185,7 +185,7 @@ func _clients() -> Array[int]:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.mission != null and td.mission.plan != null and td.mission.world != null,
@@ -193,7 +193,7 @@ func _load_and_go() -> bool:
 		return false
 	td.drive_override = true
 	td.mech.move_input = Vector2.ZERO
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes (plan checksum joined)"):
 		return false
 	return await until(func() -> bool: return td.crew_sync.puppets.size() == peers - 1, 10.0)

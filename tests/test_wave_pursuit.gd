@@ -29,8 +29,8 @@ func setup() -> void:
 
 
 func _probe_seed1_wave_closing() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = 1
 	add_child(td)
 	await frames(6)
@@ -64,7 +64,7 @@ func _probe_seed1_wave_closing() -> void:
 		for e in sq.enemies.duplicate():
 			if is_instance_valid(e) and e.spawn_deck == k:
 				e.apply_damage(1.0e7, e.core_component(), "test")
-		var rg := td.stack.decks[k].plan.road_graph()
+		var rg := CityGraphs.road_graph(td.stack.decks[k].plan)
 		var rnodes: Array = rg["nodes"]
 
 		for si in picked.size():
@@ -192,8 +192,8 @@ func _probe_seed1_wave_closing() -> void:
 ## only kept defend waves awake). Now every wave unit stays awake and walks the section's ramps toward the crew's deck
 ## (EnemySquad._step_wave_transit). Down: crew on deck 1, a deck-0 wave. Up: crew on deck 0, a deck-1 wave.
 func _probe_seed1_cross_deck() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = 1
 	add_child(td)
 	await frames(6)
@@ -224,7 +224,7 @@ func _probe_seed1_cross_deck() -> void:
 			continue
 		src["point"] = td.stack.mission.source_point(str(src["id"])) if td.stack.mission != null else {}
 		# The crew mech on a road crossing of crew_deck near the middle of the map.
-		var rnodes: Array = td.stack.decks[crew_deck].plan.road_graph()["nodes"]
+		var rnodes: Array = CityGraphs.road_graph(td.stack.decks[crew_deck].plan)["nodes"]
 		var node: Vector2 = rnodes[0]
 		for rn: Vector2 in rnodes:
 			if rn.length() < node.length():
@@ -304,8 +304,8 @@ func _probe_seed1_cross_deck() -> void:
 ## ~290 m ramp up to deck 0 and back, ~70 s of the sweep). After the crew returns it gets no farther from the ramp's
 ## entry than one transit refresh of walking, and is back on the crew's deck and within CLOSE_DIST in time.
 func _probe_seed1_ramp_turnaround() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = 1
 	add_child(td)
 	await frames(6)
@@ -337,7 +337,7 @@ func _probe_seed1_ramp_turnaround() -> void:
 		return
 	src["point"] = mw.source_point(str(src["id"])) if mw != null else {}
 	var place := func(k: int) -> Vector3:
-		var rnodes: Array = td.stack.decks[k].plan.road_graph()["nodes"]
+		var rnodes: Array = CityGraphs.road_graph(td.stack.decks[k].plan)["nodes"]
 		var node: Vector2 = rnodes[0]
 		for rn: Vector2 in rnodes:
 			if rn.length() < node.length():
@@ -422,8 +422,8 @@ func _probe_seed1_ramp_turnaround() -> void:
 func _probe_seed7_abandoned_defend() -> void:
 	MissionFlow.test_plan = {"hold": 6.0}
 	MissionFlow.test_director = {"rest_first": 1.5, "rest_last": 1.5, "arrival_rest": 1.0, "grace": 1.5, "follow_gap": 0.5}
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = 7
 	add_child(td)
 	await frames(6)

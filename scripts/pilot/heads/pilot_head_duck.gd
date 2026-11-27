@@ -51,7 +51,7 @@ func _init() -> void:
 
 func build_pieces() -> void:
 	var secs: Array = MechHeadMeshes.DUCK_SECS
-	var green: Callable = MechHeadMeshes._duck_green
+	var green: Callable = MechHeadMeshes.duck_green
 	add_piece("NeckLow", "", Vector3(0.0, 0.0, 0.07))
 	add_piece("NeckHigh", "NeckLow", Vector3(0.0, 0.18, 0.045))
 	add_piece("Skull", "NeckHigh", Vector3(0.0, 0.44, 0.03))
@@ -113,11 +113,3 @@ func pose_extra(ch: Dictionary, _neck: PilotNeck, _extra: Dictionary) -> void:
 
 static func _ring(s: Array, scale: float = 1.0) -> PackedVector3Array:
 	return MeshKit.ring(Vector3(0, s[0], s[1]), float(s[2]) * scale, float(s[3]) * scale, 8, "y", 2.2)
-
-
-static func _lerp_sec(a: Array, b: Array, y: float) -> Array:
-	var t := (y - float(a[0])) / (float(b[0]) - float(a[0]))
-	var out := []
-	for i in 4:
-		out.append(lerpf(float(a[i]), float(b[i]), t))
-	return out

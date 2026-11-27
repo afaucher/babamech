@@ -4,8 +4,8 @@ extends TestCase
 ## most blast-door gates, the real mech capsule (MechSpawn) is swept with physics queries:
 ## - through every boundary-wall gate of every kind (portal, blast door with no mission door, mission door open / shut /
 ##   sealed, collapsed), straight out and at lateral offsets and angles, at walking height and at a hop under the lintel:
-##   it gets no further than the gate's recess (CityStreets.GATE_RECESS behind the wall plane; an open mission door: its
-##   staging bay, GateDoor.BAY_DEPTH; a solid gate: not past the wall plane) and there is floor under where it stops;
+##   it gets no further than the gate's recess (CityWalls.GATE_RECESS behind the wall plane; an open mission door: its
+##   staging bay, MissionGateDoor.BAY_DEPTH; a solid gate: not past the wall plane) and there is floor under where it stops;
 ## - inside every open staging bay: pushed at the sides, the back and the roof (at walking height, at roof height and
 ##   straight up, at angles) it stays in the bay; floor under every stop and everywhere on a 2 m grid (no step: within
 ##   5 cm of the deck's faceted floor); from the usable floor in line with the door it rolls straight out to the street;
@@ -98,7 +98,7 @@ func _section(seed_: int) -> void:
 	# door key "<side>:<a>" -> state, per deck
 	var doors := {}
 	for id: Variant in ids:
-		var door := mw._doors[id] as MissionProps.GateDoor
+		var door := mw._doors[id] as MissionGateDoor
 		var st := str(mw.source_state(id)["state"])
 		eq(door.door_shape.disabled, st == "open", "seed %d %s: the door shape is off only when open (%s)" % [seed_, id, st])
 		doors[door] = st
@@ -128,7 +128,7 @@ func _section(seed_: int) -> void:
 ## "" when gate g of wall w has no mission door, else its state (open / shut / sealed ...).
 func _door_state(d: CityDistrict, w: Dictionary, g: Dictionary, mw: MissionWorld) -> String:
 	for id: Variant in mw._doors:
-		var door := mw._doors[id] as MissionProps.GateDoor
+		var door := mw._doors[id] as MissionGateDoor
 		if door == null or door.get_parent() != d:
 			continue
 		if door.transform.is_equal_approx(MissionProps.gate_frame(d, w, g)):
@@ -136,9 +136,9 @@ func _door_state(d: CityDistrict, w: Dictionary, g: Dictionary, mw: MissionWorld
 	return ""
 
 
-func _door_of(d: CityDistrict, w: Dictionary, g: Dictionary, mw: MissionWorld) -> MissionProps.GateDoor:
+func _door_of(d: CityDistrict, w: Dictionary, g: Dictionary, mw: MissionWorld) -> MissionGateDoor:
 	for id: Variant in mw._doors:
-		var door := mw._doors[id] as MissionProps.GateDoor
+		var door := mw._doors[id] as MissionGateDoor
 		if door != null and door.get_parent() == d and door.transform.is_equal_approx(MissionProps.gate_frame(d, w, g)):
 			return door
 	return null
@@ -174,9 +174,9 @@ func _gate(seed_: int, d: CityDistrict, w: Dictionary, g: Dictionary, door: Stri
 		tag = "door_" + door
 	kinds_seen[tag] = int(kinds_seen.get(tag, 0)) + 1
 	var open := kind == "portal" or door == "open"
-	var limit := (CityStreets.GATE_RECESS if open else 0.0) + MARGIN
+	var limit := (CityWalls.GATE_RECESS if open else 0.0) + MARGIN
 	if door == "open":
-		limit = MissionProps.GateDoor.BAY_DEPTH + MARGIN
+		limit = MissionGateDoor.BAY_DEPTH + MARGIN
 	var a := float(g["a"])
 	var b := float(g["b"])
 	var gh := float(g["h"])
@@ -225,7 +225,7 @@ func _perimeter(seed_: int, d: CityDistrict, w: Dictionary, mw: MissionWorld) ->
 		var limit := MARGIN
 		for g: Dictionary in w["gates"]:
 			if u > float(g["a"]) - cap.radius and u < float(g["b"]) + cap.radius:
-				limit = maxf(limit, (MissionProps.GateDoor.BAY_DEPTH if _door_state(d, w, g, mw) == "open" else CityStreets.GATE_RECESS) + MARGIN)
+				limit = maxf(limit, (MissionGateDoor.BAY_DEPTH if _door_state(d, w, g, mw) == "open" else CityWalls.GATE_RECESS) + MARGIN)
 		for h: float in [WALK_H, 6.0]:
 			var start := _wall_point(w, u, -(cap.radius + 1.0))
 			var p := _push(d, start, h, _out(w), PUSH)
@@ -245,19 +245,19 @@ func _perimeter(seed_: int, d: CityDistrict, w: Dictionary, mw: MissionWorld) ->
 ## Inside an open staging bay (door frame coordinates; the capsule foot WALK_H above the faceted floor there): pushed out
 ## at the sides, the back, at roof height and straight up, it stays inside; floor under every stop and on a 2 m grid; from
 ## the usable floor in line with the opening it rolls straight out past the wall plane to the street.
-func _bay_inside(seed_: int, d: CityDistrict, door: MissionProps.GateDoor) -> void:
+func _bay_inside(seed_: int, d: CityDistrict, door: MissionGateDoor) -> void:
 	if door == null:
 		return
 	kinds_seen["bay_inside"] = int(kinds_seen.get("bay_inside", 0)) + 1
 	var label := "seed %d deck %d bay @%s" % [seed_, d.plan.deck, str(door.arc_mid.snapped(Vector2.ONE))]
-	var mid := (MissionProps.GateDoor.USE_FROM + MissionProps.GateDoor.USE_TO) * 0.5
+	var mid := (MissionGateDoor.USE_FROM + MissionGateDoor.USE_TO) * 0.5
 	var hi := door.clear_height() - cap_h - 0.4      # a hop: the capsule's top just under the light bars
 	var lim_x := door.ihalf + MARGIN
-	var lim_z := MissionProps.GateDoor.BAY_DEPTH + MARGIN
+	var lim_z := MissionGateDoor.BAY_DEPTH + MARGIN
 	var worst_x := 0.0
 	var worst_z := 0.0
 	for h: float in [WALK_H, hi]:
-		for depth: float in [MissionProps.GateDoor.USE_FROM + 1.0, mid, MissionProps.GateDoor.USE_TO - 1.0]:
+		for depth: float in [MissionGateDoor.USE_FROM + 1.0, mid, MissionGateDoor.USE_TO - 1.0]:
 			for k: float in [-1.0, 1.0]:
 				for ang: float in [0.0, 30.0, -30.0, 60.0]:
 					var dir := Vector2(k, 0).rotated(deg_to_rad(ang))
@@ -275,10 +275,10 @@ func _bay_inside(seed_: int, d: CityDistrict, door: MissionProps.GateDoor) -> vo
 					_fail("%s: pushed back from (%.0f, %.0f) h %.1f angle %.0f it reached (%.1f, %.1f)" % [label, lx, mid, h, ang, p.x, p.y])
 				elif not _floor_under_local(d, door, p):
 					_fail("%s: no floor under the stop (%.1f, %.1f)" % [label, p.x, p.y])
-		check(worst_z > MissionProps.GateDoor.BAY_DEPTH - cap.radius - 1.5, "%s: the capsule reaches the bay's back (%.1f m)" % [label, worst_z])
+		check(worst_z > MissionGateDoor.BAY_DEPTH - cap.radius - 1.5, "%s: the capsule reaches the bay's back (%.1f m)" % [label, worst_z])
 	# Straight up from the floor: the roof stops it.
 	var geo := CityGeo.new(d.ring)
-	for at: Vector2 in [Vector2(0, mid), Vector2(door.ihalf - 3.0, MissionProps.GateDoor.USE_TO - 1.0)]:
+	for at: Vector2 in [Vector2(0, mid), Vector2(door.ihalf - 3.0, MissionGateDoor.USE_TO - 1.0)]:
 		var f := _local_frame(d, door, at, WALK_H)
 		var q := PhysicsShapeQueryParameters3D.new()
 		q.shape = cap
@@ -286,14 +286,14 @@ func _bay_inside(seed_: int, d: CityDistrict, door: MissionProps.GateDoor) -> vo
 		q.motion = f.basis.y * 40.0
 		var r := space.cast_motion(q)
 		var rise := 40.0 * r[0] + WALK_H + cap_h
-		check(r[0] < 1.0 and rise < MissionProps.GateDoor.BAY_H + MissionProps.GateDoor.PLATE, "%s: straight up the capsule stops at the roof (top %.1f m)" % [label, rise])
+		check(r[0] < 1.0 and rise < MissionGateDoor.BAY_H + MissionGateDoor.PLATE, "%s: straight up the capsule stops at the roof (top %.1f m)" % [label, rise])
 	# Floor on a 2 m grid, flush with the deck's faceted floor.
 	var bad := 0
 	var lx := -door.ihalf + 0.5
 	while lx < door.ihalf:
 		var dz := 0.5
-		while dz < MissionProps.GateDoor.BAY_DEPTH:
-			if dz >= CityStreets.WALL_THICK or absf(lx) < door.w_out - 0.3:
+		while dz < MissionGateDoor.BAY_DEPTH:
+			if dz >= CityWalls.WALL_THICK or absf(lx) < door.w_out - 0.3:
 				var a := door.arc(lx, dz)
 				var top := d.global_transform * geo.g_point(a.x, a.y, 2.0)
 				var expect := d.global_transform * geo.g_point(a.x, a.y, 0.0)
@@ -305,9 +305,9 @@ func _bay_inside(seed_: int, d: CityDistrict, door: MissionProps.GateDoor) -> vo
 			dz += 2.0
 		lx += 2.0
 	# Roll out: from the usable floor in line with the opening straight to the street (6 m in front of the door).
-	var lane := minf(door.ihalf - MissionProps.GateDoor.MARGIN, door.half - cap.radius - 0.3)     # between the bunker's jambs
+	var lane := minf(door.ihalf - MissionGateDoor.MARGIN, door.half - cap.radius - 0.3)     # between the bunker's jambs
 	for lx2: float in [-lane, 0.0, lane]:
-		for depth: float in [MissionProps.GateDoor.USE_FROM, mid, MissionProps.GateDoor.USE_TO]:
+		for depth: float in [MissionGateDoor.USE_FROM, mid, MissionGateDoor.USE_TO]:
 			var p := _push_local(d, door, Vector2(lx2, depth), WALK_H, Vector2(0, -1), depth + 6.0)
 			if p.y > -5.9:
 				_fail("%s: rolling out from (%.1f, %.0f) the capsule stopped at (%.1f, %.1f)" % [label, lx2, depth, p.x, p.y])
@@ -317,16 +317,16 @@ func _bay_inside(seed_: int, d: CityDistrict, door: MissionProps.GateDoor) -> vo
 
 ## The bunker frame is solid: a capsule pushed along the wall in front of it (1 m out) is stopped by a jamb / the pier,
 ## and a capsule hopping into the lintel from the street is stopped by it.
-func _bunker(seed_: int, d: CityDistrict, door: MissionProps.GateDoor) -> void:
+func _bunker(seed_: int, d: CityDistrict, door: MissionGateDoor) -> void:
 	if door == null:
 		return
 	var label := "seed %d deck %d bunker @%s" % [seed_, d.plan.deck, str(door.arc_mid.snapped(Vector2.ONE))]
-	var far := door.half + MissionProps.GateDoor.JAMB + MissionProps.GateDoor.BUTT + 14.0
+	var far := door.half + MissionGateDoor.JAMB + MissionGateDoor.BUTT + 14.0
 	for k: float in [-1.0, 1.0]:
 		var p := _push_local(d, door, Vector2(k * far, -(cap.radius + 0.3)), WALK_H, Vector2(-k, 0), far)
-		check(absf(p.x) > door.half + MissionProps.GateDoor.JAMB - 0.1, "%s: walking along the wall from %s the frame stops the capsule (at %.1f)" % [label, "+X" if k > 0 else "-X", p.x])
+		check(absf(p.x) > door.half + MissionGateDoor.JAMB - 0.1, "%s: walking along the wall from %s the frame stops the capsule (at %.1f)" % [label, "+X" if k > 0 else "-X", p.x])
 	var top := door.gh + 0.6
-	var f := _local_frame(d, door, Vector2(0, -(cap.radius + MissionProps.GateDoor.FRAME_OUT + 1.0)), top)
+	var f := _local_frame(d, door, Vector2(0, -(cap.radius + MissionGateDoor.FRAME_OUT + 1.0)), top)
 	var q := PhysicsShapeQueryParameters3D.new()
 	q.shape = cap
 	q.transform = f * Transform3D(Basis.IDENTITY, Vector3(0, cap_h * 0.5, 0))
@@ -340,7 +340,7 @@ func _bunker(seed_: int, d: CityDistrict, door: MissionProps.GateDoor) -> void:
 ## stays in the recess; the mech capsule pushed in at the sill from the street gets no further than the wall plane + 1 m.
 func _air_door(seed_: int, mw: MissionWorld, id: String, state: String) -> void:
 	kinds_seen["air_" + state] = int(kinds_seen.get("air_" + state, 0)) + 1
-	var door := mw._doors[id] as MissionProps.GateDoor
+	var door := mw._doors[id] as MissionGateDoor
 	var fr := door.global_transform
 	var label := "seed %d %s (%s)" % [seed_, id, state]
 	var ball := SphereShape3D.new()
@@ -353,16 +353,16 @@ func _air_door(seed_: int, mw: MissionWorld, id: String, state: String) -> void:
 	var worst := Vector3.ZERO
 	for dir: Vector3 in [Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 0, -1), Vector3(0, 1, 0), Vector3(0, -1, 0),
 			Vector3(1, 0, -1).normalized(), Vector3(-1, 0, -1).normalized(), Vector3(1, 1, -1).normalized(), Vector3(-1, -1, -1).normalized()]:
-		for start: Vector3 in [Vector3(0, mid, -MissionWorld.AIR_DEPTH * 0.5), Vector3(0, mid, -3.0)]:
+		for start: Vector3 in [Vector3(0, mid, -MissionAirDoors.DEPTH * 0.5), Vector3(0, mid, -3.0)]:
 			var p := _cast_local(fr, ball, start, dir, 40.0)
 			worst = Vector3(maxf(worst.x, absf(p.x)), maxf(worst.y, p.y), minf(worst.z, p.z))
-			if absf(p.x) > door.ihalf + 0.5 or p.z < -MissionWorld.AIR_DEPTH - 0.5 or p.y > door.room_h + 0.5 or p.y < -0.5:
+			if absf(p.x) > door.ihalf + 0.5 or p.z < -MissionAirDoors.DEPTH - 0.5 or p.y > door.room_h + 0.5 or p.y < -0.5:
 				_fail("%s: a small body pushed %s from %s got out of the recess to %s" % [label, str(dir), str(start), str(p)])
-	check(worst.z < -MissionWorld.AIR_DEPTH + 2.0, "%s: it reaches the recess's back (%.1f)" % [label, worst.z])
+	check(worst.z < -MissionAirDoors.DEPTH + 2.0, "%s: it reaches the recess's back (%.1f)" % [label, worst.z])
 	var cp := _cast_local(fr, cap, Vector3(0, 0.2 + cap_h * 0.5, 4.0), Vector3(0, 0, -1), 30.0)
 	check(cp.z > -1.0 - cap.radius, "%s: the mech capsule does not fit in (stopped at z %.1f)" % [label, cp.z])
 	print("[sealed] %s: inside |x| <= %.1f (limit %.1f), y <= %.1f (limit %.1f), back %.1f (limit %.1f)" % [label, worst.x, door.ihalf,
-			worst.y, door.room_h, worst.z, -MissionWorld.AIR_DEPTH])
+			worst.y, door.room_h, worst.z, -MissionAirDoors.DEPTH])
 
 
 ## Cast `shape` from `start` (in frame fr, its centre) along `dir` (frame) up to `dist`: where its centre stops (frame).
@@ -377,7 +377,7 @@ func _cast_local(fr: Transform3D, shape: Shape3D, start: Vector3, dir: Vector3, 
 
 ## The ring frame (global) at door-local floor point `at` = (x along the wall, depth behind the wall plane), `h` above the
 ## faceted floor, oriented like the door.
-func _local_frame(d: CityDistrict, door: MissionProps.GateDoor, at: Vector2, h: float) -> Transform3D:
+func _local_frame(d: CityDistrict, door: MissionGateDoor, at: Vector2, h: float) -> Transform3D:
 	var geo := CityGeo.new(d.ring)
 	var a := door.arc(at.x, at.y)
 	var o := d.global_transform * geo.g_point(a.x, a.y, h)
@@ -386,7 +386,7 @@ func _local_frame(d: CityDistrict, door: MissionProps.GateDoor, at: Vector2, h: 
 
 ## Sweep the capsule in the door's frame from `from` (x, depth) along `dir` (x, depth: +y deeper into the bay) up to
 ## `dist` m, STEP m per cast, re-seated on the floor each step. Returns where it stopped (x, depth).
-func _push_local(d: CityDistrict, door: MissionProps.GateDoor, from: Vector2, h: float, dir: Vector2, dist: float) -> Vector2:
+func _push_local(d: CityDistrict, door: MissionGateDoor, from: Vector2, h: float, dir: Vector2, dist: float) -> Vector2:
 	var p := from
 	var gone := 0.0
 	var q := PhysicsShapeQueryParameters3D.new()
@@ -404,7 +404,7 @@ func _push_local(d: CityDistrict, door: MissionProps.GateDoor, from: Vector2, h:
 	return p
 
 
-func _floor_under_local(d: CityDistrict, door: MissionProps.GateDoor, p: Vector2) -> bool:
+func _floor_under_local(d: CityDistrict, door: MissionGateDoor, p: Vector2) -> bool:
 	var a := door.arc(p.x, p.y)
 	return _floor_under(d, a)
 

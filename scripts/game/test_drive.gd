@@ -1,4 +1,4 @@
-class_name TestDrive
+class_name MissionScene
 extends Node3D
 ## Test drive: your mech (head + loadout from settings) in a generated city district on the ring deck, driven by you.
 ##   Mouse         look / aim (the mech turns toward where you look, at its own turn rate)
@@ -6,7 +6,7 @@ extends Node3D
 ##   N             new city (next seed)     Tab     free / capture the mouse      F1  help      Esc  back to the menu
 ##   C             first-person / chase camera (cosmetic, local only: ChaseCamera.toggle_first_person)
 ##   Space (held, while DOWNED)  respawn after 3 s + a 5 s redeploy (DownedRules; a crewmate's repair drone revives instead)
-## Open with `.\run.ps1 -TestDrive [-Seed N]`, or Play -> Launch mission in the menu.
+## Open with `.\run.ps1 -MissionScene [-Seed N]`, or Play -> Launch mission in the menu.
 ##
 ## THE CITY (city_mode): STACK (the default; `--stack`) builds the multi-deck mission section (SectionPlan from the seed,
 ##   CityStack, docs/design/city-ramps-and-stack.md) and spawns the crew on the section's entry road
@@ -20,11 +20,11 @@ extends Node3D
 ##   modes, user 2026-11-25); the load barrier compares mission_checksum() (CityStack.checksum() + the plan's).
 ## SOLO (offline, or no launched mission): your mech; seed from the menu's Launch (solo_launch: a fresh random
 ##   seed, like a host's), else --seed (default 1).
-## CREW MISSION (co-op step 1, Session.mission_params() set by the host's Launch): the seed is the mission's, and there is
+## CREW MISSION (co-op step 1, Session.mission.params set by the host's Launch): the seed is the mission's, and there is
 ##   one mech per crew entry (by seat) at crew_spawn(i, n), each built with that entry's head / chassis / accent /
 ##   loadout and tagged with its owner (MechSpawn.owner_of). Only the local one (owner = Session.local_id()) is `mech`,
 ##   with the controller input, camera, HUD and combat; the others are PUPPETS in `mechs` (co-op step 2, `crew_sync`:
-##   CrewSync streams the local mech and shows each other one from its owner's snapshots, MechPuppet). After building, the city checksum goes to Session.report_mission_built (the load barrier); the local mech is
+##   CrewSync streams the local mech and shows each other one from its owner's snapshots, MechPuppet). After building, the city checksum goes to Session.mission.report_built (the load barrier); the local mech is
 ##   held still until Session.mission_go. Esc ends the mission (the host's ends it for the crew); the host ending it, or
 ##   the session ending (e.g. sent out for a desync), goes back to the menu. N (new city) is off in a crew mission.
 ## HANGAR BOTS (docs/design/hangar-bots.md): a crew entry with "bot": true (pilot id < 0) gets a mech whose chassis and
@@ -32,7 +32,7 @@ extends Node3D
 ##   a CrewBot (`crew_bots`: PlayerTarget, WeaponRack, MissionBot from mission_go), streamed by CrewSync; elsewhere a
 ##   puppet. Its MechController.owner_peer is 1 (the host's machine); its pilot id is MechSpawn.owner_of. crew_members()
 ##   lists every pilot with its mech.
-## ENEMIES (spawn_enemies, called by TestDriveCombat.rebuild_encounters): solo, EnemySpawner from the seed in front of the
+## ENEMIES (spawn_enemies, called by MissionCombat.rebuild_encounters): solo, EnemySpawner from the seed in front of the
 ##   spawn, as before. Crew mission (W4, `enemy_sync`, scripts/game/enemy_sync.gd): only the HOST spawns them (in front of
 ##   the entry, scaled to the crew size) and runs their AI; it streams them and each client
 ##   shows puppets. Stack: an encounter on every deck (its own plan and ring); each enemy carries `spawn_deck`, stays on
@@ -43,7 +43,7 @@ extends Node3D
 ##   with MissionFlow.test_quiet (QuietSectionFixture) no plan is built and the full garrison stands. On the outcome every machine shows the banner, then the host ends the mission for the crew and
 ##   everyone goes back to the hangar (solo: FrontEnd.next_screen = "hangar"); only when this scene is the current one.
 
-const SCENE := "res://scenes/test_drive.tscn"
+const SCENE := "res://scenes/mission.tscn"
 const MODE_STACK := NetMission.MODE_STACK         ## "stack": the multi-deck mission section (CityStack), the default
 const OFFLINE_PEER := 9000              ## offline crew: fake owner peer = OFFLINE_PEER + seat
 const FALL_OUT := 25.0               ## m below the lowest floor: fell out of the city, back to the spawn
@@ -76,7 +76,7 @@ const COVER_FRAMES := 2
 
 var seed_value := 1
 ## The crew's friendly fire option (the host's hangar choice, carried in mission.launch; solo: the hangar's, in
-## solo_launch). True whenever it is absent. Set in _ready before TestDriveCombat sets up (which reads it once).
+## solo_launch). True whenever it is absent. Set in _ready before MissionCombat sets up (which reads it once).
 var friendly_fire := true
 var prebuilt_plan: MissionPlan = null   ## stepped load: the plan whose MissionWorld was set up over frames
 ## Always MODE_STACK (the only city; what the launch's "mode" and the loading screen carry). Tests may still set it.
@@ -89,13 +89,13 @@ var mech: MechController
 var rig: MechRig
 var cam: ChaseCamera
 var drive_override := false        ## true: leave the mech's inputs alone (tests set them)
-var combat: TestDriveCombat        ## weapons (1-5 pick, LMB fire; missiles track the crosshair), PlayerTarget + EnemySquad
+var combat: MissionCombat        ## weapons (1-5 pick, LMB fire; missiles track the crosshair), PlayerTarget + EnemySquad
 var combat_audio: CombatAudio      ## cosmetic combat, prop, player-damage and enemy audio observer
 ## Every mech in the district: owner peer -> MechController (solo: just `mech`, under CombatWorld.local_peer()).
 var mechs: Dictionary = {}
 ## The owner peers in spawn order (crew seat order); crew_spawn(i, n) places the i-th.
 var spawn_order: Array[int] = []
-## A crew mission launched by the host (Session.mission_params()), not a solo drive.
+## A crew mission launched by the host (Session.mission.params), not a solo drive.
 var crewed := false
 ## Crew mission: mech snapshots (streams the local mech, shows the others as puppets; scripts/game/crew_sync.gd).
 var crew_sync: CrewSync
@@ -116,10 +116,10 @@ var mission: MissionFlow
 var enemies_spawned := false
 
 var _help: Label
-var _spawn := Transform3D.IDENTITY
+var spawn_xf := Transform3D.IDENTITY
 var _ignore_mouse_until := 0      ## msec: the warp right after capturing the mouse arrives as one huge motion; skip it
 var _shooting := false
-var _held := false                ## crew mission: the local mech stands still until the load barrier passes (mission_go)
+var held := false                ## crew mission: the local mech stands still until the load barrier passes (mission_go)
 var _seats: Dictionary = {}       ## crew mission: owner peer -> crew seat (the snapshots name mechs by seat)
 var _audio_deck: Dictionary = {}  ## stack: owner peer -> the deck its MechAudio reads footstep surfaces from
 var _audio_check := 0.0           ## s until the next per-deck MechAudio check
@@ -149,7 +149,7 @@ var warming := false
 ## The mission loading screen (scripts/ui/loading_screen.gd): up from the first line of _ready until mission_go (crew) or
 ## the end of the solo load, and again while leaving. Null once it has come down.
 var loading_screen: LoadingScreen
-var _hud: MechHud                 ## the mech HUD, hidden while the loading screen is up
+var hud: MechHud                 ## the mech HUD, hidden while the loading screen is up
 var _hud_layer: CanvasLayer       ## the help / note layer, hidden while the loading screen is up
 ## Downed / revive / respawn on this machine (scripts/game/downed_crew.gd, DownedRules): the call for help, the HUD, the
 ## respawn point, the bots' wait. While the local mech is downed it gets no movement and no weapons, and SPACE (the
@@ -164,12 +164,12 @@ func net_fields() -> Dictionary:
 	return {"seed_value": Net.SPAWN, "city_mode": Net.SPAWN, "friendly_fire": Net.SPAWN,"prebuilt_plan": Net.LOCAL, "stack": Net.LOCAL, "city": Net.LOCAL, "mech": Net.LOCAL,
 		"rig": Net.LOCAL, "cam": Net.LOCAL, "enemy_sync": Net.LOCAL, "life": Net.LOCAL, "banners": Net.LOCAL, "_audio_deck": Net.LOCAL, "_audio_check": Net.LOCAL,
 		"drive_override": Net.LOCAL, "combat": Net.LOCAL, "combat_audio": Net.LOCAL, "mechs": Net.LOCAL,
-		"spawn_order": Net.SPAWN, "crewed": Net.SPAWN, "_help": Net.LOCAL, "_spawn": Net.SPAWN,
-		"_ignore_mouse_until": Net.LOCAL, "_shooting": Net.LOCAL, "_held": Net.PRIVATE, "crew_sync": Net.LOCAL, "crew_bots": Net.LOCAL, "_bot_accents": Net.SPAWN,
+		"spawn_order": Net.SPAWN, "crewed": Net.SPAWN, "_help": Net.LOCAL, "spawn_xf": Net.SPAWN,
+		"_ignore_mouse_until": Net.LOCAL, "_shooting": Net.LOCAL, "held": Net.PRIVATE, "crew_sync": Net.LOCAL, "crew_bots": Net.LOCAL, "_bot_accents": Net.SPAWN,
 		"_seats": Net.SPAWN, "mission": Net.LOCAL, "enemies_spawned": Net.LOCAL,
 		"_leaving": Net.LOCAL, "_note_label": Net.LOCAL, "_note_until": Net.LOCAL, "_flow": Net.LOCAL,
 		"loading": Net.LOCAL, "loaded": Net.LOCAL, "bot": Net.LOCAL, "_t_load": Net.LOCAL, "_t_city": Net.LOCAL,
-		"warming": Net.LOCAL, "loading_screen": Net.LOCAL, "_hud": Net.LOCAL, "_hud_layer": Net.LOCAL, "downed": Net.LOCAL,
+		"warming": Net.LOCAL, "loading_screen": Net.LOCAL, "hud": Net.LOCAL, "_hud_layer": Net.LOCAL, "downed": Net.LOCAL,
 		"_rack_muted": Net.LOCAL, "_left": Net.LOCAL, "_told": Net.LOCAL}
 
 
@@ -183,7 +183,7 @@ func _ready() -> void:
 	if args.has("--no-shader-warmup"):
 		ShaderWarmup.enabled = false   # DEV: measure without the warm-up
 	var sess := Net.session()
-	var params: Dictionary = sess.mission_params() if sess != null and sess.online() else {}
+	var params: Dictionary = sess.mission.params if sess != null and sess.online() else {}
 	crewed = not params.is_empty()
 	var s := Boot.arg_value(args, "--seed")
 	if crewed:
@@ -205,11 +205,11 @@ func _ready() -> void:
 	if crewed:
 		# Tell the host this machine is building (a slow laptop takes seconds). The stepped load builds over frames; the
 		# unstepped one blocks this frame and keeps the transport serviced between its steps (_keep_alive).
-		sess.report_mission_loading()
+		sess.mission.report_loading()
 		sess.service_transport()
 		FlowLog.say("load start", "seed %d, %s" % [seed_value, mode])
 		if test_stall_ms > 0 and not sess.hosting:
-			print("[TestDrive] test stall: blocking the main thread %d ms" % test_stall_ms)
+			print("[MissionScene] test stall: blocking the main thread %d ms" % test_stall_ms)
 			OS.delay_msec(test_stall_ms)
 	stack = CityStack.new()
 	stack.set_quality(GraphicsQuality.level())   # presentation only, any time (Settings > Graphics quality)
@@ -234,8 +234,8 @@ func _ready() -> void:
 	_build_hud()
 	if crewed:
 		# Connected before the load, so the session ending (or the host ending the mission) while loading leaves too.
-		_held = true
-		sess.mission_go.connect(func(_elapsed: float) -> void: _held = false)
+		held = true
+		sess.mission_go.connect(func(_elapsed: float) -> void: held = false)
 		sess.mission_go.connect(func(_elapsed: float) -> void: _uncover())
 		sess.mission_ended.connect(func(_reason: String) -> void: _back_to_menu())
 		sess.session_ended.connect(func(_reason: String) -> void: _back_to_menu())
@@ -327,9 +327,9 @@ func _crew_rows() -> Array:
 	var sess := Net.session()
 	if sess == null or not sess.online():
 		return []
-	var ready := sess.mission_ready_peers()
+	var ready := sess.mission.ready_peers()
 	var out: Array = []
-	var entries := (sess.mission_params().get("crew", []) as Array).duplicate()
+	var entries := (sess.mission.params.get("crew", []) as Array).duplicate()
 	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a.get("seat", 0)) < int(b.get("seat", 0)))
 	for e: Dictionary in entries:
 		var p := int(e.get("peer", 0))
@@ -344,8 +344,8 @@ func _crew_rows() -> Array:
 
 ## Hide or show the HUD (the mech HUD and the help / note layer) under the loading screen.
 func _set_hud_shown(on: bool) -> void:
-	if _hud != null and is_instance_valid(_hud):
-		_hud.visible = on
+	if hud != null and is_instance_valid(hud):
+		hud.visible = on
 	if _hud_layer != null and is_instance_valid(_hud_layer):
 		_hud_layer.visible = on
 
@@ -382,7 +382,7 @@ func _leave_to(scene: String) -> void:
 func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 	var sess := Net.session()
 	_keep_alive()
-	combat = TestDriveCombat.new()
+	combat = MissionCombat.new()
 	combat.name = "Combat"
 	add_child(combat)
 	combat.setup(self)
@@ -425,11 +425,11 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 			banners = _new_banners()
 			banners.setup(stack, combat.world)
 	_keep_alive()
-	var hud := MechHud.for_drive(self)   # weapons, heat, damage, crosshair + aim pips (scripts/ui/mech_hud.gd)
+	var new_hud := MechHud.for_drive(self)   # weapons, heat, damage, crosshair + aim pips (scripts/ui/mech_hud.gd)
 	if combat.player_target != null:
-		hud.component_source = combat.player_target.component_fractions
-	add_child(hud)
-	_hud = hud
+		new_hud.component_source = combat.player_target.component_fractions
+	add_child(new_hud)
+	hud = new_hud
 	_set_hud_shown(loading_screen == null)
 	if crewed:
 		_setup_crew_bots()
@@ -437,8 +437,8 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 		crew_sync.name = "CrewSync"
 		add_child(crew_sync)
 		crew_sync.setup(self, _seats)
-		if hud.crew_panel != null:
-			hud.crew_panel.status_source = crew_sync.status
+		if new_hud.crew_panel != null:
+			new_hud.crew_panel.status_source = crew_sync.status
 		enemy_sync = EnemySync.new()
 		enemy_sync.name = "EnemySync"
 		add_child(enemy_sync)
@@ -505,7 +505,7 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 		if not sess.online():
 			_back_to_menu.call_deferred()   # the session ended inside the build (seen by a keep-alive poll)
 		else:
-			sess.report_mission_built(mission_checksum(), ms)
+			sess.mission.report_built(mission_checksum(), ms)
 			if loading_screen != null:
 				loading_screen.set_phase("crew", 1.0)   # until mission_go (_uncover)
 			if sess.mission.phase == NetMission.RUNNING:
@@ -517,7 +517,7 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 			sess.mission_go.connect(func(_e: float) -> void: _start_crew_bots())
 	if args.has("--dev-fast-clear"):
 		CombatWorld.dev_enemy_damage = DEV_FAST_CLEAR
-		print("[TestDrive] DEV --dev-fast-clear: enemies take %.0fx damage" % DEV_FAST_CLEAR)
+		print("[MissionScene] DEV --dev-fast-clear: enemies take %.0fx damage" % DEV_FAST_CLEAR)
 	if (args.has("--bot") or bot_profile != "") and stack != null:
 		# --bot [profile]: the AI plays the mission (MissionBot). A crew's bot starts when the barrier passes.
 		var profile := bot_profile if bot_profile != "" else Boot.arg_value(args, "--bot")
@@ -654,7 +654,7 @@ func build_city(seed: int, built: bool = false) -> void:
 		# in, slid past anything blocking (plan data only: the same on every machine).
 		var xf := crew_spawn(i, n)
 		if m == mech:
-			_spawn = xf
+			spawn_xf = xf
 		else:
 			m.global_transform = xf
 			m.velocity = Vector3.ZERO
@@ -762,7 +762,7 @@ func crew_spawn(i: int, n: int) -> Transform3D:
 	return entry_spawn(stack.entry_transform(), city, i, n)
 
 
-## The enemies of this mission (TestDriveCombat.rebuild_encounters asks): solo, EnemySpawner in front of the local
+## The enemies of this mission (MissionCombat.rebuild_encounters asks): solo, EnemySpawner in front of the local
 ## mech's spawn (as before). Crew mission: the host spawns them around encounter_origin() (the same spot whatever seat it
 ## has), scaled to the crew size, each tagged with its spawn_deck; a client spawns none (EnemySync builds the host's as
 ## puppets).
@@ -827,7 +827,7 @@ func floor_radius() -> float:
 
 
 func respawn() -> void:
-	mech.global_transform = _spawn
+	mech.global_transform = spawn_xf
 	mech.velocity = Vector3.ZERO
 	rig.gait.reset([])
 	cam.reset_behind()
@@ -878,7 +878,7 @@ func _setup_crew_bots() -> void:
 	var sess := Net.session()
 	if sess == null or not sess.hosting or combat == null or combat.world == null:
 		return
-	for e: Dictionary in sess.mission_params().get("crew", []) as Array:
+	for e: Dictionary in sess.mission.params.get("crew", []) as Array:
 		var id := int(e.get("peer", 0))
 		var m := mech_of(id)
 		if not bool(e.get("bot", false)) or not NetSession.is_bot_id(id) or m == null or crew_bots.has(id):
@@ -1005,7 +1005,7 @@ func _make_mech() -> MechController:
 	var sess := Net.session()
 	var head := sess.head_id if sess != null and sess.head_id != "" else str(st["head"])
 	var chassis := sess.chassis_id if sess != null and sess.chassis_id != "" else str(st["chassis"])
-	# Paused weapons (no behaviour yet) fly the slot's default instead; TestDriveCombat reports the swaps.
+	# Paused weapons (no behaviour yet) fly the slot's default instead; MissionCombat reports the swaps.
 	var m := MechSpawn.make(head, chassis, WeaponRegistry.playable_loadout(chassis, st["loadout"] as Dictionary)["loadout"],
 		CombatWorld.local_peer(), sess.accent_id if sess != null and sess.accent_id != "" else str(st["accent"]))
 	rig = MechSpawn.rig_of(m)
@@ -1015,7 +1015,7 @@ func _make_mech() -> MechController:
 func _physics_process(delta: float) -> void:
 	if mech == null or loading:
 		return
-	if _held and not drive_override:
+	if held and not drive_override:
 		mech.move_input = Vector2.ZERO
 		mech.turn_input = 0.0
 		mech.running = false
@@ -1100,7 +1100,7 @@ func _unhandled_input(e: InputEvent) -> void:
 				if _leaving:
 					return
 				if crewed and Net.session() != null:
-					Net.session().end_mission()
+					Net.session().mission.end()
 				if get_tree().current_scene == self:
 					_leave_to(Boot.MENU_SCENE)
 				else:

@@ -45,10 +45,10 @@ func _outdoor(alive_only: bool = true) -> int:
 func _signature(t: float) -> String:
 	var out := PackedStringArray()
 	for id in life.count():
-		var p := life.crowd.pose(id, t)
+		var p := life.unit(0).crowd.pose(id, t)
 		out.append("%s@%d,%d" % [p["state"], int(round(float(p["x"]) * 100.0)), int(round(float(p["s"]) * 100.0))])
 	for v in life.vehicle_count():
-		var q := life.fleet.pose(v, t)
+		var q := life.unit(0).fleet.pose(v, t)
 		out.append("%s@%d,%d" % [q["state"], int(round(float(q["x"]) * 100.0)), int(round(float(q["s"]) * 100.0))])
 	return ",".join(out)
 
@@ -148,17 +148,17 @@ func run_host() -> void:
 	var car := -1
 	if check(await until(func() -> bool:
 			for v in life.vehicle_count():
-				if not life.fleet.pose(v, life.now)["held"]:
+				if not life.unit(0).fleet.pose(v, life.now)["held"]:
 					return true
 			return false, 40.0), "a vehicle on its timetable on the host"):
 		for v in life.vehicle_count():
-			if car < 0 and not life.fleet.pose(v, life.now)["held"]:
+			if car < 0 and not life.unit(0).fleet.pose(v, life.now)["held"]:
 				car = v
 		life.raise_threat(life.vehicle_pose(car).origin, 20.0, 2)
 		var tv := float(life.sent[life.sent.size() - 1][1]["t"]) + 3.0
 		command(client, "vsig", {"t": tv})
 		if check(await wait_reports("vsig", 1), "the client reports its vehicles after the threat"):
-			check(life.fleet.state_of(car, tv) in ["estop", "abandoned", "fleeing", "stopped"], "the pod near the threat has stopped (%s)" % life.fleet.state_of(car, tv))
+			check(life.unit(0).fleet.state_of(car, tv) in ["estop", "abandoned", "fleeing", "stopped"], "the pod near the threat has stopped (%s)" % life.unit(0).fleet.state_of(car, tv))
 			eq(str(reported(client, "vsig")), _signature(tv), "both machines stop the same vehicles in the same places")
 	command(client, "wreck", {})
 	if check(await wait_reports("wrecked", 1), "the client reports its shot at a vehicle"):

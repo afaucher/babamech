@@ -23,7 +23,7 @@ const POS_TOL := 0.5              ## m: the drone on B vs on A (sampled the firs
 const LIFE := 8.0                 ## s: the drone's life in this test (overrides the catalog's 60 on both machines)
 const DAMAGE := 200.0
 
-var td: TestDrive
+var td: MissionScene
 var world: CombatWorld
 var net: CombatNet
 var samples := {}                 ## str(s) -> Vector3: the launcher's drone position at t0 + s on this machine
@@ -46,7 +46,7 @@ func run_host() -> void:
 	Session.set_profile(Session.player_name, Session.local_head(), Session.local_chassis(), "", lo)   # A carries the drone
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	if not check(await wait_reports("ready", peers - 1, 30.0), "the client is ready"):
@@ -143,7 +143,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -180,7 +180,7 @@ func run_client() -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.crew_sync != null and td.combat.net != null, "the crew mission runs CombatNet"):
@@ -194,7 +194,7 @@ func _load_and_go() -> bool:
 	world.overrides["repair_drone"] = {"life": LIFE}       # a short life on both machines: the return happens in the test
 	world.drone_launched.connect(_on_drone)
 	td.combat.player_target.healed.connect(_on_healed)
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	if not check(await until(_puppet_shown, 10.0), "the puppet is shown"):

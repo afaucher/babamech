@@ -164,6 +164,27 @@ static func seq_newer(a: int, b: int) -> bool:
 	return d != 0 and d < 0x8000
 
 
+## A signed 24-bit int (clamped to +-8388607), little-endian: u16 low then u8 high (the codecs' positions in mm).
+static func put_i24(b: StreamPeerBuffer, v: int) -> void:
+	var u := clampi(v, -8388607, 8388607) & 0xFFFFFF
+	b.put_u16(u & 0xFFFF)
+	b.put_u8((u >> 16) & 0xFF)
+
+
+static func get_i24(b: StreamPeerBuffer) -> int:
+	var u := b.get_u16() | (b.get_u8() << 16)
+	return u - 0x1000000 if u & 0x800000 else u
+
+
+## The wire stamps packets with host_time in ms mod 2^32 (49.7 days); put it back on the seconds timeline nearest `now`.
+static func unwrap_stamp(stamp_ms: int, now: float) -> float:
+	var now_ms := int(now * 1000.0)
+	var d := (stamp_ms - now_ms) & 0xFFFFFFFF
+	if d >= 0x80000000:
+		d -= 0x100000000
+	return float(now_ms + d) / 1000.0
+
+
 func _accept_packet(from: int, bytes: PackedByteArray) -> void:
 	var buf := StreamPeerBuffer.new()
 	buf.data_array = bytes

@@ -30,7 +30,7 @@ func _run() -> void:
 	_say("renderer %s, adapter %s (%s), window %s, detected default %s" % [method, GraphicsQuality.adapter_name(),
 			"integrated" if GraphicsQuality.is_integrated(GraphicsQuality.adapter_name(), RenderingServer.get_video_adapter_type()) else "dedicated",
 			str(root.size), CityQuality.name_of(GraphicsQuality.detect())])
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	for i in 30:
 		await get_tree().physics_frame

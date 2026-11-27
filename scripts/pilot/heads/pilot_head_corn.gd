@@ -33,8 +33,6 @@ const FLAT := 0.9239
 ## The lip plate slides straight down the face this far at jaw = 1 (a hinge would swing it off the flat face).
 const JAW_DROP := 0.085
 
-var _tic := ""
-var _tic_t0 := 0.0
 var _dirs: Array[Vector3] = []
 
 
@@ -78,7 +76,7 @@ func build_pieces() -> void:
 		YELLOW.darkened(0.08), 2.0, true, 0.0)
 	var mouth := PackedVector3Array()
 	for p: Vector2 in [Vector2(-0.1, 0.36), Vector2(0.1, 0.36), Vector2(0.1, 0.275), Vector2(-0.1, 0.275)]:
-		mouth.append(Vector3(p.x, p.y, -_face_r(p.y) * FLAT - 0.004))
+		mouth.append(Vector3(p.x, p.y, -_face_r(SECS, p.y) * FLAT - 0.004))
 	ks.poly(mouth, MOUTH, Vector3(0.0, 0.32, 0.0))
 	add_body(shell, ks)
 
@@ -143,35 +141,9 @@ func pose_extra(ch: Dictionary, _neck: PilotNeck, _extra: Dictionary) -> void:
 	set_pose("Jaw", Basis.IDENTITY, Vector3(0.0, -JAW_DROP * clampf(float(ch["jaw"]), 0.0, 1.0), 0.0))
 
 
-func _tic_age(want: String, t: float) -> float:
-	var ph := head as PilotHead
-	var tic := ph.idle.tic_id if ph != null and ph.idle_enabled else ""
-	if tic != _tic:
-		_tic = tic
-		_tic_t0 = t
-	return t - _tic_t0 if tic != "" and tic == want else -1.0
-
-
-static func _face_r(y: float) -> float:
-	for i in SECS.size() - 1:
-		var a: Array = SECS[i]
-		var b: Array = SECS[i + 1]
-		if y <= float(b[0]):
-			return lerpf(float(a[3]), float(b[3]), (y - float(a[0])) / (float(b[0]) - float(a[0])))
-	return float(SECS[SECS.size() - 1][3])
-
-
 static func _colour(c: Vector3, n: Vector3) -> Color:
-	return MechHeadMeshes._corn_colour(c, n)
+	return MechHeadMeshes.corn_colour(c, n)
 
 
 static func _ring(s: Array, scale: float = 1.0) -> PackedVector3Array:
 	return MeshKit.ring(Vector3(0, s[0], s[1]), float(s[2]) * scale, float(s[3]) * scale, 8, "y", 2.0)
-
-
-static func _lerp_sec(a: Array, b: Array, y: float) -> Array:
-	var t := (y - float(a[0])) / (float(b[0]) - float(a[0]))
-	var out := []
-	for i in 4:
-		out.append(lerpf(float(a[i]), float(b[i]), t))
-	return out

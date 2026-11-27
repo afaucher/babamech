@@ -79,9 +79,9 @@ func _hop_only() -> void:
 	var r9 := s9.walkable_down_connector(0)
 	check(r9 >= 0 and s9.connectors[r9]["kind"] == "ramp", "seed 9: a ramp from deck 0 to deck 1")
 	eq(str(s9.connectors[r9]["role"]), "critical", "seed 9: the ramp is the critical way down")
-	eq(int(s9.arrival(1)["connector"]), r9, "seed 9: the crew arrives on deck 1 at the ramp's foot")
-	eq(int(s9.departure(0)["connector"]), r9, "seed 9: and leaves deck 0 by it")
-	eq(str(s9.arrival(1)["kind"]), "ramp", "seed 9: arrival kind")
+	eq(int(SectionEncounters.arrival(s9, 1)["connector"]), r9, "seed 9: the crew arrives on deck 1 at the ramp's foot")
+	eq(int(SectionEncounters.departure(s9, 0)["connector"]), r9, "seed 9: and leaves deck 0 by it")
+	eq(str(SectionEncounters.arrival(s9, 1)["kind"]), "ramp", "seed 9: arrival kind")
 	check(s9.walkable_down(1), "seed 9: deck 2 walkable from deck 1")
 	# The fallbacks when no ramp fits (a grade too gentle for the grid): the stacked shaft moves, or a shaft is cut.
 	for o: Dictionary in [{"ramp_grade": 0.08}, {"ramp_grade": 0.08, "decks": 5.0}, {"ramp_grade": 0.08, "shafts": 0.0},
@@ -426,10 +426,10 @@ func _determinism() -> void:
 	# Encounter data is derived: repeatable, the same on two plans of one seed, and reading it changes nothing.
 	var sum := a.checksum()
 	for k in a.deck_count:
-		eq(str(a.arrival(k)), str(b.arrival(k)), "same seed, same arrival on deck %d" % k)
-		eq(str(a.departure(k)), str(b.departure(k)), "same seed, same departure on deck %d" % k)
-		eq(str(a.encounter_sites(k)), str(b.encounter_sites(k)), "same seed, same encounter sites on deck %d" % k)
-		eq(str(a.encounter_sites(k)), str(a.encounter_sites(k)), "encounter sites are repeatable on deck %d" % k)
+		eq(str(SectionEncounters.arrival(a, k)), str(SectionEncounters.arrival(b, k)), "same seed, same arrival on deck %d" % k)
+		eq(str(SectionEncounters.departure(a, k)), str(SectionEncounters.departure(b, k)), "same seed, same departure on deck %d" % k)
+		eq(str(SectionEncounters.sites(a, k)), str(SectionEncounters.sites(b, k)), "same seed, same encounter sites on deck %d" % k)
+		eq(str(SectionEncounters.sites(a, k)), str(SectionEncounters.sites(a, k)), "encounter sites are repeatable on deck %d" % k)
 	eq(a.checksum(), sum, "reading encounter data leaves the plan alone")
 
 
@@ -609,8 +609,8 @@ func _check_plan(plan: SectionPlan, tag: String) -> void:
 	for w: Dictionary in plan.walk_repairs:
 		if w["how"] == "ramp":
 			var k := int(w["deck"])
-			eq(int(plan.departure(k)["connector"]), int(w["connector"]), tag + ": the repair ramp is the way down from deck %d" % k)
-			eq(int(plan.arrival(k + 1)["connector"]), int(w["connector"]), tag + ": the crew arrives at the repair ramp's foot")
+			eq(int(SectionEncounters.departure(plan, k)["connector"]), int(w["connector"]), tag + ": the repair ramp is the way down from deck %d" % k)
+			eq(int(SectionEncounters.arrival(plan, k + 1)["connector"]), int(w["connector"]), tag + ": the crew arrives at the repair ramp's foot")
 	_check_encounters(plan, tag)
 	_check_bridges(plan, tag)
 	_check_forms(plan, tag)
@@ -815,8 +815,8 @@ func _check_encounters(plan: SectionPlan, tag: String) -> void:
 	for k in n:
 		var t := "%s deck %d" % [tag, k]
 		var extent := Rect2(-plan.p("width") * 0.5, -plan.arc_of(k) * 0.5, plan.p("width"), plan.arc_of(k)).grow(0.01)
-		var a := plan.arrival(k)
-		var d := plan.departure(k)
+		var a := SectionEncounters.arrival(plan, k)
+		var d := SectionEncounters.departure(plan, k)
 		var ap := Vector2(float(a["x"]), float(a["s"]))
 		var dp := Vector2(float(d["x"]), float(d["s"]))
 		eq(int(a["deck"]), k, t + ": arrival deck")
@@ -840,7 +840,7 @@ func _check_encounters(plan: SectionPlan, tag: String) -> void:
 		var side_by_side: bool = a["kind"] == "ramp" and d["kind"] == "ramp" and absf(ap.y - dp.y) < 0.01
 		check(ad >= 100.0 or (side_by_side and ad >= 39.9), t + ": arrival and departure apart (%.1f m)" % ad)
 		# --- Sites.
-		var sites := plan.encounter_sites(k)
+		var sites := SectionEncounters.sites(plan, k)
 		check(not sites.is_empty(), t + ": encounter sites")
 		var total := 0.0
 		var early := false
@@ -850,7 +850,7 @@ func _check_encounters(plan: SectionPlan, tag: String) -> void:
 			var site: Dictionary = sites[i]
 			var at := Vector2(float(site["x"]), float(site["s"]))
 			var st := "%s site %d (%s)" % [t, i, site["kind"]]
-			check(site["kind"] in SectionPlan.SITE_PRIORITY, st + ": kind")
+			check(site["kind"] in SectionEncounters.SITE_PRIORITY, st + ": kind")
 			check(site["weight"] in ["light", "medium", "heavy"], st + ": weight")
 			eq(int(site["deck"]), k, st + ": deck")
 			check(extent.has_point(at), st + ": inside the deck")
@@ -858,7 +858,7 @@ func _check_encounters(plan: SectionPlan, tag: String) -> void:
 			if i > 0:
 				check(float(site["progress"]) >= float(sites[i - 1]["progress"]), st + ": sorted by progress")
 			near(float(site["dist"]), at.distance_to(ap), 1e-3, st + ": dist from the arrival")
-			eq(bool(site["safe"]), float(site["dist"]) < SectionPlan.SAFE_RADIUS, st + ": safe iff near the arrival")
+			eq(bool(site["safe"]), float(site["dist"]) < SectionEncounters.SAFE_RADIUS, st + ": safe iff near the arrival")
 			if site["safe"]:
 				eq(float(site["share"]), 0.0, st + ": nothing spawns in the safe bubble")
 			else:
@@ -877,7 +877,7 @@ func _check_encounters(plan: SectionPlan, tag: String) -> void:
 				check(site.has("loop"), st + ": patrol keeps its loop")
 			for j in range(i + 1, sites.size()):
 				var gap := at.distance_to(Vector2(float(sites[j]["x"]), float(sites[j]["s"])))
-				check(gap >= SectionPlan.MERGE_DIST, "%s: sites %d and %d merged (%.1f m)" % [t, i, j, gap])
+				check(gap >= SectionEncounters.MERGE_DIST, "%s: sites %d and %d merged (%.1f m)" % [t, i, j, gap])
 		near(total, 1.0, 1e-6, t + ": shares sum to 1")
 		check(early, t + ": an enemy group early on the crossing")
 		check(late, t + ": an enemy group at the way out")

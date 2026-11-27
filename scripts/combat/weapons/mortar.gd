@@ -33,7 +33,7 @@ func spread(_mount: WeaponMount) -> float:
 
 
 func look() -> Dictionary:
-	return {"color": MechMeshes.DARK, "trail_color": Color(0.62, 0.62, 0.6), "width": 0.6}
+	return {"color": LowPolyPalette.DARK, "trail_color": Color(0.62, 0.62, 0.6), "width": 0.6}
 
 
 func spawn(world: CombatWorld, record: Dictionary, st: Dictionary) -> CombatEffect:

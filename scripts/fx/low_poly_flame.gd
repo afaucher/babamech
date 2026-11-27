@@ -54,6 +54,11 @@ static var _mat: StandardMaterial3D
 static var _cache: Dictionary = {}
 
 
+## Every mesh built so far (the live cache, by key): ShaderWarmup takes them all.
+static func cached_meshes() -> Dictionary:
+	return _cache
+
+
 ## Flat vertex colours, unshaded: shared by every flame mesh.
 static func material() -> StandardMaterial3D:
 	if _mat == null:

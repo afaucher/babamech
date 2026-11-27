@@ -30,7 +30,7 @@ extends Control
 ##                drone in the crew", the revive bar while a drone beams it, "Hold SPACE to respawn" with the hold bar;
 ##                then "REDEPLOYING 4 S". `demo_downed` shows fixed sample data (layout tests).
 ## Data, read-only, polled every frame: `source: Callable` () -> {objective: String, waypoint: {pos: Vector3, deck: int,
-## label: String} or {}, banner: {title, reason, won: bool} or {}} (MissionFlow.hud_state(); plan mode adds plan, deck,
+## label: String} or {}, banner: {title, reason, won: bool} or {}} (MissionHudModel.build(); plan mode adds plan, deck,
 ## lines, waves, markers, rings, zone, alerts). `from` is where the distance is measured from (the local mech; else the
 ## camera). `demo` shows fixed sample data (layout tests, screenshots), `demo_banner` adds the banner, `demo_plan` the
 ## plan-mode elements. Cosmetic: no gameplay state, nothing synced.
@@ -108,30 +108,30 @@ func _init() -> void:
 func _ready() -> void:
 	_font = ThemeDB.fallback_font
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	markers = _canvas("Markers", _draw_markers)
+	markers = MechHud.canvas("Markers", _draw_markers)
 	add_child(markers)
 	markers.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	banner = _canvas("Banner", _draw_banner)
+	banner = MechHud.canvas("Banner", _draw_banner)
 	add_child(banner)
 	banner.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	banner.offset_left = -BANNER_SIZE.x * 0.5
 	banner.offset_right = BANNER_SIZE.x * 0.5
 	banner.offset_top = -BANNER_SIZE.y * 0.5 - 140.0   # above the crosshair
 	banner.offset_bottom = BANNER_SIZE.y * 0.5 - 140.0
-	list_panel = _canvas("ObjectiveList", _draw_list)
+	list_panel = MechHud.canvas("ObjectiveList", _draw_list)
 	add_child(list_panel)
 	list_panel.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
 	list_panel.offset_left = -MechHud.MARGIN - LIST_W
 	list_panel.offset_right = -MechHud.MARGIN
 	list_panel.offset_top = OBJ_TOP
 	list_panel.offset_bottom = OBJ_TOP + LIST_HEAD + LIST_LINE
-	alert_panel = _canvas("Reinforcements", _draw_alert)
+	alert_panel = MechHud.canvas("Reinforcements", _draw_alert)
 	add_child(alert_panel)
 	_top_strip(alert_panel, ALERT_SIZE, ALERT_TOP)
-	zone_panel = _canvas("ZoneProgress", _draw_zone)
+	zone_panel = MechHud.canvas("ZoneProgress", _draw_zone)
 	add_child(zone_panel)
 	_top_strip(zone_panel, ZONE_SIZE, ZONE_TOP)
-	downed_panel = _canvas("DownedPrompt", _draw_downed)
+	downed_panel = MechHud.canvas("DownedPrompt", _draw_downed)
 	add_child(downed_panel)
 	downed_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	downed_panel.offset_left = -DOWNED_SIZE.x * 0.5
@@ -206,14 +206,6 @@ func _top_strip(c: Control, sz: Vector2, top: float) -> void:
 	c.offset_right = sz.x * 0.5
 	c.offset_top = top
 	c.offset_bottom = top + sz.y
-
-
-func _canvas(n: String, painter: Callable) -> Control:
-	var c := Control.new()
-	c.name = n
-	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	c.draw.connect(func() -> void: painter.call(c))
-	return c
 
 
 func _process(_delta: float) -> void:

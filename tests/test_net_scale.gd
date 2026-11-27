@@ -19,7 +19,7 @@ const PLAN := {"hold": 6.0, "linger": 600.0}
 const DIRECTOR := {"rest_first": 100000.0, "rest_last": 100000.0, "arrival_rest": 100000.0, "quiet_cap": 100000.0}
 const FRACTION := 0.4
 
-var td: TestDrive
+var td: MissionScene
 var gone_view: Dictionary = {}    ## B: what it saw the moment C left its roster
 
 
@@ -29,8 +29,8 @@ func run_host() -> void:
 	MissionFlow.test_director = DIRECTOR
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
-	eq(int(Session.mission_params().get("scale", 0)), 3, "the launch carries the host's scale 3")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
+	eq(int(Session.mission.params.get("scale", 0)), 3, "the launch carries the host's scale 3")
 	if not await _load_and_go():
 		return
 	var mf := td.mission
@@ -107,10 +107,10 @@ func run_host() -> void:
 		eq(int(gv.get("scale", -1)), 3, "... and still played the host's 3 then (the change waits for its `at`)")
 		check(float(gv.get("t", INF)) < host_at, "... before the `at` (%.3f < %.3f)" % [float(gv.get("t", INF)), host_at])
 	# 5. A duplicate and a late copy.
-	var last: Dictionary = Session.mission_scales()[-1] if not Session.mission_scales().is_empty() else {}
+	var last: Dictionary = Session.mission.scales[-1] if not Session.mission.scales.is_empty() else {}
 	if check(not last.is_empty(), "A kept the change it sent"):
-		Session.send_mission_scale(last)
-		Session.send_mission_scale({"n": 3, "at": host_at - 5.0, "from": 2, "reason": "test", "pilot": 0})
+		Session.mission.host_scale(last)
+		Session.mission.host_scale({"n": 3, "at": host_at - 5.0, "from": 2, "reason": "test", "pilot": 0})
 		await sleep(1.0)
 		command(b, "dups", {})
 		if check(await wait_reports("dups", 1, 15.0), "B reports after the duplicates"):
@@ -131,7 +131,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -202,7 +202,7 @@ func _kill_all() -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.mission != null and td.mission.director != null, "the crew mission runs in plan mode"):
@@ -210,7 +210,7 @@ func _load_and_go() -> bool:
 	td.drive_override = true
 	td.mech.move_input = Vector2.ZERO
 	td.combat.player_target.auto_respawn_delay = -1.0
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	return check(await until(func() -> bool: return td.crew_sync.puppets.size() >= peers - 1, 10.0), "the puppets exist")

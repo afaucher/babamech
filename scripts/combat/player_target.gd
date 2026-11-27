@@ -13,7 +13,7 @@ extends CombatTarget
 ##   - DOWNED / REVIVE / RESPAWN (docs/design/pacing-director.md "Downed, revive, respawn", numbers in DownedRules; user
 ##     decision 2026-11-24): torso / head / leg_l / leg_r at 0 HP downs the mech (`disabled`, `player_disabled(cause)`).
 ##     It stays where it fell, takes no damage and is not hittable (enemies drop it); the owner's input layer stops its
-##     movement and weapons (TestDrive / TestDriveCombat / CrewBot). NO automatic respawn. Then, on the OWNER's machine:
+##     movement and weapons (MissionScene / MissionCombat / CrewBot). NO automatic respawn. Then, on the OWNER's machine:
 ##       revive    a crewmate's repair drone beaming it (RepairDrone calls revive_tick on the machine that owns this
 ##                 target, so nobody writes another pilot's mech): REVIVE_TIME s of beam -> revive(from): stands up in
 ##                 place, destroyed components at REVIVE_STRUCTURE, every other at least that, heat 0, shutdown cleared,
@@ -218,7 +218,7 @@ var disable_cause := ""
 var redeploying := false          ## held to respawn: the penalty runs (still disabled; streamed)
 var revive_progress := 0.0        ## s of drone beam toward DownedRules.REVIVE_TIME (streamed: the crew's revive bar)
 var aid_charges := 0              ## repair-drone charges left on this mech (the owner's DownedCrew writes it; streamed)
-var respawn_held := false         ## the owner's respawn key this step (TestDrive input; tests set it)
+var respawn_held := false         ## the owner's respawn key this step (MissionScene input; tests set it)
 var respawn_hold := 0.0           ## s the key has been held while downed
 var redeploy_left := 0.0          ## s of the penalty left while redeploying
 var down_time := 0.0              ## s since going down (through the penalty)

@@ -80,7 +80,7 @@ func _collision_hash(d: CityDistrict, skip_plates: bool = false) -> Array:
 		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else (cs.shape as ConvexPolygonShape3D).points
 		if skip_plates and sz is Vector3 and absf((sz as Vector3).z - (CityDistrict.PORTAL_PLATE + 0.1)) < 0.001:
 			var s := d.ring.world_to_arc(cs.transform.origin).y
-			if s > e.end.y + CityStreets.GATE_RECESS - 0.5 or s < e.position.y - CityStreets.GATE_RECESS + 0.5:
+			if s > e.end.y + CityWalls.GATE_RECESS - 0.5 or s < e.position.y - CityWalls.GATE_RECESS + 0.5:
 				plates += 1
 				continue
 		h = hash([h, cs.transform, sz])
@@ -169,7 +169,7 @@ func _deck(seed_: int, k: int) -> void:
 			var off := ((a.y if across else a.x) - float(w["at"])) * inward     # + into the map
 			var u0 := e.position.x if across else e.position.y
 			var u1 := e.end.x if across else e.end.y
-			if off < -CityStreets.FARM_RECESS - 0.05 or off > 3.0 or u < u0 + 3.0 or u > u1 - 3.0:
+			if off < -CityWalls.FARM_RECESS - 0.05 or off > 3.0 or u < u0 + 3.0 or u > u1 - 3.0:
 				continue
 			var by_gate := false
 			for g: Dictionary in w["gates"]:
@@ -180,7 +180,7 @@ func _deck(seed_: int, k: int) -> void:
 			n_near += 1
 			worst = maxf(worst, off)
 	check(n_near > 1000, tag + ": farm vertices found (%d)" % n_near)
-	check(worst <= CityStreets.FARM_REACH + 0.02, tag + ": the farm reaches %.2f m into the street (window wall: %.2f)" % [worst, CityStreets.FARM_REACH])
+	check(worst <= CityWalls.FARM_REACH + 0.02, tag + ": the farm reaches %.2f m into the street (window wall: %.2f)" % [worst, CityWalls.FARM_REACH])
 	# Triangle budget for the farm walls (the walls mesh also holds the bulkheads: count a farm-only deck's walls).
 	var tris := walls.mesh.get_faces().size() / 3 + (lights.mesh.get_faces().size() / 3 if lights != null else 0)
 	print("%s: farm %.0f m, walls + bars %d triangles, deck %d triangles" % [tag, farm_len, tris, int(d.stats["triangles"])])
@@ -194,7 +194,7 @@ func _deck(seed_: int, k: int) -> void:
 	var across0 := side0 >= 2
 	var in0 := -1.0 if side0 % 2 == 0 else 1.0
 	var at0 := float(w0["at"])
-	for sp: Array in CityStreets.wall_spans((e.position.x if across0 else e.position.y) + 5.0, (e.end.x if across0 else e.end.y) - 5.0, w0["gates"]):
+	for sp: Array in CityWalls.wall_spans((e.position.x if across0 else e.position.y) + 5.0, (e.end.x if across0 else e.end.y) - 5.0, w0["gates"]):
 		var um := (float(sp[0]) + float(sp[1])) * 0.5
 		for y: float in [2.0, 8.0, 20.0]:
 			var p := d.ring.arc_to_world(um, at0 + in0 * 6.0, y) if across0 else d.ring.arc_to_world(at0 + in0 * 6.0, um, y)

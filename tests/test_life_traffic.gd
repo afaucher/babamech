@@ -179,13 +179,13 @@ func _driving_pod(life: AmbientLife, empty: int = -1, mid_side: bool = false) ->
 	for v in life.vehicle_count():
 		if life.vehicle_kind(v) != "pod" or life.vehicle_state(v) != "driving":
 			continue
-		var q := life.fleet.pose(v, life.now)
+		var q := life.unit(0).fleet.pose(v, life.now)
 		if float(q["v"]) < 5.0:
 			continue
-		var li := int(life.traffic.vehicles[v]["loop"])
-		if mid_side and (life.traffic.zone_at(li, float(q["u"])) >= 0 or float(life.traffic.zone_ahead(li, float(q["u"]))[1]) < 25.0):
+		var li := int(life.unit(0).traffic.vehicles[v]["loop"])
+		if mid_side and (life.unit(0).traffic.zone_at(li, float(q["u"])) >= 0 or float(life.unit(0).traffic.zone_ahead(li, float(q["u"]))[1]) < 25.0):
 			continue
-		var n := life.traffic.riders(v, life.now)
+		var n := life.unit(0).traffic.riders(v, life.now)
 		if empty == 1 and n > 0 or empty == 0 and n == 0:
 			continue
 		return v
@@ -204,14 +204,14 @@ func _find_time(life: AmbientLife, t0: float, empty: int, mid_side: bool = false
 
 
 func _anchor(life: AmbientLife, v: int) -> Dictionary:
-	var e: Dictionary = life.fleet.episodes.get(int(life.traffic.vehicles[v]["loop"]), {})
+	var e: Dictionary = life.unit(0).fleet.episodes.get(int(life.unit(0).traffic.vehicles[v]["loop"]), {})
 	return e["v"].get(v, {}) if not e.is_empty() else {}
 
 
 ## Footprint overlaps, jumps (> 2 m between samples) and junction entries outside a turn phase (after a restart) over
 ## [t0, t1] in steps of dt. Returns [overlaps, jumps, reds].
 func _sweep_safety(life: AmbientLife, t0: float, t1: float, dt: float) -> Array:
-	var boxes := life.traffic.boxes()
+	var boxes := life.unit(0).traffic.boxes()
 	var overlaps := 0
 	var jumps := 0
 	var reds := 0
@@ -222,7 +222,7 @@ func _sweep_safety(life: AmbientLife, t0: float, t1: float, dt: float) -> Array:
 	while t <= t1:
 		var poses: Array = []
 		for v in life.vehicle_count():
-			var q := life.fleet.pose(v, t)
+			var q := life.unit(0).fleet.pose(v, t)
 			poses.append(q)
 			var at := Vector2(q["x"], q["s"])
 			if last[v] != null:
@@ -234,15 +234,15 @@ func _sweep_safety(life: AmbientLife, t0: float, t1: float, dt: float) -> Array:
 				if not q["wreck"] and not q["held"] and was.distance_to(at) > 1e-3:
 					for bx: Dictionary in boxes:
 						var r: Rect2 = bx["rect"]
-						if r.has_point(at) and not r.has_point(was) and not life.plan.all_red(int(bx["j"]), t):
+						if r.has_point(at) and not r.has_point(was) and not life.unit(0).plan.all_red(int(bx["j"]), t):
 							reds += 1
 			last[v] = at
 		for a in life.vehicle_count():
 			for b in range(a + 1, life.vehicle_count()):
 				if poses[a]["wreck"] or poses[b]["wreck"]:
 					continue
-				var ka := _box(poses[a], LifeTraffic.SIZE[life.traffic.vehicles[a]["kind"]], 0.1)
-				var kb := _box(poses[b], LifeTraffic.SIZE[life.traffic.vehicles[b]["kind"]], 0.1)
+				var ka := _box(poses[a], LifeTraffic.SIZE[life.unit(0).traffic.vehicles[a]["kind"]], 0.1)
+				var kb := _box(poses[b], LifeTraffic.SIZE[life.unit(0).traffic.vehicles[b]["kind"]], 0.1)
 				if not Geometry2D.intersect_polygons(ka, kb).is_empty():
 					if overlaps == 0:
 						print("overlap at %.2f: %d %s %s / %d %s %s" % [t, a, poses[a]["state"], Vector2(poses[a]["x"], poses[a]["s"]), b, poses[b]["state"], Vector2(poses[b]["x"], poses[b]["s"])])
@@ -257,7 +257,7 @@ func _panic_checks() -> void:
 	if not check(v >= 0, "an occupied pod driving to stop"):
 		return
 	var T := life.now
-	var q0 := life.fleet.pose(v, T)
+	var q0 := life.unit(0).fleet.pose(v, T)
 	var v0 := float(q0["v"])
 	var f0 := Vector2(sin(float(q0["heading"])), cos(float(q0["heading"])))
 	life.raise_threat(_world(float(q0["x"]) + f0.x * 15.0, float(q0["s"]) + f0.y * 15.0, 1.0), 20.0, 2)
@@ -265,43 +265,43 @@ func _panic_checks() -> void:
 	var t := T
 	while t < T + 3.0:
 		t += 0.05
-		if str(life.fleet.pose(v, t)["state"]) in ["estop", "abandoned", "fleeing"] and is_inf(stopped_by):
+		if str(life.unit(0).fleet.pose(v, t)["state"]) in ["estop", "abandoned", "fleeing"] and is_inf(stopped_by):
 			stopped_by = t - T
 	check(stopped_by <= 2.0, "the pod e-stops within 2 s of a threat in range (%.2f s)" % stopped_by)
 	var a := _anchor(life, v)
 	if check(not a.is_empty() and float(a["doors"]) > 0.0, "the occupied pod stops to let its passengers out"):
 		var x_t0 := float(a["v"]) * (float(a["t0"]) - T)
-		var ep: Dictionary = life.fleet.episodes[int(life.traffic.vehicles[v]["loop"])]
-		var at_doors := life.fleet._x_free(ep, v, float(a["doors"]))
+		var ep: Dictionary = life.unit(0).fleet.episodes[int(life.unit(0).traffic.vehicles[v]["loop"])]
+		var at_doors := life.unit(0).fleet._x_free(ep, v, float(a["doors"]))
 		check(at_doors - x_t0 <= v0 * v0 / (2.0 * LifeFleet.DECEL) + 0.3, "it stops within its braking distance")
 	# Back to normal: 15 s after the threat every vehicle of every halted loop moves again within 5 s.
 	var R := T + LifeFleet.RESTART
 	var halted: Array[int] = []
 	for k in life.vehicle_count():
 		var ak := _anchor(life, k)
-		var li := int(life.traffic.vehicles[k]["loop"])
-		if not ak.is_empty() and float(life.fleet.episodes[li]["t"]) == T:
+		var li := int(life.unit(0).traffic.vehicles[k]["loop"])
+		if not ak.is_empty() and float(life.unit(0).fleet.episodes[li]["t"]) == T:
 			var rest_u := float(ak["u"]) + float(ak["xs"])
 			# (one halted inside a turn, or right at its stop line, waits for its turn phase: that is normal driving)
-			if life.traffic.zone_at(li, rest_u) < 0 and float(life.traffic.zone_ahead(li, rest_u)[1]) > 1.0:
+			if life.unit(0).traffic.zone_at(li, rest_u) < 0 and float(life.unit(0).traffic.zone_ahead(li, rest_u)[1]) > 1.0:
 				halted.append(k)
 	check(not halted.is_empty(), "the threat halted some vehicles (%d)" % halted.size())
 	var late: Array[int] = []
 	for k in halted:
 		var moved := false
-		var p0 := life.fleet.pose(k, R)
+		var p0 := life.unit(0).fleet.pose(k, R)
 		t = R
 		while t <= R + 5.0:
 			t += 0.1
-			var p := life.fleet.pose(k, t)
+			var p := life.unit(0).fleet.pose(k, t)
 			if Vector2(p["x"], p["s"]).distance_to(Vector2(p0["x"], p0["s"])) > 0.3:
 				moved = true
 				break
 		if not moved:
 			late.append(k)
-			var pk := life.fleet.pose(k, R + 5.0)
-			var lk := int(life.traffic.vehicles[k]["loop"])
-			print("late %d: %s v %.2f  to stop %.1f  zone %d" % [k, pk["state"], float(pk["v"]), float(life.traffic.zone_ahead(lk, float(pk["u"]))[1]), life.traffic.zone_at(lk, float(pk["u"]))])
+			var pk := life.unit(0).fleet.pose(k, R + 5.0)
+			var lk := int(life.unit(0).traffic.vehicles[k]["loop"])
+			print("late %d: %s v %.2f  to stop %.1f  zone %d" % [k, pk["state"], float(pk["v"]), float(life.unit(0).traffic.zone_ahead(lk, float(pk["u"]))[1]), life.unit(0).traffic.zone_at(lk, float(pk["u"]))])
 	eq(late.size(), 0, "every halted vehicle moves again within 5 s of the restart (late: %s)" % str(late))
 	var safety := _sweep_safety(life, T, T + 240.0, 0.1)
 	eq(int(safety[0]), 0, "no two vehicles overlap while stopping, waiting and resuming")
@@ -309,9 +309,9 @@ func _panic_checks() -> void:
 	eq(int(safety[2]), 0, "after the restart no vehicle enters a junction outside its turn phase")
 	var off := 0
 	for k in halted:
-		var e: Dictionary = life.fleet.episodes[int(life.traffic.vehicles[k]["loop"])]
-		var q := life.fleet.pose(k, T + 300.0)
-		var b := life.traffic.base_pose(k, T + 300.0 - life.fleet.shift_of(e))
+		var e: Dictionary = life.unit(0).fleet.episodes[int(life.unit(0).traffic.vehicles[k]["loop"])]
+		var q := life.unit(0).fleet.pose(k, T + 300.0)
+		var b := life.unit(0).traffic.base_pose(k, T + 300.0 - life.unit(0).fleet.shift_of(e))
 		if Vector2(q["x"], q["s"]).distance_to(Vector2(b["x"], b["s"])) > 1e-4:
 			off += 1
 	eq(off, 0, "five minutes later every vehicle is on its (shifted) timetable")
@@ -326,18 +326,18 @@ func _flee_check() -> void:
 	while t < 1900.0 and v < 0:
 		life.advance_to(t)
 		for k in life.vehicle_count():
-			if life.vehicle_kind(k) != "pod" or life.vehicle_state(k) != "driving" or life.traffic.riders(k, t) > 0:
+			if life.vehicle_kind(k) != "pod" or life.vehicle_state(k) != "driving" or life.unit(0).traffic.riders(k, t) > 0:
 				continue
-			var q := life.fleet.pose(k, t)
-			var li := int(life.traffic.vehicles[k]["loop"])
-			if float(life.traffic.zone_ahead(li, float(q["u"]))[1]) > 40.0 and life.traffic.zone_at(li, float(q["u"])) < 0:
+			var q := life.unit(0).fleet.pose(k, t)
+			var li := int(life.unit(0).traffic.vehicles[k]["loop"])
+			if float(life.unit(0).traffic.zone_ahead(li, float(q["u"]))[1]) > 40.0 and life.unit(0).traffic.zone_at(li, float(q["u"])) < 0:
 				v = k
 				break
 		t += 0.5
 	if not check(v >= 0, "an empty pod with room ahead"):
 		return
 	var T := life.now
-	var q0 := life.fleet.pose(v, T)
+	var q0 := life.unit(0).fleet.pose(v, T)
 	var fwd := Vector2(sin(float(q0["heading"])), cos(float(q0["heading"])))
 	var c := Vector2(q0["x"], q0["s"]) - fwd * 12.0
 	life.raise_threat(_world(c.x, c.y, 1.0), 20.0, 2)
@@ -348,13 +348,13 @@ func _flee_check() -> void:
 		t = T
 		while t < float(a["te"]):
 			t += 0.05
-			var q := life.fleet.pose(v, t)
+			var q := life.unit(0).fleet.pose(v, t)
 			top = maxf(top, float(q["v"]))
 			if q["state"] == "fleeing":
 				seen = true
 		check(seen, "its state is fleeing")
 		check(top >= 12.0, "it reaches at least 12 m/s (%.1f)" % top)
-		var end := life.fleet.pose(v, float(a["te"]) + 0.1)
+		var end := life.unit(0).fleet.pose(v, float(a["te"]) + 0.1)
 		check(Vector2(end["x"], end["s"]).distance_to(c) > Vector2(q0["x"], q0["s"]).distance_to(c) + 10.0,
 				"it ends up further from the threat (%.1f m -> %.1f m)" % [Vector2(q0["x"], q0["s"]).distance_to(c),
 				Vector2(end["x"], end["s"]).distance_to(c)])
@@ -364,16 +364,16 @@ func _flee_check() -> void:
 	life.advance_to(life.now + 40.0)
 	var w := -1
 	for k in life.vehicle_count():
-		if k != v and life.vehicle_kind(k) == "pod" and life.vehicle_state(k) == "driving" and life.traffic.riders(k, life.now) == 0:
+		if k != v and life.vehicle_kind(k) == "pod" and life.vehicle_state(k) == "driving" and life.unit(0).traffic.riders(k, life.now) == 0:
 			w = k
 	if w >= 0:
-		var qw := life.fleet.pose(w, life.now)
+		var qw := life.unit(0).fleet.pose(w, life.now)
 		var fw := Vector2(sin(float(qw["heading"])), cos(float(qw["heading"])))
 		var cw := Vector2(qw["x"], qw["s"]) + fw * 18.0
 		life.raise_threat(_world(cw.x, cw.y, 1.0), 20.0, 2)
 		var aw := _anchor(life, w)
 		if not aw.is_empty() and int(aw["flee"]) == LifeFleet.REV:
-			var endw := life.fleet.pose(w, float(aw["te"]) + 0.1)
+			var endw := life.unit(0).fleet.pose(w, float(aw["te"]) + 0.1)
 			check(Vector2(endw["x"], endw["s"]).distance_to(cw) > Vector2(qw["x"], qw["s"]).distance_to(cw) + 5.0,
 					"a pod with the threat ahead backs away from it")
 		else:
@@ -387,14 +387,14 @@ func _rider_check() -> void:
 	if not check(v >= 0, "a pod with passengers driving"):
 		return
 	var T := life.now
-	var n := life.traffic.riders(v, T + 0.5)
-	var q0 := life.fleet.pose(v, T)
+	var n := life.unit(0).traffic.riders(v, T + 0.5)
+	var q0 := life.unit(0).fleet.pose(v, T)
 	life.raise_threat(_world(float(q0["x"]), float(q0["s"]), 1.0), 15.0, 2)
-	eq(life.crowd.riders_used, n, "%d passenger(s) get out" % n)
+	eq(life.unit(0).crowd.riders_used, n, "%d passenger(s) get out" % n)
 	life.advance_to(T + 4.0)
 	var out := 0
 	for k in n:
-		var id := life.plan.count + k
+		var id := life.unit(0).plan.count + k
 		if life.visible_now(id) and life.state_of(id) in ["wary", "fleeing", "cowering"]:
 			out += 1
 	eq(out, n, "the passengers are outside, running or crouching")
@@ -406,7 +406,7 @@ func _wreck_checks() -> void:
 	var v := _find_time(life, 2200.0, 0)
 	if not check(v >= 0, "an occupied pod to wreck"):
 		return
-	var n := life.traffic.riders(v, life.now)
+	var n := life.unit(0).traffic.riders(v, life.now)
 	var xf := life.vehicle_pose(v)
 	var hit := life.blast(xf.origin + xf.basis.x * 1.5 + Vector3(0, 0.5, 0), 3.0, 4)
 	check(hit >= 1, "a blast beside it hits it")
@@ -453,28 +453,28 @@ func _wreck_checks() -> void:
 func _queue_check() -> void:
 	var life := _life()
 	var loop := -1
-	for li in life.traffic.loops.size():
-		if life.traffic.loop_vehicles(li).size() >= 2:
+	for li in life.unit(0).traffic.loops.size():
+		if life.unit(0).traffic.loop_vehicles(li).size() >= 2:
 			loop = li
 			break
 	if not check(loop >= 0, "a loop with two vehicles"):
 		return
-	var ids := life.traffic.loop_vehicles(loop)
+	var ids := life.unit(0).traffic.loop_vehicles(loop)
 	var T := 2600.0
 	life.advance_to(T)
 	var w := ids[0]
 	var follower := ids[1]
-	life._decide_wreck(w, Vector2(0.0, 1.0), 2, 0, 0.5)          # a shot: wrecked where it stands, in its lane
+	life.unit(0)._decide_wreck(w, Vector2(0.0, 1.0), 2, 0, 0.5)          # a shot: wrecked where it stands, in its lane
 	eq(life.vehicle_state(w), "wreck", "the pod is wrecked in its lane")
-	var rest := life.fleet._wreck_rest(w)
-	var length := float(life.traffic.loops[loop]["length"])
-	var uw := life.traffic.lane_u(loop, Vector2(rest["x"], rest["s"]), LifeFleet.IN_LANE)
+	var rest := life.unit(0).fleet._wreck_rest(w)
+	var length := float(life.unit(0).traffic.loops[loop]["length"])
+	var uw := life.unit(0).traffic.lane_u(loop, Vector2(rest["x"], rest["s"]), LifeFleet.IN_LANE)
 	check(uw >= 0.0, "the wreck lies in the loop's lane")
 	var queued := -1.0
 	var t := T
 	while t < T + 600.0:
 		t += 0.5
-		var q := life.fleet.pose(follower, t)
+		var q := life.unit(0).fleet.pose(follower, t)
 		var gap := fposmod(uw - float(q["u"]), length)
 		if q["state"] == "stopped" and not q["hazard"] and absf(float(q["v"])) < 1e-3 and gap < 30.0 and t > T + 20.0:
 			queued = t
@@ -483,22 +483,22 @@ func _queue_check() -> void:
 	if not check(queued > 0.0, "the follower queues behind the wreck, hazards off"):
 		life.queue_free()
 		return
-	var still := life.fleet.pose(follower, queued + 60.0)
+	var still := life.unit(0).fleet.pose(follower, queued + 60.0)
 	check(still["state"] == "stopped", "and stays queued while the wreck blocks the lane")
 	life.advance_to(queued + 60.0)
 	# Shove the wreck clear of the lane, sideways.
 	var hd := float(rest["heading"])
 	var side := Vector2(cos(hd), -sin(hd))
-	life._decide_wreck(w, side, 2, 2, 10.0)
-	var rest2 := life.fleet._wreck_rest(w)
-	if check(life.traffic.lane_u(loop, Vector2(rest2["x"], rest2["s"]), LifeFleet.IN_LANE) < 0.0, "the shove clears the lane"):
+	life.unit(0)._decide_wreck(w, side, 2, 2, 10.0)
+	var rest2 := life.unit(0).fleet._wreck_rest(w)
+	if check(life.unit(0).traffic.lane_u(loop, Vector2(rest2["x"], rest2["s"]), LifeFleet.IN_LANE) < 0.0, "the shove clears the lane"):
 		var t0 := life.now
-		var p0 := life.fleet.pose(follower, t0)
+		var p0 := life.unit(0).fleet.pose(follower, t0)
 		var moved := false
 		t = t0
 		while t < t0 + 5.0:
 			t += 0.1
-			var p := life.fleet.pose(follower, t)
+			var p := life.unit(0).fleet.pose(follower, t)
 			if Vector2(p["x"], p["s"]).distance_to(Vector2(p0["x"], p0["s"])) > 0.3:
 				moved = true
 				break
@@ -515,7 +515,7 @@ func _busy(life: AmbientLife, T: float) -> void:
 	life.advance_to(T)
 	var v := _driving_pod(life)
 	if v >= 0:
-		var q := life.fleet.pose(v, T)
+		var q := life.unit(0).fleet.pose(v, T)
 		life.raise_threat(_world(float(q["x"]), float(q["s"]), 1.0), 20.0, 2)
 	life.advance_to(T + 2.0)
 	for k in life.vehicle_count():
@@ -529,11 +529,11 @@ func _busy(life: AmbientLife, T: float) -> void:
 func _signature(life: AmbientLife, t: float) -> String:
 	var out := PackedStringArray()
 	for v in life.vehicle_count():
-		var q := life.fleet.pose(v, t)
+		var q := life.unit(0).fleet.pose(v, t)
 		out.append("%s@%d,%d,%d" % [q["state"], int(round(float(q["x"]) * 100.0)), int(round(float(q["s"]) * 100.0)),
 				int(round(float(q["tilt"]) * 100.0))])
 	for id in life.count():
-		out.append(str(life.crowd.state_of(id, t)))
+		out.append(str(life.unit(0).crowd.state_of(id, t)))
 	return ",".join(out)
 
 
@@ -572,7 +572,7 @@ func _snapshot_check() -> void:
 	eq(diff, 0, "a restored fleet moves exactly like the original")
 	# A peer's malformed buffer (2026-11-25, audit): the broken part is cleared, nothing is read past the end, no loop or
 	# allocation by its counts. Stand-alone layout: [u32 crowd length][crowd][fleet].
-	check(not a.fleet.wrecks.is_empty(), "malformed: the busy snapshot has wrecks")
+	check(not a.unit(0).fleet.wrecks.is_empty(), "malformed: the busy snapshot has wrecks")
 	var cn := bytes.decode_u32(0)
 	var bad := {}
 	var huge := bytes.duplicate()
@@ -589,9 +589,9 @@ func _snapshot_check() -> void:
 		b.restore(bytes)
 		b.restore(bad[what][0])
 		if bad[what][1] == "fleet":
-			check(b.fleet.wrecks.is_empty() and b.fleet.unloads.is_empty() and b.fleet.episodes.is_empty(), "malformed: %s clears the fleet" % what)
+			check(b.unit(0).fleet.wrecks.is_empty() and b.unit(0).fleet.unloads.is_empty() and b.unit(0).fleet.episodes.is_empty(), "malformed: %s clears the fleet" % what)
 		else:
-			check(b.crowd.dead.is_empty() and b.crowd.recs.is_empty(), "malformed: %s clears the crowd" % what)
+			check(b.unit(0).crowd.dead.is_empty() and b.unit(0).crowd.recs.is_empty(), "malformed: %s clears the crowd" % what)
 	b.restore(bytes)
 	eq(b.snapshot().hex_encode(), bytes.hex_encode(), "malformed: a good snapshot after them restores as before")
 	var tram := LifeTram.new()
@@ -611,8 +611,8 @@ func _wreck_riders_check() -> void:
 	while t < 2600.0 and v < 0:
 		life.advance_to(t)
 		for k in life.vehicle_count():
-			if life.vehicle_kind(k) == "pod" and life.vehicle_state(k) == "driving" and life.traffic.riders(k, t) == 2 \
-					and float(life.fleet.pose(k, t)["v"]) > 3.0:
+			if life.vehicle_kind(k) == "pod" and life.vehicle_state(k) == "driving" and life.unit(0).traffic.riders(k, t) == 2 \
+					and float(life.unit(0).fleet.pose(k, t)["v"]) > 3.0:
 				v = k
 				break
 		t += 1.0
@@ -620,7 +620,7 @@ func _wreck_riders_check() -> void:
 		life.queue_free()
 		return
 	var T := life.now
-	var q0 := life.fleet.pose(v, T)
+	var q0 := life.unit(0).fleet.pose(v, T)
 	life.raise_threat(_world(float(q0["x"]), float(q0["s"]), 1.0), 15.0, 2)
 	var a := _anchor(life, v)
 	if not check(int(a.get("riders", 0)) == 2 and float(a.get("doors", -1.0)) > T, "riders: both get a rider slot (%d)" % int(a.get("riders", 0))):
@@ -628,10 +628,10 @@ func _wreck_riders_check() -> void:
 		return
 	var doors := float(a["doors"])
 	var r0 := int(a["rider0"])
-	eq(int(life.fleet.unloads.get(v, {}).get("riders", -1)), 2, "riders: the unload is kept beside the episode")
+	eq(int(life.unit(0).fleet.unloads.get(v, {}).get("riders", -1)), 2, "riders: the unload is kept beside the episode")
 	life.advance_to(doors + 0.2)             # the first is out, the second still aboard (out at doors + 0.4)
 	var killed0 := int(life.tally()["occupants_killed"])
-	life._decide_wreck(v, Vector2(0.0, 1.0), 4, 0, 0.5)
+	life.unit(0)._decide_wreck(v, Vector2(0.0, 1.0), 4, 0, 0.5)
 	eq(life.vehicle_state(v), "wreck", "riders: the pod is a wreck")
 	eq(int(life.tally()["occupants_killed"]) - killed0, 1, "riders: the one still aboard dies inside, the one out does not")
 	var seen0 := false
@@ -650,31 +650,31 @@ func _wreck_riders_check() -> void:
 	while t < life.now + 700.0 and w < 0:
 		life.advance_to(t)
 		for k in life.vehicle_count():
-			if k != v and life.vehicle_kind(k) == "pod" and life.vehicle_state(k) == "driving" and life.traffic.riders(k, t) > 0 \
-					and float(life.fleet.pose(k, t)["v"]) > 3.0 and not life.fleet.unloads.has(k):
+			if k != v and life.vehicle_kind(k) == "pod" and life.vehicle_state(k) == "driving" and life.unit(0).traffic.riders(k, t) > 0 \
+					and float(life.unit(0).fleet.pose(k, t)["v"]) > 3.0 and not life.unit(0).fleet.unloads.has(k):
 				w = k
 				break
 		t += 1.0
 	if not check(w >= 0, "riders: a second occupied pod"):
 		life.queue_free()
 		return
-	var q1 := life.fleet.pose(w, life.now)
+	var q1 := life.unit(0).fleet.pose(w, life.now)
 	life.raise_threat(_world(float(q1["x"]), float(q1["s"]), 1.0), 15.0, 2)
-	check(life.fleet.unloads.has(w), "riders: the second pod unloads")
-	var used := life.crowd.riders_used
-	var lap := life.traffic.lap_index(w, life.now)
+	check(life.unit(0).fleet.unloads.has(w), "riders: the second pod unloads")
+	var used := life.unit(0).crowd.riders_used
+	var lap := life.unit(0).traffic.lap_index(w, life.now)
 	var again := -1.0
 	t = life.now + LifeFleet.RESTART + 2.0
 	while t < life.now + 200.0:
 		life.advance_to(t)
-		var q := life.fleet.pose(w, t)
+		var q := life.unit(0).fleet.pose(w, t)
 		if q["state"] == "driving" and not q["held"] and float(q["v"]) > 3.0:
 			again = t
 			break
 		t += 0.5
 	if check(again > 0.0, "riders: the second pod drives on after the restart"):
-		var q2 := life.fleet.pose(w, again)
-		var same_lap := life.traffic.lap_index(w, again) == lap and life.traffic.riders(w, again) > 0
+		var q2 := life.unit(0).fleet.pose(w, again)
+		var same_lap := life.unit(0).traffic.lap_index(w, again) == lap and life.unit(0).traffic.riders(w, again) > 0
 		life.raise_threat(_world(float(q2["x"]), float(q2["s"]), 1.0), 15.0, 2)
-		eq(life.crowd.riders_used, used, "riders: threatened again it lets nobody out (timetable lap %s)" % ("the same, still with riders" if same_lap else "moved on"))
+		eq(life.unit(0).crowd.riders_used, used, "riders: threatened again it lets nobody out (timetable lap %s)" % ("the same, still with riders" if same_lap else "moved on"))
 	life.queue_free()

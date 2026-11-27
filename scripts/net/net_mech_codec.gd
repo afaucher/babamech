@@ -119,7 +119,7 @@ static func _put_entry(b: StreamPeerBuffer, s: NetMechState, seat: int, sent_at:
 	b.put_u8(flags)
 	b.put_u8(clampi(roundi(clampf(sent_at - s.t, 0.0, AGE_MAX) / AGE_UNIT), 0, 255))
 	for c in 3:
-		_put_i24(b, roundi(s.pos[c] * 1000.0))
+		NetWire.put_i24(b, roundi(s.pos[c] * 1000.0))
 	for c in 3:
 		b.put_16(clampi(roundi(s.vel[c] * 100.0), -32767, 32767))
 	b.put_u16(roundi(wrapf(s.yaw, 0.0, TAU) / TAU * 65536.0) & 0xFFFF)
@@ -168,7 +168,7 @@ static func decode(payload: PackedByteArray, peers: Dictionary, stamp: float) ->
 		s.t =stamp - float(b.get_u8()) * AGE_UNIT
 		var p := Vector3.ZERO
 		for c in 3:
-			p[c] = float(_get_i24(b)) / 1000.0
+			p[c] = float(NetWire.get_i24(b)) / 1000.0
 		s.pos = p
 		var v := Vector3.ZERO
 		for c in 3:
@@ -199,14 +199,3 @@ static func decode(payload: PackedByteArray, peers: Dictionary, stamp: float) ->
 		s.peer = int(peers[seat])
 		out.append(s)
 	return out
-
-
-static func _put_i24(b: StreamPeerBuffer, v: int) -> void:
-	var u := clampi(v, -8388607, 8388607) & 0xFFFFFF
-	b.put_u16(u & 0xFFFF)
-	b.put_u8((u >> 16) & 0xFF)
-
-
-static func _get_i24(b: StreamPeerBuffer) -> int:
-	var u := b.get_u16() | (b.get_u8() << 16)
-	return u - 0x1000000 if u & 0x800000 else u

@@ -197,13 +197,13 @@ func _audit_enemy_meshes() -> void:
 
 func _audit_combat_meshes() -> void:
 	var meshes := {
-		"ico": CombatMeshes.ico(MechMeshes.ORANGE),
-		"shell": CombatMeshes.shell(MechMeshes.AMBER),
-		"shard": CombatMeshes.shard(MechMeshes.GREY),
-		"ring": CombatMeshes.ring(MechMeshes.ORANGE),
+		"ico": CombatMeshes.ico(LowPolyPalette.ORANGE),
+		"shell": CombatMeshes.shell(LowPolyPalette.AMBER),
+		"shard": CombatMeshes.shard(LowPolyPalette.GREY),
+		"ring": CombatMeshes.ring(LowPolyPalette.ORANGE),
 		"scorch": CombatMeshes.scorch(Color.BLACK),
 		"ember_scorch": CombatMeshes.ember_scorch(0),
-		"prism3": CombatMeshes.prism3(MechMeshes.TEAL),
+		"prism3": CombatMeshes.prism3(LowPolyPalette.TEAL),
 		"rocket": Rocket.rocket_mesh(),
 		"mortar_shell": MortarShell.shell_mesh(),
 		"muzzle_flash": MuzzleFlash.mesh(),
@@ -430,7 +430,7 @@ func _audit_hull_walls(d: CityDistrict) -> void:
 	var sill_bot := 0
 	var transom_top := 0
 	var transom_bot := 0
-	var sill_lo := CityStreets.HULL_SILL - 0.6
+	var sill_lo := CityWalls.HULL_SILL - 0.6
 	for tri: Dictionary in _triangles(walls.mesh as ArrayMesh):
 		var c: Vector3 = tri["c"]
 		var n: Vector3 = tri["n"]
@@ -446,7 +446,7 @@ func _audit_hull_walls(d: CityDistrict) -> void:
 		var h := arc.z
 		if absf(h - sill_lo) < 0.08 and n.dot(up) < -0.9:
 			sill_bot += 1
-		if h > CityStreets.HULL_SILL + 2.0 and h < d.plan.p("ceiling") - 2.0:
+		if h > CityWalls.HULL_SILL + 2.0 and h < d.plan.p("ceiling") - 2.0:
 			if n.dot(up) > 0.9:
 				transom_top += 1
 			elif n.dot(up) < -0.9:

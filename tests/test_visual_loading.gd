@@ -2,7 +2,7 @@ extends TestCase
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## VISUAL: the mission loading screen (LoadingScreen, docs/design/hud.md "Loading screen") really draws, and covers the
 ## mission scene while it loads. Runs only under `.\test_runner.ps1 -Visual`. Shots in test_logs/shots/:
-##   loading_solo_midload   a real solo test drive (TestDrive.cover_solo) caught before its build: only the screen shows
+##   loading_solo_midload   a real solo test drive (MissionScene.cover_solo) caught before its build: only the screen shows
 ##   loading_solo_done      the same drive once the screen has faded: the world (the screen is gone)
 ##   loading_coop_wait      the screen with a crew of three waiting at the barrier (demo crew rows)
 
@@ -21,10 +21,10 @@ func setup() -> void:
 	var centre := Rect2(0.3, 0.3, 0.4, 0.4)
 	var edge := Rect2(0.0, 0.0, 0.12, 1.0)
 	# 1. A real solo drive, covered: shot while the screen is up and the city not built yet.
-	TestDrive.cover_solo = true
+	MissionScene.cover_solo = true
 	LoadingScreen.fade_in_tests = true
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = 57036
 	add_child(td)
 	await get_tree().process_frame
@@ -44,7 +44,7 @@ func setup() -> void:
 			"the world shows once the screen is gone")
 	td.queue_free()
 	await frames(2)
-	TestDrive.cover_solo = false
+	MissionScene.cover_solo = false
 	# 2. The crew wait: three members, two ready.
 	var ls := LoadingScreen.cover(self)
 	ls.set_mission(57036)

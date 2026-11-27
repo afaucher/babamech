@@ -1,6 +1,6 @@
 class_name CrewSync
 extends Node
-## The test drive's side of mech snapshots (co-op step 2, docs/networking.md "Mech snapshots"). Built by TestDrive in a
+## The test drive's side of mech snapshots (co-op step 2, docs/networking.md "Mech snapshots"). Built by MissionScene in a
 ## crew mission, child "CrewSync":
 ##   - feeds the local mech's state to Session.mechs every physics frame (after the rig posed it), which streams it;
 ##   - makes every other crew mech a puppet (MechPuppet, child "Puppet" of that mech) shown from its owner's snapshots;
@@ -8,17 +8,17 @@ extends Node
 ##     owner's to decide, co-op step 3), carried along by its MechPuppet;
 ##   - answers the crew panel (hud.crew_panel.status_source): a teammate's hull HP, heat, overheat and downed state from
 ##     its snapshots.
-##   - HANGAR BOTS (docs/design/hangar-bots.md): on the host, each bot's body (TestDrive.crew_bots, CrewBot) is streamed
+##   - HANGAR BOTS (docs/design/hangar-bots.md): on the host, each bot's body (MissionScene.crew_bots, CrewBot) is streamed
 ##     like the local mech (Session.mechs.feed_owned); elsewhere a bot is a puppet like any teammate (its PlayerTarget's
 ##     owner is the host, PlayerTarget.bind clamps the negative pilot id to 1).
 ##   - LEAVERS (Session.peer_left, every machine): retire(peer) takes the leaver's mech out of the mission here: its
 ##     PlayerTarget leaves CombatWorld (enemies, weapons and bots stop seeing it), its puppet, pilot link and mech are
-##     freed (TestDrive.drop_mech: also out of `mechs`, the life pushers and viewers). A member already gone when the
-##     mission is set up (left while loading) is retired at setup. Crew lists (TestDrive.crew_members, DownedCrew, the
+##     freed (MissionScene.drop_mech: also out of `mechs`, the life pushers and viewers). A member already gone when the
+##     mission is set up (left while loading) is retired at setup. Crew lists (MissionScene.crew_members, DownedCrew, the
 ##     mission facts) already skip non-members; the HUD crew panel follows the roster.
 ## Nothing here touches the wire: it only asks Session (begin / feed / pose / end).
 
-var drive: TestDrive
+var drive: MissionScene
 var puppets: Dictionary = {}        ## owner peer -> MechPuppet
 var targets: Dictionary = {}        ## owner peer -> PlayerTarget (the puppets')
 
@@ -39,7 +39,7 @@ func _ready() -> void:
 
 
 ## `seats`: owner peer -> crew seat for every mech of the mission (the local one too).
-func setup(td: TestDrive, seats: Dictionary) -> void:
+func setup(td: MissionScene, seats: Dictionary) -> void:
 	drive = td
 	var sess := Net.session()
 	var local := sess.local_id() if sess != null else 0
@@ -74,7 +74,7 @@ func setup(td: TestDrive, seats: Dictionary) -> void:
 		# Left while the mission loaded: a player of the LAUNCH crew no longer in the roster (never a bot, never a mech
 		# the launch didn't list, e.g. tests/test_perf_coop.gd's synthetic puppets).
 		var launched := {}
-		for e: Variant in sess.mission_params().get("crew", []) as Array:
+		for e: Variant in sess.mission.params.get("crew", []) as Array:
 			launched[int((e as Dictionary).get("peer", 0))] = true
 		for p: int in puppets.keys():
 			if launched.has(p) and not NetSession.is_bot_id(p) and not sess.has_member(p):
@@ -113,7 +113,7 @@ func retire(peer: int) -> void:
 		sess.mechs.drop(peer)
 	drive.drop_mech(peer)
 	retired.append(peer)
-	drive.member_retired(peer)   # host: TestDrive.crew_member_left + MissionFlow.on_member_retired (crew_members() is clean now)
+	drive.member_retired(peer)   # host: MissionScene.crew_member_left + MissionFlow.on_member_retired (crew_members() is clean now)
 	FlowLog.say("crew mech retired", "pilot %d left: mech and target removed" % peer)
 
 

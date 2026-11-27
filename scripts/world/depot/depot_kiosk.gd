@@ -66,7 +66,7 @@ func _init() -> void:
 		var g := _mi("CoreFlourish%d" % i, DepotMeshes.core(), DepotMeshes.socket_local(i))
 		g.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		if glow_i >= 0:
-			var m := (MechMeshes.materials()[1] as Material).duplicate() as StandardMaterial3D
+			var m := (LowPolyMaterials.materials()[1] as Material).duplicate() as StandardMaterial3D
 			g.set_surface_override_material(glow_i, m)
 		_ghosts.append(g)
 		_ghost_t[i] = -1.0

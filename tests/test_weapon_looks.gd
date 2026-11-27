@@ -4,7 +4,7 @@ extends TestCase
 ## (WeaponRegistry.LOOKS + one generic behaviour); this pins what they were BEFORE that, captured from the old files:
 ## same effect class, same look dictionary (colours, width, glow: the cache keys CombatMeshes.shell builds on), same
 ## flight numbers. And each weapon's prewarm builds the meshes its shots draw (the enemy rocket weapons used to skip
-## Rocket.prewarm_rocket, the enemy mortar MortarShell.prewarm_mortar), and TestDriveCombat prewarms every enemy weapon.
+## Rocket.prewarm_rocket, the enemy mortar MortarShell.prewarm_mortar), and MissionCombat prewarms every enemy weapon.
 
 const P := "projectile"
 const R := "rocket"
@@ -80,7 +80,7 @@ func _prewarm() -> void:
 	check(CombatMeshes._cache.has("mortar_shell"), "enemy mortar prewarm builds the mortar shell (MortarShell.prewarm_mortar)")
 
 
-## TestDriveCombat.setup prewarms every enemy weapon (WeaponRegistry.prewarm_enemy_weapons): all of EnemyCatalog.WEAPONS
+## MissionCombat.setup prewarms every enemy weapon (WeaponRegistry.prewarm_enemy_weapons): all of EnemyCatalog.WEAPONS
 ## resolve to a behaviour, and after the call the rocket mesh is built.
 func _enemy_prewarm() -> void:
 	for id: String in EnemyCatalog.WEAPONS:
@@ -89,4 +89,4 @@ func _enemy_prewarm() -> void:
 	WeaponRegistry.prewarm_enemy_weapons()
 	check(CombatMeshes._cache.has("rocket_mesh"), "prewarm_enemy_weapons builds the enemy rocket mesh")
 	check(FileAccess.get_file_as_string("res://scripts/combat/test_drive_combat.gd").contains("WeaponRegistry.prewarm_enemy_weapons()"),
-		"TestDriveCombat.setup calls WeaponRegistry.prewarm_enemy_weapons()")
+		"MissionCombat.setup calls WeaponRegistry.prewarm_enemy_weapons()")

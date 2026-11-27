@@ -1,7 +1,7 @@
 extends "res://tests/net_coop_case.gd"
 ## VISUAL co-op: two game processes over ENet on localhost (a host and a client), each a REAL rendered 1600x900 window on
 ## the hidden desktop (`.\test_runner.ps1 -Visual -TestName test_visual_coop`: VISUAL + PEERS = N windowed processes under
-## one GPU lock; docs/testing.md "Visual tests"). The host launches a stack mission (Session.start_mission, the same load
+## one GPU lock; docs/testing.md "Visual tests"). The host launches a stack mission (Session.mission.host_launch, the same load
 ## and barrier as the W9 e2e, net_coop_case.gd, whose helpers this reuses; the host idles its enemies' AI), both walk
 ## forward at one shared-clock moment, then at shared-clock moments each machine aims its own chase camera (test code:
 ## look_dir / pitch, smoothing off) and grabs shots (ShotCheck.grab):
@@ -50,7 +50,7 @@ func run_host() -> void:
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 40.0),
 			"the crew gathers (%d of %d)" % [Session.roster.size(), peers]):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	_mate = _clients()[0]
@@ -103,7 +103,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return

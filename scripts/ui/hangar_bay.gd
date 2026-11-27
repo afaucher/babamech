@@ -264,7 +264,7 @@ const END_WALL := 0.6                  ## the end wall's thickness (the doors ru
 const AIRLOCK_X := -HALF_WIDTH
 ## Launch plays the egress faster than natural (still reads as walking): EGRESS_RATE, or more for a long sequence
 ## (a big crew, several airlock cycles) so it takes about EGRESS_TARGET s, never past EGRESS_MAX_RATE. It always plays
-## to the end, the mission loading behind it (HangarHandoff; TestDrive reports ready only when both are done).
+## to the end, the mission loading behind it (HangarHandoff; MissionScene reports ready only when both are done).
 const EGRESS_RATE := 1.5
 const EGRESS_MAX_RATE := 3.0
 const EGRESS_TARGET := 16.0

@@ -110,9 +110,9 @@ func _spawn_component_debris(comp_id: String) -> void:
 		var txf := _turret_mi.global_transform if _turret_mi != null and _turret_mi.is_inside_tree() else Transform3D(global_basis, _world_pos() + up * 2.7)
 		_pop_part("tank_turret", txf, 11.5, 14.8, 3.8, 6.8, 3.2, false)
 		_pop_plates(txf.origin + up * 0.8, 2, 7.0, 11.0, 4.5, 8.5)
-		_attach_flame_stream(_turret_pivot, Vector3(0.0, 0.78, 0.0), Vector3(0.12, 1.0, -0.08),
+		wreck.attach_flame(_turret_pivot, Vector3(0.0, 0.78, 0.0), Vector3(0.12, 1.0, -0.08),
 			4.2, 1.05, 11.0, 6, 1.1, 0.0, "turret_socket")
-		_spawn_core_glow(_core_rupture_pos(), _core_rupture_scale(), false)
+		wreck.spawn_core_glow(_core_rupture_pos(), _core_rupture_scale(), false)
 
 
 func _spawn_death_debris(_cause: String) -> void:

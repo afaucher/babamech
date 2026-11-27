@@ -14,7 +14,7 @@ const PEERS := 2
 const SEED := 11
 const POS_TOL := 0.05
 
-var td: TestDrive
+var td: MissionScene
 var world: CombatWorld
 var impacts: Array = []            ## [point] on this machine
 var drone_launch_pos := Vector3.INF ## where player1's drone was at its launch here
@@ -28,7 +28,7 @@ func run_host() -> void:
 	net_timeout = 90.0
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	for e in td.combat.squad.enemies:
@@ -96,7 +96,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -175,7 +175,7 @@ func _bus_of(ev: Array, cue: String, at: Vector3) -> String:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.combat.net != null and td.combat_audio != null and _audio() != null,
@@ -189,7 +189,7 @@ func _load_and_go() -> bool:
 			drone_launch_pos = dr.pos)
 	world.impact_spawned.connect(func(pt: Vector3, _r: float, _x: bool, _en: bool) -> void: impacts.append(pt))
 	_audio().record_events = true
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	return await until(_puppet_shown, 10.0)

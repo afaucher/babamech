@@ -53,7 +53,7 @@ func fuse_check(ea: float, eb: float) -> Dictionary:
 	if eb < lo or fuse_radius <= 0.0:
 		return {}
 	var sh := str(record.get("shooter", ""))
-	var team := world._team_of(sh, str(record.get("team", "")))
+	var team := world.team_of(sh, str(record.get("team", "")))
 	var best_e := INF
 	var best_id := ""
 	for t in world.targets:
@@ -88,7 +88,7 @@ func _sweep(e0: float, e1: float) -> void:
 	end_time = ef
 	_swept = ef
 	fused_by = str(fz["target"])
-	_burst(BURST_FUSE, flight_pos(ef), -dir, null, MechMeshes.GREY)
+	_burst(BURST_FUSE, flight_pos(ef), -dir, null, LowPolyPalette.GREY)
 
 
 func on_hit(h: Dictionary, e: float) -> bool:
@@ -100,13 +100,13 @@ func on_hit(h: Dictionary, e: float) -> bool:
 		var dmg := float(stats.get("damage", 0.0)) * Combat.falloff(stats, flight_dist(e)) + splash_share(target, point)
 		world.resolve_hit(record, stats, target, str(h["component"]), point, h["normal"], fdir, dmg)
 	world.hit_prop(record, stats, h, fdir)
-	_burst(BURST_DIRECT if target != null else BURST_CONTACT, point, h["normal"], target, h.get("color", MechMeshes.GREY))
+	_burst(BURST_DIRECT if target != null else BURST_CONTACT, point, h["normal"], target, h.get("color", LowPolyPalette.GREY))
 	return true
 
 
 func reach_range() -> void:
 	end_time = max_time
-	_burst(BURST_RANGE, flight_pos(max_time), -dir, null, MechMeshes.GREY)
+	_burst(BURST_RANGE, flight_pos(max_time), -dir, null, LowPolyPalette.GREY)
 
 
 ## The splash damage `t` would take from a burst at `point` (CombatWorld.splash's rule: splash_damage × (1 - d / R), d =

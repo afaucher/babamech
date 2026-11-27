@@ -39,13 +39,13 @@ func setup() -> void:
 	bg.queue_free()
 	await frames(2)
 
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(60)
 	img = await sc.grab("hud_drive")
 	sc.not_blank(img, Rect2(0.0, 0.6, 0.22, 0.4), "drive HUD status corner")
 	sc.not_blank(img, Rect2(0.72, 0.6, 0.28, 0.4), "drive HUD weapon rows")
-	check(td.mission != null and str(td.mission.hud_state()["objective"]) != "", "the drive has an objective line")
+	check(td.mission != null and str(td.mission.hud_model.build()["objective"]) != "", "the drive has an objective line")
 	td.queue_free()
 	await frames(2)
 	finish()

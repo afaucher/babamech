@@ -14,7 +14,7 @@
 # (godot_env.ps1) and WAITS while another session renders or holds a window, and while ComfyUI listens on port 8188;
 # exit 2 if the GPU stays busy past $env:CLAUDE_GPU_LOCK_TIMEOUT (default 900 s). BABAMECH_SHOW_WINDOWS=1 shows the
 # window instead. Headless runs (-TestAll, -TestName) never take the lock. A visual test that ALSO declares
-# `const PEERS := N` (tests	est_visual_coop.gd) runs as N windowed processes on the hidden desktop at once (host first,
+# `const PEERS := N` (tests\test_visual_coop.gd) runs as N windowed processes on the hidden desktop at once (host first,
 # ports from Get-FreePort, logs test_logs\<name>.<role>.log), under the batch's one GPU lock, judged like a net run.
 #
 # SERIAL TESTS: a test whose source declares `const SERIAL := true` (a wall-clock budget, e.g. test_perf) is left out of

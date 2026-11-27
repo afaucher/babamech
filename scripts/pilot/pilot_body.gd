@@ -110,7 +110,7 @@ func setup(face: PilotFace, shell: MeshKit, rigid: MeshKit, pivots: Array[Vector
 	arrays[Mesh.ARRAY_COLOR] = colors
 	var m := ArrayMesh.new()
 	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays, [], {}, Mesh.ARRAY_FLAG_USE_DYNAMIC_UPDATE)
-	m.surface_set_material(0, MechMeshes.materials()[0])
+	m.surface_set_material(0, LowPolyMaterials.materials()[0])
 	m.surface_set_name(0, "matte")
 	mesh = m
 	var box := m.get_aabb()

@@ -182,6 +182,24 @@ func box(size: Vector3, col: Variant, pos: Vector3 = Vector3.ZERO) -> void:
 	loft([ring(pos - Vector3(0, h.y, 0), h.x, h.z, 4, "y", SQUARE), ring(pos + Vector3(0, h.y, 0), h.x, h.z, 4, "y", SQUARE)], col)
 
 
+## A joint across X: a drum on the axle (radius r, half width w, `drum`) with a hub on each end (out to hub, `hub_col`),
+## and a concentric step ring (`trim`) on the outer end of the drum with four bolts (`trim`) round the hub.
+func joint_cap(r: float, w: float, hub: float, drum: Variant, hub_col: Variant, trim: Variant) -> void:
+	tube(Vector3(-w, 0, 0), Vector3(w, 0, 0), r, 8, drum)
+	tube(Vector3(-hub, 0, 0), Vector3(hub, 0, 0), r * 0.55, 8, hub_col)
+	var ring_r := r * 0.8
+	var face := w + r * 0.12
+	tube(Vector3(w - 0.01, 0, 0), Vector3(face, 0, 0), ring_r, 8, trim)
+	bolt_ring(face, (r * 0.55 + ring_r) * 0.5, maxf(r * 0.16, 0.026), 4, 45.0, trim)
+
+
+## `n` square bolt heads on a face across +X at x, on a circle of radius `rad`, size `s` (half sunk into the face).
+func bolt_ring(x: float, rad: float, s: float, n: int, phase_deg: float, col: Variant) -> void:
+	for i in n:
+		var a := deg_to_rad(phase_deg + 360.0 * float(i) / float(n))
+		box(Vector3(s, s, s), col, Vector3(x + s * 0.2, cos(a) * rad, sin(a) * rad))
+
+
 ## Revolve a profile of (radius, y) points around Y with n sides.
 func lathe(profile: Array, n: int, col: Variant, cap_a: bool = true, cap_b: bool = true, flip: bool = false) -> void:
 	var rings: Array = []

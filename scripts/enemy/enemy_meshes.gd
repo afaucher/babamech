@@ -3,7 +3,7 @@ extends RefCounted
 ## Low-poly MeshKit builders & invader livery for every enemy unit (docs/design/enemies.md §2, §7).
 ## Concept "repainted civic": the habitat's own civil-defence robots repainted in the invaders' slate / brick livery (L1),
 ## municipal details (service lamps, number plates, hatches, hazard bands) still showing under the paint, plus a small
-## "Descent" emblem stencil. Cosmetic only: flat-shaded vertex colours using MechMeshes.materials() ([matte, glow]),
+## "Descent" emblem stencil. Cosmetic only: flat-shaded vertex colours using LowPolyMaterials.materials() ([matte, glow]),
 ## cached by part id. Every part is a set of closed primitives (tests/test_geometry_audit.gd: watertight, outward winding).
 ## Detail level: the "B" pass of docs/design/enemy-detail/ (adopted 2026-11-22): plates on the parts' own facets over a
 ## dark slate under-plate (panel line), hooded optics, collars, hub caps, hinges, pistons, cables, slatted vents, lugs,
@@ -29,6 +29,11 @@ static var _charred_mat: StandardMaterial3D
 static var _scanner_mat: StandardMaterial3D
 
 
+## Every mesh built so far (the live cache, by key): ShaderWarmup takes them all.
+static func cached_meshes() -> Dictionary:
+	return _cache
+
+
 static func mesh(part: String) -> ArrayMesh:
 	if _cache.has(part):
 		return _cache[part]
@@ -36,7 +41,7 @@ static func mesh(part: String) -> ArrayMesh:
 	if not rid.is_empty():
 		var rk := MeshKit.new()
 		_trooper(rk, rid[0], rid[1], rid[2])
-		_cache[part] = rk.commit(MechMeshes.materials())
+		_cache[part] = rk.commit(LowPolyMaterials.materials())
 		return _cache[part]
 	var tid := trooper_id(part)
 	if not tid.is_empty() and part != trooper_part(tid[0], tid[1]):   # "trooper_rifle" / "trooper_at" = variant 0
@@ -77,7 +82,7 @@ static func mesh(part: String) -> ArrayMesh:
 				k.box(Vector3.ONE, ARMOR_DARK)
 			else:
 				_trooper(k, tid[0], tid[1])
-	var m := k.commit(MechMeshes.materials())
+	var m := k.commit(LowPolyMaterials.materials())
 	_cache[part] = m
 	return m
 

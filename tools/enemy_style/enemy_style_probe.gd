@@ -655,7 +655,7 @@ func _place_banners() -> void:
 	k.box(Vector3(0.28, 11.2, 0.28), BANNER_IRON, Vector3(0.0, 5.6, 0.0))
 	k.box(Vector3(0.7, 0.4, 0.7), BANNER_IRON, Vector3(0.0, 0.2, 0.0))
 	k.box(Vector3(BANNER_W + 1.0, 0.16, 0.16), BANNER_IRON, Vector3(BANNER_W * 0.5 + 0.4, 10.7, 0.0))
-	pole.mesh = k.commit(MechMeshes.materials())
+	pole.mesh = k.commit(LowPolyMaterials.materials())
 	pole.transform = pole_xf
 	add_child(pole)
 	_add_banner(pole_xf * Transform3D(Basis.IDENTITY, Vector3(BANNER_W * 0.5 + 0.45, 10.7, 0.12)), 5.6, false)
@@ -678,7 +678,7 @@ func _add_banner(xf: Transform3D, h: float, wall: bool) -> void:
 			k.box(Vector3(0.24, 0.24, 0.24), BANNER_IRON, Vector3(sx * (BANNER_W * 0.5 + 0.25), 0.0, 0.0))
 		var bar := MeshInstance3D.new()
 		bar.name = "Bar"
-		bar.mesh = k.commit(MechMeshes.materials())
+		bar.mesh = k.commit(LowPolyMaterials.materials())
 		mi.add_child(bar)
 
 
@@ -760,7 +760,7 @@ func _banner_mesh(field: Color, sigil: Color, trim: Color, sigil2: Color, h: flo
 		for q: Vector2 in pl[0]:
 			pts.append(place + (q - mid_box) * EMBLEM_SCALE)
 		_emblem_poly(k, pts, pl[1], front, hw, mw, fold, pl[2])
-	var m := k.commit(MechMeshes.materials())
+	var m := k.commit(LowPolyMaterials.materials())
 	_remap_cache[key] = m
 	return m
 

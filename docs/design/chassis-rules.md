@@ -154,12 +154,17 @@ and checked by tests, then compared with the concept by eye.
    gimbal balls and vector for steering and strafing: 20 deg forward / back, 15 deg sideways (an ellipse,
    `WaspMeshes.FAN_TILT_MAX`; `MechModel.set_fan_tilt` clamps to it, either fan alone), clear of the hull, the coaming,
    every pilot head and the stub guns across all of it.
-   **Fan damage: PROPOSAL, awaiting the user** (it replaces "min 3 fans to fly", which the user said must change with
-   this pick): the two main fans are the damage components, as legs are on the walkers (each its own HP; its hit volume
-   the duct ring, so the two rings are separate, targetable shapes). **One fan out = it cannot hold altitude**: it
-   settles onto its legs (a hard landing from height). A dead fan shows it: blades stopped, guard bent, smoke. Nothing of
-   this is built. Open questions for the user: **can a grounded Wasp still shoot?** **Does it stay down until the fan is
-   repaired** (or limp up on one fan for short hops)?
+   **Fan damage** (user, 2026-11-26; it replaces "min 3 fans to fly"): the two main fans are the damage components, as
+   legs are on the walkers (each its own HP; its hit volume the duct ring, so the two rings are separate, targetable
+   shapes). **Losing a fan is the same as a walker losing a leg** (user: "align it with the same behavior the other
+   mechs have when they lose a leg"): the fans are core components, so one fan destroyed puts the Wasp DOWN under the
+   existing downed rules (`DownedRules`, `PlayerTarget`): it drops onto its legs where it is, no movement, and it
+   **stays down until repaired** (user: "yes"): a crewmate's repair drone revives it in place, or the pilot holds
+   respawn. A dead fan shows it: blades stopped, guard bent, smoke. Nothing of this is built.
+   **Identical to the walkers** (user, 2026-11-26: "Keep it the same as walkers, we can revisit later but they should be
+   identical behavior to walkers"): a downed Wasp has no movement and no weapons, takes no damage and is dropped as a
+   target, exactly as a downed Strider or Bulwark. No Wasp-only grounded-but-armed state.
+   **Feet** (user, 2026-11-26): the spiky claw toes are the explicit design (the Strider's toes in miniature); keep them.
    **It needs its own AI** (user): the mission bot and route planner assume a walker on decks and ramps. A hover pilot
    needs 3D routes (over obstacles, between decks through ceiling openings), altitude choice, landing before overheat,
    and enemy AI needs to aim at and react to a flying target. Design that with the bot's owners before building.
@@ -245,6 +250,9 @@ and checked by tests, then compared with the concept by eye.
   with white tips). Legs 1.35x thicker (drums sized to them, rule 3.3), feet 1.4x, a tidier dangle (both legs alike,
   feet nearly level). A taller, thicker fin, further back. The stub swivel's pitch-up is cut to 45 (the fans now sit over
   the stubs). Heaviest loadout 8508 faces; comb unchanged (7.80 m).
+- Wasp pilot head (user, 2026-11-26: "Leave it"): the shared pilot head stays at full size on the Wasp, as on every
+  chassis; no per-chassis pilot scale. The head being as tall as the small hull is accepted, and the fans stay where
+  the dog's ears allow (behind and beside the head).
 
 ## Bulwark world fit (2026-11-24, Mech session)
 The city, the missions and the bots were built around the Strider's 2.2 m capsule that can thrust onto roofs. Measured

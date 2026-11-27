@@ -204,6 +204,11 @@ func prewarm_step(budget_ms: float = 2.0) -> int:
 	return built
 
 
+## True while the async prewarm (start_async_prewarm) has been launched and not stopped.
+func is_async_started() -> bool:
+	return _async_started
+
+
 ## Launch parallel WorkerThreadPool tasks to synthesize every cue off the main thread (~0.35 s wall, 0.0 ms hitch).
 func start_async_prewarm(workers: int = 4) -> void:
 	if _async_started:

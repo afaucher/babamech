@@ -138,7 +138,7 @@ func _col(d: CityDistrict, skip_plates: bool = false) -> Array:
 		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else (cs.shape as ConvexPolygonShape3D).points
 		if skip_plates and sz is Vector3 and absf((sz as Vector3).z - (CityDistrict.PORTAL_PLATE + 0.1)) < 0.001:
 			var s := d.ring.world_to_arc(cs.transform.origin).y
-			if s > e.end.y + CityStreets.GATE_RECESS - 0.5 or s < e.position.y - CityStreets.GATE_RECESS + 0.5:
+			if s > e.end.y + CityWalls.GATE_RECESS - 0.5 or s < e.position.y - CityWalls.GATE_RECESS + 0.5:
 				plates += 1
 				continue
 		h = hash([h, cs.transform, sz])
@@ -433,7 +433,7 @@ func _forms_graphs() -> void:
 		for variant in ["off", "default", "mix"]:
 			var sec2: SectionPlan = _sec_off(s) if variant == "off" else (SectionPlan.make({"seed": s}) if variant == "default" else SectionPlan.make(_mix(s)))
 			for k in sec2.deck_count:
-				var n := _components(CityPlan.for_deck(sec2, k).road_graph())
+				var n := _components(CityGraphs.road_graph(CityPlan.for_deck(sec2, k)))
 				eq(n, 1, "C: section %d deck %d (%s forms): the city road graph is one connected network" % [s, k, variant])
 	var decks := 0
 	var dropped := 0
@@ -445,7 +445,7 @@ func _forms_graphs() -> void:
 		for k in sec.deck_count:
 			var plan := CityPlan.for_deck(sec, k)
 			var ns := plan.roads_s.size()
-			var g := plan.road_graph()
+			var g := CityGraphs.road_graph(plan)
 			var city := {}
 			for ed: Array in g["edges"]:
 				var a := int(ed[0])
@@ -528,7 +528,7 @@ func _forms_alone() -> void:
 			check(plan.seg_form(axis, line + 1, index) != f and plan.seg_form(axis, line - 1, index) != f,
 					"C: alone %d: segment %d has no parallel neighbour of the same form" % [s, k])
 		minor += (nx - 2) * (ns - 1) + (ns - 2) * (nx - 1) - (ns - 1)
-		var g := plan.road_graph()
+		var g := CityGraphs.road_graph(plan)
 		var adj := {}
 		for ed: Array in g["edges"]:
 			for e2 in [[ed[0], ed[1]], [ed[1], ed[0]]]:
@@ -592,7 +592,7 @@ func _forms_pockets(plan: CityPlan, tag: String) -> void:
 	var seen := PackedByteArray()
 	seen.resize(w * h)
 	var queue := PackedInt32Array()
-	var g := plan.road_graph()
+	var g := CityGraphs.road_graph(plan)
 	for p: Vector2 in g["nodes"]:
 		var i := int(p.x - e.position.x)
 		var j := int(p.y - e.position.y)
@@ -753,7 +753,7 @@ func _walk_plans() -> Array:
 
 func _walk_rules() -> void:
 	for key: String in ROAD_PINS:
-		eq(hash(var_to_bytes(_pin_plan(key).road_graph())), ROAD_PINS[key], "graphs: %s road_graph() byte-identical to before walk_graph" % key)
+		eq(hash(var_to_bytes(CityGraphs.road_graph(_pin_plan(key)))), ROAD_PINS[key], "graphs: %s road_graph() byte-identical to before walk_graph" % key)
 	var extra := {"pedestrian": 0, "none": 0}
 	var closed_courts := 0
 	var alleys := 0
@@ -761,8 +761,8 @@ func _walk_rules() -> void:
 	for pc: Array in _walk_plans():
 		var tag: String = pc[0]
 		var plan: CityPlan = pc[1]
-		var rg := plan.road_graph()
-		var wg := plan.walk_graph()
+		var rg := CityGraphs.road_graph(plan)
+		var wg := CityGraphs.walk_graph(plan)
 		check(not rg.has("forms"), "graphs: %s road_graph() has no forms key (unchanged shape)" % tag)
 		eq(wg["nodes"], rg["nodes"], "graphs: %s walk_graph nodes = road_graph nodes (ids and positions)" % tag)
 		var re: Array = rg["edges"]
@@ -786,7 +786,7 @@ func _walk_rules() -> void:
 			var b := int(ed[1])
 			var axis := "s" if b == a + 1 else "x"
 			eq(plan.seg_form(axis, a / ns if axis == "s" else a % ns, a % ns if axis == "s" else a / ns), f, "graphs: %s extra edge %s is that segment's form" % [tag, str(ed)])
-			check(not CityPlan._crosses_cut(wg["nodes"][a], wg["nodes"][b], cuts), "graphs: %s extra edge %s crosses no floor cut" % [tag, str(ed)])
+			check(not CityGraphs.crosses_cut(wg["nodes"][a], wg["nodes"][b], cuts), "graphs: %s extra edge %s crosses no floor cut" % [tag, str(ed)])
 		# Every pedestrian segment the cut rule allows is in; a court exactly when court_open says the capsule crosses it.
 		var have := {}
 		for ed: Array in we:
@@ -798,15 +798,15 @@ func _walk_rules() -> void:
 			var a := line * ns + index if axis == "s" else index * ns + line
 			var b := a + 1 if axis == "s" else a + ns
 			var f := str(plan.forms[k])
-			var cut := CityPlan._crosses_cut(wg["nodes"][a], wg["nodes"][b], cuts)
+			var cut := CityGraphs.crosses_cut(wg["nodes"][a], wg["nodes"][b], cuts)
 			if f == "pedestrian":
 				eq(have.has(Vector2i(a, b)), not cut, "graphs: %s pedestrian segment %d walkable unless cut" % [tag, k])
 			elif f == "none":
-				var open := plan.court_open(axis, line, index)
+				var open := CityGraphs.court_open(plan, axis, line, index)
 				closed_courts += 0 if open else 1
 				eq(have.has(Vector2i(a, b)), open and not cut, "graphs: %s court %d in the walk graph exactly when open" % [tag, k])
 		# with_alleys: the grid's ids unchanged, new ids after them, one edge through every alley, still one network.
-		var wa := plan.walk_graph(true)
+		var wa := CityGraphs.walk_graph(plan, true)
 		var n0: int = rg["nodes"].size()
 		eq((wa["nodes"] as Array).slice(0, n0), rg["nodes"], "graphs: %s with alleys: existing node ids unchanged" % tag)
 		eq(_components(wa), 1, "graphs: %s with alleys: one connected network" % tag)
@@ -843,10 +843,10 @@ func _walk_rules() -> void:
 			var line := (k % 65536) / 256
 			var index := k % 256
 			var c := plan.seg_inner(axis, line, index).get_center()
-			var before: int = plan.walk_graph()["edges"].size()
+			var before: int = CityGraphs.walk_graph(plan)["edges"].size()
 			plan.columns.append({"x": c.x, "s": c.y, "ring_r": 1.5, "half": 1.0, "ring_h": 0.6})
-			check(not plan.court_open(axis, line, index), "graphs: %s court %d with a column in it is closed" % [pc[0], k])
-			eq(plan.walk_graph()["edges"].size(), before - 1, "graphs: %s the closed court leaves the walk graph" % pc[0])
+			check(not CityGraphs.court_open(plan, axis, line, index), "graphs: %s court %d with a column in it is closed" % [pc[0], k])
+			eq(CityGraphs.walk_graph(plan)["edges"].size(), before - 1, "graphs: %s the closed court leaves the walk graph" % pc[0])
 			plan.columns.pop_back()
 			probe_done = true
 	check(probe_done, "graphs: a court to close")
@@ -855,13 +855,13 @@ func _walk_rules() -> void:
 		var sec := _sec_off(s)
 		for k in sec.deck_count:
 			var plan := CityPlan.for_deck(sec, k)
-			var rg := plan.road_graph()
-			var wg := plan.walk_graph()
+			var rg := CityGraphs.road_graph(plan)
+			var wg := CityGraphs.walk_graph(plan)
 			check(wg["nodes"] == rg["nodes"] and wg["edges"] == rg["edges"], "graphs: section %d deck %d (forms off): walk_graph == road_graph" % [s, k])
 	for s in range(1, 6):
 		var plan := CityPlan.make({"seed": s, "road_variety": 0.0})
-		var rg := plan.road_graph()
-		var wg := plan.walk_graph()
+		var rg := CityGraphs.road_graph(plan)
+		var wg := CityGraphs.walk_graph(plan)
 		check(wg["nodes"] == rg["nodes"] and wg["edges"] == rg["edges"], "graphs: alone %d (road_variety 0): walk_graph == road_graph" % s)
 
 
@@ -897,7 +897,7 @@ func _walk_built() -> void:
 		await frames(2)
 		var tag := "section %d deck %d" % [pk[0], pk[1]] if int(pk[0]) > 0 else "alone %d" % pk[1]
 		var plan := d.plan
-		var g := plan.walk_graph(true)
+		var g := CityGraphs.walk_graph(plan, true)
 		for ed: Array in g["edges"]:
 			var f := str(g["forms"][_ekey(ed)])
 			if f == "street" or f == "lane":
@@ -912,7 +912,7 @@ func _walk_built() -> void:
 			var axis := "x" if k >= 65536 else "s"
 			var line := (k % 65536) / 256
 			var index := k % 256
-			if plan.court_open(axis, line, index):
+			if CityGraphs.court_open(plan, axis, line, index):
 				continue
 			var a := line * ns + index if axis == "s" else index * ns + line
 			var b := a + 1 if axis == "s" else a + ns

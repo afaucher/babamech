@@ -1,6 +1,6 @@
 extends NetTest
 ## The shared mission start (co-op step 1, docs/networking.md "Mission"), over a real crew, once per link (off, coast):
-## - the crew gathers; the host launches (Session.start_mission): mission_started fires on every machine, the crew is
+## - the crew gathers; the host launches (Session.mission.host_launch): mission_started fires on every machine, the crew is
 ##   "mission", a second launch is refused;
 ## - every machine loads the test drive at start_t on the shared clock, on the host's seed, and reports its checksum;
 ##   the barrier passes (mission_go) and every machine lands on the same seed and city checksum;
@@ -19,7 +19,7 @@ var crew_size := 2
 var desync_index := -1
 ## The city the host launches: the stack (the only one).
 var mission_mode := NetMission.MODE_STACK
-var td: TestDrive
+var td: MissionScene
 
 
 func _configure() -> void:
@@ -34,13 +34,13 @@ func run_host() -> void:
 	var started := [false]
 	Session.mission_started.connect(func(_p: Dictionary) -> void: started[0] = true)
 	# The one mission mode (objectives).
-	check(Session.start_mission(SEED, mission_mode), "the host launches the mission (%s)" % mission_mode)
-	check(not Session.mission_params().has("objectives"), "the launch carries no mode switch (objectives are the only mode)")
+	check(Session.mission.host_launch(SEED, mission_mode), "the host launches the mission (%s)" % mission_mode)
+	check(not Session.mission.params.has("objectives"), "the launch carries no mode switch (objectives are the only mode)")
 	check(started[0], "mission_started fires on the host too")
-	check(not Session.start_mission(SEED + 1), "a second launch while one is under way is refused")
+	check(not Session.mission.host_launch(SEED + 1), "a second launch while one is under way is refused")
 	eq(Session.crew_state, "mission", "the crew is on a mission")
-	eq((Session.mission_params()["crew"] as Array).size(), crew_size, "the launch carries the whole crew")
-	eq(Session.mission_params().get("friendly_fire", null), true, "the default launch carries friendly fire on")
+	eq((Session.mission.params["crew"] as Array).size(), crew_size, "the launch carries the whole crew")
+	eq(Session.mission.params.get("friendly_fire", null), true, "the default launch carries friendly fire on")
 	for e: Dictionary in Session.crew():
 		var i := 0 if int(e["peer"]) == 1 else int(str(e["name"]).trim_prefix("c"))
 		eq(loadout_signature(e["loadout"] as Dictionary), loadout_signature(loadout_for(i)), "%s's roster entry carries its loadout" % str(e["name"]))
@@ -57,10 +57,10 @@ func run_host() -> void:
 		check(Session.telemetry == null or Array(Session.telemetry.notes).any(func(n: String) -> bool: return n.contains("DESYNC")),
 			"the desync is noted in telemetry")
 		check(await until(func() -> bool: return Session.roster.size() == expected, 10.0), "the desynced client is out of the crew")
-	check(not td._held, "the host's mech is released after the barrier")
+	check(not td.held, "the host's mech is released after the barrier")
 	var mine := _summary()
 	eq(int(mine["seed"]), SEED, "the host built the mission seed")
-	eq(str(mine["mode"]), str(Session.mission_params().get("mode", "")), "the host built the launched city mode")
+	eq(str(mine["mode"]), str(Session.mission.params.get("mode", "")), "the host built the launched city mode")
 	eq(str(mine["mechs"]), _expected_mechs(), "the host spawned one mech per crew member with its owner, head, accent and loadout")
 	check(bool(mine["local_driven"]), "the host drives its own mech")
 	eq(mine["friendly_fire"], true, "the host's test drive has friendly fire on (the default)")
@@ -79,7 +79,7 @@ func run_host() -> void:
 	if desync_index > 0:
 		check(await until(func() -> bool: return Session.refusals.any(func(r: Dictionary) -> bool: return str(r["reason"]) == NetSession.ON_MISSION), 30.0),
 			"the sent-out client trying to come back mid-mission is refused (%s)" % NetSession.ON_MISSION)
-	Session.end_mission()
+	Session.mission.end()
 	eq(Session.crew_state, "lobby", "the host's crew is back in the lobby")
 	check(await wait_reports("ended", expected - 1, 20.0), "every client hears the mission end")
 	for p in peers_with("ended"):
@@ -96,10 +96,10 @@ func run_client() -> void:
 		return
 	var ended_mission := [false]
 	Session.mission_ended.connect(func(_r: String) -> void: ended_mission[0] = true)
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
-	eq(int(Session.mission_params()["seed"]), SEED, "the launch carries the seed")
-	eq(str(Session.mission_params()["mode"]), mission_mode, "the launch carries the city mode")
+	eq(int(Session.mission.params["seed"]), SEED, "the launch carries the seed")
+	eq(str(Session.mission.params["mode"]), mission_mode, "the launch carries the city mode")
 	eq(Session.crew_state, "mission", "the crew is on a mission here too")
 	if index == desync_index:
 		Session.mission.checksum_salt = "-perturbed"
@@ -122,7 +122,7 @@ func run_client() -> void:
 ## Wait for start_t on the shared clock, then load the mission (the test drive) as the hangar would.
 func _load() -> void:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	check(td.crewed, "the test drive runs the crew mission")
@@ -140,12 +140,12 @@ func _summary() -> Dictionary:
 		parts.append("%d:%d:%s:%s:%s" % [p, MechSpawn.owner_of(m), model.head_id, MechAccent.applied(model), loadout_signature(model.loadout)])
 	return {"seed": td.seed_value, "checksum": td.mission_checksum(), "mode": td.city_mode, "crew_state": Session.crew_state, "mechs": ";".join(parts),
 		"local_driven": td.mech != null and MechSpawn.owner_of(td.mech) == Session.local_id() and td.cam.target == td.mech,
-		"held": td._held, "friendly_fire": td.friendly_fire}
+		"held": td.held, "friendly_fire": td.friendly_fire}
 
 
 ## The mechs the launch's crew should give, in seat order (members still in the crew: a leaver's mech is retired).
 func _expected_mechs() -> String:
-	var crew := (Session.mission_params()["crew"] as Array).duplicate()
+	var crew := (Session.mission.params["crew"] as Array).duplicate()
 	crew.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return int(a["seat"]) < int(b["seat"]))
 	var parts: PackedStringArray = []
 	for e: Dictionary in crew:

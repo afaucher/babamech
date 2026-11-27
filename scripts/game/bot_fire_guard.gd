@@ -4,7 +4,7 @@ extends RefCounted
 ## autocannon shells and missiles). MissionBot calls apply() every physics frame, after PlayerBot chose its slots and
 ## trigger and before the rack steps, for the local `--bot` mech and for every hangar bot. Pure geometry, no state.
 ##
-## A slot fires only if its shot can't reach a crew mech (TestDrive.mechs: players' puppets, the host's own mech, other
+## A slot fires only if its shot can't reach a crew mech (MissionScene.mechs: players' puppets, the host's own mech, other
 ## bots, on any machine), else it is disabled for this frame (PlayerBot sets the slots again next frame); no slot left:
 ## the trigger is released. Friendly mission ASSETS count too (asset_states: team "player" targets that aren't mechs, e.g.
 ## the defend relay, as a capsule from their hit spheres). A crew mech is a vertical capsule (HULL_R around its up axis, HULL_LO..HULL_HI m) moved

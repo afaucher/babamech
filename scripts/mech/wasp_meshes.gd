@@ -151,16 +151,14 @@ const FOOT_S := 0.56
 const TOES := [[Vector3(-0.13, 0, -0.16) * FOOT_S, 27.0], [Vector3(0, 0, -0.21) * FOOT_S, 0.0], [Vector3(0.13, 0, -0.16) * FOOT_S, -27.0]]
 const SPUR_ROOT := Vector3(0, 0, 0.17) * FOOT_S
 
-const WHITE := MechMeshes.WHITE
-const ORANGE := MechMeshes.ORANGE
-const GREY := MechMeshes.GREY
-const DARK := MechMeshes.DARK
-const STEEL := MechMeshes.STEEL
-const GUN := MechMeshes.GUN
-const BLACK := MechMeshes.BLACK
-const AMBER := MechMeshes.AMBER
-
-static var _cache: Dictionary = {}
+const WHITE := LowPolyPalette.WHITE
+const ORANGE := LowPolyPalette.ORANGE
+const GREY := LowPolyPalette.GREY
+const DARK := LowPolyPalette.DARK
+const STEEL := LowPolyPalette.STEEL
+const GUN := LowPolyPalette.GUN
+const BLACK := LowPolyPalette.BLACK
+const AMBER := LowPolyPalette.AMBER
 
 
 static func all_parts() -> Array[String]:
@@ -179,22 +177,11 @@ static func path(part: String) -> String:
 
 
 static func mesh(part: String) -> ArrayMesh:
-	if _cache.has(part):
-		return _cache[part]
-	var m: ArrayMesh = null
-	if ResourceLoader.exists(path(part)):
-		m = load(path(part)) as ArrayMesh
-	if m == null:
-		m = build(part)
-	_cache[part] = m
-	return m
+	return PartCache.mesh(MechMeshes.DIR, part, build)
 
 
 static func instance(part: String) -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
-	mi.name = part
-	mi.mesh = mesh(part)
-	return mi
+	return PartCache.instance(MechMeshes.DIR, part, build)
 
 
 static func build(part: String) -> ArrayMesh:
@@ -210,15 +197,15 @@ static func build(part: String) -> ArrayMesh:
 		"wasp_stub_mount": _stub_mount(k)
 		"wasp_chin_mount": _chin_mount(k)
 		"wasp_hip_socket": _hip_socket(k)
-		"wasp_hip_cap": MechMeshes._cap(k, HIP_DRUM.x, HIP_DRUM.y, HIP_DRUM.z)
+		"wasp_hip_cap": k.joint_cap(HIP_DRUM.x, HIP_DRUM.y, HIP_DRUM.z, LowPolyPalette.DARK, LowPolyPalette.GREY, LowPolyPalette.STEEL)
 		"wasp_thigh": _thigh(k)
-		"wasp_knee_cap": MechMeshes._cap(k, KNEE_DRUM.x, KNEE_DRUM.y, KNEE_DRUM.z)
+		"wasp_knee_cap": k.joint_cap(KNEE_DRUM.x, KNEE_DRUM.y, KNEE_DRUM.z, LowPolyPalette.DARK, LowPolyPalette.GREY, LowPolyPalette.STEEL)
 		"wasp_shin": _shin(k)
-		"wasp_ankle_cap": MechMeshes._cap(k, ANKLE_DRUM.x, ANKLE_DRUM.y, ANKLE_DRUM.z)
-		"wasp_foot": _scaled(k, FOOT_S, MechMeshes._foot)
+		"wasp_ankle_cap": k.joint_cap(ANKLE_DRUM.x, ANKLE_DRUM.y, ANKLE_DRUM.z, LowPolyPalette.DARK, LowPolyPalette.GREY, LowPolyPalette.STEEL)
+		"wasp_foot": _scaled(k, FOOT_S, MechMeshes.strider_foot)
 		"wasp_toe": _scaled(k, FOOT_S, _toe)
-		"wasp_spur": _scaled(k, FOOT_S, MechMeshes._spur)
-	return k.commit(MechMeshes.materials())
+		"wasp_spur": _scaled(k, FOOT_S, MechMeshes.strider_spur)
+	return k.commit(LowPolyMaterials.materials())
 
 
 static func _scaled(k: MeshKit, s: float, f: Callable) -> void:
@@ -233,7 +220,7 @@ static func hull_shell() -> ArrayMesh:
 	k.accent_key = ORANGE
 	k.loft(_hull_rings(), _hull_colour)
 	_coaming(k)
-	return k.commit(MechMeshes.materials())
+	return k.commit(LowPolyMaterials.materials())
 
 
 ## The hull volume grown for the hardpoints and joints (strut, stub, hip and chin pads).
@@ -241,7 +228,7 @@ static func hardpoint_pads() -> ArrayMesh:
 	var k := MeshKit.new()
 	k.accent_key = ORANGE
 	_pads(k)
-	return k.commit(MechMeshes.materials())
+	return k.commit(LowPolyMaterials.materials())
 
 
 ## The coaming alone (every pilot head clears it).
@@ -249,7 +236,7 @@ static func coaming() -> ArrayMesh:
 	var k := MeshKit.new()
 	k.accent_key = ORANGE
 	_coaming(k)
-	return k.commit(MechMeshes.materials())
+	return k.commit(LowPolyMaterials.materials())
 
 
 # --- The hull ------------------------------------------------------------------------------------------------
@@ -581,7 +568,7 @@ static func _chin_mount(k: MeshKit) -> void:
 		k.tube(hose[i], hose[i + 1], 0.018, 6, BLACK)
 
 
-# --- Legs (coloured as the Strider's: MechMeshes._thigh / _shin / _hip_socket / _cap / _foot / _toe / _spur) -----
+# --- Legs (coloured as the Strider's: MechMeshes._thigh / _shin / _hip_socket / strider_foot / _toe / strider_spur, MeshKit.joint_cap)
 
 ## The hip clevis (right leg; origin on the hip pin): a grey top plate on the belly pad (sunk 5 mm into it) with four steel
 ## bolts, two dark cheeks hanging either side of the hip drum, a steel axle through them with caps.

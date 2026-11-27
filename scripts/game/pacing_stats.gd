@@ -134,7 +134,7 @@ func body(est: bool) -> String:
 	return ("dur=%.1f eng_s=%.1f eng_pct=%d quiet_max=%.1f quiet_max_mt=%.1f quiet30=%s peaks=%d peak_mt=%s kills=%d"
 		+ " kint_med=%.1f kint_p90=%.1f kint_max=%.1f in_pm=%.1f out_pm=%.1f hp_min=%d hp_min_mt=%.1f core_min=%d"
 		+ " core_min_c=%s core_min_mt=%.1f deaths=%d est=%d") % [duration(), eng_s, roundi(engaged_pct()), q_max, q_max_t,
-		_pairs(quiet30), peaks, _times(peak_t), kill_t.size(), k[0], k[1], k[2], per_minute(dmg_in), per_minute(dmg_out),
+		_pairs(quiet30), peaks, times(peak_t), kill_t.size(), k[0], k[1], k[2], per_minute(dmg_in), per_minute(dmg_out),
 		roundi(hp_min), hp_min_t, roundi(core_min), core_min_c if core_min_c != "" else "-", core_min_t, deaths,
 		1 if est else 0]
 
@@ -150,7 +150,8 @@ func _quiet_until(t: float) -> float:
 	return d
 
 
-static func _times(a: PackedFloat64Array) -> String:
+## Times as "60.0;71.0" (one decimal, ";"-joined), "-" when empty (the pacing and combat log lines).
+static func times(a: PackedFloat64Array) -> String:
 	if a.is_empty():
 		return "-"
 	var parts := PackedStringArray()

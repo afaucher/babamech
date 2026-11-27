@@ -428,11 +428,11 @@ func _clear_spot(id: int, p0: Vector2, taken: PackedVector2Array, walkable: bool
 					ok = false
 					break
 			if ok and walkable and ring > 0:
-				for r in lp._foot:
+				for r in lp.foot():
 					if r.grow(0.3).has_point(p):
 						ok = false
 						break
-				for r in lp._cuts:
+				for r in lp.cuts():
 					if r.has_point(p):
 						ok = false
 						break

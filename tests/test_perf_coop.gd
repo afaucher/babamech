@@ -1,7 +1,7 @@
 extends TestCase
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## W9 perf budget: a full crew of 4 in the mission scene (the stack once W2 is in, else the district), measured in ONE
-## process. The host opens a session alone and launches a real crew mission (Session.start_mission), so the test drive
+## process. The host opens a session alone and launches a real crew mission (Session.mission.host_launch), so the test drive
 ## runs exactly as in co-op: CrewSync, CombatNet, the shared clock, Session.mechs streaming. Three more crew mechs are
 ## then added as PUPPETS through the real path: MechSpawn.make(..., peer) with `puppet` on, then CrewSync.setup again with
 ## all four seats (it gives each a MechPuppet and a PlayerTarget and calls Session.mechs.begin), and every 1/30 s a
@@ -20,7 +20,7 @@ const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "
 ## p50 6.4-6.9 ms, p95 7.8-8.5 ms, p99 15.8-17.8 ms, max 59-68 ms (one spike right after the puppets are added); the
 ## puppets cost +2.0-3.0 ms avg (about 0.7-1 ms each).
 ##
-## Engine added `--offline-crew N` / TestDrive.offline_crew (idle puppets in a solo drive). Not used here on purpose:
+## Engine added `--offline-crew N` / MissionScene.offline_crew (idle puppets in a solo drive). Not used here on purpose:
 ## those puppets get no CrewSync / Session.mechs stream, which is the cost this test measures.
 
 const SERIAL := true   # wall-clock budget: test_runner runs it alone, after the parallel batch
@@ -35,7 +35,7 @@ const PUPPET_BUDGET := 4.5         ## ms, average added by the 3 puppets (rig, I
 const SNAP_DT := 1.0 / 30.0        ## the stream's send rate (NetMechStream.SEND_RATE)
 const LEG := 3.0                   ## s each way up / down the road for the synthetic puppets
 
-var td: TestDrive
+var td: MissionScene
 var _base: Dictionary = {}         ## peer -> [deck-local start transform]
 
 
@@ -66,10 +66,10 @@ func _run() -> void:
 	var port := test_port(PORT)
 	if not check(Session.host_enet(port), "the host opens port %d" % port):
 		return
-	if not check(Session.start_mission(SEED), "the host launches a crew mission"):
+	if not check(Session.mission.host_launch(SEED), "the host launches a crew mission"):
 		return
 	await _until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0)
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	# A crew mission loads stepped (the stack and life over frames): measure only once it is fully set up.
@@ -77,7 +77,7 @@ func _run() -> void:
 		return
 	if not check(td.crewed and td.crew_sync != null, "the test drive runs the crew mission"):
 		return
-	if not check(await _until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 20.0),
+	if not check(await _until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 20.0),
 			"the load barrier passes"):
 		return
 	var where := "stack" if td.get("stack") != null else "district"
@@ -163,7 +163,7 @@ func _measure(label: String) -> Dictionary:
 
 ## Leave as the game does: the host ends the mission, the scene goes, the session closes.
 func _finish_mission() -> void:
-	Session.end_mission()
+	Session.mission.end()
 	td.queue_free()
 	await frames(2)
 	Session.leave()
@@ -189,8 +189,8 @@ func _add_puppets() -> Dictionary:
 		var ma := m.get_node_or_null("Audio") as MechAudio
 		if ma != null:
 			ma.city = td.city
-		# Rows 10 / 10 / 20 m along the road from the local mech, columns 4 m either side (TestDrive's crew layout).
-		var xf := TestDrive.entry_spawn(entry, td.city, i + 2, 6)
+		# Rows 10 / 10 / 20 m along the road from the local mech, columns 4 m either side (MissionScene's crew layout).
+		var xf := MissionScene.entry_spawn(entry, td.city, i + 2, 6)
 		m.global_transform = xf
 		td.mechs[peer] = m
 		seats[peer] = i + 2

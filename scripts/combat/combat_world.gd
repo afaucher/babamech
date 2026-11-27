@@ -1,6 +1,6 @@
 class_name CombatWorld
 extends Node3D
-## The combat container of a scene (weapons.md Â§5): owns the combat CLOCK, the mission seed, the registered targets and
+## The combat container of a scene (weapons.md §5): owns the combat CLOCK, the mission seed, the registered targets and
 ## the live effects (shots, impacts), and is where hits are decided and delivered. One per scene; place it at the
 ## origin (effects draw in world space).
 ##
@@ -8,7 +8,7 @@ extends Node3D
 ##   world.register(target)                       a CombatTarget becomes hittable
 ##   world.fire(record) -> CombatEffect           start a shot from a fire record (Combat.fire_record); a record older
 ##                                                than `now` is fast-forwarded by now - record.t (a late network event)
-##   world.advance(dt)                            the scene calls this with ITS delta (Ã— the lab's time scale): moves the
+##   world.advance(dt)                            the scene calls this with ITS delta (× the lab's time scale): moves the
 ##                                                clock, steps targets this machine owns, advances every effect
 ##   world.stats(weapon_id)                       the weapon's catalog entry + the lab's `overrides`
 ##   world.launch_drone(record) -> RepairDrone    start a repair drone (back-equipment.md; a scheduled effect that
@@ -24,7 +24,7 @@ extends Node3D
 ## CombatNet tells the crew; each other machine calls `drop_shot(key, point, normal)`, which ends its copy there if it is
 ## still flying (one dictionary lookup), so a shot never lands on two deciders in the common case.
 ##
-## CITY PROPS (docs/design/city-props.md Â§5): `first_hit` also asks the props `first_hit(a, b, r)` and keeps the nearest
+## CITY PROPS (docs/design/city-props.md §5): `first_hit` also asks the props `first_hit(a, b, r)` and keeps the nearest
 ## of targets / world / props (a hit on a prop carries "prop": id and "prop_node": the CityProps it came from, target
 ## null); a direct hit calls `apply_impulse(id, dv, src)` on that node (`hit_prop`: dv = stats.knockback along the shot,
 ## no damage, no heat) and `splash` calls `blast(point, radius, dv, src)` (dv = stats.prop_blast, else
@@ -33,7 +33,7 @@ extends Node3D
 ## railgun slug) sets `skip_props` while it sweeps, so first_hit leaves props out, and knocks every prop
 ## `props_on_segment(a, b, r)` lists along what it flew, each through `hit_prop` (the same arbitration).
 ##   STACK (the mission, docs/design/city-ramps-and-stack.md): every deck has its own CityProps (ids are per deck; each
-## node puts its own `deck` on its prop events, so the verbs take no deck). `stack` is the CityStack: TestDriveCombat sets
+## node puts its own `deck` on its prop events, so the verbs take no deck). `stack` is the CityStack: MissionCombat sets
 ## it from td.stack, else it is found in group "city_stack" (looked up only while no props node is cached). With a
 ## stack, `first_hit` asks the props of every deck the swept sphere can touch (`deck_span`: stack.deck_at of the point
 ## nearest the shared axis and of the farthest, padded by r; one deck for almost every chord, so a shot dropping through
@@ -42,7 +42,7 @@ extends Node3D
 ## stack.ring()). No stack (lab, district mode, single-process tests): the first node in group "city_props" (found once,
 ## cached) and `ring`, exactly as before.
 ##
-## AMBIENT LIFE (docs/design/ambient-life.md Â§6): when a node in group "ambient_life" exists (AmbientLife; looked up
+## AMBIENT LIFE (docs/design/ambient-life.md §6): when a node in group "ambient_life" exists (AmbientLife; looked up
 ## lazily on the first call that needs it, at most every LIFE_RESCAN s of clock while missing, cached until freed), every
 ## shot path reports itself through `life_sweep(record, a, b, r)` -> `life.sweep(a, b, r, src)` (Projectile._sweep per
 ## chord, the laser's ray, each flame chunk's chord) and `splash` calls `life.blast(point, radius, src)`. Only the
@@ -78,7 +78,7 @@ const WALL_PROBE := 0.3           ## m each way along an impact's normal that wa
 const EARLY_DROP_LIFE := 2.0      ## s of clock a drop for a shot not fired here yet waits for its record (drop_shot)
 const EARLY_DROP_MAX := 256       ## such drops kept at most (oldest forgotten first)
 
-## DEV ONLY: damage multiplier on hits against team "enemy" (TestDrive sets it for `--dev-fast-clear`, so a bot run
+## DEV ONLY: damage multiplier on hits against team "enemy" (MissionScene sets it for `--dev-fast-clear`, so a bot run
 ## clears decks quickly without skipping any transition). 1 = normal play.
 static var dev_enemy_damage := 1.0
 ## PROFILING (tests/bench_combat_fx.gd, tools/fx_bench): while `profiling` is true, advance times every effect by script
@@ -99,9 +99,9 @@ static func prof_add(key: String, us: int, n: int = 1) -> void:
 
 var now := 0.0
 var mission_seed := 0
-## FRIENDLY FIRE (weapons.md Â§4.6): true (the default) = a team "player" shot hits other team "player" targets exactly
+## FRIENDLY FIRE (weapons.md §4.6): true (the default) = a team "player" shot hits other team "player" targets exactly
 ## like enemies (direct hits stop at them, splash reaches them); false = it passes through them as before. A mission
-## parameter every machine sets the same (TestDriveCombat from the crew's launch params). Other same-team pairs (enemy
+## parameter every machine sets the same (MissionCombat from the crew's launch params). Other same-team pairs (enemy
 ## on enemy) are spared either way, and a shot never hits its own shooter (`spares`).
 var friendly_fire := true
 var ring: RingFrame = null        ## optional RingFrame on curved city decks (for surface-aligned impacts)
@@ -119,7 +119,7 @@ var looks_rng := RandomNumberGenerator.new()
 var muzzles: Dictionary = {}
 var _shooter_teams: Dictionary = {} ## shooter_id -> team string (cached from register/fire so shots skip same-team)
 ## The mission's CityStack, or null (no stack: one CityProps / `ring`). Duck-typed so tests can stand one in: `decks`
-## (each with `props`), deck_at(p), ring(), ring_at(p). Set by TestDriveCombat; else found in group "city_stack".
+## (each with `props`), deck_at(p), ring(), ring_at(p). Set by MissionCombat; else found in group "city_stack".
 var stack: Node = null
 var _props: Node = null           ## the CityProps node (group "city_props"), cached (no stack only)
 var _props_scan := -1.0           ## clock time of the last group lookup (at most one per step while it is missing)
@@ -142,7 +142,7 @@ var equipment_look := EquipmentLook.new()
 var fire_gate := Callable()
 ## True while advance() steps the targets this machine owns (an enemy's AI firing happens inside it).
 var stepping_targets := false
-## SHOT DROPS (drop_shot): shot key -> this machine's live Projectile with that key (kept by _add_effect / remove_effect,
+## SHOT DROPS (drop_shot): shot key -> this machine's live Projectile with that key (kept by add_effect / remove_effect,
 ## so a drop is one lookup), and drops that arrived before their record: key -> [point, normal, color, clock time].
 var _shots: Dictionary = {}
 var _early_drops: Dictionary = {}
@@ -285,14 +285,14 @@ func fire(record: Dictionary) -> CombatEffect:
 	var e := b.spawn(self, record, stats(str(record["weapon"])))
 	if e == null:
 		return null
-	_add_effect(e)
+	add_effect(e)
 	var f1 := Time.get_ticks_usec() if profiling else 0
 	e.advance_to(now)
 	var f2 := Time.get_ticks_usec() if profiling else 0
 	if e is Projectile and now - float(record.get("t", now)) < MuzzleFlash.LIFE:
 		var p := e as Projectile
 		var mf := MuzzleFlash.new()
-		_add_effect(mf)
+		add_effect(mf)
 		mf.setup(self, p.flight_pos(0.0), p.flight_dir(0.0), MuzzleFlash.size_for(p.stats), float(record.get("t", now)))
 	if not _early_drops.is_empty() and e is Projectile:
 		_take_early_drop(e as Projectile)
@@ -349,7 +349,7 @@ func launch_drone(record: Dictionary) -> RepairDrone:
 		remove_effect(old)
 	var d := RepairDrone.new()
 	d.start(self, record, st)
-	_add_effect(d)
+	add_effect(d)
 	d.advance_to(now)
 	equipment_look.on_launch(self, record)
 	drone_launched.emit(record, d)
@@ -435,11 +435,11 @@ func give_mesh(mi: MeshInstance3D) -> void:
 		mi.queue_free()
 
 
-## Make up to `n` pooled nodes ahead of time (at scene load: TestDriveCombat.setup), so the first seconds of a fight
+## Make up to `n` pooled nodes ahead of time (at scene load: MissionCombat.setup), so the first seconds of a fight
 ## don't pay for new nodes. `plan` [[mesh, count], ...] gives that many of them their mesh already (ImpactFx.pool_plan,
 ## Rocket.pool_plan), so a borrower of that mesh needs no mesh swap; the rest have none. Hidden: nothing to draw.
 func prewarm_mesh_pool(n: int, plan: Array = []) -> void:
-	if not is_inside_tree():      # not in the scene yet (TestDriveCombat.setup before the drive enters): once it is
+	if not is_inside_tree():      # not in the scene yet (MissionCombat.setup before the drive enters): once it is
 		if not tree_entered.is_connected(_prewarm_later):
 			tree_entered.connect(_prewarm_later.bind(n, plan), CONNECT_ONE_SHOT)
 		return
@@ -457,7 +457,7 @@ func prewarm_mesh_pool(n: int, plan: Array = []) -> void:
 		give_mesh(mi)
 
 
-func _add_effect(e: CombatEffect) -> void:
+func add_effect(e: CombatEffect) -> void:
 	add_child(e)
 	effects.append(e)
 	if e is Projectile:
@@ -580,7 +580,7 @@ func shot_stopped(p: Projectile, h: Dictionary) -> void:
 	elif h.has("prop"):
 		mine = decides_shot(p.record)
 	if mine and p.record.has("shot_index"):
-		shot_decided.emit(p.record, h["point"], h["normal"], h.get("color", MechMeshes.GREY))
+		shot_decided.emit(p.record, h["point"], h["normal"], h.get("color", LowPolyPalette.GREY))
 
 
 ## THE DROP RULE (weapons.md §5.1): another machine decided where shot `key` stopped (at `point`, facing `normal`). This
@@ -590,7 +590,7 @@ func shot_stopped(p: Projectile, h: Dictionary) -> void:
 ## already ended on its own: here its own hit stands); -1 when no live projectile has that key and
 ## `remember` is true: the drop waits EARLY_DROP_LIFE s for the record (fire() applies it at spawn), then is forgotten.
 ## Repeats are harmless (the second finds the copy ended).
-func drop_shot(key: String, point: Vector3, normal: Vector3, color: Color = MechMeshes.GREY, remember: bool = true) -> int:
+func drop_shot(key: String, point: Vector3, normal: Vector3, color: Color = LowPolyPalette.GREY, remember: bool = true) -> int:
 	var p := shot(key)
 	if p != null:
 		return 1 if p.drop_at(point, normal, color) else 0
@@ -659,7 +659,7 @@ func space() -> PhysicsDirectSpaceState3D:
 	return get_world_3d().direct_space_state
 
 
-func _team_of(shooter: String, fallback: String = "") -> String:
+func team_of(shooter: String, fallback: String = "") -> String:
 	if fallback != "":
 		return fallback
 	if shooter == "":
@@ -667,7 +667,7 @@ func _team_of(shooter: String, fallback: String = "") -> String:
 	return str(_shooter_teams.get(shooter, ""))
 
 
-## THE friendly-fire rule (weapons.md Â§4.6), asked by every shot path (first_hit, splash): true = a shot from
+## THE friendly-fire rule (weapons.md §4.6), asked by every shot path (first_hit, splash): true = a shot from
 ## `shooter_id` (team `shooter_team`) passes `t` by. A shot never touches its own shooter. Same non-empty team: a
 ## "player" shot hits a "player" target while `friendly_fire` is on, every other same-team pair (enemy on enemy) is
 ## always spared. Different or empty teams: never spared. Who then DECIDES the hit is unchanged (`decides`: the
@@ -696,7 +696,7 @@ func first_hit(a: Vector3, b: Vector3, r: float, shooter: String = "", skip: Arr
 func _first_hit(a: Vector3, b: Vector3, r: float, shooter: String, skip: Array, query: bool) -> Dictionary:
 	var best := {}
 	var best_f := 2.0
-	var sh_team := _team_of(shooter)
+	var sh_team := team_of(shooter)
 	if _tb_on:
 		# Inside advance's effect step: the packed bounds (see _tb_*) reject every target the chord's bounding sphere
 		# can't reach without touching it; the rest go through _target_hit exactly as below, in the same order.
@@ -745,7 +745,7 @@ func _first_hit(a: Vector3, b: Vector3, r: float, shooter: String, skip: Array, 
 		if not h.is_empty():
 			var f := a.distance_to(h["position"]) / a.distance_to(b)
 			if f < best_f:
-				var col: Color = MechMeshes.GREY
+				var col: Color = LowPolyPalette.GREY
 				var c: Object = h.get("collider")
 				if c != null and c.has_meta("surface_color"):
 					col = c.get_meta("surface_color")
@@ -801,7 +801,7 @@ func _target_hit(t: CombatTarget, a: Vector3, b: Vector3, r: float, shooter: Str
 			var p := a.lerp(b, f)
 			best_f = f
 			best = {"target": t, "component": t.wc_comps[i], "point": p, "normal": (p - c).normalized(),
-				"frac": f, "color": MechMeshes.GREY}
+				"frac": f, "color": LowPolyPalette.GREY}
 	return best
 
 
@@ -1097,7 +1097,7 @@ func surface_below(p: Vector3, up_dir: Vector3, depth: float) -> Dictionary:
 
 # --- Hits --------------------------------------------------------------------------------------------
 
-## A direct hit: builds the Hit (damage, Î”v = stats.knockback along `dir`, heat = stats.target_heat) and delivers it,
+## A direct hit: builds the Hit (damage, Δv = stats.knockback along `dir`, heat = stats.target_heat) and delivers it,
 ## if this machine decides hits on `target`. Returns the Hit or null.
 func resolve_hit(record: Dictionary, st: Dictionary, target: CombatTarget, component: String, point: Vector3, normal: Vector3,
 		dir: Vector3, damage: float) -> Hit:
@@ -1145,7 +1145,7 @@ func deliver(target: CombatTarget, h: Hit) -> void:
 
 
 ## Splash at `point`: every other target whose nearest hit sphere is within stats.splash_radius takes
-## splash_damage Ã— (1 - d / R) and a radial Î”v of splash_knockback (+ splash_lift up) scaled the same way.
+## splash_damage × (1 - d / R) and a radial Δv of splash_knockback (+ splash_lift up) scaled the same way.
 func splash(record: Dictionary, st: Dictionary, point: Vector3, exclude: CombatTarget = null) -> void:
 	if not profiling:
 		_splash(record, st, point, exclude)
@@ -1184,7 +1184,7 @@ func _splash(record: Dictionary, st: Dictionary, point: Vector3, exclude: Combat
 	if rad <= 0.0 or (dmg <= 0.0 and float(st.get("splash_knockback", 0.0)) <= 0.0):
 		return
 	var sh := str(record.get("shooter", ""))
-	var sh_team := _team_of(sh, str(record.get("team", "")))
+	var sh_team := team_of(sh, str(record.get("team", "")))
 	for t in targets.duplicate():
 		if t == exclude or not is_instance_valid(t) or not t.is_hittable():
 			continue
@@ -1248,7 +1248,7 @@ static func _plain_script(s: Script) -> bool:
 	return n == 1
 
 
-## Fill _plain_spheres' cache for every named class deriving from CombatTarget (at scene load: TestDriveCombat.setup), so
+## Fill _plain_spheres' cache for every named class deriving from CombatTarget (at scene load: MissionCombat.setup), so
 ## no splash pays for a method list mid-fight.
 static func warm_target_scripts() -> void:
 	var base_of: Dictionary = {}
@@ -1270,7 +1270,7 @@ static func warm_target_scripts() -> void:
 
 ## A cosmetic impact of radius r (ImpactFx) and a shake signal. `flash_color`: the flash ball's colour (default the flame
 ## core; the laser's is teal).
-func spawn_impact(point: Vector3, normal: Vector3, r: float, surface: Color = MechMeshes.GREY, explosive: bool = false,
+func spawn_impact(point: Vector3, normal: Vector3, r: float, surface: Color = LowPolyPalette.GREY, explosive: bool = false,
 		flash_color: Color = LowPolyFlame.CORE, is_energy: bool = false) -> ImpactFx:
 	if r <= 0.0:
 		return null
@@ -1284,7 +1284,7 @@ func spawn_impact(point: Vector3, normal: Vector3, r: float, surface: Color = Me
 	var wall := wall_at(point, normal)
 	var p2 := Time.get_ticks_usec() if profiling else 0
 	var fx := ImpactFx.new()
-	_add_effect(fx)
+	add_effect(fx)
 	fx.setup(self, point, normal, r, surface, gy, explosive, flash_color, surf, local_up, wall)
 	if profiling:
 		prof_add("si.surface", p1 - pt)

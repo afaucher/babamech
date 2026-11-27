@@ -1,21 +1,21 @@
 extends TestCase
-## The solo test drive in the multi-deck city stack (W2, the default city; TestDrive "THE CITY"):
+## The solo test drive in the multi-deck city stack (W2, the default city; MissionScene "THE CITY"):
 ## - it builds a CityStack from the seed (several decks, the entry deck at the world origin), `td.city` is the entry deck
 ##   (so the single-district systems still have a district), and enemies found spots on it;
 ## - the mech spawns at CityStack.entry_transform() and, after a few seconds, still stands on the entry deck (did not fall
 ##   through), grounded, inside the deck's plan; the camera's deck is the active (daylit) deck;
-## - TestDrive.entry_spawn gives a crew of 4 four slots on the entry road, none overlapping;
+## - MissionScene.entry_spawn gives a crew of 4 four slots on the entry road, none overlapping;
 ## - dropped below the lowest deck it respawns at the entry; N (new city, solo) rebuilds the stack on the next seed;
-## - an offline crew (TestDrive.offline_crew = 4) spawns 3 idle puppets in the crew slots;
+## - an offline crew (MissionScene.offline_crew = 4) spawns 3 idle puppets in the crew slots;
 ## - the stack is the only city: a forced city_mode or `--district` changes nothing (the district mode was cut).
 
 
 func setup() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(4)
 	var st := td.stack
-	if not check(st != null and td.city_mode == TestDrive.MODE_STACK, "the solo test drive builds the stack"):
+	if not check(st != null and td.city_mode == MissionScene.MODE_STACK, "the solo test drive builds the stack"):
 		finish()
 		return
 	var k := int(st.section.entry["deck"])
@@ -70,7 +70,7 @@ func setup() -> void:
 			check(slots[i].distance_to(slots[j]) >= 4.4, "crew slots %d and %d don't overlap (%.2f m)" % [i, j, slots[i].distance_to(slots[j])])
 	# Below the lowest deck: back to the entry.
 	var low := st.section.radius_of(st.section.deck_count - 1)
-	td.mech.global_position = td.city.ring.arc_to_world(arc.x, arc.y, td.city.ring.radius - low - TestDrive.FALL_OUT - 5.0)
+	td.mech.global_position = td.city.ring.arc_to_world(arc.x, arc.y, td.city.ring.radius - low - MissionScene.FALL_OUT - 5.0)
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 	check(td.mech.global_position.distance_to(entry.origin) < 1.0, "fell below the lowest deck: respawned at the entry")
@@ -83,11 +83,11 @@ func setup() -> void:
 	check(td.mech.global_position.distance_to(td.stack.entry_transform().origin) < 1.0, "respawned at the new entry")
 	td.queue_free()
 	await frames(2)
-	# An offline crew of 4 (TestDrive.offline_crew, perf tests): your mech + 3 idle puppets in the crew slots.
-	TestDrive.offline_crew = 4
-	var tdc := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	# An offline crew of 4 (MissionScene.offline_crew, perf tests): your mech + 3 idle puppets in the crew slots.
+	MissionScene.offline_crew = 4
+	var tdc := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(tdc)
-	TestDrive.offline_crew = 0
+	MissionScene.offline_crew = 0
 	await frames(4)
 	eq(tdc.mechs.size(), 4, "the offline crew has 4 mechs")
 	eq(tdc.spawn_order.size(), 4, "in seat order")
@@ -99,11 +99,11 @@ func setup() -> void:
 	tdc.queue_free()
 	await frames(2)
 	# The stack is the only city: an old forced mode ("district") still builds the stack.
-	var tdd := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var tdd := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	tdd.city_mode = "district"
 	add_child(tdd)
 	await frames(4)
-	check(tdd.stack != null and tdd.city_mode == TestDrive.MODE_STACK and tdd.city == tdd.stack.decks[int(tdd.stack.section.entry["deck"])],
+	check(tdd.stack != null and tdd.city_mode == MissionScene.MODE_STACK and tdd.city == tdd.stack.decks[int(tdd.stack.section.entry["deck"])],
 		"a forced 'district' city_mode builds the stack")
 	tdd.queue_free()
 	await frames(1)

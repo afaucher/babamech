@@ -306,10 +306,6 @@ func shown(i: int) -> int:
 
 # --- Mesh ------------------------------------------------------------------------------------------------
 
-static func _c(id: String) -> Color:
-	return CityPalette.C[id]
-
-
 ## A rounded loft along +Y: rings [y, half x, half z, colour of the band above], superellipse cross-sections.
 static func _loft(geo: CityGeo, rings: Array, cap_top: Color, cap_bottom: Color) -> void:
 	var ring_pts: Array = []
@@ -341,20 +337,20 @@ static func _loft(geo: CityGeo, rings: Array, cap_top: Color, cap_bottom: Color)
 ## One tram car, 3 x 9 m, 3.2 m tall, symmetric (either end leads), floor at y = 0. `lights`: PLAIN, HAZARD_DARK or
 ## HAZARD_BRIGHT.
 static func car(geo: CityGeo, lights: int) -> void:
-	var blue := _c("sky_blue")
-	var cream := _c("cream_light")
-	var glass := _c("glass_dark")
+	var blue := CityPalette.c("sky_blue")
+	var cream := CityPalette.c("cream_light")
+	var glass := CityPalette.c("glass_dark")
 	var hw := LifeTram.CAR_W * 0.5
 	var hl := LifeTram.CAR_L * 0.5
 	_loft(geo, [
-		[0.30, hw - 0.2, hl - 0.2, _c("metal_dark")],
+		[0.30, hw - 0.2, hl - 0.2, CityPalette.c("metal_dark")],
 		[0.55, hw, hl, blue],
 		[0.92, hw, hl, cream],
 		[1.22, hw, hl, blue],
 		[2.70, hw - 0.02, hl - 0.04, blue],
 		[3.04, hw - 0.14, hl - 0.2, blue],
 		[3.20, hw - 0.4, hl - 0.5, blue],
-	], blue, _c("metal_dark"))
+	], blue, CityPalette.c("metal_dark"))
 	var xf := Transform3D.IDENTITY
 	# Glazing along both sides: four windows and a double door in the middle (door glass down to the step).
 	for sx: float in [-1.0, 1.0]:
@@ -362,14 +358,14 @@ static func car(geo: CityGeo, lights: int) -> void:
 			geo.box(xf, Vector3(sx * (hw + 0.01), 1.95, (float(z[0]) + float(z[1])) * 0.5), Vector3(0.05, 1.2, float(z[1]) - float(z[0])), glass)
 		for z: float in [-0.36, 0.36]:
 			geo.box(xf, Vector3(sx * (hw + 0.01), 1.55, z), Vector3(0.05, 2.0, 0.64), glass)
-		geo.box(xf, Vector3(sx * (hw + 0.015), 1.55, 0.0), Vector3(0.05, 2.06, 0.06), _c("blue_grey"))     # door seam
+		geo.box(xf, Vector3(sx * (hw + 0.015), 1.55, 0.0), Vector3(0.05, 2.06, 0.06), CityPalette.c("blue_grey"))     # door seam
 	# A big windscreen and a light bar at both ends.
 	for sz: float in [-1.0, 1.0]:
 		geo.box(xf, Vector3(0.0, 1.95, sz * (hl + 0.0)), Vector3(2.0, 1.3, 0.06), glass)
 		if lights == PLAIN:
-			geo.box(xf, Vector3(0.0, 0.74, sz * (hl + 0.01)), Vector3(1.6, 0.12, 0.05), _c("marking"))
-			geo.box(xf, Vector3(0.0, 2.78, sz * (hl - 0.05)), Vector3(1.1, 0.12, 0.08), _c("marking"))   # destination strip
+			geo.box(xf, Vector3(0.0, 0.74, sz * (hl + 0.01)), Vector3(1.6, 0.12, 0.05), CityPalette.c("marking"))
+			geo.box(xf, Vector3(0.0, 2.78, sz * (hl - 0.05)), Vector3(1.1, 0.12, 0.08), CityPalette.c("marking"))   # destination strip
 	# Roof unit.
-	geo.box(xf, Vector3(0.0, 3.32, 0.0), Vector3(1.6, 0.26, 3.2), _c("blue_grey"))
+	geo.box(xf, Vector3(0.0, 3.32, 0.0), Vector3(1.6, 0.26, 3.2), CityPalette.c("blue_grey"))
 	if lights != PLAIN:
 		LifeCars._hazards(geo, hw, hl, 3.1, hw - 0.3, hl - 0.6, lights == HAZARD_BRIGHT)

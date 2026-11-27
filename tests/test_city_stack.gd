@@ -140,8 +140,8 @@ func _stack(seed_: int) -> void:
 	eq(stack.checksum(), sum, "%s: and the same layout passes it again" % what)
 	var doors := 0
 	for p in plans:
-		doors += MissionWorld.air_doors(p).size()
-		eq(MissionWorld.air_checksum(p), MissionWorld.air_checksum(CityPlan.for_deck(sec, p.deck)), "%s deck %d: air doors from the plan, deterministic" % [what, p.deck])
+		doors += MissionAirDoors.doors(p).size()
+		eq(MissionAirDoors.checksum(p), MissionAirDoors.checksum(CityPlan.for_deck(sec, p.deck)), "%s deck %d: air doors from the plan, deterministic" % [what, p.deck])
 	check(doors >= 1, "%s: the stack has air doors in its checksum (%d)" % [what, doors])
 	print("%s stack: %s, checksum %s, air doors %d" % [what, str(stack.stats), sum, doors])
 	await frames(2)

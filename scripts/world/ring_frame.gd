@@ -77,3 +77,18 @@ func basis_at(p: Vector3, forward_hint: Vector3 = Vector3.FORWARD) -> Basis:
 func basis_at_arc(s: float) -> Basis:
 	var p := arc_to_world(0.0, s)
 	return basis_at(p, tangent_at(p))
+
+
+## (x, s) of p on `ring`, or (p.x, p.z) on a flat arena (ring null: the labs and tests).
+static func world_to_arc2(ring: RingFrame, p: Vector3) -> Vector2:
+	if ring != null:
+		var a := ring.world_to_arc(p)
+		return Vector2(a.x, a.y)
+	return Vector2(p.x, p.z)
+
+
+## The world point at arc (a2.x, a2.y), height h on `ring`, or (a2.x, h, a2.y) on a flat arena (ring null).
+static func arc2_to_world(ring: RingFrame, a2: Vector2, h: float = 0.0) -> Vector3:
+	if ring != null:
+		return ring.arc_to_world(a2.x, a2.y, h)
+	return Vector3(a2.x, h, a2.y)

@@ -138,7 +138,7 @@ func _hits() -> void:
 	check(not h.reacting("flinch"), "(the flinch is over)")
 	world.spawn_impact(mech.global_position + Vector3(30.0, 1.0, 0.0), Vector3.UP, 2.0)
 	check(not h.reacting("flinch"), "an impact 30 m away does not flinch")
-	world.spawn_impact(mech.global_position + Vector3(0.0, 1.0, -6.0), Vector3.UP, 6.0, MechMeshes.GREY, true)
+	world.spawn_impact(mech.global_position + Vector3(0.0, 1.0, -6.0), Vector3.UP, 6.0, LowPolyPalette.GREY, true)
 	check(h.reacting("flinch"), "a blast a few metres away does")
 	await _phys(150)
 	pp.target.apply_damage(80.0, "torso", "enemy_t")

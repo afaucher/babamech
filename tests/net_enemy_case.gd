@@ -27,7 +27,7 @@ const SEED := 11
 const POSE_TOL := {"off": 0.5, "coast": 0.8}
 const LEAD_MIN := 0.3
 
-var td: TestDrive
+var td: MissionScene
 var world: CombatWorld
 var sync: EnemySync
 var track_n := -1
@@ -45,7 +45,7 @@ func run_host() -> void:
 	net_timeout = 110.0
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	for e in td.combat.squad.enemies:
@@ -263,7 +263,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -308,7 +308,7 @@ func run_client() -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.enemy_sync != null and td.stack != null, "the crew mission runs EnemySync in the stack"):
@@ -326,7 +326,7 @@ func _load_and_go() -> bool:
 	td.combat.player_target.auto_respawn_delay = -1.0
 	sync.telegraph_received.connect(func(_e: EnemyBase, t0: float, dur: float, arrival: float) -> void:
 		leads.append(t0 + dur - arrival))
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	return true
@@ -391,7 +391,7 @@ func _state() -> Dictionary:
 			continue
 		core[e.target_id] = e.core_hp_ratio()
 		dead[e.target_id] = e.destroyed()
-		wreck[e.target_id] = e.destroyed() and e.has_active_flame()
+		wreck[e.target_id] = e.destroyed() and e.wreck.has_active_flame()
 		aims[e.target_id] = e.puppet_aim()
 		muzzles[e.target_id] = e.muzzle_world("enemy_bolter" if e.enemy_type.begins_with("turret") else "")
 	var final := Vector3.ZERO

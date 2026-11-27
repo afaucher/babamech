@@ -18,7 +18,7 @@ const TRACK_FROM := 6.0            ## s: render time by which the puppet tracks 
 const END_T := 6.8
 const MOUNT_TOL := 1.6             ## deg: one NetMechCodec.MOUNT_UNIT step plus rounding
 
-var td: TestDrive
+var td: MissionScene
 
 
 func run_host() -> void:
@@ -26,7 +26,7 @@ func run_host() -> void:
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0),
 			"the crew gathers (%d of %d)" % [Session.roster.size(), peers]):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	var mine := await _run()
@@ -44,7 +44,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -53,14 +53,14 @@ func run_client() -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.crew_sync != null, "the test drive runs the crew mission with mech snapshots"):
 		return false
 	td.combat.squad.clear_enemies()
 	td.combat.enemies.clear()
-	return check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	return check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 		"the load barrier passes (phase %s)" % Session.mission.phase)
 
 

@@ -40,13 +40,13 @@ func on_shot(m: WeaponMount) -> void:
 
 
 func look() -> Dictionary:
-	return {"color": MechMeshes.TEAL, "trail_color": MechMeshes.TEAL, "width": 0.2}
+	return {"color": LowPolyPalette.TEAL, "trail_color": LowPolyPalette.TEAL, "width": 0.2}
 
 
 ## The beam's look for these stats: width size -> size × growth at growth_full m.
 static func beam_look(st: Dictionary) -> Dictionary:
 	var w0 := float(st.get("size", 0.35))
-	return {"core": MechMeshes.TEAL, "sides": 6, "w0": w0, "w1": w0 * float(st.get("growth", 2.86)),
+	return {"core": LowPolyPalette.TEAL, "sides": 6, "w0": w0, "w1": w0 * float(st.get("growth", 2.86)),
 		"w_full": float(st.get("growth_full", 150.0)), "core_share": 0.6, "pulse": 0.18, "pulse_hz": 11.0, "spin": 90.0}
 
 
@@ -77,7 +77,7 @@ func spawn(world: CombatWorld, record: Dictionary, st: Dictionary) -> CombatEffe
 			world.resolve_hit(record, st, target, str(h["component"]), h["point"], h["normal"], r["dir"],
 				float(st.get("damage", 0.0)) * Combat.falloff(st, from.distance_to(h["point"])))
 		world.hit_prop(record, st, h, r["dir"])
-		world.spawn_impact(h["point"], h["normal"], float(st.get("impact_radius", 2.0)), MechMeshes.ORANGE, false, FLASH_COLOR)
+		world.spawn_impact(h["point"], h["normal"], float(st.get("impact_radius", 2.0)), LowPolyPalette.ORANGE, false, FLASH_COLOR)
 	var b := Beam.new()
 	b.look = beam_look(st)
 	b.start(world, record, st)

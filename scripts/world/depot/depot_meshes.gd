@@ -17,9 +17,9 @@ extends RefCounted
 ##
 ## Sockets: SOCKETS (2 x 2), index 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right as seen from the front.
 
-const WHITE := MechMeshes.WHITE                 ## the player mech's off-white
-const ORANGE := MechMeshes.ORANGE               ## the player mech's safety orange
-const CHARCOAL := MechMeshes.DARK
+const WHITE := LowPolyPalette.WHITE                 ## the player mech's off-white
+const ORANGE := LowPolyPalette.ORANGE               ## the player mech's safety orange
+const CHARCOAL := LowPolyPalette.DARK
 const HOLE := Color(0.03, 0.03, 0.035)          ## an empty socket
 const ICE := Color("7fd8ff")                    ## the core's cell
 const ICE_HOT := Color("e2f8ff")                ## its bright centre
@@ -82,7 +82,7 @@ static func core() -> ArrayMesh:
 		k.tube(Vector3(0, 0, CORE_OUT), Vector3(0, 0, CORE_OUT + 0.06), CELL_R, N, ICE)
 		k.tube(Vector3(0, 0, CORE_OUT + 0.06), Vector3(0, 0, CORE_OUT + 0.09), CELL_R * 0.5, N, ICE_HOT)
 		k.glow = false
-		_cache["core"] = k.commit(MechMeshes.materials())
+		_cache["core"] = k.commit(LowPolyMaterials.materials())
 	return _cache["core"]
 
 
@@ -110,7 +110,7 @@ static func marker(wrecked: bool = false) -> ArrayMesh:
 			k.glow = true
 			k.box(Vector3(0.5, 0.25, 0.04), LAMP, Vector3(0, MAST_H - 0.45, 0.33))
 			k.glow = false
-		_cache[key] = k.commit(MechMeshes.materials())
+		_cache[key] = k.commit(LowPolyMaterials.materials())
 	return _cache[key]
 
 
@@ -247,7 +247,7 @@ static func _body(wrecked: bool) -> ArrayMesh:
 		k.ico(Vector3(2.6, 0.2, 2.6), Vector3(0.45, 0.22, 0.4), CHAR_DARK)
 		k.ico(Vector3(0.4, 0.15, 2.95), Vector3(0.35, 0.16, 0.3), CHAR)
 		k.ico(Vector3(3.6, 0.3, -0.6), Vector3(0.55, 0.32, 0.7), CHAR)
-	return k.commit(MechMeshes.materials())
+	return k.commit(LowPolyMaterials.materials())
 
 
 ## The service emblem on the +X outer slope: an orange cross with a charcoal bolt across it.

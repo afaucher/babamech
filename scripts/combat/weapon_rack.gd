@@ -64,7 +64,7 @@ extends Node
 ##   heat_state() -> {heat: float, cap: float, fraction: float 0..1, shutdown: bool}   (the MechController's gauge)
 ##   designator_on() -> bool  (the guided track is on, see above)   aim() -> Vector3 (this step's aim point)
 ##   substitutions() -> Array[String]  paused weapons swapped for the slot default ("LEFT SIDE: Flamer offline, using
-##                                     Side Laser"), set by whoever built the loadout (TestDriveCombat); [] when none
+##                                     Side Laser"), set by whoever built the loadout (MissionCombat); [] when none
 ##   signal slot_changed(slot: int)   a slot was enabled / disabled
 ##   signal fired(slot: int)          one shot left that slot (once per fire record: a rocket salvo emits six)
 ## ----------------------------------------------------------------------------------------------------------------------

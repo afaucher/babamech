@@ -25,7 +25,7 @@ class MockPlayerTarget extends Node:
 		add_to_group("player_target")
 
 
-## Stands in for TestDrive / ThrusterLab: the parent whose `mech` is the mech this machine pilots (MechAudio._local()).
+## Stands in for MissionScene / ThrusterLab: the parent whose `mech` is the mech this machine pilots (MechAudio._local()).
 class PilotHost extends Node3D:
 	var mech: MechController
 
@@ -307,7 +307,7 @@ func _test_mech_audio(a: AudioDirector) -> void:
 	if not check(ma != null, "MechSpawn.make attaches MechAudio child"):
 		host.queue_free()
 		return
-	check(ma._local(), "the parent's piloted mech (TestDrive.mech) counts as the local pilot's")
+	check(ma._local(), "the parent's piloted mech (MissionScene.mech) counts as the local pilot's")
 	var rig := MechSpawn.rig_of(mech)
 	# Floor collider so mech walks on ground.
 	var floor_body := StaticBody3D.new()
@@ -491,7 +491,7 @@ func _test_mech_step_signal(a: AudioDirector) -> void:
 
 
 ## Only the mech this machine pilots plays cockpit cues (docs/coordination 2026-11-23 audio fix). A host-run bot (a
-## non-puppet mech that is not the parent's `mech`, like a CrewBot's on TestDrive), a mech nobody marked, and a puppet
+## non-puppet mech that is not the parent's `mech`, like a CrewBot's on MissionScene), a mech nobody marked, and a puppet
 ## (even one forced is_local) are REMOTE: no 2D / player-bus / telegraph-bus cue, no pilot voice, no heat duck; their
 ## steps, thrusters, landings and power-down play 3D on SFX_World at the mech.
 func _test_remote_mech_audio(a: AudioDirector) -> void:
@@ -752,7 +752,7 @@ func _test_combat_props_and_enemy_contract(a: AudioDirector) -> void:
 
 	# Impact scaling.
 	a.clear_events()
-	world.spawn_impact(Vector3(0, 1, -20), Vector3.UP, 6.0, MechMeshes.GREY, true)
+	world.spawn_impact(Vector3(0, 1, -20), Vector3.UP, 6.0, LowPolyPalette.GREY, true)
 	check(_has_cue(a, "impact.explosive.large"), "large explosive impact triggers impact.explosive.large")
 
 	# CityProps signal hook.

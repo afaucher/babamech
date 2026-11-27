@@ -83,12 +83,7 @@ func _process(delta: float) -> void:
 
 
 func lab_params() -> Array:
-	var out: Array = []
-	for p: Dictionary in PARAMS:
-		var d := p.duplicate()
-		d["value"] = params[p["id"]]
-		out.append(d)
-	return out
+	return LabRegistry.param_rows(PARAMS, params)
 
 
 func set_lab_param(id: String, v: float) -> void:

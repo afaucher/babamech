@@ -6,6 +6,11 @@ extends RefCounted
 
 static var _cache: Dictionary = {}
 
+
+## Every mesh built so far (the live cache, by key): ShaderWarmup takes them all.
+static func cached_meshes() -> Dictionary:
+	return _cache
+
 const RED := Color(0.92, 0.12, 0.08)
 ## Fire colours are LowPolyFlame's (OUTER / MID / CORE): the game has one flame palette (ImpactFx.FLAME_RAMP).
 
@@ -14,7 +19,7 @@ static func _mesh(key: String, build: Callable) -> ArrayMesh:
 	if not _cache.has(key):
 		var k := MeshKit.new()
 		build.call(k)
-		_cache[key] = k.commit(MechMeshes.materials())
+		_cache[key] = k.commit(LowPolyMaterials.materials())
 	return _cache[key]
 
 

@@ -114,6 +114,11 @@ static func basis_for_normal(n: Vector3) -> Basis:
 	return Basis(x, y, z)
 
 
+## Every mesh built so far (the live cache, by key): ShaderWarmup takes them all.
+static func cached_meshes() -> Dictionary:
+	return _meshes
+
+
 ## A flame ball (20 faces, radius 1) in a flame colour, on LowPolyFlame's unshaded material.
 static func flame_ball(c: Color) -> ArrayMesh:
 	var m: ArrayMesh = _ball_by.get(c)
@@ -140,7 +145,7 @@ static func stem(smoke: bool) -> ArrayMesh:
 		var prof := [Vector2(1.0, 0.0), Vector2(0.75, 0.3), Vector2(0.55, 0.75), Vector2(0.0, 1.0)]
 		if smoke:
 			k.lathe(prof, LowPolyFlame.SIDES, SMOKE)
-			_meshes[key] = k.commit(MechMeshes.materials())
+			_meshes[key] = k.commit(LowPolyMaterials.materials())
 		else:
 			k.glow = true
 			k.shade = 0.0
@@ -197,7 +202,7 @@ static func _rubble() -> ArrayMesh:
 ## impact borrows (flash / chunk ball, grey and rubble shards, tongues, ring, scorch, ember, column stems, the wreck's
 ## charred shards), so a fight's first impacts find nodes already showing their mesh (no mesh swap per part).
 static func pool_plan() -> Array:
-	var plan: Array = [[ramp_mesh(0), 560], [CombatMeshes.shard(MechMeshes.GREY), 400], [_rubble(), 160], [_ring(), 40],
+	var plan: Array = [[ramp_mesh(0), 560], [CombatMeshes.shard(LowPolyPalette.GREY), 400], [_rubble(), 160], [_ring(), 40],
 		[CombatMeshes.shard(EnemyMeshes.CHARRED), 64], [stem(false), 12], [stem(true), 12]]
 	for v in LowPolyFlame.VARIANTS:
 		plan.append([_tongue(v), 30])

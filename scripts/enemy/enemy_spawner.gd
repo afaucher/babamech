@@ -6,7 +6,7 @@ extends RefCounted
 ## CityPlan geometry (buildings, pillars, columns, floor_cuts, clear_at, ramps). No global randomness (AGENTS.md rule 4).
 
 const SPAWN_SAFE_RADIUS := 48.0    ## m around player spawn kept clear in standalone districts
-const SECTION_SAFE_RADIUS := 70.0  ## m around SectionPlan.arrival(k) kept clear on mission decks (§16)
+const SECTION_SAFE_RADIUS := 70.0  ## m around SectionEncounters.arrival(sec, k) kept clear on mission decks (§16)
 const DRONE_SAFE_RADIUS := 68.0    ## m min distance for Patrol Drone spawn (never aggro on frame 0)
 const DRONE_CRUISE_ALT := 15.0     ## m default hover altitude above deck floor
 const GUNSHIP_SAFE_RADIUS := 72.0  ## m min distance for Valkyrie Gunship spawn (never aggro on frame 0)
@@ -42,7 +42,7 @@ static func deck_budget(crew_size: int = 1, deck: int = 0) -> int:
 
 
 ## Compute deterministic encounter spawn specs across the full deck.
-##   - In section mode (`sites` passed, or automatically read from `plan.section.encounter_sites(plan.deck)`):
+##   - In section mode (`sites` passed, or automatically read from `SectionEncounters.sites(plan.section, plan.deck)`):
 ##     spreads garrison across all non-safe encounter sites proportional to `share` & `weight` (light/medium/heavy),
 ##     respecting the 70 m safe bubble around `arrival(k)`, with static turrets at heavy/medium sites and mobile
 ##     units at light sites.
@@ -59,10 +59,10 @@ static func plan_encounters(plan: CityPlan, ring: RingFrame, player_spawn: Vecto
 	var p_arc3 := ring.world_to_arc(player_spawn)
 	var p2 := Vector2(p_arc3.x, p_arc3.y)
 	var deck_idx := maxi(plan.deck, 0)
-	if eff_sites.is_empty() and plan.section != null and plan.deck >= 0 and plan.section.has_method("encounter_sites"):
-		eff_sites = plan.section.encounter_sites(plan.deck)
-	if not eff_sites.is_empty() and plan.section != null and plan.deck >= 0 and plan.section.has_method("arrival"):
-		var arr: Dictionary = plan.section.arrival(plan.deck)
+	if eff_sites.is_empty() and plan.section != null and plan.deck >= 0:
+		eff_sites = SectionEncounters.sites(plan.section, plan.deck)
+	if not eff_sites.is_empty() and plan.section != null and plan.deck >= 0:
+		var arr: Dictionary = SectionEncounters.arrival(plan.section, plan.deck)
 		safe_arc = Vector2(float(arr.get("x", p2.x)), float(arr.get("s", p2.y)))
 		safe_r = SECTION_SAFE_RADIUS
 	else:
@@ -304,14 +304,14 @@ static func spawn_specs(specs: Array[Dictionary], plan: CityPlan, ring: RingFram
 			if gid != "":
 				if not fireteams.has(gid):
 					var anc_arc: Vector2 = sp.get("squad_anchor", Vector2(x, s))
-					var anc_w := use_ring.arc_to_world(anc_arc.x, anc_arc.y, h) if use_ring != null else Vector3(anc_arc.x, h, anc_arc.y)
+					var anc_w := RingFrame.arc2_to_world(use_ring, anc_arc, h)
 					var ft := EnemyTroopSquad.make(id_prefix + gid, spawn_deck, anc_w, tr.on_roof)
 					fireteams[gid] = ft
 					if squad != null and squad.has_method("register_fireteam"):
 						squad.register_fireteam(ft)
 				tr.attach_fireteam(fireteams[gid] as EnemyTroopSquad, int(sp.get("member_idx", 0)))
 		if skip_meshes:
-			e._built_visuals = true
+			e.skip_visuals()
 		if squad != null:
 			squad.add_enemy(e)
 		spawned.append(e)
@@ -822,7 +822,7 @@ static func _find_clear_ground_near(plan: CityPlan, want: Vector2, radius: float
 	# Fallback: nearest clear road crossing or open plaza to `want` outside the safe bubble.
 	var best := Vector2(NAN, NAN)
 	var best_d := INF
-	var rg := plan.road_graph()
+	var rg := CityGraphs.road_graph(plan)
 	for n: Vector2 in rg["nodes"]:
 		var d := n.distance_to(want)
 		if d < best_d and _ground_spot_ok(plan, n, radius, used, min_sep, safe_arc, p2, safe_r):
@@ -942,7 +942,7 @@ static func _rooftop_candidates(plan: CityPlan, lane: float = 0.0) -> Array[Dict
 ## (where a mech walks); occluders: every building tier >= 2.5 m and pillar cores, as boxes from the plan (no physics).
 static func _roof_sight_context(plan: CityPlan) -> Dictionary:
 	var pts: Array[Vector2] = []
-	var rg: Dictionary = plan.walk_graph() if plan.has_method("walk_graph") else plan.road_graph()
+	var rg: Dictionary = CityGraphs.walk_graph(plan)
 	var nodes: Array = rg["nodes"]
 	for n: Vector2 in nodes:
 		pts.append(n)

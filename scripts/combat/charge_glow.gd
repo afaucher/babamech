@@ -25,9 +25,9 @@ func net_fields() -> Dictionary:
 
 func _init() -> void:
 	top_level = true
-	_shell = CombatMeshes.instance(CombatMeshes.ico(MechMeshes.TEAL, true))
+	_shell = CombatMeshes.instance(CombatMeshes.ico(LowPolyPalette.TEAL, true))
 	add_child(_shell)
-	_core = CombatMeshes.instance(CombatMeshes.ico(MechMeshes.TEAL.lerp(MechMeshes.WHITE, 0.6), true))
+	_core = CombatMeshes.instance(CombatMeshes.ico(LowPolyPalette.TEAL.lerp(LowPolyPalette.WHITE, 0.6), true))
 	add_child(_core)
 	visible = false
 

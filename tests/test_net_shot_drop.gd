@@ -18,7 +18,7 @@ const SEED := 13
 const GAP := 40.0                  ## m between the two things the shot could hit
 const LINGER := 0.45               ## s after the deciding hit by which every copy must have ended
 
-var td: TestDrive
+var td: MissionScene
 var world: CombatWorld
 var net: CombatNet
 var hits: Array = []               ## hit_landed: {id, dmg, shot}
@@ -32,7 +32,7 @@ func run_host() -> void:
 	net_timeout = 140.0
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	if not check(await wait_reports("ready", peers - 1, 30.0), "every client is ready"):
@@ -125,7 +125,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -147,7 +147,7 @@ func run_client() -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.crew_sync != null and td.combat.net != null, "the crew mission runs CombatNet"):
@@ -159,7 +159,7 @@ func _load_and_go() -> bool:
 	net = td.combat.net
 	world.hit_landed.connect(func(t: CombatTarget, h: Hit) -> void: hits.append({"id": t.target_id, "dmg": h.damage, "shot": h.shot}))
 	world.impact_spawned.connect(func(p: Vector3, _r: float, _x: bool, _en: bool) -> void: impacts.append([world.now, p]))
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	return check(await until(func() -> bool:

@@ -104,7 +104,7 @@ func _physics_process(delta: float) -> void:
 	super._physics_process(delta)
 
 
-## The shooter id this teammate's fire records and hits carry ("player<peer>", as CrewSync / TestDriveCombat name them).
+## The shooter id this teammate's fire records and hits carry ("player<peer>", as CrewSync / MissionCombat name them).
 func shooter_id() -> String:
 	var t := _valid(target) as PlayerTarget
 	if t != null and t.target_id != "":

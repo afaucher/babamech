@@ -27,10 +27,6 @@ const WX := 0.70                       ## ... wheel-centre x ...
 const HW := 0.90                       ## ... body half width
 
 
-static func _c(id: String) -> Color:
-	return CityPalette.C[id]
-
-
 ## The game's pod: capsule_a trimmed for the game (see the header). `lights`: 0 plain, 1 hazards dark, 2 hazards bright
 ## (LifeCars.PLAIN / HAZARD_DARK / HAZARD_BRIGHT). Origin on the road at the centre, either end +Z (it is symmetric).
 static func adopted(geo: CityGeo, lights: int) -> void:
@@ -43,7 +39,7 @@ static func adopted(geo: CityGeo, lights: int) -> void:
 ## Profile helper: [point (z, y), colour of the edge from this point to the next], counter-clockwise with z right, y up
 ## (nose first, over the roof to the tail, back along the underside).
 static func _p(z: float, y: float, col: String) -> Array:
-	return [Vector2(z, y), _c(col)]
+	return [Vector2(z, y), CityPalette.c(col)]
 
 
 static func _capsule(geo: CityGeo, lights: int) -> void:
@@ -75,8 +71,8 @@ static func _capsule(geo: CityGeo, lights: int) -> void:
 	for s: float in [-1.0, 1.0]:
 		var o := Vector3(s * hw, 0.0, 0.0)
 		var n := Vector3(s, 0.0, 0.0)
-		_plate(geo, o, Vector3.BACK, Vector3.UP, n, door, -0.01, 0.016, [[door, _c("marking")]])
-		_plate(geo, o, Vector3.BACK, Vector3.UP, n, panel, 0.0, 0.024, [[panel, _c("cream")]])
+		_plate(geo, o, Vector3.BACK, Vector3.UP, n, door, -0.01, 0.016, [[door, CityPalette.c("marking")]])
+		_plate(geo, o, Vector3.BACK, Vector3.UP, n, panel, 0.0, 0.024, [[panel, CityPalette.c("cream")]])
 		_side_glass(geo, s, hw, glass, false, 0.012)
 		_side_glass(geo, s, hw, quarter, false)
 		_side_glass(geo, s, hw, quarter_r, false)
@@ -90,9 +86,9 @@ static func _game_lights(geo: CityGeo, lights: int) -> void:
 	var xf := Transform3D.IDENTITY
 	if lights == 0:
 		for z: float in [1.735, -1.735]:
-			geo.box(xf, Vector3(0.0, 0.80, z), Vector3(0.98, 0.09, 0.05), _c("marking"))
+			geo.box(xf, Vector3(0.0, 0.80, z), Vector3(0.98, 0.09, 0.05), CityPalette.c("marking"))
 		return
-	var amber := _c("marking_yellow") if lights == 2 else _c("terracotta_dark")
+	var amber := CityPalette.c("marking_yellow") if lights == 2 else CityPalette.c("terracotta_dark")
 	for z: float in [1.735, -1.735]:
 		geo.box(xf, Vector3(0.0, 0.80, z), Vector3(1.12, 0.16, 0.06), amber)
 	geo.box(xf, Vector3(0.0, 1.95, 0.0), Vector3(1.1, 0.08, 1.0), amber)
@@ -172,7 +168,7 @@ static func _body(geo: CityGeo, prof: Array, hw: float, cw: float, ins_lo: float
 			_q(geo, Vector3(x0, p0[i].y, p0[i].x), Vector3(x0, p0[j].y, p0[j].x), Vector3(x1, p1[j].y, p1[j].x),
 					Vector3(x1, p1[i].y, p1[i].x), cols[i], hint)
 	var tris := Geometry2D.triangulate_polygon(inset)
-	var cream := _c("cream")
+	var cream := CityPalette.c("cream")
 	for sx: float in [-hw, hw]:
 		for k in range(0, tris.size(), 3):
 			var a := inset[tris[k]]
@@ -239,11 +235,11 @@ static func _glint_poly(poly: PackedVector2Array, margin: float, flip: bool) -> 
 ## A dark-teal glass panel on the plane, with one lighter facet standing a little off it when `glint`.
 static func _glass(geo: CityGeo, o: Vector3, u: Vector3, v: Vector3, nrm: Vector3, poly: PackedVector2Array,
 		glint: bool, flip_glint: bool, t0: float = -0.01, t1: float = GLASS_T) -> void:
-	_plate(geo, o, u, v, nrm, poly, t0, t1, [[poly, _c("glass_teal")]])
+	_plate(geo, o, u, v, nrm, poly, t0, t1, [[poly, CityPalette.c("glass_teal")]])
 	if glint:
 		var g := _glint_poly(poly, 0.05, flip_glint)
 		if g.size() >= 3:
-			_plate(geo, o, u, v, nrm, g, t1 - 0.004, t1 + 0.006, [[g, _c("glass_blue")]])
+			_plate(geo, o, u, v, nrm, g, t1 - 0.004, t1 + 0.006, [[g, CityPalette.c("glass_blue")]])
 
 
 ## Glass on the flat side face x = side * hw, polygon in (z, y).
@@ -287,7 +283,7 @@ static func _stripes(geo: CityGeo, hw: float, z0: float, z1: float) -> void:
 		poly.reverse()
 	for s: float in [-1.0, 1.0]:
 		_plate(geo, Vector3(s * hw, 0.0, 0.0), Vector3.BACK, Vector3.UP, Vector3(s, 0.0, 0.0), poly, -0.01, 0.008,
-				[[poly, _c("terracotta")]])
+				[[poly, CityPalette.c("terracotta")]])
 
 
 ## Four hexagonal wheels on axles along x, flat side down on the road: dark tyre, a low three-sided pyramid hub cap.
@@ -301,8 +297,8 @@ static func _wheels(geo: CityGeo) -> void:
 ## A hexagonal tyre with a flat outer face and a low three-sided pyramid hub cap on it.
 static func _wheel(geo: CityGeo, c: Vector3, side: float) -> void:
 	var sides := SIMPLE_SIDES
-	var tyre := _c("metal_dark")
-	var hub := _c("curb")
+	var tyre := CityPalette.c("metal_dark")
+	var hub := CityPalette.c("curb")
 	var x_in := c.x - side * WHEEL_W * 0.5
 	var x_out := c.x + side * WHEEL_W * 0.5
 	var ring_in: Array[Vector3] = []

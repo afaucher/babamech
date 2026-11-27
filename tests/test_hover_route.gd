@@ -82,10 +82,10 @@ func _test_multi_deck_two_way_routes() -> void:
 			plans.append(CityPlan.for_deck(sec, k))
 		var hr := HoverRoute.new()
 		hr.setup_plans(sec, plans)
-		var a0 := sec.arrival(0)
+		var a0 := SectionEncounters.arrival(sec, 0)
 		var p_top := Vector2(float(a0["x"]), float(a0["s"]))
 		var last_k := sec.deck_count - 1
-		var al := sec.arrival(last_k)
+		var al := SectionEncounters.arrival(sec, last_k)
 		var p_bot := Vector2(float(al["x"]), float(al["s"]))
 
 		# Down: deck 0 -> bottom deck.
@@ -117,7 +117,7 @@ func _test_safe_landing_and_altitude() -> void:
 		plans.append(CityPlan.for_deck(sec, k))
 	var hr := HoverRoute.new()
 	hr.setup_plans(sec, plans)
-	var a0 := sec.arrival(0)
+	var a0 := SectionEncounters.arrival(sec, 0)
 	var street_pt := Vector2(float(a0["x"]), float(a0["s"]))
 
 	var spot := hr.safe_landing_spot(0, street_pt)

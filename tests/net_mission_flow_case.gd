@@ -11,14 +11,14 @@ extends NetTest
 ##    becomes the extraction hold, with the EXTRACT waypoint on its HUD.
 ## 3. The LAST client stands (teleports) its own mech in the hold zone for the hold: the host decides "won" from that
 ##    mech's streamed position and every machine applies it and shows the MISSION COMPLETE banner.
-## 4. END_HOLD later the host ends the mission (Session.end_mission): every client hears mission.end (mission_ended,
-##    the scene-change signal TestDrive goes back to the hangar on; the test's drive isn't the current scene, so it stays)
+## 4. END_HOLD later the host ends the mission (Session.mission.end): every client hears mission.end (mission_ended,
+##    the scene-change signal MissionScene goes back to the hangar on; the test's drive isn't the current scene, so it stays)
 ##    and the mission is over everywhere, the session still up.
 
 const SEED := 7
 const PLAN := {"primary": "sweep", "bonus_max": 0, "waves_per_deck": 0, "hold": 3.0}
 
-var td: TestDrive
+var td: MissionScene
 var ended_heard := ""              ## client: the reason mission_ended brought
 var _spot := 0                     ## _place: the sweep spot tried now
 var _placed := false               ## _place teleported the mech last call
@@ -29,7 +29,7 @@ func run_host() -> void:
 	MissionFlow.test_plan = PLAN
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	if not check(await wait_reports("ready", peers - 1, 30.0), "every client is ready"):
@@ -95,7 +95,7 @@ func run_host() -> void:
 	# 4. The end -------------------------------------------------------------------------------------------------
 	if not check(await until(func() -> bool: return mf.ended, MissionFlow.END_HOLD + 3.0), "the host's end flow finishes"):
 		return
-	check(Session.mission_params().is_empty() and Session.mission.phase == NetMission.IDLE, "the host ended the mission")
+	check(Session.mission.params.is_empty() and Session.mission.phase == NetMission.IDLE, "the host ended the mission")
 	await sleep(1.0)
 	_ask_all("after")
 	if check(await wait_reports("after", peers - 1, 15.0), "every client reports after the end"):
@@ -117,7 +117,7 @@ func run_client() -> void:
 	if not check(why == "", "welcomed (%s)" % why):
 		return
 	Session.mission_ended.connect(func(r: String) -> void: ended_heard = r)
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -144,7 +144,7 @@ func run_client() -> void:
 					"left": str(r.state()["left"]), "outcome": r.outcome, "text": str(hs.get("objective", "")),
 					"waypoint": str((hs.get("waypoint", {}) as Dictionary).get("label", "")),
 					"banner": str((hs.get("banner", {}) as Dictionary).get("title", "")), "ended_heard": ended_heard,
-					"over": Session.mission_params().is_empty() and td.mission.ended})
+					"over": Session.mission.params.is_empty() and td.mission.ended})
 
 
 ## Stand this machine's mech on objective o (a sweep: its deck's arrival; a flag: its site; the hold: its zone's centre).
@@ -155,7 +155,7 @@ func _place(o: Dictionary) -> void:
 	if str(o["type"]) == "hold":
 		at = (ro["zone"] as Rect2).get_center()
 	elif str(o["type"]) == "sweep":   # anywhere standing on the deck: its arrival or a spine point (the next one when a
-		var arr: Dictionary = td.stack.section.arrival(k)   # spot drops the mech off the deck, e.g. inside a building)
+		var arr: Dictionary = SectionEncounters.arrival(td.stack.section, k)   # spot drops the mech off the deck, e.g. inside a building)
 		var sx: float = td.stack.section.col_x[td.stack.section.spine_line]
 		var cands := [Vector2(float(arr["x"]), float(arr["s"])), Vector2(sx, 0.0), Vector2(sx, 60.0), Vector2(sx, -60.0),
 			Vector2(sx, 120.0), Vector2(sx, -120.0), at]
@@ -196,7 +196,7 @@ func _clients() -> Array[int]:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.mission != null and td.mission.crew and td.mission.plan != null,
@@ -204,7 +204,7 @@ func _load_and_go() -> bool:
 		return false
 	td.drive_override = true
 	td.mech.move_input = Vector2.ZERO
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	return await until(func() -> bool: return td.crew_sync.puppets.size() == peers - 1, 10.0)

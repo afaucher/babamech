@@ -3,7 +3,7 @@ extends CanvasLayer
 ## Carries the hangar's launch egress (HangarEgress, docs/design/hangar-v2/README.md) across the scene change into the
 ## mission: FrontEnd hands its MechStage (bay mode, egress playing) to this layer on the tree root just before it
 ## changes scene, so the mechs keep walking into the airlock, full screen, over the mission's loading screen while the
-## mission loads behind it. TestDrive waits for it (`wait_done`) before it reports its build at the crew's load barrier
+## mission loads behind it. MissionScene waits for it (`wait_done`) before it reports its build at the crew's load barrier
 ## (crew) or uncovers (solo): play starts only when both the sequence and the load are done, and since the sequence's
 ## length comes from the crew, which every machine has the same, the crew still starts together on the host's go.
 ## When the sequence ends the layer fades out over FADE and frees itself (the loading screen underneath then shows

@@ -56,7 +56,7 @@ func _tank_turret_break_and_settle() -> void:
 	tk.apply_hit(h)
 
 	check(not tk.destroyed(), "breaking tank turret leaves the hull alive")
-	check(tk.has_active_flame(), "living tank has live LowPolyFlame.Stream shooting from ruptured turret ring")
+	check(tk.wreck.has_active_flame(), "living tank has live LowPolyFlame.Stream shooting from ruptured turret ring")
 	var df := sq.get_debris_field()
 	var turrets := df.find_by_part("tank_turret")
 	eq(turrets.size(), 1, "breaking tank turret pops 1 persistent tank_turret debris chunk")
@@ -76,7 +76,7 @@ func _tank_turret_break_and_settle() -> void:
 		eq(df.active_count(), 0, "all settled debris chunks stop ticking (0 active -> 0.00 ms CPU)")
 		check(tur.global_position.y >= 0.0 and tur.global_position.y <= tur.rest_radius + 0.35,
 			"settled tank_turret rests cleanly on ground (y=%.2f, r=%.2f)" % [tur.global_position.y, tur.rest_radius])
-		check(tk.has_active_flame(), "living tank turret-ring flame keeps burning while tank is alive")
+		check(tk.wreck.has_active_flame(), "living tank turret-ring flame keeps burning while tank is alive")
 
 	sq.queue_free()
 	w.queue_free()
@@ -97,7 +97,7 @@ func _strider_leg_break_socket_flame() -> void:
 
 	st.apply_damage(float(st.max_hp["legs"]) + 5.0, "legs", "player1")
 	check(not st.destroyed(), "crippling strider legs leaves it alive")
-	check(st.has_active_flame(), "crippled strider attaches a live socket flame jet")
+	check(st.wreck.has_active_flame(), "crippled strider attaches a live socket flame jet")
 	check(sq.get_debris_field().total_count() >= 2, "crippling strider legs pops off armor debris chunks")
 
 	sq.queue_free()
@@ -135,7 +135,7 @@ func _all_classes_persistent_wrecks() -> void:
 		check(e.destroyed(), "%s killed cleanly" % e.enemy_type)
 		check(not e.is_hittable(), "%s wreck is non-hittable (shots fly cleanly past)" % e.enemy_type)
 		check(e.has_charred_hulk(), "%s keeps its persistent charred hulk visible" % e.enemy_type)
-		check(e.has_active_flame(), "%s wreck shoots active LowPolyFlame.Stream jet" % e.enemy_type)
+		check(e.wreck.has_active_flame(), "%s wreck shoots active LowPolyFlame.Stream jet" % e.enemy_type)
 		check(sq.get_debris_field().find_by_part(expected_part).size() >= 1,
 			"%s kill pops persistent %s debris piece" % [e.enemy_type, expected_part])
 
@@ -150,7 +150,7 @@ func _all_classes_persistent_wrecks() -> void:
 		w.advance(0.05)
 	for e in enemies:
 		check(is_instance_valid(e) and e.has_charred_hulk(), "%s charred hulk persists after flames cool" % e.enemy_type)
-		check(not e.has_active_flame(), "%s wreck flame tapered and extinguished cleanly" % e.enemy_type)
+		check(not e.wreck.has_active_flame(), "%s wreck flame tapered and extinguished cleanly" % e.enemy_type)
 		check(e._wreck_cooled, "%s wreck reached cooled idle state (0 ms CPU)" % e.enemy_type)
 	eq(sq.get_debris_field().active_count(), 0, "all kill debris settled to 0 active CPU")
 

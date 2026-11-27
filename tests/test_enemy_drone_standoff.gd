@@ -21,7 +21,7 @@ const WIG_REVS := 6
 const SAMPLE := 0.1
 const BAY_WATCH := 12.0       ## s the bay-exit fliers are watched
 
-var td: TestDrive
+var td: MissionScene
 var sq: EnemySquad
 var pt: PlayerTarget
 
@@ -31,8 +31,8 @@ func _init() -> void:
 
 
 func setup() -> void:
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = SEED
 	add_child(td)
 	await frames(4)

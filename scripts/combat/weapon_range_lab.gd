@@ -145,7 +145,7 @@ func lab_own_ground() -> bool:
 ## and knockback).
 func _build_range() -> void:
 	_add_block(Vector3(80, 1, 280), Vector3(0, -0.5, -110), Color(0.34, 0.36, 0.37))
-	_add_block(Vector3(4, 0.6, 4), Vector3(0, 0.3, 0), MechMeshes.GUN)
+	_add_block(Vector3(4, 0.6, 4), Vector3(0, 0.3, 0), LowPolyPalette.GUN)
 	for i in range(1, 9):
 		var m := MechParts.box(Vector3(30, 0.02, 0.25), Color(0.45, 0.47, 0.48), Vector3(0, 0.01, -25.0 * i))
 		add_child(m)
@@ -173,7 +173,7 @@ func _add_block(size: Vector3, at: Vector3, c: Color, yaw: float = 0.0) -> void:
 	var k := MeshKit.new()
 	k.box(size, c)
 	var mi := MeshInstance3D.new()
-	mi.mesh = k.commit(MechMeshes.materials())
+	mi.mesh = k.commit(LowPolyMaterials.materials())
 	body.add_child(mi)
 	add_child(body)
 
@@ -405,8 +405,7 @@ func step(dt: float) -> void:
 				state = "returning" if drone.returning() else "%.0f s left, repaired %.0f HP" % [drone.time_left(), drone.healed_total]
 			_heat_label.text += "\nDRONE " + state
 		elif eq == "radiator":
-			_heat_label.text += "
-fins glow with heat (demo load %s)" % ("%.0f/s" % RADIATOR_DEMO_HEAT if fire_mode == "hold"
+			_heat_label.text += "\nfins glow with heat (demo load %s)" % ("%.0f/s" % RADIATOR_DEMO_HEAT if fire_mode == "hold"
 				else ("%.0f per tap" % RADIATOR_DEMO_TAP if fire_mode == "single" else "off"))
 		elif eq == "ammo_bin":
 			_heat_label.text += "\n+50%% ammo on limited-ammo weapons (rockets %d, missiles %d, mortar %d)" % [

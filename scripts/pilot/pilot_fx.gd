@@ -340,7 +340,7 @@ static func _mesh_star() -> Mesh:
 			var b := rim[(i + 1) % 10]
 			k.tri(Vector3(0, 0, 0.024), a, b, STAR_COLOUR, Vector3.ZERO)
 			k.tri(Vector3(0, 0, -0.024), a, b, STAR_COLOUR.darkened(0.15), Vector3.ZERO)
-		_meshes["star"] = k.commit(MechMeshes.materials())
+		_meshes["star"] = k.commit(LowPolyMaterials.materials())
 	return _meshes["star"]
 
 
@@ -350,7 +350,7 @@ static func _mesh_puff(col: Color, glow: bool) -> Mesh:
 		var k := MeshKit.new()
 		k.glow = glow
 		k.ico(Vector3.ZERO, Vector3(0.07, 0.06, 0.07), col)
-		_meshes[key] = k.commit(MechMeshes.materials())
+		_meshes[key] = k.commit(LowPolyMaterials.materials())
 	return _meshes[key]
 
 
@@ -360,7 +360,7 @@ static func _mesh_drop() -> Mesh:
 		k.seg(Vector3(0, 0.1, 0), Vector3(0, 0.0, 0), Vector2.ZERO, Vector2(0.05, 0.05), 5, SWEAT_COLOUR, 2.0, false, 0.0)
 		k.seg(Vector3(0, 0.0, 0), Vector3(0, -0.05, 0), Vector2(0.05, 0.05), Vector2.ZERO, 5, SWEAT_COLOUR.darkened(0.1),
 			2.0, false, 0.0)
-		_meshes["drop"] = k.commit(MechMeshes.materials())
+		_meshes["drop"] = k.commit(LowPolyMaterials.materials())
 	return _meshes["drop"]
 
 
@@ -375,5 +375,5 @@ static func _mesh_chip(col: Color) -> Mesh:
 		var ctr := (a + b + c + d) * 0.25
 		for f: Array in [[a, b, c], [a, b, d], [b, c, d], [c, a, d]]:
 			k.tri(f[0], f[1], f[2], col, ctr)
-		_meshes[key] = k.commit(MechMeshes.materials())
+		_meshes[key] = k.commit(LowPolyMaterials.materials())
 	return _meshes[key]

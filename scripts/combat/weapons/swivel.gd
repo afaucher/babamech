@@ -22,7 +22,7 @@ extends WeaponBehaviour
 ## the record alone.
 
 const BARREL := 0.05                      ## m (× the body scale): each barrel's offset across the boom
-const SLUG_COLOR: Color = MechMeshes.DARK
+const SLUG_COLOR: Color = LowPolyPalette.DARK
 const TRACER_COLOR: Color = LowPolyFlame.OUTER     ## orange (the one flame palette)
 const WEAPON_NODE := "Weapon_swivel"      ## MechParts.weapon's root under the HP_ node: rotated by pose_boom
 

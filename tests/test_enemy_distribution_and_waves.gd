@@ -60,10 +60,10 @@ func _rooftop_units_seen_from_street() -> void:
 		for k in sec.deck_count:
 			var dp := CityPlan.for_deck(sec, k)
 			var dr := RingFrame.new(sec.radius_of(k))
-			var arr := sec.arrival(k)
+			var arr := SectionEncounters.arrival(sec, k)
 			var arr_w := dr.arc_to_world(float(arr["x"]), float(arr["s"]), CityPlan.CURB_H)
 			var pts: Array[Vector2] = []
-			var g := dp.walk_graph()
+			var g := CityGraphs.walk_graph(dp)
 			for n: Vector2 in g["nodes"]:
 				pts.append(n)
 			for ed: Array in g["edges"]:
@@ -142,7 +142,7 @@ func _multi_seed_full_deck_distribution() -> void:
 			total_decks += 1
 			var dp := CityPlan.for_deck(sec, k)
 			var dr := RingFrame.new(sec.radius_of(k))
-			var arr := sec.arrival(k)
+			var arr := SectionEncounters.arrival(sec, k)
 			var arr_arc := Vector2(float(arr["x"]), float(arr["s"]))
 			var arr_w := dr.arc_to_world(arr_arc.x, arr_arc.y, CityPlan.CURB_H)
 
@@ -159,7 +159,7 @@ func _multi_seed_full_deck_distribution() -> void:
 				var d := pt.distance_to(arr_arc)
 				all_dists.append(d)
 				deck_max_d = maxf(deck_max_d, d)
-				if d < SectionPlan.SAFE_RADIUS - 0.1:
+				if d < SectionEncounters.SAFE_RADIUS - 0.1:
 					safe_violations += 1
 				var check_h := h + (0.25 if sp.has("b_center") else 0.0)
 				if not EnemySpawner.clear_of_buildings(dp, pt, 1.3, check_h):
@@ -195,7 +195,7 @@ func _mission_waves_end_to_end() -> void:
 	sq.add_deck_nav(0, dp)
 	sq.drops_enabled = false
 
-	var arr := sec.arrival(0)
+	var arr := SectionEncounters.arrival(sec, 0)
 	var arr_w := dr.arc_to_world(float(arr["x"]), float(arr["s"]), CityPlan.CURB_H)
 	var p := _mock_player(w, arr_w, "wave_p1")
 
@@ -204,7 +204,7 @@ func _mission_waves_end_to_end() -> void:
 	var g_share := float(pool0.get("garrison", 0.5))
 	var w_pool_share := clampf(1.0 - g_share, 0.0, 1.0)
 	var budget0 := EnemySpawner.deck_budget(4, 0)
-	var gar := EnemySpawner.spawn_all(dp, dr, arr_w, w, sq, 4, true, 4, "d0_", 0, sec.encounter_sites(0), g_share)
+	var gar := EnemySpawner.spawn_all(dp, dr, arr_w, w, sq, 4, true, 4, "d0_", 0, SectionEncounters.sites(sec, 0), g_share)
 	check(gar.size() >= 3, "garrison spawned %d units at share %.2f" % [gar.size(), g_share])
 	for e in gar:
 		eq(e.wave, "", "garrison enemy %s has empty wave tag" % e.target_id)

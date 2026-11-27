@@ -28,7 +28,7 @@ func _crew_scale() -> void:
 	eq(MissionFlow.launch_scale({"crew": crew3, "scale": 2}), 2, "a launch's scale is the host's value, not its crew list's size")
 	eq(MissionFlow.launch_scale({}), 1, "no launch (solo): 1")
 	eq(NetMission.launch_scale(crew3), 3, "the host's launch asks MissionFlow.host_crew_scale (the one rule)")
-	var td := TestDrive.new()
+	var td := MissionScene.new()
 	td.crewed = true
 	td.spawn_order = [1, 2, 3] as Array[int]   # this client's own view of the launch: 3 pilots
 	var mf := MissionFlow.new()
@@ -94,8 +94,8 @@ func setup() -> void:
 
 
 func _flow() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	add_child(td)
 	await frames(4)
 	var mf := td.mission
@@ -179,8 +179,8 @@ func _flow() -> void:
 		_kill_all(td)
 		await _seconds(0.1)
 	eq(rules.outcome, "won", "holding the portal wins (%s)" % str(rules.state()))
-	var hs := mf.hud_state()
-	eq(str((hs["banner"] as Dictionary).get("reason", "")), MissionFlow.REASONS["objectives"], "the objectives' reason")
+	var hs := mf.hud_model.build()
+	eq(str((hs["banner"] as Dictionary).get("reason", "")), MissionHudModel.REASONS["objectives"], "the objectives' reason")
 	if hud != null:
 		await frames(2)
 		check(hud.mission_hud.banner.visible, "the banner shows")
@@ -195,14 +195,14 @@ func _flow() -> void:
 
 
 ## Stand the mech on objective o (a sweep: its deck's arrival; a flag: its site; the hold: its zone's centre).
-func _place(td: TestDrive, mf: MissionFlow, o: Dictionary) -> void:
+func _place(td: MissionScene, mf: MissionFlow, o: Dictionary) -> void:
 	var k := int(o["deck"])
 	var ro := mf.rules.objective(o["id"])
 	var at := Vector2(float(ro["site"]["x"]), float(ro["site"]["s"]))
 	if str(o["type"]) == "hold":
 		at = (ro["zone"] as Rect2).get_center()
 	elif str(o["type"]) == "sweep":
-		var arr: Dictionary = td.stack.section.arrival(k)
+		var arr: Dictionary = SectionEncounters.arrival(td.stack.section, k)
 		at = Vector2(float(arr["x"]), float(arr["s"]))
 	var here := td.stack.to_deck_arc(td.mech.global_position)
 	if int(here["deck"]) != k or Vector2(float(here["x"]), float(here["s"])).distance_to(at) > 5.0:
@@ -210,7 +210,7 @@ func _place(td: TestDrive, mf: MissionFlow, o: Dictionary) -> void:
 		td.mech.velocity = Vector3.ZERO
 
 
-func _kill_all(td: TestDrive) -> void:
+func _kill_all(td: MissionScene) -> void:
 	for e in td.combat.squad.enemies.duplicate():
 		if is_instance_valid(e) and not e.destroyed():
 			e.apply_damage(1.0e7, e.core_component(), "test")

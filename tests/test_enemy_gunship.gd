@@ -82,7 +82,7 @@ func _meshes_components_disarm_and_thruster_kill() -> void:
 	check(g1._primary_disabled, "broken pods disable primary rocket salvo")
 	near(float(g1.hp["hull"]), hull0 - 65.0, 0.1, "broken pods deal 65 shock damage to hull")
 	check(not g1._pods_mi.visible, "broken pods mesh hidden")
-	check(g1.has_active_flame(), "broken pods attach wing-stub socket flame")
+	check(g1.wreck.has_active_flame(), "broken pods attach wing-stub socket flame")
 
 	# Thrusters weak point (85 HP at 1.5x -> 57 raw dmg kills with cause "engine_failure").
 	var g2 := EnemyGunship.new()
@@ -246,7 +246,7 @@ func _coop_enemy_sync_roundtrip() -> void:
 	pg.puppet_tick(DT)
 	near(pg.puppet_aim().y, -0.22, 0.01, "gunship puppet pitch synced from host")
 	pg.puppet_break("pods")
-	check(not pg._pods_mi.visible and pg.has_active_flame(), "gunship puppet replays pods break & wing flame")
+	check(not pg._pods_mi.visible and pg.wreck.has_active_flame(), "gunship puppet replays pods break & wing flame")
 
 	csync.queue_free()
 	csq.queue_free()
@@ -257,15 +257,15 @@ func _coop_enemy_sync_roundtrip() -> void:
 	await frames(1)
 
 
-## Behaviour in the real game (TestDrive, plan mode): a hunting wave gunship put 120 m from a mech parked on a deck-0
+## Behaviour in the real game (MissionScene, plan mode): a hunting wave gunship put 120 m from a mech parked on a deck-0
 ## street crossing (kept standing) closes in, and for ENGAGED_WINDOW s after first contact (within CLOSE_ENGAGE_R)
 ## stays within its rockets' range and in line of sight of the mech (ray from the mech's eye height to its hull) for at
 ## least ENGAGED_MIN_SHARE of the time: a gunship that is shooting can be shot back. Then its pods are shot off: the
 ## disarmed gunship circles in reach (never farther than EVADE_RING_MAX + 25 m) instead of fleeing out of sight
 ## (seed 4: it used to fly to the deck's far end, 400 m out, and the sweep never ended).
 func _engaged_stays_in_range_and_visible(seed_n: int) -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = seed_n
 	add_child(td)
 	await frames(4)
@@ -274,7 +274,7 @@ func _engaged_stays_in_range_and_visible(seed_n: int) -> void:
 	var sq: EnemySquad = td.combat.squad
 	var pt: PlayerTarget = td.combat.player_target
 	var plan: CityPlan = sq.deck_plan(0)
-	var nodes: Array = plan.walk_graph()["nodes"]
+	var nodes: Array = CityGraphs.walk_graph(plan)["nodes"]
 	var tag := "seed %d" % seed_n
 	# The crossing nearest the deck centre, the gunship 120 m along the deck from it (inside the keep-in rect).
 	var c := plan.extent.get_center()

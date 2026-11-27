@@ -396,8 +396,8 @@ func _step_drone_patrol(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 		_patrol_check_t -= dt
 		if _patrol_check_t <= 0.0:
 			_patrol_check_t = PATROL_CHECK
-			if _tall_line_blocked(here, _patrol_points[gi]) and squad != null and squad.has_method("find_arc_path"):
-				_path_points = squad.find_arc_path(here, _patrol_points[gi], spawn_deck)
+			if _tall_line_blocked(here, _patrol_points[gi]) and _nav() != null:
+				_path_points = _nav().find_arc_path(here, _patrol_points[gi], spawn_deck)
 				_path_timer = 0.0   # a hunt that takes over replans at once instead of flying this route
 				_patrol_blocked = not _path_points.is_empty()
 				if not _patrol_blocked:

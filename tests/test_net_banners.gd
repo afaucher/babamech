@@ -1,7 +1,7 @@
 extends NetTest
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Invader banners across machines (docs/design/banners.md) over a real crew mission of 2, once per link (off, coast).
-## Both machines set up OccupationBanners on their own TestDrive's stack and CombatWorld (TestDrive.banners, the
+## Both machines set up OccupationBanners on their own MissionScene's stack and CombatWorld (MissionScene.banners, the
 ## Engine wiring): the same checksum. The client shoots one banner with autocannon records; each hit is decided on the
 ## client and reaches the host through CombatNet "combat.hit"; the host tears it and sends one "banner.torn"; both see
 ## it torn, the client never decided a tear itself. A banner field built late on the client (standing in for a member
@@ -10,7 +10,7 @@ const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "
 const PEERS := 2
 const SEED := 11
 
-var td: TestDrive
+var td: MissionScene
 var world: CombatWorld
 var field: OccupationBanners
 var deck := 0
@@ -20,7 +20,7 @@ func run_host() -> void:
 	net_timeout = 120.0
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	for e in td.combat.squad.enemies:
@@ -62,7 +62,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -103,7 +103,7 @@ func run_client() -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	if not check(await until(func() -> bool: return td.loaded, 60.0), "the drive loads"):
 		return false
@@ -111,14 +111,14 @@ func _load_and_go() -> bool:
 	td.mech.move_input = Vector2.ZERO
 	world = td.combat.world
 	deck = int(td.stack.section.entry["deck"])
-	field = td.banners   # Engine wires them into TestDrive now
+	field = td.banners   # Engine wires them into MissionScene now
 	if field == null:
 		field = OccupationBanners.new()
 		add_child(field)
 		field.setup(td.stack, world)
 	if not check(field.banner_count(deck) > 0, "banners on the entry deck"):
 		return false
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	return true

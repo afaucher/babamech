@@ -63,3 +63,14 @@ static func make(id: String) -> Node3D:
 	if res is GDScript:
 		return (res as GDScript).new() as Node3D
 	return null
+
+
+## lab_params() rows for a subject whose sliders are `defs` ({id, label, min, max, ...} dictionaries) and whose current
+## values are `values` (id -> value): each def copied, with its "value" set.
+static func param_rows(defs: Array, values: Dictionary) -> Array:
+	var out: Array = []
+	for p: Dictionary in defs:
+		var d := p.duplicate()
+		d["value"] = values[p["id"]]
+		out.append(d)
+	return out

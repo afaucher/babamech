@@ -160,7 +160,7 @@ func on_hit(h: Dictionary, e: float) -> bool:
 			float(stats.get("damage", 0.0)) * Combat.falloff(stats, d))
 	world.hit_prop(record, stats, h, fdir)
 	world.splash(record, stats, h["point"], target)
-	world.spawn_impact(h["point"], h["normal"], float(stats.get("impact_radius", 1.0)), h.get("color", MechMeshes.GREY),
+	world.spawn_impact(h["point"], h["normal"], float(stats.get("impact_radius", 1.0)), h.get("color", LowPolyPalette.GREY),
 		bool(stats.get("explosive", false)))
 	return true
 
@@ -168,7 +168,7 @@ func on_hit(h: Dictionary, e: float) -> bool:
 ## Another machine decided this shot stopped at `point` (CombatWorld.drop_shot): if still flying, end here now through
 ## on_hit with no target (the impact look of a hit on something there, once; splash and the rest only where this machine
 ## decides them, as for any hit). False when it had already ended (its own hit stands; nothing is applied again).
-func drop_at(point: Vector3, normal: Vector3, color: Color = MechMeshes.GREY) -> bool:
+func drop_at(point: Vector3, normal: Vector3, color: Color = LowPolyPalette.GREY) -> bool:
 	if end_time >= 0.0:
 		return false
 	var e := clampf(elapsed, 0.0, max_time)
@@ -182,7 +182,7 @@ func drop_at(point: Vector3, normal: Vector3, color: Color = MechMeshes.GREY) ->
 # --- Look ---------------------------------------------------------------------------------------------
 
 func _build_look() -> void:
-	_shell = CombatMeshes.instance(CombatMeshes.shell(look.get("color", MechMeshes.AMBER), float(look.get("width", 0.38)),
+	_shell = CombatMeshes.instance(CombatMeshes.shell(look.get("color", LowPolyPalette.AMBER), float(look.get("width", 0.38)),
 		bool(look.get("glow", false))))
 	_shell.top_level = true
 	add_child(_shell)
@@ -229,7 +229,7 @@ func _draw_trail() -> void:
 	if head - tail < 0.005:
 		return
 	var n := maxi(int(ceil((head - tail) / TRAIL_SEG)), 1)
-	var col: Color = look.get("trail_color", MechMeshes.AMBER)
+	var col: Color = look.get("trail_color", LowPolyPalette.AMBER)
 	var rings := PackedVector3Array()      # 4 corners per ring, flat (no per-frame nested arrays)
 	rings.resize((n + 1) * 4)
 	for i in n + 1:
@@ -259,7 +259,7 @@ func _draw_trail() -> void:
 ## index lists, the muzzle flash star), so a weapon's FIRST shot doesn't build them mid-fight (WeaponBehaviour.prewarm,
 ## from WeaponRack.rebuild). The same cached resources the shot would build on demand: nothing drawn changes.
 static func prewarm_look(lk: Dictionary, st: Dictionary) -> void:
-	CombatMeshes.shell(lk.get("color", MechMeshes.AMBER), float(lk.get("width", 0.38)), bool(lk.get("glow", false)))
+	CombatMeshes.shell(lk.get("color", LowPolyPalette.AMBER), float(lk.get("width", 0.38)), bool(lk.get("glow", false)))
 	prewarm_trail(st)
 	MuzzleFlash.mesh()
 

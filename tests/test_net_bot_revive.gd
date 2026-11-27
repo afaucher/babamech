@@ -13,7 +13,7 @@ const NET_TIMEOUT := 200   # test_runner reads this literal
 const SEED := 19
 const REVIVE_TIMEOUT := 60.0
 
-var td: TestDrive
+var td: MissionScene
 
 
 func run_host() -> void:
@@ -24,9 +24,9 @@ func run_host() -> void:
 	if not check((pick["loadout"] as Dictionary).values().has(DownedRules.REVIVER), "seed %d gives the bot a repair drone (%s)"
 			% [SEED, str(pick["loadout"])]):
 		return
-	check(Session.start_mission(SEED), "the host launches")
+	check(Session.mission.host_launch(SEED), "the host launches")
 	await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0)
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await until(func() -> bool: return td.loaded, 30.0)
 	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING, 40.0), "the barrier passes"):

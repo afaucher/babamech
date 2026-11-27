@@ -2,7 +2,7 @@ class_name MissionBot
 extends Node
 ## `--bot [profile]`: the AI plays the local mech through the whole mission (LAN verification, soak runs). Input only,
 ## like a player: it never moves a mech or an enemy itself (except the DEV travel jump below).
-##   FIGHTING is antigravity's TestDriveBotPilot / PlayerBot (sense, aim, fire, dodge, cover), rebound to the deck the
+##   FIGHTING is antigravity's MissionBotPilot / PlayerBot (sense, aim, fire, dodge, cover), rebound to the deck the
 ##   mech is on (that deck's CityPlan and deck_ring).
 ##   GOING somewhere is this layer. The mission plan's objectives (MissionRules.plan, the host's state on a client; the
 ##   one mission mode): per deck in order its primary, its KNOWN bonuses (MissionBot.bonuses), then on the extraction
@@ -23,10 +23,10 @@ extends Node
 ##   moving to a vantage node with a clear line after VANTAGE_AFTER s without a kill.
 ## HANGAR BOTS (docs/design/hangar-bots.md): the same AI drives a host-run crew bot's mech (attach_crew): its body
 ## (body_mech / body_rack / body_pt) is that bot's, not the local mech; no camera; its PlayerBot is its own
-## (TestDriveBotPilot with a body). The local `--bot` path is unchanged (body = drive.mech and drive.combat's rack /
+## (MissionBotPilot with a body). The local `--bot` path is unchanged (body = drive.mech and drive.combat's rack /
 ## PlayerTarget).
 ## Every deck change logs "[Flow] bot deck change: deck a -> b by ramp | shaft | glide | unplanned | respawn".
-## Started by TestDrive once the scene is set up (attach); every other [Flow] transition is still logged by TestDrive.
+## Started by MissionScene once the scene is set up (attach); every other [Flow] transition is still logged by MissionScene.
 ##
 ## DEV ONLY, `--dev-bot-travel` (dev_travel): a FALLBACK when the walk can't get there: no route to the target deck,
 ## DEV_STALL s without 5 m of progress along the route, or DEV_FIGHT_STALL s fighting without a kill. The bot then JUMPS:
@@ -140,12 +140,12 @@ static var bonuses := true
 ## ceiling carries it over an atrium); off, its planner leaves every glide out (BotRoutePlanner.fit_body).
 static var hop_glides := false
 
-var drive: TestDrive
+var drive: MissionScene
 var body_mech: MechController   ## the mech it drives (drive.mech, or a crew bot's)
 var body_rack: WeaponRack       ## that mech's rack
 var body_pt: PlayerTarget       ## that mech's PlayerTarget
 var crew_bot := false           ## a host-run hangar bot (attach_crew), not the local mech
-var pilot: TestDriveBotPilot
+var pilot: MissionBotPilot
 var planner: BotRoutePlanner
 var mode := ""                ## "fight" | "travel" | "idle"
 var goal_text := ""           ## what it is doing (logs, tests)
@@ -320,25 +320,25 @@ func net_fields() -> Dictionary:
 		"body_r": Net.PRIVATE, "hop_only": Net.PRIVATE, "local_side": Net.PRIVATE, "roomy": Net.PRIVATE, "stuck_win": Net.PRIVATE, "veto_grow": Net.PRIVATE}
 
 
-## TestDrive calls this once its scene is set up (and the stack built).
-static func attach(td: TestDrive, profile: String) -> MissionBot:
+## MissionScene calls this once its scene is set up (and the stack built).
+static func attach(td: MissionScene, profile: String) -> MissionBot:
 	var mb := MissionBot.new()
 	mb.name = "MissionBot"
 	mb.drive = td
 	mb.body_mech = td.mech
 	mb.body_rack = td.combat.rack if td.combat != null else null
 	mb.body_pt = td.combat.player_target if td.combat != null else null
-	mb.pilot = TestDriveBotPilot.attach(td)
+	mb.pilot = MissionBotPilot.attach(td)
 	mb.pilot.set_profile(profile if BotProfile.has_profile(profile) else "veteran")
 	mb.pilot.set_active(true)
-	mb.dev_travel = OS.get_cmdline_user_args().has("--dev-bot-travel") or TestDrive.dev_bot_travel
+	mb.dev_travel = OS.get_cmdline_user_args().has("--dev-bot-travel") or MissionScene.dev_bot_travel
 	td.add_child(mb)
 	return mb
 
 
 ## A host-run hangar bot: the AI drives `m` (its rack `r`, its PlayerTarget `t`, pilot id `id` < 0) with skill `profile`.
 ## Added as a child of `parent` (the bot's CrewBot node).
-static func attach_crew(td: TestDrive, parent: Node, m: MechController, r: WeaponRack, t: PlayerTarget, id: int,
+static func attach_crew(td: MissionScene, parent: Node, m: MechController, r: WeaponRack, t: PlayerTarget, id: int,
 		profile: String) -> MissionBot:
 	var mb := MissionBot.new()
 	mb.name = "MissionBot"
@@ -347,7 +347,7 @@ static func attach_crew(td: TestDrive, parent: Node, m: MechController, r: Weapo
 	mb.body_rack = r
 	mb.body_pt = t
 	mb.crew_bot = true
-	var p := TestDriveBotPilot.new()
+	var p := MissionBotPilot.new()
 	p.name = "BotPilot"
 	p.drive = td
 	p.body = {"mech": m, "rack": r, "pt": t, "id": id}
@@ -355,7 +355,7 @@ static func attach_crew(td: TestDrive, parent: Node, m: MechController, r: Weapo
 	mb.pilot = p
 	p.set_profile(profile if BotProfile.has_profile(profile) else "veteran")
 	p.set_active(true)
-	mb.dev_travel = TestDrive.dev_bot_travel or OS.get_cmdline_user_args().has("--dev-bot-travel")
+	mb.dev_travel = MissionScene.dev_bot_travel or OS.get_cmdline_user_args().has("--dev-bot-travel")
 	parent.add_child(mb)
 	return mb
 
@@ -744,7 +744,7 @@ func _physics_process(dt: float) -> void:
 ## the current leg means to go down one (a ramp, a shaft drop, a glide). A thruster hop whose next second of flight ends
 ## over a cut loses its thrust.
 func _guard_holes() -> void:
-	if drive == null or drive.loading or body_mech == null or drive.stack == null or planner == null or drive._held:
+	if drive == null or drive.loading or body_mech == null or drive.stack == null or planner == null or drive.held:
 		return
 	if _leg_i < _legs.size() and str(_legs[_leg_i]["kind"]) != "walk":
 		return
@@ -765,7 +765,7 @@ func _guard_holes() -> void:
 func _step(dt: float) -> void:
 	if drive == null or drive.loading or body_mech == null or drive.stack == null or drive.mission == null:
 		return
-	if drive._held:
+	if drive.held:
 		return   # the barrier hasn't passed: stand still like everyone else
 	var mech := body_mech
 	t += dt
@@ -837,7 +837,8 @@ func _step(dt: float) -> void:
 	# Fight near the target (hysteresis: in at ENGAGE, out past ENGAGE_OUT), or once the road there has run out.
 	var road_done := mode == "travel" and _route_key.begins_with(str(goal["key"]) + "@") and not _legs.is_empty() \
 		and _leg_i >= _legs.size()
-	var fight := not in_special and enemy and t_deck == k and (dist < (engage_radius * ENGAGE_OUT / ENGAGE if mode == "fight" 		else engage_radius) or road_done)
+	var fight := not in_special and enemy and t_deck == k and (dist < (engage_radius * ENGAGE_OUT / ENGAGE if mode == "fight" \
+		else engage_radius) or road_done)
 	if fight:
 		if mode != "fight":
 			_clear_route()
@@ -1042,7 +1043,7 @@ func _pick_target(td: int, k: int) -> void:
 		_target = null
 	var pb := pilot.bot if pilot != null else null
 	if mode == "fight" and k == td and pb != null and is_instance_valid(pb):
-		var pe: Variant = pb._current_enemy   # untyped: it may already be freed
+		var pe: Variant = pb.current_target()   # untyped: it may already be freed
 		if _live_on(pe, td) and pe != _target and (_target == null or _target_t > 3.0):
 			_target = pe
 			_target_t = 0.0
@@ -1088,7 +1089,7 @@ func _plan_goal(k: int) -> Dictionary:
 			return {"deck": td, "at": _target.global_position, "key": id, "text": "sweep deck %d (%s)" % [td, _target.name],
 				"enemy": true, "eye": _core(_target)}
 		# Nothing alive: wait for the deck's waves at its arrival (never the site: the departure is a hole in the floor).
-		var arr: Dictionary = drive.stack.section.arrival(td)
+		var arr: Dictionary = SectionEncounters.arrival(drive.stack.section, td)
 		return {"deck": td, "at": drive.stack.from_deck_arc(td, float(arr["x"]), float(arr["s"])), "key": id + ":wait",
 			"text": "sweep deck %d: waiting for its waves" % td, "enemy": false, "zone": 30.0}
 	if _live_on(_hunt, td) and k == td:
@@ -1107,7 +1108,7 @@ func _plan_goal(k: int) -> Dictionary:
 		c += Vector2(cos(ang), sin(ang)) * r * ESCORT_OFF
 	var txt := "%s %s" % [ty, id]
 	if rules.obj_state(id) != "hidden":
-		txt += " (%.0f / %.0f)" % [rules.obj_progress(id), float(rules._tot.get(id, 0.0))]
+		txt += " (%.0f / %.0f)" % [rules.obj_progress(id), rules.obj_total(id)]
 	return {"deck": td, "at": drive.stack.from_deck_arc(td, c.x, c.y), "key": id, "text": txt, "enemy": false, "zone": r}
 
 
@@ -1251,7 +1252,8 @@ func _obj_tick(dt: float) -> void:
 		_hunt_blocks = false
 		if _hunt != null:
 			var ha := drive.stack.to_deck_arc((_hunt as EnemyBase).global_position)
-			_hunt_blocks = ty != "defend" and (_zone_of(o)[0] as Vector2).distance_to(Vector2(float(ha["x"]), float(ha["s"]))) 				<= float(o.get("radius", 0.0)) + HUNT_ZONE_PAD
+			_hunt_blocks = ty != "defend" and (_zone_of(o)[0] as Vector2).distance_to(Vector2(float(ha["x"]), float(ha["s"]))) \
+				<= float(o.get("radius", 0.0)) + HUNT_ZONE_PAD
 			_hunt_hp = (_hunt as EnemyBase).total_hp()
 			_hunt_dry = 0.0
 			if ty != "defend" and float(_arc_on(int(o["deck"]), _core(_hunt))["h"]) > PERCH_MIN_H:
@@ -1325,7 +1327,8 @@ func _zone_sight(o: Dictionary, en: EnemyBase) -> Vector3:
 				q.exclude = [body_mech.get_rid()]
 				var hit := space.intersect_ray(q)
 				var hn := hit.get("collider") as Node if not hit.is_empty() else null
-				if hit.is_empty() or (hn != null and (hn == en or en.is_ancestor_of(hn))) 						or (hit["position"] as Vector3).distance_to(aim) < 1.5:
+				if hit.is_empty() or (hn != null and (hn == en or en.is_ancestor_of(hn))) \
+						or (hit["position"] as Vector3).distance_to(aim) < 1.5:
 					sees = true
 					break
 			if not sees or _street_floor(k, p) == null:
@@ -1522,7 +1525,7 @@ func _pick_cover(k: int, at: Vector3, zc: Vector3, r: float, eyes: Array) -> Vec
 
 ## Low on HP: launch a repair drone from active equipment if the loadout has one (WeaponRack.activate, the bots' way).
 func _use_repair() -> void:
-	if drive == null or drive.combat == null or body_rack == null or body_mech == null or drive._held:
+	if drive == null or drive.combat == null or body_rack == null or body_mech == null or drive.held:
 		return
 	var pt := body_pt
 	if pt == null or pt.disabled or _core_hp() > REPAIR_AT:
@@ -1612,7 +1615,7 @@ func _zone_hold(k: int, at: Vector3, r: float, dt: float, goal: Dictionary = {})
 	mech.thrust_input = false
 
 
-## Friendly fire (on by default): BotFireGuard holds every slot whose shot could reach a crew mech (TestDrive.mechs: the
+## Friendly fire (on by default): BotFireGuard holds every slot whose shot could reach a crew mech (MissionScene.mechs: the
 ## players' puppets, the host's own mech, the other hangar bots), from the slot's real muzzle along the whole flight
 ## (range, spread, splash, travel time against the mate's motion, missiles' homing, the mortar's landing), and leads this
 ## shooter's flying missiles away from a mate. Called last every physics frame (after PlayerBot and this layer).
@@ -2563,7 +2566,7 @@ func _pick_perch(k: int, look: Vector3) -> Dictionary:
 	var st := drive.stack
 	var mp := body_mech.global_position
 	var cands: Array = []
-	for r: Dictionary in nav._roofs:
+	for r: Dictionary in nav.all_roofs():
 		var cw: Vector3 = r["center_w"]
 		var key := "roof:%d:%d" % [roundi((r["arc2"] as Vector2).x), roundi((r["arc2"] as Vector2).y)]
 		var d := cw.distance_to(look)

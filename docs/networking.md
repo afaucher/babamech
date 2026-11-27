@@ -56,9 +56,9 @@ mission ends; mid-mission join is not built: cast's M6 seat handover is the mode
 
 ## Mission (co-op step 1)
 ```
-host -> crew     mission.launch {seed, mode, start_t, crew, friendly_fire, objectives, scale}  Session.start_mission(seed, mode): start_t = host_time() + 2.5 s; scale: "Crew scale" below
+host -> crew     mission.launch {seed, mode, start_t, crew, friendly_fire, objectives, scale}  Session.mission.host_launch(seed, mode): start_t = host_time() + 2.5 s; scale: "Crew scale" below
 client -> host   mission.loading {}                     Session.report_mission_loading(): right before the (blocking) build
-client -> host   mission.ready  {sum, ms}               Session.report_mission_built(TestDrive.mission_checksum(), build ms)
+client -> host   mission.ready  {sum, ms}               Session.report_mission_built(MissionScene.mission_checksum(), build ms)
 host -> crew     mission.wait   {ready: [peer]}         the set of members that reported changed (the loading screen's ready ticks: Session.mission_ready_peers())
 host -> crew     mission.go     {start_at}              every remaining member reported the host's sum; start_at = +0.5 s
 host -> crew     mission.state  {state}                 the mission's progress changed (W6, below): Session.send_mission_state
@@ -71,7 +71,7 @@ host -> crew     mission.end    {reason}                the host left the missio
   drive. `crew` is the roster by seat at launch: `{peer, seat, name, head, chassis, accent, loadout}`. The crew state is
   "mission" from the launch to the end (joiners refused). `friendly_fire` is the host's crew option at launch
   (`Session.friendly_fire`; absent = true): every machine sets `td.friendly_fire` (`Net.SPAWN`) from it before
-  TestDriveCombat sets up, which hands it to `CombatWorld.friendly_fire`. Solo: `TestDrive.solo_launch` carries the
+  MissionCombat sets up, which hands it to `CombatWorld.friendly_fire`. Solo: `MissionScene.solo_launch` carries the
   hangar's setting; a test drive with neither has it on. The loading screen's section line says "Friendly fire on / off".
 - **The city** (`params.mode`, always `stack`; any other value builds it too): the multi-deck mission section,
   `SectionPlan.make({seed})` then `CityStack.build`. The stack is placed with the ENTRY deck's floor through the world origin, and `td.city` is that
@@ -81,8 +81,8 @@ host -> crew     mission.end    {reason}                the host left the missio
   respawns (`CityStack.fell_out`). Every deck's props are networked (prop events carry the deck); each mech's MechAudio
   reads footstep surfaces from the deck it is on.
 - Each machine builds the city from `params.seed` + `mode`, spawns one mech per crew entry (seat order: two columns 8 m
-  apart, rows 10 m apart: `TestDrive.entry_spawn(entry, deck, i, n)` around `CityStack.entry_transform()` on the entry
-  road), holds its own still, and reports `TestDrive.mission_checksum()` (`CityStack.checksum()` + "/" + the
+  apart, rows 10 m apart: `MissionScene.entry_spawn(entry, deck, i, n)` around `CityStack.entry_transform()` on the entry
+  road), holds its own still, and reports `MissionScene.mission_checksum()` (`CityStack.checksum()` + "/" + the
   `MissionPlan` checksum; the stack's alone under the TEST-ONLY quiet fixture).
   `CityStack.checksum()` covers the section (`SectionPlan.checksum()`) and, for every deck, its plan
   (`CityPlan.checksum()`), its street-prop layout (`CityProps.layout_checksum`: props are host-arbitrated by index and
@@ -95,29 +95,29 @@ host -> crew     mission.end    {reason}                the host left the missio
   `.notes.txt` beside the CSV), kept in `Session.mission.desyncs`, and that pilot is sent out. A member silent for 45 s
   after `start_t` is sent out too. Then `mission.go`; `Session.mission_go(elapsed)` fires everywhere at `start_at` and
   the mechs are released.
-- Ownership: each mech carries its owner peer (`MechSpawn.owner_of(m)`, the "owner_peer" meta). `TestDrive.mechs` is
-  peer -> mech, `TestDrive.mech_of(peer)` finds one, `spawn_order` is the seat order; `TestDrive.mech` is the local one
+- Ownership: each mech carries its owner peer (`MechSpawn.owner_of(m)`, the "owner_peer" meta). `MissionScene.mechs` is
+  peer -> mech, `MissionScene.mech_of(peer)` finds one, `spawn_order` is the seat order; `MissionScene.mech` is the local one
   (input, camera, HUD, combat). Remote mechs are puppets of their owners' snapshots (below).
 - **Seed**: the Launch (host or solo) rolls a fresh seed from a launch-only generator seeded by the clock (not a gameplay
   roll; it is broadcast), unless `--seed N` forces it. Solo, the hangar hands `{seed, mode}` to the test drive itself
-  (`TestDrive.solo_launch`); the plain test drive (`run.ps1 -TestDrive`, tests) uses `--seed` (default 1). The
+  (`MissionScene.solo_launch`); the plain test drive (`run.ps1 -Mission`, tests) uses `--seed` (default 1). The
   stack is the only city (user 2026-11-25 "Cut the legacy modes."; `--stack` is ignored, `--district` gone). N
   (new city) is solo only. A client leaving the mission (Esc) leaves only on its own machine; the host leaving ends it for
   the crew (`mission_ended` on the clients, back to the hangar).
 - **Leavers** (audit 2026-11 #1): a member who drops or quits mid-mission (`Session.peer_left`: on the host from
   `_drop`, on a client when the host's `sys.roster` no longer lists it) is retired on every machine by
   `CrewSync.retire`: its PlayerTarget leaves CombatWorld (enemies, weapons and bots stop seeing it), its puppet and mech
-  are freed (`TestDrive.drop_mech`), `Session.mechs` drops its buffer. Crew lists, downed / revive lists and the
+  are freed (`MissionScene.drop_mech`), `Session.mechs` drops its buffer. Crew lists, downed / revive lists and the
   mission facts count members only, so a downed leaver is simply gone (a bot going to revive it logs "gone"). A member
   gone before the mission is set up is retired at setup. The host quitting ends the session (`session_ended`, back to
   the menu with the reason); no host migration. Test: `test_net_leaver` (3). The host's leaver hook
-  (`TestDrive.member_retired` -> `MissionFlow.on_member_retired`) eases the mission off: "Crew scale" below.
+  (`MissionScene.member_retired` -> `MissionFlow.on_member_retired`) eases the mission off: "Crew scale" below.
 - **Crew scale** (AGENTS.md rule 8; user 2026-11-25: "Run it from the host, enforce this! And ease off when a player
   leaves."). Every crew-scaled gameplay value (the director's `crew_n` and everything it sizes, the reserve's group sizes
   and spawn ctx, the defend relay's HP, the depot cores) reads ONE value: `MissionFlow.crew_scale()` (1..4), the scale in
   force on this machine. **The host owns it**: only `MissionFlow.host_crew_scale(members)` derives it from a crew, at the
   launch from the launch crew with its hangar bots (`NetMission.launch_scale` -> `mission.launch` `scale`), on a retire
-  from the members still in the crew (`TestDrive.crew_members()`: players and bots alike). A client never computes it
+  from the members still in the crew (`MissionScene.crew_members()`: players and bots alike). A client never computes it
   from `Session.crew()` / `roster` / `spawn_order` / `crew_members()` / `crew_bots`: it reads the launch's `scale`
   (MissionFlow.setup, before anything is built from it: it travels with the crew list) and the host's changes. Solo: 1.
   ```
@@ -168,13 +168,13 @@ ENet dropped the client at ~5.8 s of silence (crew 2 -> 1). The host's ENet rese
 client, back from its stall, heard nothing and ended 6 s later with "The host left". Reproduced by
 `test_net_load_stall` with ENet's default timeouts (host: "c1 dropped: lost the link while loading").
 
-- **Stepped load (the game's crew mission in the stack):** `TestDrive._load_stepped` runs `CityStack.build_step(8 ms)`
+- **Stepped load (the game's crew mission in the stack):** `MissionScene._load_stepped` runs `CityStack.build_step(8 ms)`
   once per frame (behind the loading screen, `scripts/ui/loading_screen.gd`, docs/design/hud.md; mechs not simulated), then sets up the
   scene, then `AmbientLife.setup_step(8 ms)` once per frame, and only then reports `mission.ready` (so `mission.go` waits
-  for every machine's whole load). `TestDrive.loading` is true meanwhile (no input, no physics). Events that arrive
+  for every machine's whole load). `MissionScene.loading` is true meanwhile (no input, no physics). Events that arrive
   during the load are dispatched as usual: EnemySync pulls its manifest after setup, life replays what it heard while
   setting up, and nothing gameplay is sent before `mission.go`. Measured here (desktop, headless): 143 chunks, longest
-  25 ms, 1.26 s of build. Crew TESTS load in `_ready` (`TestDrive.stepped_load = false`, set by NetTest) because they
+  25 ms, 1.26 s of build. Crew TESTS load in `_ready` (`MissionScene.stepped_load = false`, set by NetTest) because they
   check the scene two frames after adding it; `test_net_load_stall*` run the stepped load.
 - **Keep-alive inside a blocking load** (the unstepped path, and any long frame): `Session.service_transport()` polls
   the transport (ENet acks and pings, Steam takes its messages) and flushes, WITHOUT dispatching: what arrives waits in
@@ -198,7 +198,7 @@ client, back from its stall, heard nothing and ended 6 s later with "The host le
   Didn't load the mission in time") shows under the test drive's help line for 8 s and is a telemetry note.
 - Tests: `test_net_load_stall` (a client blocks its main thread 12 s in the mission load while the host keeps sending
   reliable events: it lands in the mission, the crew stays 2), `test_net_load_stall_slow` (load timeout 4 s, the same
-  stall: kicked with LOAD_SLOW, both sides say why). Hook: `TestDrive.test_stall_ms` (client only).
+  stall: kicked with LOAD_SLOW, both sides say why). Hook: `MissionScene.test_stall_ms` (client only).
 
 ## LAN soak (bots, automation, [Flow] logs)
 Every transition prints one `[Flow] t=<host_time> peer=<id> <role> <what>: <detail>` line (`FlowLog.say`): session
@@ -240,7 +240,7 @@ host -> crew     mission.go     {start_at, state?}   carries the latest state (i
   `DownedRules`); `MissionRules` "wipe" stays off by default (on: lost when every pilot is down and nobody redeploys).
 - **The plan** (mission objectives, docs/design/mission-objectives.md §7 / §9; THE ONLY MODE since 2026-11-25, user:
   "Cut the legacy modes."; no setting, `--objectives` accepted and ignored, `--no-objectives` gone). `mission.launch`
-  carries no mode switch any more (the `objectives` key, `Session.objectives`, `TestDrive.objectives`, the hangar's
+  carries no mode switch any more (the `objectives` key, `Session.objectives`, `MissionScene.objectives`, the hangar's
   Objectives box and the transitional clear + extract rules are gone). Every machine builds `MissionPlan.make(sec)`,
   `MissionRules.make(sec, {plan})`, `PacingDirector.make(plan, {}, crew_scale())` (docs/design/pacing-director.md), then `stack.setup_mission(plan)` (MissionWorld, behind the
   loading screen, before the barrier) and `rules.set_site` from its `flag_site` / `asset_site` (kept on the plan's site
@@ -350,7 +350,7 @@ host -> client   T_SNAP  the host's mech + the other clients' (<= 173 B)  each f
 - **Friendly fire:** `BotFireGuard` (scripts/game/bot_fire_guard.gd), called last every physics frame by MissionBot for
   the local `--bot` and every hangar bot: per slot, the shot from its real muzzle over the weapon's whole range (spread,
   splash, flak fuse, missile curve, mortar landing + descent, crew motion over the travel time) against every crew mech
-  in `TestDrive.mechs`; unsafe slots are held, flying missiles are led away from a mate.
+  in `MissionScene.mechs`; unsafe slots are held, flying missiles are led away from a mate.
 - Tests: `test_net_hangar_bots` (2), `test_bot_loadout`, `test_bot_fire_guard`, `test_layout` (hangar controls).
 
 ## Enemies (W4, the host-owned world)
@@ -360,8 +360,8 @@ host -> client   enemy.spawn  {e: [[n, id, type, deck, xform, dead, broken, hp].
 host -> client   T_ENEMY      the enemies due (28 B + 1 per component each)  20 Hz while changed, 2 Hz keep-alive
 host -> crew     enemy.ev     {l: [[kind, n, data]...]}               one reliable batch per physics frame, in order
 ```
-- **Spawn and AI on the host only.** `TestDrive.spawn_enemies` (TestDriveCombat.rebuild_encounters asks it): solo, as
-  before; in a crew mission the HOST runs `EnemySpawner` from the mission seed around `TestDrive.encounter_origin()`
+- **Spawn and AI on the host only.** `MissionScene.spawn_enemies` (MissionCombat.rebuild_encounters asks it): solo, as
+  before; in a crew mission the HOST runs `EnemySpawner` from the mission seed around `MissionScene.encounter_origin()`
   (the stack's entry: the same whatever seat the host has), scaled to the crew size, and
   tags each enemy with `spawn_deck` (`CityStack.deck_at`); a client spawns none. EnemySpawner now lays the encounter out
   from the plan's avenue lane (`CityPlan.avenue_x()`: the entry's lane on a stack deck) and refuses
@@ -404,7 +404,7 @@ host -> crew     enemy.ev     {l: [[kind, n, data]...]}               one reliab
   point, so one shot does not land on two deciders. No new event kind; `scripts/net/` unchanged.
 - **Targeting.** Host enemies already see every crew mech: CrewSync registers each puppet as a PlayerTarget (team
   "player", the owner's peer), and enemies lead it from its puppet's streamed velocity.
-- **Missions.** `TestDrive.enemies_alive_per_deck() -> Array[int]` (`EnemySync.alive_per_deck(enemies, decks)`): alive
+- **Missions.** `MissionScene.enemies_alive_per_deck() -> Array[int]` (`EnemySync.alive_per_deck(enemies, decks)`): alive
   enemies by `spawn_deck`, one entry per deck (MissionRules.evaluate's "enemies"). Authoritative on the host; a client's
   puppets follow the host's `dead` events.
 - **Contract.** `NetEnemyCodec.ENEMY_FIELDS` (EnemyBase ai_state / _dead / _locked_aim / hp / heat / aim_kick, the

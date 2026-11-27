@@ -20,7 +20,7 @@ const RECORD_END := 5.8
 const BULWARK_LOADOUT := {"side_l": "rockets", "side_r": "autocannon", "back_l": "mortar", "back_r": "ammo_bin"}
 const SNAP := preload("res://tests/net_snap_case.gd")
 
-var td: TestDrive
+var td: MissionScene
 var _t0 := 0.0
 
 
@@ -41,7 +41,7 @@ func run_host() -> void:
 	if not check(await wait_reports("roster", 1, 20.0), "the client sees its change in the roster"):
 		return
 	eq(str(reported(client, "roster")), "bulwark", "the client's own roster copy shows its Bulwark")
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	var mine := await _drive_and_record()
@@ -63,7 +63,7 @@ func run_client() -> void:
 		MechCatalog.sanitize_loadout("bulwark", BULWARK_LOADOUT))
 	await until(func() -> bool: return str(Session.local_entry().get("chassis", "")) == "bulwark", 15.0)
 	report("roster", str(Session.local_entry().get("chassis", "")))
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -72,14 +72,14 @@ func run_client() -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.crew_sync != null, "the test drive runs the crew mission"):
 		return false
 	td.combat.squad.clear_enemies()
 	td.combat.enemies.clear()
-	return check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	return check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 		"the load barrier passes")
 
 

@@ -203,7 +203,17 @@ func next_all_red(j: int, t: float, need: float) -> float:
 	return t + (half - u) + GREEN
 
 
-func _junction_near(at: Vector2) -> int:
+## Building footprints (read-only view).
+func foot() -> Array[Rect2]:
+	return _foot
+
+
+## Section mode: the grown floor cuts (read-only view).
+func cuts() -> Array[Rect2]:
+	return _cuts
+
+
+func junction_near(at: Vector2) -> int:
 	var bi := 0
 	var bd := INF
 	for j in junctions.size():
@@ -554,7 +564,7 @@ func _crossing_junction(a: int, b: int, axis: int) -> int:
 						best = i
 				j = best * ns + k
 	if j < 0:
-		j = _junction_near(mid)
+		j = junction_near(mid)
 	return j
 
 

@@ -45,7 +45,7 @@ static func _quad_mi(col: Color) -> MeshInstance3D:
 	k.glow = true
 	k.shade = 0.0
 	k.quad(Vector3(-0.5, -0.5, 0), Vector3(0.5, -0.5, 0), Vector3(0.5, 0.5, 0), Vector3(-0.5, 0.5, 0), col, Vector3(0, 0, -1))
-	return CombatMeshes.instance(k.commit(MechMeshes.materials()))
+	return CombatMeshes.instance(k.commit(LowPolyMaterials.materials()))
 
 
 func refresh(hp_ratio: float, heat_ratio: float, _alerted: bool, _telegraphing: bool, status_text: String,

@@ -17,7 +17,7 @@ extends RefCounted
 ## Same conventions and tools as MechMeshes (model units, faces -Z, +X its right; body parts in body space around their
 ## attach point, drawn at BODY_SCALE; leg segments hang along -Y from the proximal joint to REST_LENGTH; joint caps on the
 ## joint, axle along X; foot parts on the ground; right side authored, the left mirrored). Shared palette, materials
-## (MechMeshes.materials) and helpers (MechMeshes._cap, _bolt_ring). Weapons, equipment, the hatch and the pilot heads
+## (LowPolyMaterials.materials) and helpers (MeshKit.joint_cap, bolt_ring). Weapons, equipment, the hatch and the pilot heads
 ## are the Strider's parts, named as-is (ChassisParts). Files: res://assets/models/mech/bulwark_<part>.res
 ## (tools/models/gen_mech_meshes.gd). Cosmetic only (no gameplay state).
 
@@ -128,8 +128,6 @@ const CUP := [Vector2(0.59, 0.15), Vector2(0.556, 0.3), Vector2(0.4375, 0.5), Ve
 const KNEE_DRUM := Vector3(0.45, 0.375, 0.46)
 const ANKLE_DRUM := Vector3(0.26, 0.25, 0.31)
 
-static var _cache: Dictionary = {}
-
 
 static func all_parts() -> Array[String]:
 	var out: Array[String] = []
@@ -148,28 +146,17 @@ static func path(part: String) -> String:
 
 ## The part's mesh: the saved file when it exists, else built now.
 static func mesh(part: String) -> ArrayMesh:
-	if _cache.has(part):
-		return _cache[part]
-	var m: ArrayMesh = null
-	if ResourceLoader.exists(path(part)):
-		m = load(path(part)) as ArrayMesh
-	if m == null:
-		m = build(part)
-	_cache[part] = m
-	return m
+	return PartCache.mesh(MechMeshes.DIR, part, build)
 
 
 static func instance(part: String) -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
-	mi.name = part
-	mi.mesh = mesh(part)
-	return mi
+	return PartCache.instance(MechMeshes.DIR, part, build)
 
 
 ## Generate a part from scratch (the generator and the staleness test use this).
 static func build(part: String) -> ArrayMesh:
 	var k := MeshKit.new()
-	k.accent_key = MechMeshes.ORANGE
+	k.accent_key = LowPolyPalette.ORANGE
 	match part:
 		"bulwark_torso": _torso(k)
 		"bulwark_pod": _pod(k)
@@ -183,45 +170,45 @@ static func build(part: String) -> ArrayMesh:
 		"bulwark_hip_socket": _hip_socket(k)
 		"bulwark_hip_cap": _hip_ball(k)
 		"bulwark_knee_cap": _knee(k)
-		"bulwark_ankle_cap": MechMeshes._cap(k, ANKLE_DRUM.x, ANKLE_DRUM.y, ANKLE_DRUM.z)
+		"bulwark_ankle_cap": k.joint_cap(ANKLE_DRUM.x, ANKLE_DRUM.y, ANKLE_DRUM.z, LowPolyPalette.DARK, LowPolyPalette.GREY, LowPolyPalette.STEEL)
 		"bulwark_boot": _boot(k)
 		"bulwark_toe": _toe(k)
 		"bulwark_spur": _spur(k)
-	return k.commit(MechMeshes.materials())
+	return k.commit(LowPolyMaterials.materials())
 
 
 ## Only the hull volume grown for the hardpoints (the side guns' pads on the pods' fronts, the back plinths): the tests
 ## check the legs, the pivoting weapons and the back items against it.
 static func hardpoint_pads() -> ArrayMesh:
 	var k := MeshKit.new()
-	k.accent_key = MechMeshes.ORANGE
+	k.accent_key = LowPolyPalette.ORANGE
 	_hardpoint_pads(k)
-	return k.commit(MechMeshes.materials())
+	return k.commit(LowPolyMaterials.materials())
 
 
 ## The hull's primary masses only (upper hull round the well, keel, the two hip pods' drums): test_torso_clearance_bulwark
 ## checks the legs against it.
 static func hull_shell() -> ArrayMesh:
 	var k := MeshKit.new()
-	k.accent_key = MechMeshes.ORANGE
+	k.accent_key = LowPolyPalette.ORANGE
 	_shell(k, true)
-	return k.commit(MechMeshes.materials())
+	return k.commit(LowPolyMaterials.materials())
 
 
 ## The right hip pod's drum alone (body space; the left is its mirror): the hardpoint test adds both to the hull.
 static func pod_shell() -> ArrayMesh:
 	var k := MeshKit.new()
-	k.accent_key = MechMeshes.ORANGE
+	k.accent_key = LowPolyPalette.ORANGE
 	k.loft(_pod_rings(1.0, POD_IN, POD_OUT, POD_R, POD_FLOOR), _pod_colour)
-	return k.commit(MechMeshes.materials())
+	return k.commit(LowPolyMaterials.materials())
 
 
 ## The coaming round the pilot's well alone (body space): the hardpoint test keeps every pilot head off it.
 static func coaming() -> ArrayMesh:
 	var k := MeshKit.new()
-	k.accent_key = MechMeshes.ORANGE
+	k.accent_key = LowPolyPalette.ORANGE
 	_coaming(k)
-	return k.commit(MechMeshes.materials())
+	return k.commit(LowPolyMaterials.materials())
 
 
 # --- The slung hull ----------------------------------------------------------------------------------------
@@ -296,12 +283,12 @@ static func _side_sec(s: Array, side: float) -> PackedVector3Array:
 ## the keel's lower chamfers and its bottom (the dark ribs, hatch and skids read against it).
 static func _hull_colour(c: Vector3, n: Vector3) -> Color:
 	if n.y < -0.6:
-		return MechMeshes.GREY
+		return LowPolyPalette.GREY
 	if absf(c.x) < KEEL_HW + 0.01 and c.y < UPPER_Y - 0.01 and n.y < -0.2:
-		return MechMeshes.GREY
+		return LowPolyPalette.GREY
 	if n.z < -0.9 or n.z > 0.9:
-		return MechMeshes.GREY
-	return MechMeshes.WHITE
+		return LowPolyPalette.GREY
+	return LowPolyPalette.WHITE
 
 
 ## The upper hull with the pilot's well cut out of it: a loft ahead of the well, one behind it, a block either side, the
@@ -329,15 +316,15 @@ static func _upper(k: MeshKit) -> void:
 		for s: Array in mid:
 			rings.append(_side_sec(s, side))
 		k.loft(rings, _hull_colour)
-	k.box(Vector3(2.0 * WELL_HALF + 0.02, WELL_FLOOR - UPPER_Y, w1 - w0), MechMeshes.DARK, Vector3(0, (WELL_FLOOR + UPPER_Y) * 0.5, HATCH_Z))
+	k.box(Vector3(2.0 * WELL_HALF + 0.02, WELL_FLOOR - UPPER_Y, w1 - w0), LowPolyPalette.DARK, Vector3(0, (WELL_FLOOR + UPPER_Y) * 0.5, HATCH_Z))
 
 
 static func _pod_colour(_c: Vector3, n: Vector3) -> Color:
 	if absf(n.x) > 0.7:
-		return MechMeshes.GREY
+		return LowPolyPalette.GREY
 	if n.y < -0.6:
-		return MechMeshes.GREY
-	return MechMeshes.WHITE
+		return LowPolyPalette.GREY
+	return LowPolyPalette.WHITE
 
 
 ## A pod-shaped section across X at each x in [x0, x1] (side +1 right): a 12-gon of radius r round the pod's axis (a flat
@@ -387,10 +374,10 @@ static func _annulus(k: MeshKit, c: Vector3, prof: Array, n: int, col: Variant) 
 
 static func _coaming_colour(_c: Vector3, n: Vector3) -> Color:
 	if n.y > 0.5:
-		return MechMeshes.GREY
+		return LowPolyPalette.GREY
 	if n.y < -0.5:
-		return MechMeshes.DARK
-	return MechMeshes.WHITE
+		return LowPolyPalette.DARK
+	return LowPolyPalette.WHITE
 
 
 ## The coaming: a thick armoured ring round the well's mouth (its foot 2 cm into the deck), a sloped outer top edge.
@@ -417,9 +404,9 @@ static func _glacis_box(k: MeshKit, x: float, u: float, lift: float, size: Vecto
 ## An amber lamp in a dark frame, facing `dir`, at p.
 static func _lamp(k: MeshKit, p: Vector3, dir: Vector3, w: float) -> void:
 	k.push(Transform3D(Basis.looking_at(dir, Vector3.UP), p))
-	k.box(Vector3(w + 0.06, 0.12, 0.05), MechMeshes.DARK)
+	k.box(Vector3(w + 0.06, 0.12, 0.05), LowPolyPalette.DARK)
 	k.glow = true
-	k.box(Vector3(w, 0.07, 0.07), MechMeshes.AMBER, Vector3(0, -0.005, 0))
+	k.box(Vector3(w, 0.07, 0.07), LowPolyPalette.AMBER, Vector3(0, -0.005, 0))
 	k.glow = false
 	k.pop()
 
@@ -440,18 +427,18 @@ static func _torso(k: MeshKit) -> void:
 ## on its flat top an ammo box feeding a belt down the pod's front to the side gun's flange, and two caps.
 static func _pod(k: MeshKit) -> void:
 	k.loft(_pod_rings(1.0, POD_IN, POD_OUT, POD_R, POD_FLOOR), _pod_colour)
-	k.loft(_pod_rings(1.0, POD_OUT - 0.01, POD_OUT + 0.012, POD_R - 0.07, POD_FLOOR + 0.03), MechMeshes.DARK)
-	k.loft(_pod_rings(1.0, POD_OUT + 0.01, POD_CAP, POD_R - 0.11, POD_FLOOR + 0.06), MechMeshes.ORANGE)
-	k.tube(Vector3(POD_CAP - 0.01, POD_Y, 0), Vector3(POD_CAP + 0.02, POD_Y, 0), 0.11, 8, MechMeshes.DARK)
+	k.loft(_pod_rings(1.0, POD_OUT - 0.01, POD_OUT + 0.012, POD_R - 0.07, POD_FLOOR + 0.03), LowPolyPalette.DARK)
+	k.loft(_pod_rings(1.0, POD_OUT + 0.01, POD_CAP, POD_R - 0.11, POD_FLOOR + 0.06), LowPolyPalette.ORANGE)
+	k.tube(Vector3(POD_CAP - 0.01, POD_Y, 0), Vector3(POD_CAP + 0.02, POD_Y, 0), 0.11, 8, LowPolyPalette.DARK)
 	for i in 4:
 		var a := TAU * (float(i) + 0.5) / 4.0
-		k.box(Vector3(0.03, 0.05, 0.05), MechMeshes.STEEL, Vector3(POD_CAP + 0.005, POD_Y + cos(a) * 0.2, sin(a) * 0.2))
+		k.box(Vector3(0.03, 0.05, 0.05), LowPolyPalette.STEEL, Vector3(POD_CAP + 0.005, POD_Y + cos(a) * 0.2, sin(a) * 0.2))
 	_lamp(k, Vector3(HIP_X, POD_Y + 0.1, POD_R * 0.966 + 0.025), Vector3(0, 0, 1), 0.14)
 	var top := POD_Y + POD_R * cos(PI / 12.0)
-	k.box(Vector3(0.3, 0.15, 0.2), MechMeshes.GUN, Vector3(HIP_X + 0.04, top + 0.065, 0.0))
-	k.box(Vector3(0.32, 0.03, 0.22), MechMeshes.ORANGE, Vector3(HIP_X + 0.04, top + 0.14, 0.0))
+	k.box(Vector3(0.3, 0.15, 0.2), LowPolyPalette.GUN, Vector3(HIP_X + 0.04, top + 0.065, 0.0))
+	k.box(Vector3(0.32, 0.03, 0.22), LowPolyPalette.ORANGE, Vector3(HIP_X + 0.04, top + 0.14, 0.0))
 	for x: float in [HIP_X - 0.26, HIP_X + 0.3]:
-		k.tube(Vector3(x, top - 0.01, 0.0), Vector3(x, top + 0.05, 0.0), 0.06, 6, MechMeshes.GREY)
+		k.tube(Vector3(x, top - 0.01, 0.0), Vector3(x, top + 0.05, 0.0), 0.06, 6, LowPolyPalette.GREY)
 	var r := POD_R + 0.03
 	var belt := [Vector3(HIP_X + 0.07, top + 0.06, -0.11), Vector3(HIP_X + 0.07, POD_Y + r * cos(PI / 6.0), -r * sin(PI / 6.0)),
 		Vector3(HIP_X + 0.07, POD_Y + r * cos(PI / 3.0), -r * sin(PI / 3.0)), Vector3(SIDE_X - 0.05, SIDE_Y + SIDE_FLANGE.y + 0.01, SIDE_FACE_Z - 0.03)]
@@ -462,21 +449,21 @@ static func _pod(k: MeshKit) -> void:
 		for j in nl:
 			var p := a.lerp(b, (float(j) + 0.5) / float(nl))
 			k.push(Transform3D(Basis.looking_at((b - a).normalized(), Vector3.UP if absf((b - a).normalized().y) < 0.9 else Vector3.BACK), p))
-			k.box(Vector3(0.1, 0.04, 0.035), MechMeshes.STEEL if j % 2 == 0 else MechMeshes.GUN)
+			k.box(Vector3(0.1, 0.04, 0.035), LowPolyPalette.STEEL if j % 2 == 0 else LowPolyPalette.GUN)
 			k.pop()
 
 
 ## The glacis: the radiator grille (a dark well, grey slats), orange hazard plates at its corners, the headlight pair low
 ## on the nose's front face, a dark seam under the deck's front edge.
 static func _glacis(k: MeshKit) -> void:
-	_glacis_box(k, 0.0, 0.45, 0.0, Vector3(0.66, 0.05, 0.42), MechMeshes.GREY)
-	_glacis_box(k, 0.0, 0.45, 0.01, Vector3(0.56, 0.05, 0.34), MechMeshes.BLACK)
+	_glacis_box(k, 0.0, 0.45, 0.0, Vector3(0.66, 0.05, 0.42), LowPolyPalette.GREY)
+	_glacis_box(k, 0.0, 0.45, 0.01, Vector3(0.56, 0.05, 0.34), LowPolyPalette.BLACK)
 	for u: float in [0.32, 0.45, 0.58]:
-		_glacis_box(k, 0.0, u, 0.025, Vector3(0.52, 0.04, 0.045), MechMeshes.GREY)
+		_glacis_box(k, 0.0, u, 0.025, Vector3(0.52, 0.04, 0.045), LowPolyPalette.GREY)
 	for side: float in [-1.0, 1.0]:
-		_glacis_box(k, side * 0.45, 0.55, 0.005, Vector3(0.14, 0.04, 0.3), MechMeshes.ORANGE)
+		_glacis_box(k, side * 0.45, 0.55, 0.005, Vector3(0.14, 0.04, 0.3), LowPolyPalette.ORANGE)
 		_lamp(k, Vector3(side * 0.28, 0.22, -1.5), Vector3(0, 0, -1), 0.13)
-	k.box(Vector3(0.9, 0.03, 0.04), MechMeshes.DARK, Vector3(0, 0.255, -1.5))
+	k.box(Vector3(0.9, 0.03, 0.04), LowPolyPalette.DARK, Vector3(0, 0.255, -1.5))
 
 
 ## The deck: the hatch lid behind the coaming, a radiator grille between the back saddles, front lamp boxes and caps on
@@ -484,48 +471,48 @@ static func _glacis(k: MeshKit) -> void:
 static func _deck(k: MeshKit) -> void:
 	# The hatch lid, swung open and leaning back behind the coaming, on a hinge block.
 	var hinge := HATCH_Z + COAMING_OUT + 0.05
-	k.box(Vector3(0.36, 0.08, 0.1), MechMeshes.DARK, Vector3(0, DECK + 0.03, hinge))
+	k.box(Vector3(0.36, 0.08, 0.1), LowPolyPalette.DARK, Vector3(0, DECK + 0.03, hinge))
 	k.push(MeshKit.xf(Vector3(0, DECK + 0.05, hinge + 0.02), Vector3(-65, 0, 0)))
-	k.tube(Vector3(0, 0.0, 0.0), Vector3(0, 0.05, 0.0), 0.24, 8, MechMeshes.WHITE)
-	k.tube(Vector3(0, 0.04, 0.0), Vector3(0, 0.07, 0.0), 0.15, 8, MechMeshes.ORANGE)
+	k.tube(Vector3(0, 0.0, 0.0), Vector3(0, 0.05, 0.0), 0.24, 8, LowPolyPalette.WHITE)
+	k.tube(Vector3(0, 0.04, 0.0), Vector3(0, 0.07, 0.0), 0.15, 8, LowPolyPalette.ORANGE)
 	k.pop()
 	# The radiator grille on the rear deck, between the back saddles.
-	k.box(Vector3(0.5, 0.03, 0.4), MechMeshes.GREY, Vector3(0, DECK + 0.005, 1.0))
-	k.box(Vector3(0.42, 0.03, 0.32), MechMeshes.BLACK, Vector3(0, DECK + 0.012, 1.0))
+	k.box(Vector3(0.5, 0.03, 0.4), LowPolyPalette.GREY, Vector3(0, DECK + 0.005, 1.0))
+	k.box(Vector3(0.42, 0.03, 0.32), LowPolyPalette.BLACK, Vector3(0, DECK + 0.012, 1.0))
 	for z: float in [0.9, 1.0, 1.1]:
-		k.box(Vector3(0.38, 0.03, 0.04), MechMeshes.GREY, Vector3(0, DECK + 0.025, z))
+		k.box(Vector3(0.38, 0.03, 0.04), LowPolyPalette.GREY, Vector3(0, DECK + 0.025, z))
 	# A low handrail across the rear deck's back edge.
 	for x: float in [-0.5, 0.0, 0.5]:
-		k.box(Vector3(0.03, 0.1, 0.03), MechMeshes.STEEL, Vector3(x, DECK + 0.04, 1.2))
-	k.tube(Vector3(-0.52, DECK + 0.09, 1.2), Vector3(0.52, DECK + 0.09, 1.2), 0.022, 6, MechMeshes.STEEL)
+		k.box(Vector3(0.03, 0.1, 0.03), LowPolyPalette.STEEL, Vector3(x, DECK + 0.04, 1.2))
+	k.tube(Vector3(-0.52, DECK + 0.09, 1.2), Vector3(0.52, DECK + 0.09, 1.2), 0.022, 6, LowPolyPalette.STEEL)
 	for side: float in [-1.0, 1.0]:
 		# A front box with an amber lamp and a deck cap at each front corner, ahead of the coaming.
-		k.box(Vector3(0.24, 0.12, 0.16), MechMeshes.GREY, Vector3(side * 0.4, DECK + 0.05, -0.95))
+		k.box(Vector3(0.24, 0.12, 0.16), LowPolyPalette.GREY, Vector3(side * 0.4, DECK + 0.05, -0.95))
 		_lamp(k, Vector3(side * 0.4, DECK + 0.06, -1.035), Vector3(0, 0, -1), 0.12)
-		k.tube(Vector3(side * 0.12, DECK - 0.01, -0.96), Vector3(side * 0.12, DECK + 0.05, -0.96), 0.06, 6, MechMeshes.GREY)
-		k.box(Vector3(0.05, 0.03, 0.05), MechMeshes.DARK, Vector3(side * 0.12, DECK + 0.055, -0.96))
+		k.tube(Vector3(side * 0.12, DECK - 0.01, -0.96), Vector3(side * 0.12, DECK + 0.05, -0.96), 0.06, 6, LowPolyPalette.GREY)
+		k.box(Vector3(0.05, 0.03, 0.05), LowPolyPalette.DARK, Vector3(side * 0.12, DECK + 0.055, -0.96))
 		# Running lights on the deck's top edge chamfer, at the front corners and the wings' rear corners.
 		for z: float in [-0.86, 1.05]:
 			var s := _upper_at(z)
 			var hw: float = s[1]
 			k.push(Transform3D(Basis.looking_at(Vector3(side, 1, 0).normalized(), Vector3.UP), Vector3(side * (hw - 0.05), DECK - 0.05, z)))
 			k.glow = true
-			k.box(Vector3(0.18, 0.05, 0.04), MechMeshes.AMBER)
+			k.box(Vector3(0.18, 0.05, 0.04), LowPolyPalette.AMBER)
 			k.glow = false
 			k.pop()
 		# An orange hazard plate on each wing's flank.
-		k.box(Vector3(0.04, 0.14, 0.26), MechMeshes.ORANGE, Vector3(side * WING_HW, (UPPER_Y + DECK) * 0.5, 0.85))
+		k.box(Vector3(0.04, 0.14, 0.26), LowPolyPalette.ORANGE, Vector3(side * WING_HW, (UPPER_Y + DECK) * 0.5, 0.85))
 
 
 ## The rear: an engine block on the back face with a grille and two exhaust stacks.
 static func _rear(k: MeshKit) -> void:
-	k.loft([_oct(1.35, 0.6, 0.26, 0.5, 0.06, 0.04), _oct(1.56, 0.56, 0.28, 0.48, 0.06, 0.04)], MechMeshes.GREY)
-	k.box(Vector3(0.8, 0.14, 0.04), MechMeshes.BLACK, Vector3(0, 0.38, 1.565))
+	k.loft([_oct(1.35, 0.6, 0.26, 0.5, 0.06, 0.04), _oct(1.56, 0.56, 0.28, 0.48, 0.06, 0.04)], LowPolyPalette.GREY)
+	k.box(Vector3(0.8, 0.14, 0.04), LowPolyPalette.BLACK, Vector3(0, 0.38, 1.565))
 	for y: float in [0.34, 0.38, 0.42]:
-		k.box(Vector3(0.76, 0.025, 0.05), MechMeshes.GREY, Vector3(0, y, 1.575))
+		k.box(Vector3(0.76, 0.025, 0.05), LowPolyPalette.GREY, Vector3(0, y, 1.575))
 	for side: float in [-1.0, 1.0]:
-		k.tube(Vector3(side * 0.4, 0.45, 1.42), Vector3(side * 0.42, 0.7, 1.52), 0.07, 6, MechMeshes.DARK)
-		k.tube(Vector3(side * 0.42, 0.68, 1.51), Vector3(side * 0.425, 0.73, 1.53), 0.085, 6, MechMeshes.GUN)
+		k.tube(Vector3(side * 0.4, 0.45, 1.42), Vector3(side * 0.42, 0.7, 1.52), 0.07, 6, LowPolyPalette.DARK)
+		k.tube(Vector3(side * 0.42, 0.68, 1.51), Vector3(side * 0.425, 0.73, 1.53), 0.085, 6, LowPolyPalette.GUN)
 
 
 ## The underside: two skid rails along the keel's flat bottom, three ribs across it, a belly hatch with a handle, a dim
@@ -533,13 +520,13 @@ static func _rear(k: MeshKit) -> void:
 static func _belly(k: MeshKit) -> void:
 	var y := KEEL_Y
 	for side: float in [-1.0, 1.0]:
-		k.box(Vector3(0.07, 0.06, 1.5), MechMeshes.DARK, Vector3(side * 0.5, y - 0.02, -0.12))
+		k.box(Vector3(0.07, 0.06, 1.5), LowPolyPalette.DARK, Vector3(side * 0.5, y - 0.02, -0.12))
 	for z: float in [-0.7, -0.35, 0.55]:
-		k.box(Vector3(0.86, 0.04, 0.07), MechMeshes.DARK, Vector3(0, y - 0.012, z))
-	k.box(Vector3(0.44, 0.03, 0.4), MechMeshes.BLACK, Vector3(0, y - 0.008, 0.1))
-	k.box(Vector3(0.2, 0.03, 0.04), MechMeshes.STEEL, Vector3(0, y - 0.03, 0.22))
+		k.box(Vector3(0.86, 0.04, 0.07), LowPolyPalette.DARK, Vector3(0, y - 0.012, z))
+	k.box(Vector3(0.44, 0.03, 0.4), LowPolyPalette.BLACK, Vector3(0, y - 0.008, 0.1))
+	k.box(Vector3(0.2, 0.03, 0.04), LowPolyPalette.STEEL, Vector3(0, y - 0.03, 0.22))
 	k.glow = true
-	k.box(Vector3(0.14, 0.03, 0.08), MechMeshes.AMBER, Vector3(0, y - 0.01, -0.95))
+	k.box(Vector3(0.14, 0.03, 0.08), LowPolyPalette.AMBER, Vector3(0, y - 0.01, -0.95))
 	k.glow = false
 
 
@@ -553,8 +540,8 @@ static func _hardpoint_pads(k: MeshKit) -> void:
 
 static func _pad_colour(_c: Vector3, n: Vector3) -> Color:
 	if n.z < -0.8:
-		return MechMeshes.DARK
-	return MechMeshes.GREY
+		return LowPolyPalette.DARK
+	return LowPolyPalette.GREY
 
 
 ## The side gun's pad (one side, +1 right): a chamfered block on the pod's front face, its flat dark face (SIDE_FACE_Z)
@@ -569,10 +556,10 @@ static func _side_pad(k: MeshKit, side: float) -> void:
 
 static func _plinth_colour(_c: Vector3, n: Vector3) -> Color:
 	if n.y > 0.9:
-		return MechMeshes.DARK
+		return LowPolyPalette.DARK
 	if n.z > 0.3:
-		return MechMeshes.GREY
-	return MechMeshes.WHITE
+		return LowPolyPalette.GREY
+	return LowPolyPalette.WHITE
 
 
 ## The raised plinth under one back saddle (MOUNTS["back_*"]; the equipment base plate's underside is at -0.04, the
@@ -590,8 +577,8 @@ static func _plinth(k: MeshKit, side: float) -> void:
 		rings.append(r)
 	k.loft(rings, _plinth_colour)
 	for sx: float in [-1.0, 1.0]:
-		k.box(Vector3(0.04, 0.02, 0.36), MechMeshes.STEEL, Vector3(mb.x + sx * 0.12, top + 0.001, mb.z + 0.06))
-		k.box(Vector3(0.02, 0.05, 0.3), MechMeshes.ORANGE, Vector3(mb.x + sx * (PLINTH_HALF + 0.006), top - 0.06, mb.z + 0.04))
+		k.box(Vector3(0.04, 0.02, 0.36), LowPolyPalette.STEEL, Vector3(mb.x + sx * 0.12, top + 0.001, mb.z + 0.06))
+		k.box(Vector3(0.02, 0.05, 0.3), LowPolyPalette.ORANGE, Vector3(mb.x + sx * (PLINTH_HALF + 0.006), top - 0.06, mb.z + 0.04))
 
 
 # --- Body parts ---------------------------------------------------------------------------------------------
@@ -601,30 +588,30 @@ static func _plinth(k: MeshKit, side: float) -> void:
 static func _pelvis(k: MeshKit) -> void:
 	var ball := HIP_BALL / BODY_SCALE
 	var end := HIP_X - ball + 0.05
-	k.tube(Vector3(-end, HIP_Y, 0), Vector3(end, HIP_Y, 0), 0.1, 8, MechMeshes.DARK)
+	k.tube(Vector3(-end, HIP_Y, 0), Vector3(end, HIP_Y, 0), 0.1, 8, LowPolyPalette.DARK)
 	for side: float in [-1.0, 1.0]:
-		k.tube(Vector3(side * (KEEL_HW - 0.02), HIP_Y, 0), Vector3(side * (KEEL_HW + 0.04), HIP_Y, 0), 0.16, 8, MechMeshes.STEEL)
+		k.tube(Vector3(side * (KEEL_HW - 0.02), HIP_Y, 0), Vector3(side * (KEEL_HW + 0.04), HIP_Y, 0), 0.16, 8, LowPolyPalette.STEEL)
 
 
 ## The chin sensor housing on the keel's front face (origin on it): a grey block with the sensor port (bezel, bolts, visor
 ## hood) and two amber lamps each side, the family's nose.
 static func _nose(k: MeshKit) -> void:
-	k.loft([_oct(0.02, 0.4, -0.14, 0.14, 0.04, 0.04), _oct(-0.1, 0.36, -0.12, 0.12, 0.04, 0.04)], MechMeshes.GREY)
+	k.loft([_oct(0.02, 0.4, -0.14, 0.14, 0.04, 0.04), _oct(-0.1, 0.36, -0.12, 0.12, 0.04, 0.04)], LowPolyPalette.GREY)
 	var c := Vector3(0, 0.0, -0.1)
-	k.tube(c, c + Vector3(0, 0, -0.06), 0.11, 8, MechMeshes.DARK)
-	k.tube(c + Vector3(0, 0, -0.06), c + Vector3(0, 0, -0.09), 0.07, 8, MechMeshes.GUN)
+	k.tube(c, c + Vector3(0, 0, -0.06), 0.11, 8, LowPolyPalette.DARK)
+	k.tube(c + Vector3(0, 0, -0.06), c + Vector3(0, 0, -0.09), 0.07, 8, LowPolyPalette.GUN)
 	k.glow = true
-	k.tube(c + Vector3(0, 0, -0.09), c + Vector3(0, 0, -0.11), 0.04, 6, MechMeshes.AMBER)
+	k.tube(c + Vector3(0, 0, -0.09), c + Vector3(0, 0, -0.11), 0.04, 6, LowPolyPalette.AMBER)
 	for side: float in [-1.0, 1.0]:
 		for x: float in [0.19, 0.29]:
-			k.box(Vector3(0.07, 0.05, 0.04), MechMeshes.AMBER, Vector3(side * x, -0.04, -0.115))
+			k.box(Vector3(0.07, 0.05, 0.04), LowPolyPalette.AMBER, Vector3(side * x, -0.04, -0.115))
 	k.glow = false
 	for i in 6:
 		var a := TAU * (float(i) + 0.5) / 6.0
-		k.box(Vector3(0.035, 0.035, 0.03), MechMeshes.STEEL, c + Vector3(sin(a) * 0.125, cos(a) * 0.125, -0.01))
-	k.box(Vector3(0.3, 0.04, 0.09), MechMeshes.DARK, c + Vector3(0, 0.13, -0.02))
+		k.box(Vector3(0.035, 0.035, 0.03), LowPolyPalette.STEEL, c + Vector3(sin(a) * 0.125, cos(a) * 0.125, -0.01))
+	k.box(Vector3(0.3, 0.04, 0.09), LowPolyPalette.DARK, c + Vector3(0, 0.13, -0.02))
 	for side: float in [-1.0, 1.0]:
-		k.box(Vector3(0.22, 0.08, 0.03), MechMeshes.DARK, Vector3(side * 0.24, -0.04, -0.1))
+		k.box(Vector3(0.22, 0.08, 0.03), LowPolyPalette.DARK, Vector3(side * 0.24, -0.04, -0.1))
 
 
 ## A side gun mount (right side; origin on the pod pad's face, the weapon's origin SIDE_REACH straight ahead): a bolted
@@ -633,23 +620,23 @@ static func _nose(k: MeshKit) -> void:
 static func _side_mount(k: MeshKit) -> void:
 	var reach := SIDE_REACH
 	var f := SIDE_FLANGE
-	k.box(Vector3(2.0 * f.x, 2.0 * f.y, 0.06), MechMeshes.DARK, Vector3(0, 0, -0.02))
-	k.box(Vector3(2.0 * f.x + 0.03, 2.0 * f.y + 0.03, 0.025), MechMeshes.ORANGE, Vector3(0, 0, -0.015))
+	k.box(Vector3(2.0 * f.x, 2.0 * f.y, 0.06), LowPolyPalette.DARK, Vector3(0, 0, -0.02))
+	k.box(Vector3(2.0 * f.x + 0.03, 2.0 * f.y + 0.03, 0.025), LowPolyPalette.ORANGE, Vector3(0, 0, -0.015))
 	for sx: float in [-1.0, 1.0]:
 		for sy: float in [-1.0, 1.0]:
-			k.box(Vector3(0.04, 0.04, 0.03), MechMeshes.STEEL, Vector3(sx * (f.x - 0.04), sy * (f.y - 0.04), -0.055))
-	k.seg(Vector3(0, 0, -0.04), reach + Vector3(0, 0, 0.12), Vector2(0.15, 0.13), Vector2(0.13, 0.11), 4, MechMeshes.GREY, MeshKit.SQUARE)
-	k.box(Vector3(0.24, 0.14, 0.28), MechMeshes.DARK, reach)
+			k.box(Vector3(0.04, 0.04, 0.03), LowPolyPalette.STEEL, Vector3(sx * (f.x - 0.04), sy * (f.y - 0.04), -0.055))
+	k.seg(Vector3(0, 0, -0.04), reach + Vector3(0, 0, 0.12), Vector2(0.15, 0.13), Vector2(0.13, 0.11), 4, LowPolyPalette.GREY, MeshKit.SQUARE)
+	k.box(Vector3(0.24, 0.14, 0.28), LowPolyPalette.DARK, reach)
 	for sx: float in [-1.0, 1.0]:
-		k.box(Vector3(0.035, 0.1, 0.16), MechMeshes.STEEL, reach + Vector3(sx * 0.135, 0, 0))
-	k.tube(reach - Vector3(0, 0.1, 0), reach + Vector3(0, 0.09, 0), 0.05, 6, MechMeshes.STEEL)
-	k.box(Vector3(0.22, 0.035, 0.22), MechMeshes.ORANGE, reach + Vector3(0, -0.085, 0))
+		k.box(Vector3(0.035, 0.1, 0.16), LowPolyPalette.STEEL, reach + Vector3(sx * 0.135, 0, 0))
+	k.tube(reach - Vector3(0, 0.1, 0), reach + Vector3(0, 0.09, 0), 0.05, 6, LowPolyPalette.STEEL)
+	k.box(Vector3(0.22, 0.035, 0.22), LowPolyPalette.ORANGE, reach + Vector3(0, -0.085, 0))
 	for sx: float in [-1.0, 1.0]:
 		k.seg(Vector3(sx * 0.12, -f.y + 0.03, -0.05), Vector3(sx * 0.06, -0.1, reach.z * 0.6), Vector2(0.035, 0.035), Vector2(0.03, 0.03), 4,
-			MechMeshes.DARK, MeshKit.SQUARE)
+			LowPolyPalette.DARK, MeshKit.SQUARE)
 	var hose := [Vector3(-0.17, 0.1, -0.06), Vector3(-0.17, 0.08, -0.25), Vector3(-0.15, 0.06, -0.42)]
 	for i in hose.size() - 1:
-		k.tube(hose[i], hose[i + 1], 0.03, 6, MechMeshes.BLACK)
+		k.tube(hose[i], hose[i + 1], 0.03, 6, LowPolyPalette.BLACK)
 
 
 ## PROTOTYPE: the belly turret's pintle mount (origin on the keel's flat underside at the turret's centre; the weapon's
@@ -658,24 +645,24 @@ static func _side_mount(k: MeshKit) -> void:
 ## dark collar and an end cap (finished when the hardpoint is empty), a feed cable from the ring to the post.
 static func _belly_mount(k: MeshKit) -> void:
 	var b := BELLY_BASE
-	k.tube(Vector3(0, 0.005, 0), Vector3(0, -0.05, 0), b, 8, MechMeshes.DARK)
+	k.tube(Vector3(0, 0.005, 0), Vector3(0, -0.05, 0), b, 8, LowPolyPalette.DARK)
 	for i in 4:
 		var a := TAU * (float(i) + 0.5) / 4.0
-		k.box(Vector3(0.03, 0.02, 0.03), MechMeshes.STEEL, Vector3(sin(a) * (b - 0.03), -0.058, cos(a) * (b - 0.03)))
-	k.tube(Vector3(0, -0.05, 0), Vector3(0, -0.09, 0), 0.08, 8, MechMeshes.GREY)
+		k.box(Vector3(0.03, 0.02, 0.03), LowPolyPalette.STEEL, Vector3(sin(a) * (b - 0.03), -0.058, cos(a) * (b - 0.03)))
+	k.tube(Vector3(0, -0.05, 0), Vector3(0, -0.09, 0), 0.08, 8, LowPolyPalette.GREY)
 	var r := BELLY_RING
-	k.tube(Vector3(0, -0.09, 0), Vector3(0, -0.15, 0), r, 10, MechMeshes.GREY)
-	k.tube(Vector3(0, -0.1, 0), Vector3(0, -0.135, 0), r + 0.015, 10, MechMeshes.ORANGE)
+	k.tube(Vector3(0, -0.09, 0), Vector3(0, -0.15, 0), r, 10, LowPolyPalette.GREY)
+	k.tube(Vector3(0, -0.1, 0), Vector3(0, -0.135, 0), r + 0.015, 10, LowPolyPalette.ORANGE)
 	for i in 6:
 		var a := TAU * float(i) / 6.0
-		k.box(Vector3(0.03, 0.02, 0.03), MechMeshes.STEEL, Vector3(sin(a) * (r - 0.04), -0.158, cos(a) * (r - 0.04)))
+		k.box(Vector3(0.03, 0.02, 0.03), LowPolyPalette.STEEL, Vector3(sin(a) * (r - 0.04), -0.158, cos(a) * (r - 0.04)))
 	var end := BELLY_REACH.y + 0.08
-	k.tube(Vector3(0, -0.15, 0), Vector3(0, end, 0), 0.055, 8, MechMeshes.STEEL)
-	k.tube(Vector3(0, -0.15, 0), Vector3(0, -0.2, 0), 0.085, 8, MechMeshes.DARK)
-	k.tube(Vector3(0, end + 0.02, 0), Vector3(0, end, 0), 0.075, 8, MechMeshes.DARK)
+	k.tube(Vector3(0, -0.15, 0), Vector3(0, end, 0), 0.055, 8, LowPolyPalette.STEEL)
+	k.tube(Vector3(0, -0.15, 0), Vector3(0, -0.2, 0), 0.085, 8, LowPolyPalette.DARK)
+	k.tube(Vector3(0, end + 0.02, 0), Vector3(0, end, 0), 0.075, 8, LowPolyPalette.DARK)
 	var hose := [Vector3(-0.15, -0.13, 0.08), Vector3(-0.12, -0.24, 0.1), Vector3(-0.06, -0.32, 0.07)]
 	for i in hose.size() - 1:
-		k.tube(hose[i], hose[i + 1], 0.025, 6, MechMeshes.BLACK)
+		k.tube(hose[i], hose[i + 1], 0.025, 6, LowPolyPalette.BLACK)
 
 
 # --- Legs ---------------------------------------------------------------------------------------------------
@@ -708,8 +695,8 @@ static func _seg_rings(spec: Array, rest: float, drawn: float) -> Array:
 
 static func _thigh_colour(c: Vector3, n: Vector3) -> Color:
 	if n.x < -0.75 or (c.y < -0.62 * float(REST_LENGTH["thigh"]) and n.y < -0.3):
-		return MechMeshes.GREY
-	return MechMeshes.WHITE
+		return LowPolyPalette.GREY
+	return LowPolyPalette.WHITE
 
 
 ## The thigh: hip (origin) forward-down to the knee. A white armoured block, a raised front plate, a dark unit plate on
@@ -720,35 +707,35 @@ static func _thigh(k: MeshKit) -> void:
 	k.loft(_seg_rings(THIGH, l, THIGH_DRAWN), _thigh_colour)
 	# The front plate (two stacked plates down the long thigh) with a dark seam, the outer unit plate and its bolts.
 	for y: float in [-0.5, -0.8]:
-		k.box(Vector3(0.36, 0.26, 0.06), MechMeshes.WHITE, Vector3(0.025, y * l / THIGH_DRAWN, -0.415))
-	k.box(Vector3(0.26, 0.035, 0.035), MechMeshes.DARK, Vector3(0.025, -0.3 * l / THIGH_DRAWN, -0.4))
-	k.box(Vector3(0.05, 0.42, 0.3), MechMeshes.DARK, Vector3(0.405, -0.66 * l / THIGH_DRAWN, 0.0))
+		k.box(Vector3(0.36, 0.26, 0.06), LowPolyPalette.WHITE, Vector3(0.025, y * l / THIGH_DRAWN, -0.415))
+	k.box(Vector3(0.26, 0.035, 0.035), LowPolyPalette.DARK, Vector3(0.025, -0.3 * l / THIGH_DRAWN, -0.4))
+	k.box(Vector3(0.05, 0.42, 0.3), LowPolyPalette.DARK, Vector3(0.405, -0.66 * l / THIGH_DRAWN, 0.0))
 	for sz: float in [-1.0, 1.0]:
 		for y: float in [-0.5, -0.82]:
-			k.box(Vector3(0.04, 0.05, 0.05), MechMeshes.STEEL, Vector3(0.44, y * l / THIGH_DRAWN, sz * 0.11))
+			k.box(Vector3(0.04, 0.05, 0.05), LowPolyPalette.STEEL, Vector3(0.44, y * l / THIGH_DRAWN, sz * 0.11))
 	# The piston behind: cylinder, rod and two end blocks on the back face.
 	var pa := Vector3(0, -0.26 * l / THIGH_DRAWN, 0.46)
 	var pb := Vector3(0, -1.03 * l / THIGH_DRAWN, 0.44)
-	k.box(Vector3(0.12 * t, 0.1, 0.14 * t), MechMeshes.DARK, Vector3(0, pa.y, 0.39))
-	k.box(Vector3(0.12 * t, 0.1, 0.16 * t), MechMeshes.DARK, Vector3(0, pb.y, 0.375))
-	k.tube(pa, pa.lerp(pb, 0.6), 0.058 * t, 6, MechMeshes.DARK)
-	k.tube(pa.lerp(pb, 0.55), pb, 0.034 * t, 6, MechMeshes.STEEL)
-	k.tube(pa.lerp(pb, 0.3), pa.lerp(pb, 0.42), 0.068 * t, 6, MechMeshes.GREY)
+	k.box(Vector3(0.12 * t, 0.1, 0.14 * t), LowPolyPalette.DARK, Vector3(0, pa.y, 0.39))
+	k.box(Vector3(0.12 * t, 0.1, 0.16 * t), LowPolyPalette.DARK, Vector3(0, pb.y, 0.375))
+	k.tube(pa, pa.lerp(pb, 0.6), 0.058 * t, 6, LowPolyPalette.DARK)
+	k.tube(pa.lerp(pb, 0.55), pb, 0.034 * t, 6, LowPolyPalette.STEEL)
+	k.tube(pa.lerp(pb, 0.3), pa.lerp(pb, 0.42), 0.068 * t, 6, LowPolyPalette.GREY)
 
 
 ## The shin: knee (origin) back-down to the ankle, ribs down the front and a hose on the outer side.
 static func _shin(k: MeshKit) -> void:
 	var l: float = REST_LENGTH["shin"]
 	var f := l / SHIN_DRAWN
-	k.loft(_seg_rings(SHIN, l, SHIN_DRAWN), [MechMeshes.GREY, MechMeshes.GREY, MechMeshes.WHITE, MechMeshes.GREY])
+	k.loft(_seg_rings(SHIN, l, SHIN_DRAWN), [LowPolyPalette.GREY, LowPolyPalette.GREY, LowPolyPalette.WHITE, LowPolyPalette.GREY])
 	# Ribs down the front, a hose down the outer side.
 	for i in 3:
 		var y := (-0.7 - 0.1 * float(i)) * f
 		var front := -0.11 - 0.29 + (y + 0.6) / -0.38 * 0.085   # the front face between the -0.6 and -0.98 rings
-		k.box(Vector3(0.4, 0.05, 0.05), MechMeshes.DARK, Vector3(0, y, front + 0.012))
+		k.box(Vector3(0.4, 0.05, 0.05), LowPolyPalette.DARK, Vector3(0, y, front + 0.012))
 	var hose := [Vector3(0.3, -0.2, 0.12), Vector3(0.375, -0.56 * f, 0.04), Vector3(0.315, -0.97 * f, 0.04)]
 	for i in hose.size() - 1:
-		k.tube(hose[i], hose[i + 1], 0.03, 6, MechMeshes.BLACK)
+		k.tube(hose[i], hose[i + 1], 0.03, 6, LowPolyPalette.BLACK)
 
 
 ## The knee pad's box in the knee cap's frame (MechModel keeps the cap upright with the hip twist: it faces the legs'
@@ -761,28 +748,28 @@ const KNEE_PAD := [Vector3(-0.375, -0.35, -0.75), Vector3(0.375, 0.3, -0.51)]
 static func _knee(k: MeshKit) -> void:
 	var r := KNEE_DRUM.x
 	var w := KNEE_DRUM.y
-	k.tube(Vector3(-w, 0, 0), Vector3(w, 0, 0), r, 10, MechMeshes.GREY)
-	k.tube(Vector3(-KNEE_DRUM.z, 0, 0), Vector3(KNEE_DRUM.z, 0, 0), r * 0.55, 8, MechMeshes.DARK)
-	k.tube(Vector3(w - 0.01, 0, 0), Vector3(w + 0.035, 0, 0), r * 0.8, 10, MechMeshes.STEEL)
-	MechMeshes._bolt_ring(k, w + 0.035, r * 0.68, 0.045, 5, 18.0)
+	k.tube(Vector3(-w, 0, 0), Vector3(w, 0, 0), r, 10, LowPolyPalette.GREY)
+	k.tube(Vector3(-KNEE_DRUM.z, 0, 0), Vector3(KNEE_DRUM.z, 0, 0), r * 0.55, 8, LowPolyPalette.DARK)
+	k.tube(Vector3(w - 0.01, 0, 0), Vector3(w + 0.035, 0, 0), r * 0.8, 10, LowPolyPalette.STEEL)
+	k.bolt_ring(w + 0.035, r * 0.68, 0.045, 5, 18.0, LowPolyPalette.STEEL)
 	var lo: Vector3 = KNEE_PAD[0]
 	var hi: Vector3 = KNEE_PAD[1]
 	var t := LEG_T
 	for sx: float in [-1.0, 1.0]:
-		k.box(Vector3(0.05, 0.15, 0.55), MechMeshes.DARK, Vector3(sx * 0.4125, 0.0, -0.2625))
-	k.box(Vector3(0.775, 0.6, 0.06), MechMeshes.DARK, Vector3(0, (lo.y + hi.y) * 0.5, hi.z - 0.03))
+		k.box(Vector3(0.05, 0.15, 0.55), LowPolyPalette.DARK, Vector3(sx * 0.4125, 0.0, -0.2625))
+	k.box(Vector3(0.775, 0.6, 0.06), LowPolyPalette.DARK, Vector3(0, (lo.y + hi.y) * 0.5, hi.z - 0.03))
 	k.loft([_zring(hi.z - 0.035, hi.x, lo.y, hi.y, 0.075), _zring(lo.z + 0.06, hi.x, lo.y, hi.y, 0.075),
-		_zring(lo.z, hi.x - 0.075, lo.y + 0.06, hi.y - 0.06, 0.06)], MechMeshes.ORANGE)
+		_zring(lo.z, hi.x - 0.075, lo.y + 0.06, hi.y - 0.06, 0.06)], LowPolyPalette.ORANGE)
 	for sx: float in [-1.0, 1.0]:
 		for y: float in [lo.y + 0.1, hi.y - 0.1]:
-			k.box(Vector3(0.035, 0.035, 0.03) * t, MechMeshes.STEEL, Vector3(sx * 0.2, y, lo.z - 0.005))
+			k.box(Vector3(0.035, 0.035, 0.03) * t, LowPolyPalette.STEEL, Vector3(sx * 0.2, y, lo.z - 0.005))
 
 
 ## The short ankle block from the ankle drum (origin) down into the boot.
 static func _ankle(k: MeshKit) -> void:
 	var l: float = REST_LENGTH["tarsus"]
-	k.seg(Vector3.ZERO, Vector3(0, -l + 0.03, 0), Vector2(0.18, 0.2), Vector2(0.18, 0.2), 4, MechMeshes.DARK, MeshKit.SQUARE)
-	k.seg(Vector3(0, -0.08, 0), Vector3(0, -0.13, 0), Vector2(0.195, 0.215), Vector2(0.195, 0.215), 4, MechMeshes.STEEL, MeshKit.SQUARE)
+	k.seg(Vector3.ZERO, Vector3(0, -l + 0.03, 0), Vector2(0.18, 0.2), Vector2(0.18, 0.2), 4, LowPolyPalette.DARK, MeshKit.SQUARE)
+	k.seg(Vector3(0, -0.08, 0), Vector3(0, -0.13, 0), Vector2(0.195, 0.215), Vector2(0.195, 0.215), 4, LowPolyPalette.STEEL, MeshKit.SQUARE)
 
 
 ## An octagonal section across Z at z: half width hw, from y0 to y1, corners cut by ch.
@@ -801,34 +788,34 @@ static func _hip_ball(k: MeshKit) -> void:
 		var a := PI * float(i) / 5.0
 		profile.append(Vector2(sin(a) * HIP_BALL, cos(a) * HIP_BALL))
 	profile.reverse()
-	k.lathe(profile, 8, [MechMeshes.STEEL, MechMeshes.STEEL, MechMeshes.WHITE, MechMeshes.STEEL, MechMeshes.STEEL], false, false)
+	k.lathe(profile, 8, [LowPolyPalette.STEEL, LowPolyPalette.STEEL, LowPolyPalette.WHITE, LowPolyPalette.STEEL, LowPolyPalette.STEEL], false, false)
 	var t := LEG_T
-	k.tube(Vector3(HIP_BALL - 0.07, 0, 0), Vector3(HIP_BALL + 0.015, 0, 0), 0.1 * t, 8, MechMeshes.DARK)
-	k.tube(Vector3(HIP_BALL, 0, 0), Vector3(HIP_BALL + 0.045, 0, 0), 0.052 * t, 6, MechMeshes.STEEL)
-	MechMeshes._bolt_ring(k, HIP_BALL + 0.015, 0.078 * t, 0.035, 4, 0.0)
+	k.tube(Vector3(HIP_BALL - 0.07, 0, 0), Vector3(HIP_BALL + 0.015, 0, 0), 0.1 * t, 8, LowPolyPalette.DARK)
+	k.tube(Vector3(HIP_BALL, 0, 0), Vector3(HIP_BALL + 0.045, 0, 0), 0.052 * t, 6, LowPolyPalette.STEEL)
+	k.bolt_ring(HIP_BALL + 0.015, 0.078 * t, 0.035, 4, 0.0, LowPolyPalette.STEEL)
 
 
 ## The hip socket (right side): a cup over the top of the ball (CUP), the strut that carries it into the pelvis. The
 ## strut and the fittings are the first build's, drawn LEG_T larger; the strut is kept short of the pilot's well.
 static func _hip_socket(k: MeshKit) -> void:
-	k.lathe(CUP, 8, [MechMeshes.GREY, MechMeshes.DARK, MechMeshes.DARK], true, true)
+	k.lathe(CUP, 8, [LowPolyPalette.GREY, LowPolyPalette.DARK, LowPolyPalette.DARK], true, true)
 	var t := LEG_T
-	k.seg(Vector3(-0.16, 0.37, 0) * t, Vector3(-0.56, 0.48, 0) * t, Vector2(0.16, 0.2) * t, Vector2(0.19, 0.26) * t, 4, MechMeshes.DARK, MeshKit.SQUARE)
-	k.tube(Vector3(0, 0.48, 0) * t, Vector3(0, 0.54, 0) * t, 0.1 * t, 6, MechMeshes.GREY)
-	k.lathe([Vector2(0.458, 0.25) * t, Vector2(0.432, 0.31) * t], 8, MechMeshes.STEEL)
+	k.seg(Vector3(-0.16, 0.37, 0) * t, Vector3(-0.56, 0.48, 0) * t, Vector2(0.16, 0.2) * t, Vector2(0.19, 0.26) * t, 4, LowPolyPalette.DARK, MeshKit.SQUARE)
+	k.tube(Vector3(0, 0.48, 0) * t, Vector3(0, 0.54, 0) * t, 0.1 * t, 6, LowPolyPalette.GREY)
+	k.lathe([Vector2(0.458, 0.25) * t, Vector2(0.432, 0.31) * t], 8, LowPolyPalette.STEEL)
 	for a: float in [0.0, 90.0, 180.0, 270.0]:
 		var dir := Vector3(sin(deg_to_rad(a)), 0, -cos(deg_to_rad(a)))
 		if dir.x < -0.5:
 			dir = Vector3(-0.7, 0, -0.7).normalized()
 		k.push(Transform3D(Basis.looking_at(dir, Vector3.UP), (dir * 0.468 + Vector3(0, 0.18, 0)) * t))
-		k.box(Vector3(0.055, 0.055, 0.055) * t, MechMeshes.STEEL)
+		k.box(Vector3(0.055, 0.055, 0.055) * t, LowPolyPalette.STEEL)
 		k.pop()
 
 
 static func _boot_colour(_c: Vector3, n: Vector3) -> Color:
 	if n.y > 0.7:
-		return MechMeshes.GREY
-	return MechMeshes.DARK
+		return LowPolyPalette.GREY
+	return LowPolyPalette.DARK
 
 
 ## The boot (drawn FOOT_S larger): origin on the ground under the ankle drum (which sits half sunk in its top). A heavy dark block with grey
@@ -839,10 +826,10 @@ static func _boot(k: MeshKit) -> void:
 		_zring(-0.34, 0.3, 0.0, 0.15, 0.05)], _boot_colour)
 	# White side armour plates (rule 6.3: a step, not a colour change), a steel plate across the front, a dark sole band.
 	for side: float in [-1.0, 1.0]:
-		k.box(Vector3(0.03, 0.13, 0.36), MechMeshes.WHITE, Vector3(side * 0.322, 0.11, -0.0))
-		k.box(Vector3(0.03, 0.04, 0.04), MechMeshes.STEEL, Vector3(side * 0.34, 0.11, 0.12))
-	k.box(Vector3(0.46, 0.08, 0.04), MechMeshes.STEEL, Vector3(0, 0.1, -0.33))
-	k.box(Vector3(0.62, 0.04, 0.62), MechMeshes.BLACK, Vector3(0, 0.019, -0.02))
+		k.box(Vector3(0.03, 0.13, 0.36), LowPolyPalette.WHITE, Vector3(side * 0.322, 0.11, -0.0))
+		k.box(Vector3(0.03, 0.04, 0.04), LowPolyPalette.STEEL, Vector3(side * 0.34, 0.11, 0.12))
+	k.box(Vector3(0.46, 0.08, 0.04), LowPolyPalette.STEEL, Vector3(0, 0.1, -0.33))
+	k.box(Vector3(0.62, 0.04, 0.62), LowPolyPalette.BLACK, Vector3(0, 0.019, -0.02))
 	k.pop()
 
 
@@ -850,16 +837,16 @@ static func _boot(k: MeshKit) -> void:
 static func _toe(k: MeshKit) -> void:
 	k.push(Transform3D(Basis.from_scale(Vector3.ONE * FOOT_S), Vector3.ZERO))
 	k.loft([_zring(0.02, 0.125, 0.0, 0.17, 0.04), _zring(-0.18, 0.125, 0.0, 0.15, 0.04), _zring(-0.28, 0.1, 0.0, 0.085, 0.03)],
-		[MechMeshes.GREY, MechMeshes.STEEL])
-	k.loft([_zring(-0.06, 0.135, 0.005, 0.175, 0.045), _zring(-0.1, 0.135, 0.005, 0.172, 0.045)], MechMeshes.DARK)
-	k.box(Vector3(0.2, 0.03, 0.16), MechMeshes.BLACK, Vector3(0, 0.014, -0.12))
+		[LowPolyPalette.GREY, LowPolyPalette.STEEL])
+	k.loft([_zring(-0.06, 0.135, 0.005, 0.175, 0.045), _zring(-0.1, 0.135, 0.005, 0.172, 0.045)], LowPolyPalette.DARK)
+	k.box(Vector3(0.2, 0.03, 0.16), LowPolyPalette.BLACK, Vector3(0, 0.014, -0.12))
 	k.pop()
 
 
 ## The heel spur: root at the origin on the boot's back, a dark clamp, a steel wedge up and back to a point.
 static func _spur(k: MeshKit) -> void:
 	k.push(Transform3D(Basis.from_scale(Vector3.ONE * FOOT_S), Vector3.ZERO))
-	k.box(Vector3(0.24, 0.14, 0.08), MechMeshes.DARK, Vector3(0, 0.1, 0.0))
-	k.seg(Vector3(0, 0.08, -0.02), Vector3(0, 0.17, 0.16), Vector2(0.09, 0.07), Vector2(0.075, 0.06), 4, MechMeshes.STEEL)
-	k.seg(Vector3(0, 0.17, 0.16), Vector3(0, 0.36, 0.28), Vector2(0.075, 0.06), Vector2.ZERO, 4, MechMeshes.GREY)
+	k.box(Vector3(0.24, 0.14, 0.08), LowPolyPalette.DARK, Vector3(0, 0.1, 0.0))
+	k.seg(Vector3(0, 0.08, -0.02), Vector3(0, 0.17, 0.16), Vector2(0.09, 0.07), Vector2(0.075, 0.06), 4, LowPolyPalette.STEEL)
+	k.seg(Vector3(0, 0.17, 0.16), Vector3(0, 0.36, 0.28), Vector2(0.075, 0.06), Vector2.ZERO, 4, LowPolyPalette.GREY)
 	k.pop()

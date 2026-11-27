@@ -1,11 +1,11 @@
 extends TestCase
-## SITE FIT (docs/design/city-ramps-and-stack.md "Mission world", the fit rule; MissionProps.snap_site_fit): every flag,
+## SITE FIT (docs/design/city-ramps-and-stack.md "Mission world", the fit rule; SiteFit.snap_fit): every flag,
 ## defend relay and hold zone of the default MissionPlan is reachable by the WIDEST mech, a disc of CityPlan.MECH_R_MAX +
-## MissionProps.FIT_MARGIN (4.1 m), from the deck's walk graph to within 0.9 x the objective's radius of the snapped site
+## SiteFit.FIT_MARGIN (4.1 m), from the deck's walk graph to within 0.9 x the objective's radius of the snapped site
 ## (the hold: into its zone, 1 m in). Checked with this test's OWN flood (not FitMask): a 1 m grid, every cell tested
 ## against bucketed obstacles (court_open's: tiers and solids lower than MECH_TOP and higher than a step, pillar cores,
 ## park column rings, floor cuts + curb, ramps + 0.5 m, the walls) plus every mission piece on the deck (its clear radius),
-## seeded from the walk graph's NODES. Also: the old rule (MissionProps.snap_site, the same chain of avoids) is computed
+## seeded from the walk graph's NODES. Also: the old rule (SiteFit.snap, the same chain of avoids) is computed
 ## beside it; the sites it put out of reach are listed (they are the ones that moved), every other site is identical to
 ## the old rule's, key for key. MECH_R_MAX covers every chassis in MechCatalog. Informational: per seed, how many facing
 ## gaps between buildings of a downtown block are wider than a Strider needs (4.4 m) but narrower than 8.2 m.
@@ -27,7 +27,7 @@ func setup() -> void:
 		var cr := float(MechCatalog.movement(id)["capsule_radius"])
 		rmax = maxf(rmax, cr)
 		check(CityPlan.MECH_R_MAX >= cr, "CityPlan.MECH_R_MAX %.2f covers chassis %s (capsule radius %.2f)" % [CityPlan.MECH_R_MAX, id, cr])
-	print("[SiteFit] widest chassis capsule %.2f m, MECH_R_MAX %.2f, fit disc %.2f m" % [rmax, CityPlan.MECH_R_MAX, MissionProps.fit_r()])
+	print("[SiteFit] widest chassis capsule %.2f m, MECH_R_MAX %.2f, fit disc %.2f m" % [rmax, CityPlan.MECH_R_MAX, SiteFit.fit_r()])
 	var only := OS.get_environment("FIT_SEED")
 	var seeds: Array = [int(only)] if only.is_valid_int() else SEEDS
 	for s: int in seeds:
@@ -56,8 +56,8 @@ func _seed(seed_n: int) -> void:
 			site_ms.append("%s %.1f" % [str(c[0]).substr(5), float(c[1])])
 	var graph := []
 	for d: CityDistrict in stack.decks:
-		if MissionProps.has_fit_mask(d.plan):
-			graph.append("d%d %.1f" % [d.plan.deck, MissionProps.fit_mask(d.plan).graph_ms])
+		if SiteFit.has_mask(d.plan):
+			graph.append("d%d %.1f" % [d.plan.deck, SiteFit.mask(d.plan).graph_ms])
 	print("[SiteFit] seed %d: mask chunks (ms) %s (of which walk_graph %s); site chunks (ms) %s" % [seed_n, str(fit_ms), str(graph),
 			str(site_ms)])
 	# The old rule, chained as MissionWorld._site chains it (flags, then relays; each avoids the pieces before it on its deck).
@@ -72,7 +72,7 @@ func _seed(seed_n: int) -> void:
 				if int(old[id2]["deck"]) == k:
 					avoid.append([Vector2(float(old[id2]["x"]), float(old[id2]["s"])), float(old[id2]["clear"])])
 			var clear := MissionWorld.FLAG_CLEAR if kind == "flag" else MissionWorld.ASSET_CLEAR
-			var r := MissionProps.snap_site(stack.decks[k], Vector2(float(o["site"]["x"]), float(o["site"]["s"])), MissionWorld.snap_reach(o),
+			var r := SiteFit.snap(stack.decks[k], Vector2(float(o["site"]["x"]), float(o["site"]["s"])), MissionWorld.snap_reach(o),
 					clear, avoid)
 			r["deck"] = k
 			r["clear"] = clear
@@ -111,21 +111,21 @@ func _seed(seed_n: int) -> void:
 			for id: Variant in sites:
 				if int(sites[id]["deck"]) == k:
 					pieces.append([Vector2(float(sites[id]["x"]), float(sites[id]["s"])), float(sites[id]["clear"])])
-			var reach := _flood(dplan, MissionProps.fit_r(), pieces)
+			var reach := _flood(dplan, SiteFit.fit_r(), pieces)
 			for o: Dictionary in objs:
 				var ok: bool
 				if str(o["type"]) == "hold":
 					ok = _reaches_zone(dplan, reach, ((o["params"] as Dictionary)["zone"] as Rect2).grow(-1.0))
 				else:
 					var st: Dictionary = sites[o["id"]]
-					ok = _reaches(dplan, reach, Vector2(float(st["x"]), float(st["s"])), float(o["radius"]) * MissionProps.FIT_GOAL)
+					ok = _reaches(dplan, reach, Vector2(float(st["x"]), float(st["s"])), float(o["radius"]) * SiteFit.FIT_GOAL)
 				var tag := "seed %d deck %d %s (%s %s)" % [seed_n, k, str(o["id"]), o["role"], o["type"]]
 				if which == 0:
 					if not ok:
 						old_fail.append("%d:%s" % [seed_n, str(o["id"])])
-						print("[SiteFit] old rule: %s out of reach of a %.1f m disc" % [tag, MissionProps.fit_r()])
+						print("[SiteFit] old rule: %s out of reach of a %.1f m disc" % [tag, SiteFit.fit_r()])
 				else:
-					check(ok, "%s: a %.1f m disc reaches it from the walk graph" % [tag, MissionProps.fit_r()])
+					check(ok, "%s: a %.1f m disc reaches it from the walk graph" % [tag, SiteFit.fit_r()])
 					if ok and old_fail.has("%d:%s" % [seed_n, str(o["id"])]):
 						check(moved.has("%d:%s" % [seed_n, str(o["id"])]), "%s: out of reach before, so it moved" % tag)
 	_gaps(seed_n, stack)
@@ -208,7 +208,7 @@ func _flood(p: CityPlan, r: float, pieces: Array) -> Dictionary:
 		state[c] = 1 if ok else 2
 		return ok
 	var q := PackedInt32Array()
-	var g := p.walk_graph()
+	var g := CityGraphs.walk_graph(p)
 	for nd: Vector2 in g["nodes"]:
 		var i := floori((nd.x - e.position.x) / CELL)
 		var j := floori((nd.y - e.position.y) / CELL)
@@ -268,7 +268,7 @@ func _reaches_zone(_p: CityPlan, f: Dictionary, z: Rect2) -> bool:
 ## wider than 2 x MECH_R + 0 (4.4 m) and narrower than 2 x fit_r() (8.2 m). Printed, not checked.
 func _gaps(seed_n: int, stack: CityStack) -> void:
 	var lo := 2.0 * CityPlan.MECH_R
-	var hi := 2.0 * MissionProps.fit_r()
+	var hi := 2.0 * SiteFit.fit_r()
 	var total := 0
 	var parts: Array[String] = []
 	for k in stack.decks.size():

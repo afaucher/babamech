@@ -24,7 +24,7 @@ func setup() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	var was := Session.chassis_id
 	Session.chassis_id = "bulwark"
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(20)
 	Session.chassis_id = was

@@ -49,7 +49,7 @@ func _ready() -> void:
 	var head := arg_value(args, "--head")
 	var accent := arg_value(args, "--accent")   # run-only, like --head (run.ps1 -Crew gives each window its own)
 	Session.set_profile(str(settings["player_name"]), head if MechCatalog.HEADS.has(head) else str(settings["head"]),
-		str(settings["chassis"]), accent if MechMeshes.ACCENTS.has(accent) else str(settings["accent"]),
+		str(settings["chassis"]), accent if LowPolyPalette.ACCENTS.has(accent) else str(settings["accent"]),
 		settings["loadout"] as Dictionary)
 	get_tree().change_scene_to_file.call_deferred(route(args))
 

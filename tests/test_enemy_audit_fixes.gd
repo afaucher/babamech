@@ -25,12 +25,16 @@ class PeekTrooper extends EnemyTrooper:
 		return true
 
 
-## Stub squad that only answers deck_occluders (the gunship's obstacle push reads nothing else).
-class OccSquad extends Node:
+## Stub squad whose path service only answers deck_occluders (the gunship's obstacle push reads nothing else).
+class OccNav extends EnemyNav:
 	var occ: Array = []
 
 	func deck_occluders(_deck: int = -1) -> Array:
 		return occ
+
+
+class OccSquad extends Node:
+	var nav := OccNav.new()
 
 
 func setup() -> void:
@@ -358,7 +362,7 @@ func _dropship_troops_skip_relay() -> void:
 func _gunship_edge_repulsion() -> void:
 	var occ := [{"rect": Rect2(0.0, 0.0, 40.0, 20.0), "h": 30.0}]
 	var stub := OccSquad.new()
-	stub.occ = occ
+	stub.nav.occ = occ
 	add_child(stub)
 	var g := EnemyGunship.new()
 	g.configure("gunship", "rep_gs", null, null, null, 1)

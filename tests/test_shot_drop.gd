@@ -128,7 +128,7 @@ func _drop_plain() -> void:
 	var lost := _lost(far)
 	check(lost > 0.0, "plain: an undisturbed shot hits the far target")
 	var n := impacts.size()
-	var res := w.drop_shot(Combat.shot_key(r2), at, Vector3.BACK, MechMeshes.GREY, false)
+	var res := w.drop_shot(Combat.shot_key(r2), at, Vector3.BACK, LowPolyPalette.GREY, false)
 	eq(res, 0, "plain: a drop after the copy's own hit is ignored")
 	eq(impacts.size(), n, "plain: no extra impact from it")
 	near(_lost(far), lost, 1e-6, "plain: nothing applied again")
@@ -166,7 +166,7 @@ func _early() -> void:
 	_run(w, 0.1)
 	var r := _rec("autocannon", 11, w.now)
 	var k := Combat.shot_key(r)
-	eq(w.drop_shot(k, Vector3(0, 2, -5), Vector3.BACK, MechMeshes.GREY, false), 0, "early: remember = false keeps nothing")
+	eq(w.drop_shot(k, Vector3(0, 2, -5), Vector3.BACK, LowPolyPalette.GREY, false), 0, "early: remember = false keeps nothing")
 	eq(w.drop_shot(k, Vector3(0, 2, -5), Vector3.BACK), -1, "early: a drop before its record waits")
 	var e := w.fire(r) as Projectile
 	check(e != null and e.end_time >= 0.0, "early: the record arriving later ends at once")

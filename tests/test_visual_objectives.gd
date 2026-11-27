@@ -41,8 +41,8 @@ func setup() -> void:
 	await frames(2)
 
 	MissionFlow.test_plan = {"hold": 6.0}
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = 7
 	add_child(td)
 	await frames(10)

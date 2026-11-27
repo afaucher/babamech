@@ -155,7 +155,7 @@ func _ensure_laser() -> void:
 		return
 	l = MissileLaser.new()
 	l.setup(world, record)
-	world._add_effect(l)
+	world.add_effect(l)
 	l.advance_to(world.now)
 
 
@@ -185,16 +185,16 @@ static func prewarm_missile() -> void:
 ## four red tail fins and four small red canards, a dark nozzle.
 static func missile_mesh() -> ArrayMesh:
 	var key := "missile_mesh"
-	if CombatMeshes._cache.has(key):
-		return CombatMeshes._cache[key]
-	var red := MechMeshes.MISSILE_RED
+	if CombatMeshes.cached_meshes().has(key):
+		return CombatMeshes.cached_meshes()[key]
+	var red := LowPolyPalette.MISSILE_RED
 	var k := MeshKit.new()
 	k.push(Transform3D(Basis(Vector3.RIGHT, -PI * 0.5), Vector3.ZERO))      # lathe +Y -> -Z (the nose)
-	k.lathe([Vector2(0.05, -0.44), Vector2(0.068, -0.4), Vector2(0.068, 0.12)], 6, MechMeshes.WHITE, true, false)
+	k.lathe([Vector2(0.05, -0.44), Vector2(0.068, -0.4), Vector2(0.068, 0.12)], 6, LowPolyPalette.WHITE, true, false)
 	k.lathe([Vector2(0.068, 0.12), Vector2(0.068, 0.24)], 6, red, false, false)
-	k.lathe([Vector2(0.068, 0.24), Vector2(0.042, 0.41)], 6, MechMeshes.WHITE, false, false)
+	k.lathe([Vector2(0.068, 0.24), Vector2(0.042, 0.41)], 6, LowPolyPalette.WHITE, false, false)
 	k.lathe([Vector2(0.042, 0.41), Vector2(0.0, 0.5)], 6, red, false, false)
-	k.lathe([Vector2(0.05, -0.44), Vector2(0.06, -0.5)], 6, MechMeshes.DARK, false, true)
+	k.lathe([Vector2(0.05, -0.44), Vector2(0.06, -0.5)], 6, LowPolyPalette.DARK, false, true)
 	for f in 4:
 		var a := TAU * float(f) / 4.0 + PI * 0.25
 		k.push(Transform3D(Basis(Vector3.UP, a), Vector3.ZERO))
@@ -202,8 +202,8 @@ static func missile_mesh() -> ArrayMesh:
 		k.box(Vector3(0.06, 0.07, 0.016), red, Vector3(0.085, 0.06, 0.0))
 		k.pop()
 	k.pop()
-	var m := k.commit(MechMeshes.materials())
-	CombatMeshes._cache[key] = m
+	var m := k.commit(LowPolyMaterials.materials())
+	CombatMeshes.cached_meshes()[key] = m
 	return m
 
 

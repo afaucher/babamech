@@ -96,15 +96,11 @@ func shown(vid: int) -> int:
 
 # --- Meshes ----------------------------------------------------------------------------------------------
 
-static func _c(id: String) -> Color:
-	return CityPalette.C[id]
-
-
 ## Amber hazard lights: bars front and back, a band round the roof edge (dark or bright amber).
 static func _hazards(geo: CityGeo, half_w: float, half_l: float, roof_y: float, roof_hw: float, roof_hl: float, bright: bool,
 		roof_z: float = 0.0) -> void:
 	var xf := Transform3D.IDENTITY
-	var amber := _c("marking_yellow") if bright else _c("terracotta_dark")
+	var amber := CityPalette.c("marking_yellow") if bright else CityPalette.c("terracotta_dark")
 	for sz: float in [-1.0, 1.0]:
 		geo.box(xf, Vector3(0.0, 0.5, sz * (half_l + 0.02)), Vector3(half_w * 1.6, 0.3, 0.12), amber)
 		geo.box(xf, Vector3(0.0, roof_y, roof_z + sz * roof_hl), Vector3(roof_hw * 2.0, 0.16, 0.12), amber)
@@ -121,14 +117,14 @@ static func pod(geo: CityGeo, lights: int) -> void:
 ## The service cart, nose +Z: chassis, cab at the front, hopper on the bed.
 static func cart(geo: CityGeo, lights: int) -> void:
 	var xf := Transform3D.IDENTITY
-	var sand := _c("sand")
-	geo.box(xf, Vector3(0.0, 0.2, 0.0), Vector3(1.3, 0.24, 2.4), _c("metal_dark"))           # skirts over the wheels
+	var sand := CityPalette.c("sand")
+	geo.box(xf, Vector3(0.0, 0.2, 0.0), Vector3(1.3, 0.24, 2.4), CityPalette.c("metal_dark"))           # skirts over the wheels
 	geo.box(xf, Vector3(0.0, 0.5, 0.0), Vector3(1.4, 0.36, 2.6), sand)                        # bed
-	geo.box(xf, Vector3(0.0, 1.12, 0.85), Vector3(1.3, 0.88, 0.8), sand, CityGeo.ALL, _c("cream_light"))   # cab
-	geo.box(xf, Vector3(0.0, 1.2, 1.26), Vector3(1.1, 0.42, 0.04), _c("glass_teal"))         # windscreen
-	geo.box(xf, Vector3(0.0, 1.0, -0.45), Vector3(1.2, 0.64, 1.3), _c("sage"), CityGeo.ALL, _c("sage_dark"))   # hopper
+	geo.box(xf, Vector3(0.0, 1.12, 0.85), Vector3(1.3, 0.88, 0.8), sand, CityGeo.ALL, CityPalette.c("cream_light"))   # cab
+	geo.box(xf, Vector3(0.0, 1.2, 1.26), Vector3(1.1, 0.42, 0.04), CityPalette.c("glass_teal"))         # windscreen
+	geo.box(xf, Vector3(0.0, 1.0, -0.45), Vector3(1.2, 0.64, 1.3), CityPalette.c("sage"), CityGeo.ALL, CityPalette.c("sage_dark"))   # hopper
 	if lights == PLAIN:
-		geo.box(xf, Vector3(0.0, 1.62, 0.85), Vector3(0.5, 0.08, 0.2), _c("tactile"))       # beacon
-		geo.box(xf, Vector3(0.0, 0.5, 1.31), Vector3(0.9, 0.1, 0.03), _c("marking"))
+		geo.box(xf, Vector3(0.0, 1.62, 0.85), Vector3(0.5, 0.08, 0.2), CityPalette.c("tactile"))       # beacon
+		geo.box(xf, Vector3(0.0, 0.5, 1.31), Vector3(0.9, 0.1, 0.03), CityPalette.c("marking"))
 	else:
 		_hazards(geo, 0.7, 1.3, 1.6, 0.66, 0.42, lights == HAZARD_BRIGHT, 0.85)

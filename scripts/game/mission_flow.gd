@@ -1,7 +1,7 @@
 class_name MissionFlow
 extends Node
 ## The mission's objectives and end (docs/design/mission-objectives.md §7, §9, docs/design/mission-section.md §14,
-## docs/networking.md "Mission progress"). Built by TestDrive in stack mode (child "MissionFlow").
+## docs/networking.md "Mission progress"). Built by MissionScene in stack mode (child "MissionFlow").
 ##
 ## ONE MODE (user 2026-11-25: "Cut the legacy modes."): every mission plays a MissionPlan (objectives, the pacing
 ## director, depots, the extraction hold); a section always has one. `--objectives` is accepted as a no-op,
@@ -12,10 +12,10 @@ extends Node
 ## RULES: every machine builds the same rules from the plan. Who decides:
 ##   - SOLO (offline, no launched mission): this machine evaluates locally, no network.
 ##   - CREW, HOST (a host alone included): evaluates every EVAL_INTERVAL s and, whenever evaluate() returns true, sends
-##     rules.state() to the crew (Session.send_mission_state -> reliable "mission.state", also carried by mission.go).
+##     rules.state() to the crew (Session.mission.host_state -> reliable "mission.state", also carried by mission.go).
 ##   - CREW, CLIENT: never evaluates; applies what the host sent (Session.mission_state_changed -> rules.apply_state).
 ## Evaluation is GATED until the mission is released (Session.mission_go; solo at once) AND the enemies have spawned
-## (TestDrive.enemies_spawned), because a clear objective latches the first time its deck counts 0 alive.
+## (MissionScene.enemies_spawned), because a clear objective latches the first time its deck counts 0 alive.
 ## CREW FACTS: one entry per mech of the mission still in the crew: {peer, downed, deck, x, s}, deck / x / s =
 ##   CityStack.to_deck_arc(position); downed = this machine's PlayerTarget.disabled / a puppet's streamed `downed`.
 ##   No crew-wipe loss for now (user decision): the rules run with MissionRules' "wipe" option off (its default).
@@ -24,7 +24,7 @@ extends Node
 ## rules = MissionRules.make(section, {plan}), director = PacingDirector.make(plan, test_director, crew_scale()), then
 ## stack.setup_mission(plan) (Environment's MissionWorld: wave doors, flag masts, defend relays, the portal) and
 ## rules.set_site() from its flag_site / asset_site, all before the first evaluate. The load barrier's checksum joins
-## plan.checksum() (TestDrive.mission_checksum). The HOST / SOLO tick (same gate, EVAL_INTERVAL, t = Session.host_time(),
+## plan.checksum() (MissionScene.mission_checksum). The HOST / SOLO tick (same gate, EVAL_INTERVAL, t = Session.host_time(),
 ## solo: this node's mission clock) evaluates the rules first, then ticks the director with the fresh state:
 ##   rules facts    t, enemies, crew, waves_left, waves, zone_enemies {objective id: enemies inside its radius}, assets
 ##                  {defend id: hp}, defend_waves
@@ -37,7 +37,7 @@ extends Node
 ##                  staged (dormant, not hittable) in the bay in a seeded loose formation (BayFormation); when the door
 ##                  is passable (source_state(id).passable, open_at + MissionWorld.OPENING) the squad rolls them out
 ##                  (EnemySquad.roll_out_wave) and the door is held open while they leave. Other sources spawn at open_at.
-##   each order     {wave, deck, source, open_at, max_units}: the host sends it (Session.send_mission_wave: reliable
+##   each order     {wave, deck, source, open_at, max_units}: the host sends it (Session.mission.host_wave: reliable
 ##                  "mission.wave"), every machine calls stack.mission.open_source(source, open_at) (`opened` records it),
 ##                  and when the shared clock reaches open_at the host spawns it (EnemySpawner.spawn_wave, see
 ##                  _spawn_wave; a group the spawner never reports counts beaten GRACE s after its door opened)
@@ -64,12 +64,12 @@ extends Node
 ## A change whose `at` is not newer than the last one known here is ignored (duplicate / late). Solo: 1.
 ##
 ## END FLOW: once rules.outcome is set ("won"; decided here or heard from the host) every machine shows the banner
-## (hud_state().banner) for END_HOLD s, then: the HOST calls Session.end_mission(reason) (mission.end to the crew, whose
-## TestDrive goes back to the hangar on Session.mission_ended); SOLO just leaves; a CLIENT waits for the host's
-## mission.end and only leaves on its own after CLIENT_GRACE more seconds. `finished` tells TestDrive to leave.
+## (hud_model.build().banner) for END_HOLD s, then: the HOST calls Session.mission.end(reason) (mission.end to the crew, whose
+## MissionScene goes back to the hangar on Session.mission_ended); SOLO just leaves; a CLIENT waits for the host's
+## mission.end and only leaves on its own after CLIENT_GRACE more seconds. `finished` tells MissionScene to leave.
 
 signal outcome_reached(outcome: String, reason: String)
-## The end flow is over: leave the mission scene (TestDrive does, when it is the current scene).
+## The end flow is over: leave the mission scene (MissionScene does, when it is the current scene).
 signal finished(outcome: String)
 ## Every machine: a wave's door was scheduled (stack.mission.open_source) from a host order.
 signal wave_ordered(order: Dictionary)
@@ -77,19 +77,8 @@ signal wave_ordered(order: Dictionary)
 const EVAL_INTERVAL := 0.25       ## s between host / solo evaluations (4 Hz)
 const END_HOLD := 4.0             ## s the end banner shows before the mission ends
 const CLIENT_GRACE := 6.0         ## s past END_HOLD a client waits for the host's mission.end before leaving alone
-const WAYPOINT_H := 3.0           ## m above the floor the extraction waypoint is drawn at
-const MARKER_H := 4.0             ## m above the floor objective markers are drawn at
-const PANEL_STAND_H := 2.5        ## m: within this of a deck's floor the pilot stands on it (the panel's DECK n of m)
-const SOURCE_H := 4.0             ## m above the floor a wave source's arrow points at
-const ALERT_AFTER := 6.0          ## s past open_at the "Reinforcements, east gate" line stays
-const RING_POINTS := 40           ## points of a projected objective ring
-const TITLES := {"won": "MISSION COMPLETE", "lost": "CREW LOST"}
-const LOST_TITLES := {"objective_failed": "MISSION FAILED"}
-const REASONS := {"objectives": "Every primary done, the crew held the extraction portal",
-	"crew_down": "Every pilot is down", "objective_failed": "Objective failed"}
 const END_REASONS := {"won": "Mission complete", "lost": "Crew lost"}
 const LOST_END_REASONS := {"objective_failed": "Objective failed"}
-const MARK_LABEL := {"flag": "FLAG", "defend": "DEFEND", "hold": "EXTRACT"}
 const ASSET_MAX_HP := 600.0       ## a defend relay's hit points (Weapons' AssetTarget hits are in points; asset_hp is 0..1) ...
 ## ... times this by crew size (index = pilots - 1; defend balance 2026-11-24: a lone veteran bot at 90 %+ structure lost
 ## relays in 40-110 s): the relay takes hits in points against ASSET_MAX_HP x scale.
@@ -110,7 +99,7 @@ static var test_director: Dictionary = {}
 ## as spawned (crew and full garrison), nothing is released and the mission never ends. Set on every machine of a test.
 static var test_quiet := false
 
-var drive: TestDrive
+var drive: MissionScene
 var rules: MissionRules
 var crew := false                 ## a crew mission with a session (else solo)
 var released := false             ## the mission started (mission_go; solo at once)
@@ -149,10 +138,9 @@ var scale_log: Array = []         ## changes applied here [{from, to, at, t, rea
 var scale_dups := 0               ## mission.scale messages ignored as duplicate / late (tests)
 var _present_left := 0.0
 var _pushed: Dictionary = {}      ## presentation: key -> last value pushed to the world
-var _alerts: Array = []           ## HUD: orders heard, [{order, text, deck, pos}]
-var _rings: Dictionary = {}       ## HUD: defend id -> PackedVector3Array (its ring on the floor)
-var _zone_seen: Dictionary = {}   ## presentation: objective id -> {crew: bool, enemies: int} (this machine's view)
-var _hud_deck := -1               ## HUD: the deck the local pilot last stood on (kept on a ramp / in a shaft; -1 none yet)
+## What MissionHud draws (scripts/game/mission_hud_model.gd: the orders heard, the zone view, the panel's deck): fed by
+## alert() / zones here, read through hud_model.build() (MissionHud.source).
+var hud_model: MissionHudModel
 ## The military supply depots (MissionDepots child, every machine; pacing-director.md §2). Their state rides in
 ## plan_state()["depots"]; the claim / grant messages are MissionDepots' own.
 var depots: MissionDepots
@@ -173,40 +161,44 @@ func net_fields() -> Dictionary:
 		"_scale": Net.OWNER, "scale_at": Net.OWNER,   # the host decides (launch params.scale, mission.scale, state "scale")
 		"_scale_due": Net.LOCAL, "_scale_last_at": Net.LOCAL,   # this machine's schedule of the host's changes
 		"scale_log": Net.LOCAL, "scale_dups": Net.LOCAL,
-		"_pushed": Net.LOCAL, "_alerts": Net.LOCAL, "_rings": Net.LOCAL, "_zone_seen": Net.LOCAL,
-		"_hud_deck": Net.LOCAL,        # the local pilot's deck for the objective panel, never sent
+		"_pushed": Net.LOCAL,
+		"hud_model": Net.LOCAL,        # this machine's HUD view (MissionHudModel declares its own state)
 		"depots": Net.LOCAL}   # MissionDepots declares its own state (net_fields)
+
+
+func _init() -> void:
+	hud_model = MissionHudModel.new(self)
 
 
 func _ready() -> void:
 	process_physics_priority = 40   # after the combat world, the crew snapshots and EnemySync stepped
 
 
-func setup(td: TestDrive) -> void:
+func setup(td: MissionScene) -> void:
 	drive = td
 	var sess := Net.session()
 	crew = td.crewed and sess != null and sess.online()
 	# The host's crew scale before anything is built from it (it comes with the launch params that carry the crew), then
 	# the changes heard while this machine loaded (due ones apply at once: the director starts at the scale in force).
-	init_scale(sess.mission_params() if crew else {})
+	init_scale(sess.mission.params if crew else {})
 	if crew:
-		for c: Variant in sess.mission_scales():
+		for c: Variant in sess.mission.scales:
 			if c is Dictionary:
 				receive_scale(c, false)
 		_tick_scale()
 	rebuild()
 	if crew:
-		released = not td._held
+		released = not td.held
 		# Methods, not lambdas: Session outlives this node, and a method connection goes away with it.
 		sess.mission_go.connect(_on_go)
 		sess.mission_state_changed.connect(_on_state)
 		sess.mission_ended.connect(_on_ended)
 		sess.mission_wave.connect(_on_wave)
 		sess.mission_scale.connect(_on_scale_msg)
-		if not sess.mission_state().is_empty():
-			_on_state(sess.mission_state())
+		if not sess.mission.state.is_empty():
+			_on_state(sess.mission.state)
 		if not deciding():
-			for o: Variant in sess.mission_waves():
+			for o: Variant in sess.mission.waves:
 				if o is Dictionary:
 					_on_wave(o)
 	else:
@@ -241,9 +233,7 @@ func rebuild() -> void:
 	_wave_total = {}
 	_seen = {}
 	_pushed = {}
-	_alerts = []
-	_rings = {}
-	_zone_seen = {}
+	hud_model.reset()
 	_clock = 0.0
 	rules = null
 	if sec == null or test_quiet:
@@ -254,7 +244,7 @@ func rebuild() -> void:
 		plan = pre if ready else MissionPlan.make(sec, test_plan)
 		rules = MissionRules.make(sec, {"plan": plan})
 		director = PacingDirector.make(plan, test_director, crew_scale())
-		# The stepped load set the world up over frames already (TestDrive.prebuilt_plan); otherwise in one call.
+		# The stepped load set the world up over frames already (MissionScene.prebuilt_plan); otherwise in one call.
 		world = drive.stack.mission if ready else drive.stack.setup_mission(plan)
 		for o: Dictionary in plan.objectives:
 			var id: String = o["id"]
@@ -284,6 +274,11 @@ func deciding() -> bool:
 		return true
 	var sess := Net.session()
 	return sess != null and sess.online() and sess.hosting
+
+
+## The plan state the host last sent (read only; {} before the first send).
+func last_sent_state() -> Dictionary:
+	return _sent
 
 
 ## The mission clock: the shared clock in a crew, this node's own (physics seconds since release) solo.
@@ -326,7 +321,7 @@ func evaluate_now() -> bool:
 
 
 ## [{peer, downed, deck, x, s}] for this machine's mech and (crew) every teammate's puppet still in the crew.
-## Every pilot (TestDrive.crew_members: the local mech, the host's hangar bots, the puppets of members still in the crew;
+## Every pilot (MissionScene.crew_members: the local mech, the host's hangar bots, the puppets of members still in the crew;
 ## a bot's peer is its negative pilot id, docs/design/hangar-bots.md).
 ## One entry per crew_members() entry, in its order (_pacing_facts pairs them by index); a member whose mech was freed
 ## while still listed is not standing: downed, deck -1.
@@ -397,13 +392,13 @@ func _tick_end(dt: float) -> void:
 		if _end_wait < END_HOLD + CLIENT_GRACE:
 			return
 		if sess != null:
-			sess.end_mission()
+			sess.mission.end()
 		_finish()
 		return
 	if end_left > 0.0:
 		return
 	if crew and sess != null and sess.online():
-		sess.end_mission(end_reason())
+		sess.mission.end(end_reason())
 	_finish()
 
 
@@ -433,7 +428,7 @@ func _evaluate_plan() -> bool:
 	var orders := director.tick(t, _director_facts(enemies, crew_f, live))
 	for o: Dictionary in orders:
 		if crew:
-			Net.session().send_mission_wave(o)
+			Net.session().mission.host_wave(o)
 		_open(o)
 		if not source_bay(str(o["source"])).is_empty():
 			_spawn_wave(o)   # staged in the closed bay now; rolled out when the door is passable (_roll_due)
@@ -446,7 +441,7 @@ func _evaluate_plan() -> bool:
 		_sent = st
 		changed = true
 		if crew:
-			Net.session().send_mission_state(st)
+			Net.session().mission.host_state(st)
 	_present()
 	_check_outcome()
 	return changed
@@ -532,7 +527,7 @@ func _director_facts(enemies: Array, crew_f: Array, live: Array) -> Dictionary:
 		"kills": pf.get("kills", []), "source_route": _source_routes(crew_f)}
 
 
-## Host: {source id: walk-route metres from the standing crew's centre on its deck} (EnemySquad.find_arc_path over the
+## Host: {source id: walk-route metres from the standing crew's centre on its deck} (EnemyNav.find_arc_path over the
 ## road graph), refreshed every ROUTE_EVERY s; -1 where no path was found (the director then measures straight).
 func _source_routes(crew_f: Array) -> Dictionary:
 	var t := now()
@@ -541,8 +536,9 @@ func _source_routes(crew_f: Array) -> Dictionary:
 	_route_t = t
 	_routes = {}
 	var squad: Variant = drive.combat.squad if drive.combat != null else null
-	if not is_instance_valid(squad) or not (squad as Object).has_method("find_arc_path"):
+	if not is_instance_valid(squad) or not squad is EnemySquad or (squad as EnemySquad).nav == null:
 		return _routes
+	var nav: EnemyNav = (squad as EnemySquad).nav
 	var sum := {}
 	for c: Dictionary in crew_f:
 		if bool(c["downed"]):
@@ -554,7 +550,7 @@ func _source_routes(crew_f: Array) -> Dictionary:
 		var centre: Vector2 = sum[k][0] / float(sum[k][1])
 		for s: Dictionary in plan.deck_sources(k):
 			var to := Vector2(float(s["x"]), float(s["s"]))
-			var path: Array = squad.call("find_arc_path", centre, to, k)
+			var path: Array = nav.find_arc_path(centre, to, k)
 			if path.is_empty():
 				_routes[str(s["id"])] = -1.0
 				continue
@@ -566,7 +562,7 @@ func _source_routes(crew_f: Array) -> Dictionary:
 	return _routes
 
 
-## Host: PacingFacts over every pilot (crew_facts order: the same entries as TestDrive.crew_members) and the live enemies.
+## Host: PacingFacts over every pilot (crew_facts order: the same entries as MissionScene.crew_members) and the live enemies.
 func _pacing_facts(crew_f: Array, live: Array) -> Dictionary:
 	if drive.combat == null or drive.combat.world == null:
 		return {}
@@ -677,7 +673,7 @@ func order_air_door(id: String, deck: int, open_at: float, hold: float) -> void:
 	var o := {"wave": "air", "deck": deck, "source": id, "open_at": open_at, "hold": hold, "max_units": 0, "air": true,
 		"reason": "dropship"}
 	if crew:
-		Net.session().send_mission_wave(o)
+		Net.session().mission.host_wave(o)
 	_open(o)
 
 
@@ -694,9 +690,7 @@ func _open(o: Dictionary) -> void:
 	opened.append({"wave": str(o.get("wave", "")), "source": src, "open_at": open_at})
 	if world != null:
 		world.open_source(src, open_at)
-	_alerts.append({"order": o.duplicate(), "text": "Reinforcements, " + source_words(src), "deck": int(o.get("deck", 0))})
-	if _alerts.size() > 8:
-		_alerts.pop_front()
+	hud_model.alert(o.duplicate(), "Reinforcements, " + source_words(src), int(o.get("deck", 0)))
 	var wid := str(o.get("wave", ""))
 	var size := str(_wave_size[wid]) if _wave_size.has(wid) else "?"
 	print("[mission] wave %s: %s opens at %.2f (%s units, cap room %d, %s)" % [wid, src, open_at, size,
@@ -803,7 +797,7 @@ func crew_scale() -> int:
 
 ## HOST ONLY: the one derivation of the crew scale from a crew: `members` = the launch crew entries (mission.launch
 ## params.crew, hangar bots included: NetMission.launch_scale) at the launch, the members still in the crew
-## (TestDrive.crew_members(): players and hangar bots alike) on a retire. 1..4.
+## (MissionScene.crew_members(): players and hangar bots alike) on a retire. 1..4.
 static func host_crew_scale(members: Array) -> int:
 	return clampi(members.size(), 1, 4)
 
@@ -841,7 +835,7 @@ func _scale_target() -> int:
 	return int((_scale_due.back() as Dictionary)["n"]) if not _scale_due.is_empty() else _scale
 
 
-## The host's leaver hook (TestDrive.member_retired, after crew_members() stopped listing the pilot; a hangar bot counts the
+## The host's leaver hook (MissionScene.member_retired, after crew_members() stopped listing the pilot; a hangar bot counts the
 ## same). Host only (no-op on clients and solo): forget the pilot's bookkeeping, recompute host_crew_scale from the members
 ## still in the crew and, if it changed, decide it for every machine: mission.scale {n, at} with at = shared clock +
 ## SCALE_LEAD (before the release: now, so the start value just changes), applied here at `at` too.
@@ -859,7 +853,7 @@ func on_member_retired(pilot_id: int) -> void:
 	print("[mission] scale decided %d -> %d at %.3f (pilot %d left)" % [cur, n, at, pilot_id])
 	var sess := Net.session()
 	if sess != null:
-		sess.send_mission_scale(change)
+		sess.mission.host_scale(change)
 	receive_scale(change, false)
 
 
@@ -1010,14 +1004,14 @@ func _present() -> void:
 	var crew_f := crew_facts()
 	var live := _live_enemies()
 	var zen := _zone_enemies(live)
-	_zone_seen = {}
+	hud_model.zones = {}
 	for o: Dictionary in rules.objectives:
 		var id: String = o["id"]
 		var st := rules.obj_state(id)
 		match str(o["type"]):
 			"flag":
 				var inside := _crew_within(o, crew_f)
-				_zone_seen[id] = {"crew": inside, "enemies": int(zen.get(id, 0))}
+				hud_model.zones[id] = {"crew": inside, "enemies": int(zen.get(id, 0))}
 				if st == "done":
 					_push("flag:" + id, true, func() -> void: world.set_flag(id, true))
 				var z := "idle"
@@ -1027,7 +1021,7 @@ func _present() -> void:
 					z = "contested"
 				_push("zone:" + id, z, func() -> void: world.set_zone(id, z))
 			"defend":
-				_zone_seen[id] = {"crew": _crew_within(o, crew_f), "enemies": int(zen.get(id, 0))}
+				hud_model.zones[id] = {"crew": _crew_within(o, crew_f), "enemies": int(zen.get(id, 0))}
 				var hp := float(asset_hp.get(id, 1.0))
 				_push("asset:" + id, hp, func() -> void: world.set_asset(id, hp))
 			"hold":
@@ -1036,7 +1030,7 @@ func _present() -> void:
 				if st == "done":
 					p = 1.0
 				var inside := _crew_in_zone(o, crew_f)
-				_zone_seen[id] = {"crew": inside, "enemies": 0}
+				hud_model.zones[id] = {"crew": inside, "enemies": 0}
 				_push("portal:" + id, snappedf(p, 0.005), func() -> void: world.set_portal(p))
 				var hz := "done" if st == "done" else ("holding" if inside and st == "active" else "idle")
 				_push("hold:" + id, hz, func() -> void: world.set_hold_zone(hz))
@@ -1090,130 +1084,3 @@ func source_words(id: String) -> String:
 		else:
 			dir = "north" if fs > 0.0 else "south"
 	return "%s %s" % [dir, kind]
-
-
-# --- HUD -----------------------------------------------------------------------------------------------------
-
-## What MissionHud draws (its contract, MissionHud header): {objective: String, waypoint: {pos: Vector3, deck, label}
-## or {}, banner: {title, reason, won} or {}}; plan mode adds plan: true, deck, lines, waves [released, total],
-## markers [{pos, label, role, state, kind}], rings [PackedVector3Array], zone {label, progress, total, contested,
-## countdown (hold: seconds left), percent (flag: whole percent)} or {}, panel (MissionRules.panel() for this pilot's
-## deck and position, plus extra: [the depot line]; its route_at, while a lead line ("Proceed to deck n", "Return to
-## deck n") shows, is also the waypoint "RAMP DOWN" / "SHAFT DOWN" when there is no extraction waypoint),
-
-## alerts [{text, pos: Vector3 or null, left: s to the door}].
-func hud_state() -> Dictionary:
-	var out := {"objective": "", "waypoint": {}, "banner": {}}
-	if rules == null or drive == null:
-		return out
-	out["objective"] = rules.text()
-	var mk := rules.marker()
-	if not mk.is_empty() and drive.stack != null:
-		out["waypoint"] = {"pos": drive.stack.from_deck_arc(int(mk["deck"]), float(mk["x"]), float(mk["s"]), WAYPOINT_H),
-			"deck": int(mk["deck"]), "label": "EXTRACT"}
-	if rules.outcome != "":
-		var title := str(TITLES.get(rules.outcome, rules.outcome.to_upper()))
-		if rules.outcome == "lost" and LOST_TITLES.has(rules.reason):
-			title = str(LOST_TITLES[rules.reason])
-		var why := str(REASONS.get(rules.reason, rules.reason))
-		out["banner"] = {"title": title, "reason": why, "won": rules.outcome == "won"}
-	if plan != null and drive.stack != null and drive.mech != null:
-		_plan_hud(out)
-	return out
-
-
-func _plan_hud(out: Dictionary) -> void:
-	var here := drive.stack.to_deck_arc(drive.mech.global_position)
-	var k := int(here["deck"])
-	out["plan"] = true
-	out["deck"] = k
-	out["lines"] = rules.lines(k)
-	var core_line := depots.progress_line() if depots != null else ""
-	if core_line != "":   # this pilot taking a power core: an objective-style line, kept inside the panel's LIST_MAX
-		(out["lines"] as Array).insert(mini((out["lines"] as Array).size(), MissionHud.LIST_MAX - 1), core_line)
-	out["panel"] = _panel(here, core_line)
-	var to: Dictionary = (out["panel"] as Dictionary).get("route_at", {})
-	if (out["waypoint"] as Dictionary).is_empty() and not to.is_empty():   # a lead line ("Proceed to deck n"): the way
-		out["waypoint"] = {"pos": drive.stack.from_deck_arc(int(to["deck"]), float(to["x"]), float(to["s"]), WAYPOINT_H),
-			"deck": int(to["deck"]), "label": "%s %s" % [str(to["kind"]).to_upper(), "DOWN" if int(to["dir"]) > 0 else "UP"]}
-	var wv: Array = director.state()["waves"]
-	out["waves"] = wv[k] if k >= 0 and k < wv.size() else [0, 0]
-	var marks: Array = []
-	var rings: Array = []
-	for m: Dictionary in rules.markers(k):
-		var ty := str(m["type"])
-		if ty == "sweep" or ty == "hold":
-			continue   # deck-wide / the extraction waypoint
-		var label := str(MARK_LABEL.get(ty, ty.to_upper()))   # a bonus reads like a primary: the plain type name
-		marks.append({"pos": drive.stack.from_deck_arc(k, float(m["x"]), float(m["s"]), MARKER_H), "label": label,
-			"role": m["role"], "state": m["state"], "kind": ty})
-		if ty == "defend":
-			rings.append(_ring(m))
-	out["markers"] = marks
-	out["rings"] = rings
-	out["zone"] = _zone_hud()
-	var alerts: Array = []
-	var t := now()
-	for a: Dictionary in _alerts:
-		var o: Dictionary = a["order"]
-		var open_at := float(o["open_at"])
-		if t > open_at + ALERT_AFTER:
-			continue
-		var text := str(a["text"])
-		var pos: Variant = null
-		if int(a["deck"]) != k:
-			text += ", deck %d" % (int(a["deck"]) + 1)
-		elif world != null:
-			var sp := world.source_point(str(o["source"]))
-			if not sp.is_empty():
-				pos = drive.stack.from_deck_arc(int(sp["deck"]), float(sp["x"]), float(sp["s"]), SOURCE_H)
-		alerts.append({"text": text, "pos": pos, "left": maxf(open_at - t, 0.0)})
-	out["alerts"] = alerts
-
-
-## The objective panel (MissionRules.panel) for the local pilot: their deck, held while they are off every floor (on a
-## ramp, falling down a shaft: more than PANEL_STAND_H from the floor under them) until they stand on the next one, and
-## their (x, s) on it; `extra` the depot line (MissionDepots.progress_line()) under this deck's lines. Local facts only.
-func _panel(here: Dictionary, core_line: String) -> Dictionary:
-	var k := int(here["deck"])
-	if _hud_deck < 0 or absf(float(here.get("h", 0.0))) <= PANEL_STAND_H:
-		_hud_deck = k
-	var s := float(here["s"])
-	var sec := drive.stack.section
-	if _hud_deck != k and sec != null:   # the same top-down point on the held deck (decks are concentric)
-		s *= sec.radius_of(_hud_deck) / maxf(sec.radius_of(k), 1.0)
-	var pn := rules.panel(_hud_deck, Vector2(float(here["x"]), s))
-	pn["extra"] = [core_line] if core_line != "" else []
-	return pn
-
-
-## The zone progress bar while anyone stands in an active flag / hold zone: {label, progress, total, contested}.
-func _zone_hud() -> Dictionary:
-	for o: Dictionary in rules.objectives:
-		var id: String = o["id"]
-		var ty := str(o["type"])
-		if (ty != "flag" and ty != "hold") or rules.obj_state(id) != "active":
-			continue
-		var zs: Dictionary = _zone_seen.get(id, {})
-		if not bool(zs.get("crew", false)):
-			continue
-		var objs: Dictionary = rules.state().get("objs", {})
-		var tot := float((objs.get(id, [0, 0, 0]) as Array)[2])
-		return {"id": id, "label": "RAISING THE FLAG" if ty == "flag" else "HOLDING THE PORTAL",
-			"progress": rules.obj_progress(id), "total": tot, "contested": int(zs.get("enemies", 0)) > 0,
-			"countdown": ty == "hold", "percent": ty == "flag"}
-
-	return {}
-
-
-func _ring(m: Dictionary) -> PackedVector3Array:
-	var id := str(m["id"])
-	if _rings.has(id):
-		return _rings[id]
-	var pts := PackedVector3Array()
-	var r := float(m["radius"])
-	for i in RING_POINTS + 1:
-		var a := TAU * float(i) / float(RING_POINTS)
-		pts.append(drive.stack.from_deck_arc(int(m["deck"]), float(m["x"]) + cos(a) * r, float(m["s"]) + sin(a) * r, 0.3))
-	_rings[id] = pts
-	return pts

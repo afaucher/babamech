@@ -203,7 +203,8 @@ func _eye_frame(seat: Node3D) -> void:
 		return
 	var l := pilot.piece("PupilL")
 	var r := pilot.piece("PupilR")
-	var eye_world := (l.global_position + r.global_position) * 0.5 if l != null and r != null 		else holder.global_transform * Vector3(0, 0.8, -0.3)
+	var eye_world := (l.global_position + r.global_position) * 0.5 if l != null and r != null \
+		else holder.global_transform * Vector3(0, 0.8, -0.3)
 	var fwd := -seat.global_basis.z.normalized()
 	_eye_local = seat.global_transform.affine_inverse() * (eye_world + fwd * fp_forward)
 	hide_from_first_person(holder)

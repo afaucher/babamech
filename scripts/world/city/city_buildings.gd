@@ -77,10 +77,10 @@ static func _lane_face(geo: CityGeo, f: Face) -> void:
 	var n := maxi(int(f.w / 8.0), 1)
 	for k in n:
 		var u := f.w * (float(k) + 0.5) / float(n)
-		_slab(geo, f, u - 0.06, u + 0.06, 4.9, 5.05, 0.9, _c("metal_dark"))
-		geo.box(f.xf, Vector3(u, 4.75, 0.85), Vector3(0.36, 0.3, 0.36), _c("cream_light"), CityGeo.ALL, _c("metal_dark"))
+		_slab(geo, f, u - 0.06, u + 0.06, 4.9, 5.05, 0.9, CityPalette.c("metal_dark"))
+		geo.box(f.xf, Vector3(u, 4.75, 0.85), Vector3(0.36, 0.3, 0.36), CityPalette.c("cream_light"), CityGeo.ALL, CityPalette.c("metal_dark"))
 	var us := f.w * (LANE_SIGN_U0 + LANE_SIGN_SPAN * _vr.randf())
-	_slab(geo, f, us - 0.05, us + 0.05, 6.1, 6.2, 1.5, _c("metal_dark"))
+	_slab(geo, f, us - 0.05, us + 0.05, 6.1, 6.2, 1.5, CityPalette.c("metal_dark"))
 	geo.box(f.xf, Vector3(us, 5.525, 1.0), Vector3(0.08, 1.15, 0.9), _pick(_vr, ["fascia_teal", "fascia_rose", "fascia_sand", "sage_dark", "terracotta"]))
 
 
@@ -95,19 +95,15 @@ static func _alley_face(geo: CityGeo, f: Face) -> void:
 		c = clampf(c, ALLEY_DOOR_END, f.w - ALLEY_DOOR_END)
 		# 0.16 out: in front of an apartment's 0.12 m base band. Pipes stand 0.41 / 0.47 m proud, clear of every style's
 		# piers (0.3), cornices (0.35) and ledges (0.3), so no face of theirs lies in a facade's plane.
-		_pane(geo, f, c - 0.6, c + 0.6, 0.0, 2.3, _c("door_back"), 0.16)
-		_slab(geo, f, c - ALLEY_HOOD_HALF, c + ALLEY_HOOD_HALF, ALLEY_HOOD_V0, ALLEY_HOOD_V1, ALLEY_HOOD_D, _c("metal_dark"))
+		_pane(geo, f, c - 0.6, c + 0.6, 0.0, 2.3, CityPalette.c("door_back"), 0.16)
+		_slab(geo, f, c - ALLEY_HOOD_HALF, c + ALLEY_HOOD_HALF, ALLEY_HOOD_V0, ALLEY_HOOD_V1, ALLEY_HOOD_D, CityPalette.c("metal_dark"))
 	for u: float in [0.6, f.w - 0.6]:
-		_slab(geo, f, u - 0.12, u + 0.12, -0.3, f.y1 - 0.4, ALLEY_PIPE_D, _c("pipe"))
+		_slab(geo, f, u - 0.12, u + 0.12, -0.3, f.y1 - 0.4, ALLEY_PIPE_D, CityPalette.c("pipe"))
 	# 4.95..5.2: clear of every style's sills, ledges and balcony tops (their top faces lay in a pipe run at 4.45).
-	_slab(geo, f, 0.75, f.w - 0.75, ALLEY_RUN_V0, ALLEY_RUN_V1, ALLEY_RUN_D, _c("pipe"))
+	_slab(geo, f, 0.75, f.w - 0.75, ALLEY_RUN_V0, ALLEY_RUN_V1, ALLEY_RUN_D, CityPalette.c("pipe"))
 
 
 # --- Shared pieces ---------------------------------------------------------------------------------------
-
-static func _c(id: String) -> Color:
-	return CityPalette.C[id]
-
 
 static func _pick(rng: RandomNumberGenerator, ids: Array) -> Color:
 	return CityPalette.C[ids[rng.randi_range(0, ids.size() - 1)]]
@@ -368,34 +364,34 @@ const TANK_COLOURS := ["terracotta_dark", "sand", "metal"]     ## water tank var
 ## One roof unit upright at the origin of `xf`: type water_tank | ac | vent | planter (CityProps prototypes).
 static func roof_unit(geo: CityGeo, xf: Transform3D, type: String, variant: int) -> void:
 	match type:
-		"water_tank": _water_tank(geo, xf, Vector3.ZERO, _c(TANK_COLOURS[clampi(variant, 0, TANK_COLOURS.size() - 1)]))
+		"water_tank": _water_tank(geo, xf, Vector3.ZERO, CityPalette.c(TANK_COLOURS[clampi(variant, 0, TANK_COLOURS.size() - 1)]))
 		"ac": _ac_unit(geo, xf, Vector3.ZERO, 0.0)
-		"vent": geo.prism(xf, Vector3.ZERO, 0.45, 1.1, 6, _c("metal"), 0.45, _c("metal_dark"), _c("metal"))
+		"vent": geo.prism(xf, Vector3.ZERO, 0.45, 1.1, 6, CityPalette.c("metal"), 0.45, CityPalette.c("metal_dark"), CityPalette.c("metal"))
 		"planter": _planter(geo, xf, Vector3.ZERO, Vector2(3.2, 1.3))
 
 
 static func _ac_unit(geo: CityGeo, xf: Transform3D, at: Vector3, yaw: float) -> void:
 	var t := xf * Transform3D(Basis(Vector3.UP, yaw), at)
-	geo.box(t, Vector3(0, 0.75, 0), Vector3(1.9, 1.1, 1.2), _c("metal"), CityGeo.ALL, _c("metal_dark"))
-	geo.box(t, Vector3(0, 0.1, 0), Vector3(2.2, 0.2, 1.5), _c("concrete_dark"), CityGeo.ALL)
+	geo.box(t, Vector3(0, 0.75, 0), Vector3(1.9, 1.1, 1.2), CityPalette.c("metal"), CityGeo.ALL, CityPalette.c("metal_dark"))
+	geo.box(t, Vector3(0, 0.1, 0), Vector3(2.2, 0.2, 1.5), CityPalette.c("concrete_dark"), CityGeo.ALL)
 
 
 static func _water_tank(geo: CityGeo, xf: Transform3D, at: Vector3, col: Color) -> void:
 	var t := xf * Transform3D(Basis.IDENTITY, at)
 	for k: Vector2 in [Vector2(-0.8, -0.8), Vector2(0.8, -0.8), Vector2(0.8, 0.8), Vector2(-0.8, 0.8)]:
-		geo.box(t, Vector3(k.x, 0.7, k.y), Vector3(0.22, 1.4, 0.22), _c("metal_dark"), CityGeo.ALL)
+		geo.box(t, Vector3(k.x, 0.7, k.y), Vector3(0.22, 1.4, 0.22), CityPalette.c("metal_dark"), CityGeo.ALL)
 	geo.prism(t, Vector3(0, 1.4, 0), 1.35, 2.2, 8, col, -1.0, null, col.darkened(0.12))
-	geo.prism(t, Vector3(0, 3.6, 0), 1.5, 0.7, 8, _c("roof_dark"), 0.0, null, _c("roof_dark"))
+	geo.prism(t, Vector3(0, 3.6, 0), 1.5, 0.7, 8, CityPalette.c("roof_dark"), 0.0, null, CityPalette.c("roof_dark"))
 
 
 static func _planter(geo: CityGeo, xf: Transform3D, at: Vector3, size: Vector2) -> void:
 	var t := xf * Transform3D(Basis.IDENTITY, at)
-	geo.box(t, Vector3(0, 0.35, 0), Vector3(size.x, 0.7, size.y), _c("cream_light"), CityGeo.ALL, _c("soil"))
+	geo.box(t, Vector3(0, 0.35, 0), Vector3(size.x, 0.7, size.y), CityPalette.c("cream_light"), CityGeo.ALL, CityPalette.c("soil"))
 	var n := maxi(int(size.x / 1.6), 1)
 	var leaves := ["leaf", "leaf_dark", "leaf_light"]
 	for i in n:
 		var x := (float(i) + 0.5) / float(n) * size.x - size.x * 0.5
-		var col := _c(leaves[i % leaves.size()])
+		var col := CityPalette.c(leaves[i % leaves.size()])
 		geo.prism(t, Vector3(x, 0.7, 0), minf(size.y, 1.5) * 0.48, 0.95 - 0.15 * float(i % 2), 5, col, 0.25, null, col)
 
 
@@ -406,8 +402,8 @@ static func _skylight(geo: CityGeo, xf: Transform3D, so: Dictionary) -> void:
 	var t := xf * Transform3D(Basis(Vector3.UP, yaw), Vector3((so["off"] as Vector2).x, float(so["y0"]), (so["off"] as Vector2).y))
 	var long := maxf(sz.x, sz.y)
 	var short := minf(sz.x, sz.y)
-	geo.box(t, Vector3(0, 0.2, 0), Vector3(short, 0.4, long), _c("concrete"), CityGeo.NO_BOTTOM)      # the solid curb (plan y1)
-	geo.gable(t, Vector3(0, 0.4, 0), short - 0.2, long - 0.2, 0.7, _c("glass_blue"), _c("concrete"))
+	geo.box(t, Vector3(0, 0.2, 0), Vector3(short, 0.4, long), CityPalette.c("concrete"), CityGeo.NO_BOTTOM)      # the solid curb (plan y1)
+	geo.gable(t, Vector3(0, 0.4, 0), short - 0.2, long - 0.2, 0.7, CityPalette.c("glass_blue"), CityPalette.c("concrete"))
 
 
 ## What is drawn on a roof slot: its skylights (plan solids). The roll below keeps the cosmetic stream exactly where the
@@ -448,19 +444,19 @@ static func _punched(geo: CityGeo, f: Face, y: float, bays: PackedFloat32Array, 
 
 static func _apartment(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary, rng: RandomNumberGenerator) -> void:
 	var wall := _pick(rng, ["terracotta", "terracotta", "terracotta_light", "terracotta_dark", "cream"])
-	var trim := _c("terracotta") if wall == _c("cream") else _c("cream_light")
+	var trim := CityPalette.c("terracotta") if wall == CityPalette.c("cream") else CityPalette.c("cream_light")
 	var base := _pick(rng, ["concrete", "cream", "sand"])
 	var glass := _pick(rng, ["glass_teal", "glass_dark", "glass_teal"])
 	var balcony := _pick(rng, ["cream_light", "sage_light", "cream"])
 	if _vr.randf() < COLOURWAY:      # second colourway: sky-blue body, cream trim, blue glass
-		wall = _c("apt_sky") if _vr.randf() < 0.7 else _c("apt_sky_dark")
-		trim = _c("cream_light")
-		glass = _c("glass_blue")
+		wall = CityPalette.c("apt_sky") if _vr.randf() < 0.7 else CityPalette.c("apt_sky_dark")
+		trim = CityPalette.c("cream_light")
+		glass = CityPalette.c("glass_blue")
 	wall = CityPalette.tint(wall, _vr)
 	var main: Dictionary = b["tiers"][0]
 	var floors: int = b["floors"]
 	var roof: float = b["roof_h"]
-	_body(geo, xf, main, wall, _c("roof"))
+	_body(geo, xf, main, wall, CityPalette.c("roof"))
 	var faces := _faces(xf, main, lot)
 	var phase := rng.randi_range(0, 1)
 	for f in faces:
@@ -470,7 +466,7 @@ static func _apartment(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictio
 		for k in bays.size():
 			var c := bays[k]
 			if f.street and f.side == int(b["front"]) and k == door:
-				_pane(geo, f, c - 0.9, c + 0.9, 0.05, 2.5, _c("glass_dark"), 0.17)
+				_pane(geo, f, c - 0.9, c + 0.9, 0.05, 2.5, CityPalette.c("glass_dark"), 0.17)
 				_slab(geo, f, c - APT_CANOPY_HALF, c + APT_CANOPY_HALF, APT_CANOPY_V0, APT_CANOPY_V1, APT_CANOPY_D, trim)
 			elif f.street:
 				_pane(geo, f, c - 1.15, c + 1.15, 0.85, 2.55, glass, 0.17)
@@ -492,9 +488,9 @@ static func _apartment(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictio
 	# Roof: stair bulkhead (a tier: you can stand on it), water tank, a couple of units.
 	if (b["tiers"] as Array).size() > 1:
 		var bulk: Dictionary = b["tiers"][1]
-		_body(geo, xf, bulk, wall, _c("roof_dark"))
+		_body(geo, xf, bulk, wall, CityPalette.c("roof_dark"))
 		var bf := _faces(xf, bulk, lot)[rng.randi_range(0, 3)]
-		_pane(geo, bf, bf.w * 0.5 - 0.6, bf.w * 0.5 + 0.6, roof + 0.05, roof + 2.2, _c("metal_dark"))
+		_pane(geo, bf, bf.w * 0.5 - 0.6, bf.w * 0.5 + 0.6, roof + 0.05, roof + 2.2, CityPalette.c("metal_dark"))
 	_pick(rng, TANK_COLOURS)      # was the tank colour (the tanks are CityProps now): keeps the cosmetic stream in step
 	_roof(geo, xf, b, main, rng, ["tank", "tank", "ac", "vent"])
 
@@ -507,9 +503,9 @@ static func _office(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionar
 	var spandrel := _pick(rng, ["cream", "sand", "cream_light"])
 	var accent := _pick(rng, ["terracotta", "sage_dark", "blue_grey"])
 	if _vr.randf() < COLOURWAY:      # second colourway: sand frame and spandrels, teal glass
-		frame = _c("office_sand")
-		spandrel = _c("sand_light")
-		glass = _c("glass_teal")
+		frame = CityPalette.c("office_sand")
+		spandrel = CityPalette.c("sand_light")
+		glass = CityPalette.c("glass_teal")
 	frame = CityPalette.tint(frame, _vr, 0.7)
 	spandrel = CityPalette.tint(spandrel, _vr, 0.7)
 	var tiers: Array = b["tiers"]
@@ -518,20 +514,20 @@ static func _office(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionar
 		if str(t.get("kind", "")) == "plant":
 			plant = t
 			continue
-		_body(geo, xf, t, glass, _c("roof"))
+		_body(geo, xf, t, glass, CityPalette.c("roof"))
 		_grid_facade(geo, _faces(xf, t, lot), frame, spandrel, 3.2)
 	var faces := _faces(xf, tiers[0], lot)
 	for f in faces:
 		if f.side == int(b["front"]):
-			_pane(geo, f, f.w * 0.5 - 1.7, f.w * 0.5 + 1.7, 0.0, 2.9, _c("glass_dark"), 0.03)
+			_pane(geo, f, f.w * 0.5 - 1.7, f.w * 0.5 + 1.7, 0.0, 2.9, CityPalette.c("glass_dark"), 0.03)
 			_slab(geo, f, f.w * 0.5 - OFFICE_CANOPY_HALF, f.w * 0.5 + OFFICE_CANOPY_HALF, OFFICE_CANOPY_V0, OFFICE_CANOPY_V1, OFFICE_CANOPY_D, accent)
 	var top: Dictionary = tiers[int(plan_top(b))]
 	var ts: Vector2 = top["size"]
 	if not plant.is_empty():      # plant room (a plan tier: solid, standable) and mast
 		var pt := xf * Transform3D(Basis.IDENTITY, Vector3((top["off"] as Vector2).x, float(top["y1"]), (top["off"] as Vector2).y))
-		_body(geo, xf, plant, frame, _c("roof_dark"))
+		_body(geo, xf, plant, frame, CityPalette.c("roof_dark"))
 		if rng.randf() < 0.5:
-			geo.box(pt, Vector3(ts.x * 0.12, 2.4 + 1.6, 0), Vector3(0.18, 3.2, 0.18), _c("metal_dark"), CityGeo.NO_BOTTOM)
+			geo.box(pt, Vector3(ts.x * 0.12, 2.4 + 1.6, 0), Vector3(0.18, 3.2, 0.18), CityPalette.c("metal_dark"), CityGeo.NO_BOTTOM)
 	_roof(geo, xf, b, top, rng, ["ac", "ac", "vent"])
 
 
@@ -573,13 +569,13 @@ static func _sage(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary,
 	var ledge := _pick(rng, ["cream_light", "cream"])
 	var glass := _pick(rng, ["glass_dark", "glass_teal"])
 	if _vr.randf() < COLOURWAY:      # second colourway: pale cream panels with sage ledges
-		wall = _c("sage_cream")
-		ledge = _c("sage_dark")
-		glass = _c("glass_teal")
+		wall = CityPalette.c("sage_cream")
+		ledge = CityPalette.c("sage_dark")
+		glass = CityPalette.c("glass_teal")
 	wall = CityPalette.tint(wall, _vr)
 	var tiers: Array = b["tiers"]
 	for t: Dictionary in tiers:
-		_body(geo, xf, t, wall, _c("roof"))
+		_body(geo, xf, t, wall, CityPalette.c("roof"))
 		var faces := _faces(xf, t, lot)
 		for f in faces:
 			var floors := int(round((f.y1 - f.y0) / FH))
@@ -598,7 +594,7 @@ static func _sage(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary,
 					_slab(geo, f, -0.25, f.w + 0.25, y - 0.15, y + 0.15, 0.25, ledge)
 			_slab(geo, f, -0.3, f.w + 0.3, f.y1 - 0.2, f.y1 + 0.5, 0.3, ledge)
 			if f.y0 <= 0.0 and f.side == int(b["front"]):
-				_pane(geo, f, f.w * 0.5 - 1.2, f.w * 0.5 + 1.2, 0.0, 2.7, _c("glass_dark"), 0.07)
+				_pane(geo, f, f.w * 0.5 - 1.2, f.w * 0.5 + 1.2, 0.0, 2.7, CityPalette.c("glass_dark"), 0.07)
 				_slab(geo, f, f.w * 0.5 - SAGE_CANOPY_HALF, f.w * 0.5 + SAGE_CANOPY_HALF, SAGE_CANOPY_V0, SAGE_CANOPY_V1, SAGE_CANOPY_D, ledge)
 	# Roof garden on the main roof, units on the penthouse.
 	_roof(geo, xf, b, tiers[0], rng, ["planter", "planter", "skylight"] if tiers.size() == 1 else ["planter"])
@@ -610,14 +606,14 @@ static func _sage(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary,
 
 static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary, rng: RandomNumberGenerator) -> void:
 	var wall := _pick(rng, ["cream", "cream_light", "terracotta_light", "sage_light", "sky_blue", "sand"])
-	var trim := _c("cream_light") if wall != _c("cream_light") else _c("sand")
+	var trim := CityPalette.c("cream_light") if wall != CityPalette.c("cream_light") else CityPalette.c("sand")
 	if _vr.randf() < COLOURWAY:      # second colourway: a rose-terracotta row with cream trim
-		wall = _c("shop_rose")
-		trim = _c("cream_light")
+		wall = CityPalette.c("shop_rose")
+		trim = CityPalette.c("cream_light")
 	wall = CityPalette.tint(wall, _vr)
 	var main: Dictionary = b["tiers"][0]
 	var roof: float = b["roof_h"]
-	_body(geo, xf, main, wall, _c("roof"))
+	_body(geo, xf, main, wall, CityPalette.c("roof"))
 	var faces := _faces(xf, main, lot)
 	var awnings := ["terracotta", "sage_dark", "sky_blue", "marking_yellow", "terracotta_dark", "cream_light"]
 	# Shopfront variants (one per row: awning shape, recessed doors; fascia colours per unit), from the row's own stream.
@@ -638,8 +634,8 @@ static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 					col = _pick(_vr, more_awnings)
 				if _vr.randf() < 0.5:
 					fascia = _pick(_vr, fascias)
-				_pane(geo, f, c - h + 0.45, c + h - 0.45, 0.55, 3.0, _c("glass_dark"))
-				_pane(geo, f, c + h - 1.9, c + h - 0.75, 0.0, 2.6, _c("glass_teal"), 0.07)
+				_pane(geo, f, c - h + 0.45, c + h - 0.45, 0.55, 3.0, CityPalette.c("glass_dark"))
+				_pane(geo, f, c + h - 1.9, c + h - 0.75, 0.0, 2.6, CityPalette.c("glass_teal"), 0.07)
 				if recessed:
 					# A recessed entrance: deep jambs and a head round the door, so the door reads as set into the front.
 					_slab(geo, f, c + h - 2.1, c + h - 1.9, 0.0, 2.8, SHOP_JAMB_D, trim)
@@ -651,7 +647,7 @@ static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 					1: _slab(geo, f, c - h + SHOP_AWNING_IN, c + h - SHOP_AWNING_IN, float(SHOP_AWNINGS[1][1]), float(SHOP_AWNINGS[1][0]), float(SHOP_AWNINGS[1][2]), col)
 					_: _awning(geo, f, c - h + SHOP_AWNING_IN, c + h - SHOP_AWNING_IN, float(SHOP_AWNINGS[2][0]), float(SHOP_AWNINGS[2][1]), float(SHOP_AWNINGS[2][2]), col, col.darkened(0.25))
 				_slab(geo, f, c - h + 0.5, c + h - 0.5, 3.5, 4.3, 0.12, fascia)
-				_punched(geo, f, FH, PackedFloat32Array([c - h * 0.45, c + h * 0.45]), 0.65, 1.2, 2.5, _c("glass_teal"), trim)
+				_punched(geo, f, FH, PackedFloat32Array([c - h * 0.45, c + h * 0.45]), 0.65, 1.2, 2.5, CityPalette.c("glass_teal"), trim)
 			for k in bays.size() + 1:
 				var u := 0.3 + float(k) * pitch
 				_slab(geo, f, u - 0.3, u + 0.3, -0.5, 3.3, 0.15, trim)
@@ -660,11 +656,11 @@ static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 				# A corner entrance on a corner lot: a door on the side street right by the corner, and a blade sign over it.
 				var at_hi := _corner_at_high_u(f.side, int(b["front"]))
 				var u0 := f.w - 1.9 if at_hi else 0.75
-				_pane(geo, f, u0, u0 + 1.15, 0.0, 2.6, _c("glass_dark"), 0.09)
+				_pane(geo, f, u0, u0 + 1.15, 0.0, 2.6, CityPalette.c("glass_dark"), 0.09)
 				var ub := f.w - 0.35 if at_hi else 0.35
 				_slab(geo, f, ub - 0.08, ub + 0.08, SHOP_BLADE_V0, SHOP_BLADE_V1, SHOP_BLADE_D, _pick(_vr, fascias))
 		else:
-			_punched(geo, f, FH, _bays(f.w, 5.0, 1.0), 0.6, 1.2, 2.4, _c("glass_teal"), trim)
+			_punched(geo, f, FH, _bays(f.w, 5.0, 1.0), 0.6, 1.2, 2.4, CityPalette.c("glass_teal"), trim)
 	_band(geo, faces, roof - 0.2, roof + 0.6, 0.2, trim)
 	_roof(geo, xf, b, main, rng, ["ac", "skylight", "vent"])
 
@@ -672,14 +668,14 @@ static func _shops(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 # --- 5. Civic hall ---------------------------------------------------------------------------------------
 
 static func _civic(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary, _rng: RandomNumberGenerator) -> void:
-	var stone := _c("cream")
-	var wall := _c("sand")
+	var stone := CityPalette.c("cream")
+	var wall := CityPalette.c("sand")
 	var plinth: Dictionary = b["tiers"][0]
 	var hall: Dictionary = b["tiers"][1]
 	var roof: float = b["roof_h"]
 	var front: int = b["front"]
-	_body(geo, xf, plinth, _c("concrete"), stone)
-	_body(geo, xf, hall, wall, _c("blue_grey"))
+	_body(geo, xf, plinth, CityPalette.c("concrete"), stone)
+	_body(geo, xf, hall, wall, CityPalette.c("blue_grey"))
 	# Everything solid on the portico is plan data (solids, the entablature tier, the gable): drawn from it here, made
 	# solid from the same numbers by CityDistrict.
 	var back_face: int = [CityGeo.NX, CityGeo.PX, CityGeo.NZ, CityGeo.PZ][front]
@@ -702,7 +698,7 @@ static func _civic(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 					Vector3((t["size"] as Vector2).x, float(t["y1"]) - float(t["y0"]), (t["size"] as Vector2).y), stone)
 	var g: Dictionary = b["gable"]
 	var gx := gable_frame(xf, g)
-	geo.gable(gx, Vector3.ZERO, float(g["w"]), float(g["d"]), float(g["rise"]), _c("blue_grey"), stone, stone)
+	geo.gable(gx, Vector3.ZERO, float(g["w"]), float(g["d"]), float(g["rise"]), CityPalette.c("blue_grey"), stone, stone)
 	# Walls: tall windows between pilasters; a big door behind the columns.
 	for f in _faces(xf, hall, lot):
 		var bays := _bays(f.w, 3.8, 1.2)
@@ -710,9 +706,9 @@ static func _civic(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 		for k in bays.size():
 			var c := bays[k]
 			if f.side == front and k == bays.size() / 2:
-				_pane(geo, f, c - 1.5, c + 1.5, 1.2, 6.2, _c("glass_dark"))
+				_pane(geo, f, c - 1.5, c + 1.5, 1.2, 6.2, CityPalette.c("glass_dark"))
 			else:
-				_pane(geo, f, c - 0.75, c + 0.75, 3.0, col_top - 1.6, _c("glass_teal"))
+				_pane(geo, f, c - 0.75, c + 0.75, 3.0, col_top - 1.6, CityPalette.c("glass_teal"))
 				_slab(geo, f, c - 0.9, c + 0.9, 2.84, 3.0, 0.2, stone)
 		for k in bays.size() + 1:
 			var u := 1.2 + float(k) * pitch
@@ -732,15 +728,15 @@ static func gable_frame(xf: Transform3D, g: Dictionary) -> Transform3D:
 
 static func _pillar(geo: CityGeo, xf: Transform3D, core_xf: Transform3D, b: Dictionary, lot: Dictionary,
 		rng: RandomNumberGenerator, ceiling: float) -> void:
-	var stone := _c("concrete")
+	var stone := CityPalette.c("concrete")
 	var glass := _pick(rng, ["sky_blue", "glass_blue"])
 	var core: Dictionary = b["core"]
 	var lift: bool = core["kind"] == "lift"
 	var y0 := 0.0
 	if not (b["tiers"] as Array).is_empty():
 		var podium: Dictionary = b["tiers"][0]
-		_body(geo, xf, podium, _c("glass_teal"), _c("roof"))
-		_grid_facade(geo, _faces(xf, podium, lot), _c("cream"), _c("sand"), 3.6)
+		_body(geo, xf, podium, CityPalette.c("glass_teal"), CityPalette.c("roof"))
+		_grid_facade(geo, _faces(xf, podium, lot), CityPalette.c("cream"), CityPalette.c("sand"), 3.6)
 		y0 = podium["y1"]
 	var shaft := {"off": Vector2.ZERO, "size": core["size"], "y0": 0.0, "y1": ceiling + 1.0}
 	_body(geo, core_xf, shaft, stone, stone)
@@ -760,16 +756,16 @@ static func _pillar(geo: CityGeo, xf: Transform3D, core_xf: Transform3D, b: Dict
 			_slab(geo, f, u - 0.45, u + 0.45, y0 - (0.5 if y0 <= 0.0 else 0.0), under, 0.5, stone)
 		var y := maxf(y0, 6.5) + FH * 2.0
 		while y < flare - 2.0:
-			_slab(geo, f, 0.0, f.w, y - 0.3, y + 0.3, 0.22, _c("concrete_dark"))
+			_slab(geo, f, 0.0, f.w, y - 0.3, y + 0.3, 0.22, CityPalette.c("concrete_dark"))
 			y += FH * 2.0
 		if door:
 			# The freight lift: a mech-sized door in a hazard frame, and the guide channel running up the shaft.
 			var m := f.w * 0.5
-			_pane(geo, f, m - 5.0, m + 5.0, 0.0, 8.0, _c("metal_dark"), 0.56)
-			_slab(geo, f, m - 5.8, m - 5.0, -0.5, 8.8, 0.7, _c("tactile"))
-			_slab(geo, f, m + 5.0, m + 5.8, -0.5, 8.8, 0.7, _c("tactile"))
-			_slab(geo, f, m - 5.8, m + 5.8, 8.0, 8.8, 0.7, _c("tactile"))
-			_slab(geo, f, m - 1.8, m + 1.8, 8.8, under, 0.62, _c("sage_dark"))
+			_pane(geo, f, m - 5.0, m + 5.0, 0.0, 8.0, CityPalette.c("metal_dark"), 0.56)
+			_slab(geo, f, m - 5.8, m - 5.0, -0.5, 8.8, 0.7, CityPalette.c("tactile"))
+			_slab(geo, f, m + 5.0, m + 5.8, -0.5, 8.8, 0.7, CityPalette.c("tactile"))
+			_slab(geo, f, m - 5.8, m + 5.8, 8.0, 8.8, 0.7, CityPalette.c("tactile"))
+			_slab(geo, f, m - 1.8, m + 1.8, 8.8, under, 0.62, CityPalette.c("sage_dark"))
 	capital(geo, core_xf, (core["size"] as Vector2) * 0.5, ceiling, stone)
 	if not (b["tiers"] as Array).is_empty():
 		_roof(geo, xf, b, b["tiers"][0], rng, ["planter", "ac"])
@@ -786,9 +782,9 @@ static func capital(geo: CityGeo, xf: Transform3D, half: Vector2, ceiling: float
 		collar: float = CAPITAL_COLLAR, proud: float = 0.8) -> void:
 	var flare := ceiling - 7.5
 	var pad := CityStreets.DROP_PANEL
-	geo.box(xf, Vector3(0, flare - collar * 0.5, 0), Vector3(half.x * 2.0 + proud * 2.0, collar, half.y * 2.0 + proud * 2.0), _c("concrete_dark"))
+	geo.box(xf, Vector3(0, flare - collar * 0.5, 0), Vector3(half.x * 2.0 + proud * 2.0, collar, half.y * 2.0 + proud * 2.0), CityPalette.c("concrete_dark"))
 	geo.frustum(xf, Vector3.ZERO, flare, half + Vector2(0.5, 0.5), ceiling - 1.4, half + Vector2(pad - 1.0, pad - 1.0), col)
-	geo.box(xf, Vector3(0, ceiling - 0.6, 0), Vector3((half.x + pad) * 2.0, 1.8, (half.y + pad) * 2.0), _c("rib"), CityGeo.ALL - CityGeo.PY)
+	geo.box(xf, Vector3(0, ceiling - 0.6, 0), Vector3((half.x + pad) * 2.0, 1.8, (half.y + pad) * 2.0), CityPalette.c("rib"), CityGeo.ALL - CityGeo.PY)
 
 
 # --- 7. Downtown towers (docs/design/city-downtown.md) ----------------------------------------------------
@@ -813,9 +809,9 @@ static func _tower(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 	_pick(rng, ["cream", "cream", "sand", "cream_light"])
 	_pick(rng, ["sky_blue", "sky_blue", "glass_blue"])
 	var shop := _pick(rng, ["glass_dark", "glass_teal"])
-	var frame := _c("cream_light") if _vr.randf() < 0.35 else _c("cream")
-	var trim := _c("sand")
-	var glass := _c("sky_blue")
+	var frame := CityPalette.c("cream_light") if _vr.randf() < 0.35 else CityPalette.c("cream")
+	var trim := CityPalette.c("sand")
+	var glass := CityPalette.c("sky_blue")
 	var dt: Dictionary = b["dt"]
 	var base := str(b.get("base", "podium"))
 	for t: Dictionary in b["tiers"]:
@@ -827,7 +823,7 @@ static func _tower(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictionary
 				if dt.has("gallery_frame"):      # the gallery's ceiling, seen from under the arcade
 					var g: Rect2 = dt["gallery_frame"]
 					geo.box(xf, Vector3(g.get_center().x, float(t["y0"]) - 0.05, g.get_center().y), Vector3(g.size.x, 0.1, g.size.y),
-							_c("concrete"), CityGeo.NY)
+							CityPalette.c("concrete"), CityGeo.NY)
 			"lobby":
 				_dt_lobby(geo, xf, t, lot, int(dt.get("front", -1)), frame, trim, glass, shop)
 			"tower":
@@ -857,9 +853,9 @@ static func _dt_block(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Diction
 	var wall := frame
 	if base == "stepped" and not terrace:
 		wall = trim
-	_body(geo, xf, t, wall, _c("roof"))
+	_body(geo, xf, t, wall, CityPalette.c("roof"))
 	var floors := maxi(int(round((y1 - y0) / FH)), 1)
-	var awning := _c(["awning_teal", "awning_sky", "awning_cream"][_vr.randi_range(0, 2)])
+	var awning := CityPalette.c(["awning_teal", "awning_sky", "awning_cream"][_vr.randi_range(0, 2)])
 	for f in _faces(xf, t, lot):
 		if f.w < 3.0:
 			continue
@@ -867,7 +863,7 @@ static func _dt_block(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Diction
 			# A glass curtain: full-storey teal panes between slim frame mullions.
 			var bays := _bays(f.w, 2.6, 0.3)
 			var pitch := _pitch(f.w, 2.6, 0.3)
-			_pane(geo, f, 0.3, f.w - 0.3, y0 + 0.4 if y0 > 0.0 else 0.2, y1 - 0.6, _c("glass_teal"))
+			_pane(geo, f, 0.3, f.w - 0.3, y0 + 0.4 if y0 > 0.0 else 0.2, y1 - 0.6, CityPalette.c("glass_teal"))
 			for k in bays.size() + 1:
 				var u := 0.3 + float(k) * pitch
 				_slab(geo, f, u - 0.12, u + 0.12, y0 - (0.5 if y0 <= 0.0 else 0.0), y1 - 0.45, 0.14, frame)
@@ -888,7 +884,7 @@ static func _dt_block(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Diction
 			elif base == "stepped":
 				# Tall windows over a stone base course.
 				if y0 <= 0.0 and i == 0:
-					_slab(geo, f, -0.1, f.w + 0.1, -0.5, 1.2, 0.1, _c("concrete"))
+					_slab(geo, f, -0.1, f.w + 0.1, -0.5, 1.2, 0.1, CityPalette.c("concrete"))
 				var bays := _bays(f.w, 2.8, 0.6)
 				for c in bays:
 					_pane(geo, f, c - 0.75, c + 0.75, y + (1.4 if y0 <= 0.0 and i == 0 else 0.6), y + FH - 0.5, glass)
@@ -904,8 +900,8 @@ static func _dt_block(geo: CityGeo, xf: Transform3D, t: Dictionary, lot: Diction
 			var n := maxi(int(f.w / 2.5), 1)
 			for k in n + 1:
 				var u := 0.6 + (f.w - 1.2) * float(k) / float(n)
-				geo.box(f.xf, Vector3(u, y1 + 0.7, -0.55), Vector3(0.12, 1.6, 0.12), _c("metal_dark"), CityGeo.NO_BOTTOM)
-			geo.box(f.xf, Vector3(f.w * 0.5, y1 + 1.55, -0.55), Vector3(f.w - 1.0, 0.14, 0.16), _c("metal_dark"))
+				geo.box(f.xf, Vector3(u, y1 + 0.7, -0.55), Vector3(0.12, 1.6, 0.12), CityPalette.c("metal_dark"), CityGeo.NO_BOTTOM)
+			geo.box(f.xf, Vector3(f.w * 0.5, y1 + 1.55, -0.55), Vector3(f.w - 1.0, 0.14, 0.16), CityPalette.c("metal_dark"))
 
 
 ## An arcade's lobby behind its gallery: glass across the gallery side, ribbon windows elsewhere (no cornice: the arcade's
@@ -1006,7 +1002,7 @@ static func column(geo: CityGeo, xf: Transform3D, c: Dictionary, ceiling: float)
 	var r := float(c["half"])
 	var split := ceiling - 10.0
 	var ring_r := float(c.get("ring_r", r + 1.6))     # plan data (solid: CityDistrict builds the same prism)
-	geo.prism(xf, Vector3(0, -1.0, 0), ring_r, float(c.get("ring_h", 0.7)) + 1.0, 8, _c("cream_light"), ring_r, _c("leaf"))
-	geo.prism(xf, Vector3(0, -1.0, 0), r, split + 1.0, 8, _c("cream"), r * 0.8)
-	geo.prism(xf, Vector3(0, split, 0), r * 0.8, 10.0 - 1.2, 8, _c("cream"), 6.0)
-	geo.prism(xf, Vector3(0, ceiling - 1.2, 0), 7.0, 1.6, 8, _c("rib"), 7.0, null, _c("rib"))
+	geo.prism(xf, Vector3(0, -1.0, 0), ring_r, float(c.get("ring_h", 0.7)) + 1.0, 8, CityPalette.c("cream_light"), ring_r, CityPalette.c("leaf"))
+	geo.prism(xf, Vector3(0, -1.0, 0), r, split + 1.0, 8, CityPalette.c("cream"), r * 0.8)
+	geo.prism(xf, Vector3(0, split, 0), r * 0.8, 10.0 - 1.2, 8, CityPalette.c("cream"), 6.0)
+	geo.prism(xf, Vector3(0, ceiling - 1.2, 0), 7.0, 1.6, 8, CityPalette.c("rib"), 7.0, null, CityPalette.c("rib"))

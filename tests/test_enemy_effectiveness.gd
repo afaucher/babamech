@@ -18,10 +18,10 @@ func setup() -> void:
 	finish()
 
 
-# --- 0. Spawn Calmness & Pocket Isolation (Real TestDrive) ------------------------------------------------
+# --- 0. Spawn Calmness & Pocket Isolation (Real MissionScene) ------------------------------------------------
 
 func _spawn_calmness_and_pocket_isolation() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	td.drive_override = true
 	await frames(2)

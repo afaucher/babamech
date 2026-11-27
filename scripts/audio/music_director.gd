@@ -99,15 +99,15 @@ func _try_start_music() -> void:
 	match music_mode:
 		"hangar":
 			if _hangar_player != null and not _hangar_player.playing:
-				var s: AudioStreamWAV = _director._fetch_stream("music.hangar")
+				var s: AudioStreamWAV = _director.fetch_stream("music.hangar")
 				if s != null:
 					_hangar_player.stream = s
 					_hangar_player.volume_db = float(SoundBank.spec("music.hangar").get("db", -7.0)) + music_trim_db
 					_hangar_player.play()
 		"calm", "combat":
 			if _calm_player != null and _combat_player != null and (not _calm_player.playing or not _combat_player.playing):
-				var sc: AudioStreamWAV = _director._fetch_stream("music.calm")
-				var sb: AudioStreamWAV = _director._fetch_stream("music.combat")
+				var sc: AudioStreamWAV = _director.fetch_stream("music.calm")
+				var sb: AudioStreamWAV = _director.fetch_stream("music.combat")
 				if sc != null and sb != null:
 					_calm_player.stream = sc
 					_combat_player.stream = sb
@@ -142,7 +142,7 @@ func _try_start_ambience() -> void:
 		return
 	if _amb_player.playing and _amb_player.stream != null:
 		return
-	var s: AudioStreamWAV = _director._fetch_stream(cid)
+	var s: AudioStreamWAV = _director.fetch_stream(cid)
 	if s != null:
 		_amb_player.stream = s
 		_amb_player.volume_db = float(SoundBank.spec(cid).get("db", -12.0)) + ambience_trim_db

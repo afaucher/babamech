@@ -64,10 +64,6 @@ const DECAL := CityStreets.DECAL_PATCH     ## one decal layer (2 cm): outline, t
 static var _glyphs: Dictionary = {}
 
 
-static func _c(id: String) -> Color:
-	return CityPalette.C[id]
-
-
 ## The number district `plan` shows (0: none).
 static func number_of(plan: CityPlan) -> int:
 	if plan.section != null:
@@ -140,7 +136,7 @@ static func _gates(out: Array, plan: CityPlan, geo: CityGeo, n: int) -> void:
 
 ## Centred ABOVE gate g on the wall over it (reads from the road that ends at the gate): its panel's bottom over a
 ## MissionWorld bunker's lintel and the beacons standing on it (gate top + LINTEL_H 3 + housing 0.4 + beacon 1.3 m,
-## MissionProps.GateDoor) with 1 m to spare, which also clears the baked hazard frame (gate top + 1.6 m), and over a
+## MissionGateDoor) with 1 m to spare, which also clears the baked hazard frame (gate top + 1.6 m), and over a
 ## bulkhead's gallery band (15.4-16.6 m); sized with the gate (OVER_SHARE of its width), under the ceiling's girders.
 ## Farm walls: on a proud panel in front of the racks.
 static func _over_gate(plan: CityPlan, geo: CityGeo, w: Dictionary, g: Dictionary, n: int) -> Dictionary:
@@ -172,12 +168,12 @@ static func _over_gate(plan: CityPlan, geo: CityGeo, w: Dictionary, g: Dictionar
 	s["at"] = Vector2(mid, at) if across else Vector2(at, mid)
 	s["ref"] = s["at"]
 	s["gate_top"] = float(g["h"])
-	s["door_key"] = "%d:%.2f" % [side, float(g["a"])]     # CityStreets.walls' key of a MissionWorld door in this gate
+	s["door_key"] = "%d:%.2f" % [side, float(g["a"])]     # CityWalls.build's key of a MissionWorld door in this gate
 	return s
 
 
 ## Over every freight lift door (the core's `front` face: CityBuildings._pillar), on a panel above the door's lamps:
-## beside the door the leaves slide over the face when they open (MissionProps.LiftDoor).
+## beside the door the leaves slide over the face when they open (MissionLiftDoor).
 static func _lifts(out: Array, plan: CityPlan, ring: RingFrame, n: int) -> void:
 	for i in plan.buildings.size():
 		var b: Dictionary = plan.buildings[i]
@@ -282,14 +278,14 @@ static func build(geo: CityGeo, s: Dictionary, st: String) -> void:
 		var z0 := float(s["z0"])
 		var z1 := float(s["z1"])
 		geo.tag("deck_sign.panel")
-		_extrude(geo, xf, poly, z0, z1, _c("sign_panel") if dark else _c("concrete"), s["surface"] == "hang")
+		_extrude(geo, xf, poly, z0, z1, CityPalette.c("sign_panel") if dark else CityPalette.c("concrete"), s["surface"] == "hang")
 		face = z1
 		if s["surface"] == "hang":
 			geo.tag("deck_sign.rod")
 			var top := float(s["y1"])
 			var ceiling := float(s["ceiling"]) + 0.5
 			for k: float in [-1.0, 1.0]:
-				geo.box(xf, Vector3(k * (float(s["w"]) * 0.5 - 0.8), (top + ceiling) * 0.5, 0.0), Vector3(ROD, ceiling - top, ROD), _c("metal_dark"))
+				geo.box(xf, Vector3(k * (float(s["w"]) * 0.5 - 0.8), (top + ceiling) * 0.5, 0.0), Vector3(ROD, ceiling - top, ROD), CityPalette.c("metal_dark"))
 	_face(geo, xf, s["front"], u, base, face, dark, float(s["w"]), float(s["y0"]))
 	if not (s["back"] as Dictionary).is_empty():
 		var bx := xf * Transform3D(Basis(Vector3.UP, PI), Vector3.ZERO)
@@ -313,17 +309,17 @@ static func _face(geo: CityGeo, xf: Transform3D, f: Dictionary, u: float, base: 
 		geo.tag("deck_sign.stripe")
 		var hw := w * 0.5 - STRIPE_INSET * u
 		_flat(geo, xf, PackedVector2Array([Vector2(-hw, y0 + STRIPE.x * u), Vector2(hw, y0 + STRIPE.x * u),
-				Vector2(hw, y0 + STRIPE.y * u), Vector2(-hw, y0 + STRIPE.y * u)]), face + DECAL, _c("sign_stripe"))
+				Vector2(hw, y0 + STRIPE.y * u), Vector2(-hw, y0 + STRIPE.y * u)]), face + DECAL, CityPalette.c("sign_stripe"))
 		geo.tag("deck_sign.glyph")
 		for p: Array in polys:
-			_flat(geo, xf, p[0], face + DECAL, _c("sign_cream"))
+			_flat(geo, xf, p[0], face + DECAL, CityPalette.c("sign_cream"))
 		return
 	geo.tag("deck_sign.outline")
 	for p: Array in polys:
-		_flat(geo, xf, _grow(p[0], float(p[1])), face + DECAL, _c("sign_outline"))
+		_flat(geo, xf, _grow(p[0], float(p[1])), face + DECAL, CityPalette.c("sign_outline"))
 	geo.tag("deck_sign.glyph")
 	for p: Array in polys:
-		_flat(geo, xf, p[0], face + DECAL * 2.0, _c("sign_white"))
+		_flat(geo, xf, p[0], face + DECAL * 2.0, CityPalette.c("sign_white"))
 
 
 ## Every glyph piece of a face in frame metres, centred on x = 0, the numeral's bottom at `base`; with its outline width.

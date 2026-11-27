@@ -104,7 +104,7 @@ func _add_block(size: Vector3, at: Vector3, col: Color) -> void:
 	var k := MeshKit.new()
 	k.box(size, col)
 	var mi := MeshInstance3D.new()
-	mi.mesh = k.commit(MechMeshes.materials())
+	mi.mesh = k.commit(LowPolyMaterials.materials())
 	body.add_child(mi)
 	add_child(body)
 

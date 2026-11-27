@@ -237,7 +237,7 @@ func _pose_legs_rest() -> void:
 func _spawn_component_debris(comp_id: String) -> void:
 	if comp_id == "legs":
 		_pop_plates(_world_pos() + up * 2.2, 2, 5.5, 8.5, 3.5, 6.5)
-		_attach_flame_stream(_chassis_pivot, Vector3(0.85, -0.15, 0.15), Vector3(0.42, 0.88, 0.18),
+		wreck.attach_flame(_chassis_pivot, Vector3(0.85, -0.15, 0.15), Vector3(0.42, 0.88, 0.18),
 			2.5, 0.58, 9.5, 5, 0.7, 0.0, "leg_socket")
 
 

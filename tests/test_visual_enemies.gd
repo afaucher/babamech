@@ -115,7 +115,7 @@ func setup() -> void:
 	# 3. Test Drive rooftop vantage looking down the occupied entry road (matches user screenshot perspective). The stack
 	# (the only city; QUIET_SECTION: the full garrison, nothing released): the camera sits 14 m left of the entry, 18 m
 	# up, looking 48 m into the map along the road.
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(12)
 	td.drive_override = true

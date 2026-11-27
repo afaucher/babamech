@@ -18,7 +18,7 @@ func setup() -> void:
 func _run(chassis: String) -> void:
 	var was := Session.chassis_id
 	Session.chassis_id = chassis
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(10)
 	Session.chassis_id = was
@@ -137,7 +137,7 @@ func _run(chassis: String) -> void:
 
 ## The Bulwark pilot's view from its well: the eye over the coaming, the view ahead clear of its own hull (level and the
 ## chase's default pitch, and 20 deg either side), its deck under the view looking down.
-func _bulwark_view(td: TestDrive, cam: ChaseCamera, head_meshes: Array[VisualInstance3D]) -> void:
+func _bulwark_view(td: MissionScene, cam: ChaseCamera, head_meshes: Array[VisualInstance3D]) -> void:
 	var model := td.rig.model
 	var chassis_node := model.find_child("Chassis", true, false) as Node3D
 	var eye_body := chassis_node.global_transform.affine_inverse() * cam.global_position

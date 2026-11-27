@@ -2,8 +2,8 @@ class_name NetMission
 extends Node
 ## The shared mission start (co-op step 1; cast's M1, modelled on cast's crew_flow.gd, cut down to a launch and a load
 ## barrier). Child "Mission" of the Session autoload, so it survives the scene change from the hangar to the mission.
-## Game and UI code never call this directly: they use Session.start_mission / mission_params / report_mission_built /
-## end_mission and listen to Session.mission_started / mission_go / mission_ended. Events ride Session's reliable events,
+## Game and UI code reach it as Session.mission (host_launch / params / report_built / end ...) and listen to
+## Session.mission_started / mission_go / mission_ended. Events ride Session's reliable events,
 ## kinds "mission.*".
 ##
 ##   LAUNCH   The host's Launch: mission.launch {seed, mode, start_t, crew, friendly_fire, scale} to the crew
@@ -11,7 +11,7 @@ extends Node
 ##            on the shared clock; mode = what the seed builds, always MODE_STACK (the multi-deck section; the mission
 ##            is always the plan's objectives); crew = the roster by seat, each {peer, seat, name, head, chassis, accent,
 ##            loadout}; friendly_fire = the host's crew option (Session.friendly_fire; absent = true):
-##            TestDrive.friendly_fire).
+##            MissionScene.friendly_fire).
 ##            Every machine, the host included, gets mission_started(params), plays the bay alert and loads the mission
 ##            when the shared clock reaches start_t. The crew goes to "mission" (lobby data; joiners are refused with
 ##            ON_MISSION until it ends).
@@ -57,7 +57,7 @@ extends Node
 ##            mission_ended(reason) and goes back to the hangar; the crew is back in "lobby". A client leaving the
 ##            mission only leaves it on its own machine (the host's mission goes on without its mech moving).
 ##
-## Offline (solo) none of this runs: the hangar hands its seed + mode to the test drive itself (TestDrive.solo_launch).
+## Offline (solo) none of this runs: the hangar hands its seed + mode to the test drive itself (MissionScene.solo_launch).
 
 const IDLE := "idle"
 const LAUNCH := "launch"

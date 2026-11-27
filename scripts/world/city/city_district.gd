@@ -44,7 +44,7 @@ const BLOCKS_PER_CHUNK := 6             ## finished block meshes instanced per c
 const SHAPE_BUILDINGS_PER_CHUNK := 60   ## buildings whose collision shapes are made per chunk
 const CEILING_BAYS_PER_CHUNK := 2       ## CityStreets.ceiling_range girder bays per chunk (~4-5 ms each)
 const CEILING_LINES_PER_CHUNK := 16     ## and girder lines per chunk (~0.7 ms each)
-const FARM_PARTS := 2                   ## chunks per farm wall side (CityStreets.walls part / parts)
+const FARM_PARTS := 2                   ## chunks per farm wall side (CityWalls.build part / parts)
 
 var _queue: Array = []                  ## [label, Callable] chunks of the build in progress, in order
 var _qi := 0                            ## next chunk to run
@@ -305,7 +305,7 @@ func _c_walls(side: int, part: int, parts: int, first: bool, last: bool) -> void
 	if first:
 		_wall_geo = CityGeo.new(ring)
 		_wall_lights = CityGeo.new(ring)
-	CityStreets.walls(_wall_geo, plan, _wall_lights, side, part, parts)
+	CityWalls.build(_wall_geo, plan, _wall_lights, side, part, parts)
 	if not last:
 		return
 	var lights := _wall_lights
@@ -501,22 +501,22 @@ func _col_walls() -> void:
 		var side: int = w["side"]
 		var across := side >= 2
 		var out := 1.0 if side % 2 == 0 else -1.0
-		var at: float = w["at"] + out * CityStreets.WALL_THICK * 0.5
-		var thick := CityStreets.WALL_THICK
+		var at: float = w["at"] + out * CityWalls.WALL_THICK * 0.5
+		var thick := CityWalls.WALL_THICK
 		var portals := []
 		for g: Dictionary in w["gates"]:
 			if g["kind"] == "portal":
 				portals.append(g)
 		var u0 := e.position.x if across else e.position.y
 		var u1 := e.end.x if across else e.end.y
-		for sp: Array in CityStreets.wall_spans(u0, u1, portals):
+		for sp: Array in CityWalls.wall_spans(u0, u1, portals):
 			count += _wall_box(body, geo, across, at, sp[0], sp[1], -1.0, ceiling + 1.0, thick)
 		for g: Dictionary in portals:
 			count += _wall_box(body, geo, across, at, g["a"], g["b"], g["h"], ceiling + 1.0, thick)
-			# The portal's recess is sealed where it is drawn (CityStreets._recess, GATE_RECESS deep): a back plate there,
+			# The portal's recess is sealed where it is drawn (CityWalls._recess, GATE_RECESS deep): a back plate there,
 			# PORTAL_PLATE thick, reaching a little into the recess and past its sides and roof so no seam opens. The
 			# recess's sides and roof are the wall slab beside the gate and the lintel (the recess is no deeper than the wall).
-			var back := float(w["at"]) + out * (CityStreets.GATE_RECESS - 0.05 + PORTAL_PLATE * 0.5)
+			var back := float(w["at"]) + out * (CityWalls.GATE_RECESS - 0.05 + PORTAL_PLATE * 0.5)
 			count += _wall_box(body, geo, across, back, float(g["a"]) - 1.0, float(g["b"]) + 1.0, -1.0, float(g["h"]) + 1.0, PORTAL_PLATE + 0.1)
 	# Sidewalk slabs (open over a floor hole), and the solid curb round each hole.
 	var th := CityPlan.CURB_H + 0.5

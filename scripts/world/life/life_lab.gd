@@ -45,7 +45,7 @@ var time_scale := 1.0
 var params := {"seed": 1.0, "people": 0.0, "pods": -1.0, "carts": -1.0, "time_scale": 1.0, "deck": 0.0}
 var options := {"camera": "lab", "demo": "calm", "lighting": "day", "site": "alone"}
 var district: CityDistrict      ## the district on view (on its own, the section deck, or the stack's deck on view)
-var life: AmbientLife           ## the life on view: root itself, or root's unit for the deck on view
+var life: LifeDeck              ## the life on view: root's deck (Deck0 for a district, the deck on view for a stack)
 var root: AmbientLife           ## the scene's AmbientLife (group "ambient_life")
 var stack: CityStack
 
@@ -126,7 +126,7 @@ func rebuild() -> void:
 		district.rig.apply(str(options["lighting"]))
 		root.setup(district, people_n, int(params["pods"]), int(params["carts"]))
 		root.bind_props(district.props)
-		life = root
+		life = root.unit(0)
 	if _eye != null:
 		root.remove_viewer(_eye)
 		root.remove_viewer(_cam)
@@ -174,12 +174,7 @@ func lab_own_lighting() -> bool:
 
 
 func lab_params() -> Array:
-	var out := []
-	for p: Dictionary in PARAMS:
-		var q := p.duplicate()
-		q["value"] = params[p["id"]]
-		out.append(q)
-	return out
+	return LabRegistry.param_rows(PARAMS, params)
 
 
 func set_lab_param(id: String, value: float) -> void:
@@ -531,7 +526,7 @@ func _demo() -> void:
 				_demo_step = 2
 			elif _demo_step == 2 and _pusher != null:
 				var to := life.vehicle_pose(_target).origin - _pusher.global_position
-				_pusher.global_position += to.normalized() * minf(6.0 * get_process_delta_time() * maxf(life.time_scale, 0.0), to.length())
+				_pusher.global_position += to.normalized() * minf(6.0 * get_process_delta_time() * maxf(root.time_scale, 0.0), to.length())
 				if t >= 5.0:
 					life.remove_pusher(_pusher)
 					_demo_step = 3

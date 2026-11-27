@@ -224,7 +224,7 @@ func rebuild() -> void:
 	_next_fire = life.now + _fire_delay if options["threat"] != "off" else INF
 	_apply_view()
 	print("[crowd] seed %d area %d m  people %d (+%d riders)  plan %s  focus %s" % [int(params["seed"]), int(params["area"]),
-			life.plan.count, LifePlan.RIDERS, life.plan.checksum(), str(_focus)])
+			life.unit(0).plan.count, LifePlan.RIDERS, life.unit(0).plan.checksum(), str(_focus)])
 
 
 func _process(delta: float) -> void:
@@ -233,7 +233,7 @@ func _process(delta: float) -> void:
 		if _dirty < 0:
 			rebuild()
 		return
-	if life == null or life.plan == null:
+	if life == null or life.unit(0) == null:
 		return
 	life.time_scale = time_scale * float(params["time_scale"])
 	_place_viewer()
@@ -256,12 +256,7 @@ func lab_own_lighting() -> bool:
 
 
 func lab_params() -> Array:
-	var out := []
-	for p: Dictionary in PARAMS:
-		var q := p.duplicate()
-		q["value"] = params[p["id"]]
-		out.append(q)
-	return out
+	return LabRegistry.param_rows(PARAMS, params)
 
 
 func set_lab_param(id: String, value: float) -> void:
@@ -324,7 +319,7 @@ func lab_actions() -> Array:
 
 
 func do_lab_action(id: String) -> void:
-	if life == null or life.plan == null:
+	if life == null or life.unit(0) == null:
 		return
 	match id:
 		"fire": _fire()
@@ -697,7 +692,7 @@ func _measure(delta: float) -> void:
 ## The readout: totals, the state / animation histograms, the figures' draw calls, life's own time per frame, the
 ## threat, the forced state, then the inspected figure.
 func readout_text() -> String:
-	if life == null or life.plan == null:
+	if life == null or life.unit(0) == null:
 		return ""
 	var t := life.tally()
 	var states := {}
@@ -715,14 +710,14 @@ func readout_text() -> String:
 			drawn += 1
 	var mmis := 0
 	var inst := 0
-	for n in life.figures.find_children("*", "GeometryInstance3D", true, false):
+	for n in life.unit(0).figures.find_children("*", "GeometryInstance3D", true, false):
 		if (n as GeometryInstance3D).is_visible_in_tree():
 			mmis += 1
 			if n is MultiMeshInstance3D and (n as MultiMeshInstance3D).multimesh != null:
 				inst += (n as MultiMeshInstance3D).multimesh.instance_count
 	var lines: Array[String] = []
 	lines.append("CROWD  seed %d  %d x %d m  people %d (+%d riders)  t %.1f" % [int(params["seed"]), int(params["area"]),
-			int(params["area"]), life.plan.count, LifePlan.RIDERS, life.now])
+			int(params["area"]), life.unit(0).plan.count, LifePlan.RIDERS, life.now])
 	lines.append("alive %d  down %d  outdoors %d  drawn %d  quality %s" % [life.count() - int(t["dead"]), int(t["dead"]),
 			outdoors, drawn, options["quality"]])
 	lines.append("states  " + _hist(states))

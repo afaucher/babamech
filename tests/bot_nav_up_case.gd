@@ -18,13 +18,13 @@ func _init() -> void:
 
 
 func setup() -> void:
-	TestDrive.solo_launch = {"seed": seed_n, "mode": TestDrive.MODE_STACK}
-	TestDrive.bot_profile = "veteran"
-	TestDrive.dev_bot_travel = dev
+	MissionScene.solo_launch = {"seed": seed_n, "mode": MissionScene.MODE_STACK}
+	MissionScene.bot_profile = "veteran"
+	MissionScene.dev_bot_travel = dev
 	MissionFlow.test_plan = load("res://tests/bot_nav_case.gd").get_script_constant_map()["PLAN"]
-	CombatWorld.dev_enemy_damage = TestDrive.DEV_FAST_CLEAR
+	CombatWorld.dev_enemy_damage = MissionScene.DEV_FAST_CLEAR
 	Engine.time_scale = float(load("res://tests/bot_nav_case.gd").call("speed"))   # the same test speed (2x)
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(4)
 	if not check(td.bot != null and td.stack != null and td.mission != null and td.mission.plan != null,
@@ -81,7 +81,7 @@ func setup() -> void:
 
 func _restore() -> void:
 	Engine.time_scale = 1.0
-	TestDrive.bot_profile = ""
-	TestDrive.dev_bot_travel = false
+	MissionScene.bot_profile = ""
+	MissionScene.dev_bot_travel = false
 	CombatWorld.dev_enemy_damage = 1.0
 	MissionFlow.test_plan = {}

@@ -1,7 +1,8 @@
 extends SceneTree
-## Regenerate the mech's low-poly part files from the builders in scripts/mech/mech_meshes.gd (the Strider, the shared
-## weapons, equipment and heads), scripts/mech/bulwark_meshes.gd (the Bulwark's bulwark_* parts) and
-## scripts/mech/wasp_meshes.gd (the Wasp's wasp_* parts):
+## Regenerate the mech's low-poly part files from the builders in scripts/mech/mech_meshes.gd (the Strider and the part
+## registry), scripts/mech/mech_weapon_meshes.gd (the shared weapons and equipment), scripts/mech/mech_head_meshes.gd
+## (the heads), scripts/mech/bulwark_meshes.gd (the Bulwark's bulwark_* parts) and scripts/mech/wasp_meshes.gd (the
+## Wasp's wasp_* parts):
 ##   .\tools\models\gen_mech_meshes.ps1                 every part and the shared materials
 ##   .\tools\models\gen_mech_meshes.ps1 --only wasp_    only the parts whose name starts with the prefix (every other file,
 ##                                                      the materials included, left untouched)
@@ -19,11 +20,11 @@ func _init() -> void:
 		var mats := []
 		for n: String in MeshKit.SURFACES:
 			var p := MechMeshes.DIR + "mech_" + n + ".tres"
-			var m := MechMeshes.make_material(n)
+			var m := LowPolyMaterials.make_material(n)
 			ResourceSaver.save(m, p)
 			m.take_over_path(p)
 			mats.append(m)
-		MechMeshes._mats = mats
+		LowPolyMaterials._mats = mats
 	var faces := 0
 	var all: Array[String] = MechMeshes.all_parts()
 	all.append_array(BulwarkMeshes.all_parts())

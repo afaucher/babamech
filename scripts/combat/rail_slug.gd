@@ -62,7 +62,7 @@ func _through_props(a: Vector3, b: Vector3) -> void:
 			continue          # a prop astride two chords: knocked once
 		_knocked[key] = true
 		world.hit_prop(record, stats, h, dir)
-		world.spawn_impact(h["point"], h["normal"], r, h.get("color", MechMeshes.GREY), false, FLASH_COLOR)
+		world.spawn_impact(h["point"], h["normal"], r, h.get("color", LowPolyPalette.GREY), false, FLASH_COLOR)
 
 
 ## A target's damage share after `n` pierces.
@@ -75,23 +75,23 @@ func on_hit(h: Dictionary, e: float) -> bool:
 	var target: CombatTarget = h["target"]
 	var r := float(stats.get("impact_radius", 1.0))
 	if target == null:      # world geometry: the slug stops here (props never reach on_hit: see _sweep)
-		world.spawn_impact(h["point"], h["normal"], r, h.get("color", MechMeshes.GREY), false, FLASH_COLOR)
+		world.spawn_impact(h["point"], h["normal"], r, h.get("color", LowPolyPalette.GREY), false, FLASH_COLOR)
 		return true
 	var n := pierced.size()
 	pierced.append(target.target_id)
 	world.resolve_hit(record, stats, target, str(h["component"]), h["point"], h["normal"], fdir,
 		float(stats.get("damage", 0.0)) * Combat.falloff(stats, flight_dist(e)) * pierce_factor(stats, n))
-	world.spawn_impact(h["point"], h["normal"], r, MechMeshes.ORANGE, false, FLASH_COLOR)
+	world.spawn_impact(h["point"], h["normal"], r, LowPolyPalette.ORANGE, false, FLASH_COLOR)
 	if n + 1 >= maxi(int(stats.get("pierce", 1)), 1):
 		return true
-	world.spawn_impact(_exit_point(target, h["point"], fdir), fdir, r * EXIT_SHARE, MechMeshes.ORANGE, false, FLASH_COLOR)
+	world.spawn_impact(_exit_point(target, h["point"], fdir), fdir, r * EXIT_SHARE, LowPolyPalette.ORANGE, false, FLASH_COLOR)
 	return false
 
 
 ## A dropped slug (CombatWorld.drop_shot) only ever stopped in a target on the deciding machine (world stops are never
 ## announced, props never stop it): show the same orange target burst that machine saw, not the grey world one.
-func drop_at(point: Vector3, normal: Vector3, _color: Color = MechMeshes.GREY) -> bool:
-	return super.drop_at(point, normal, MechMeshes.ORANGE)
+func drop_at(point: Vector3, normal: Vector3, _color: Color = LowPolyPalette.GREY) -> bool:
+	return super.drop_at(point, normal, LowPolyPalette.ORANGE)
 
 
 ## Where the flight line leaves the hit sphere it entered at `p` (the exit burst).
@@ -122,10 +122,10 @@ static func spike_mesh() -> ArrayMesh:
 		var k := MeshKit.new()
 		k.glow = true
 		k.shade = 0.1
-		k.seg(Vector3(0, 0, 0.6), Vector3(0, 0, 0.0), Vector2(0.17, 0.17), Vector2(0.01, 0.01), 6, MechMeshes.TEAL)
-		k.seg(Vector3(0, 0, 3.2), Vector3(0, 0, 0.6), Vector2(0.01, 0.01), Vector2(0.17, 0.17), 6, MechMeshes.TEAL)
+		k.seg(Vector3(0, 0, 0.6), Vector3(0, 0, 0.0), Vector2(0.17, 0.17), Vector2(0.01, 0.01), 6, LowPolyPalette.TEAL)
+		k.seg(Vector3(0, 0, 3.2), Vector3(0, 0, 0.6), Vector2(0.01, 0.01), Vector2(0.17, 0.17), 6, LowPolyPalette.TEAL)
 		k.seg(Vector3(0, 0, 1.6), Vector3(0, 0, -0.15), Vector2(0.04, 0.04), Vector2(0.09, 0.09), 3, CORE_COLOR)
-		_spike_mesh = k.commit(MechMeshes.materials())
+		_spike_mesh = k.commit(LowPolyMaterials.materials())
 	return _spike_mesh
 
 
@@ -135,13 +135,13 @@ static func star_mesh() -> ArrayMesh:
 		var k := MeshKit.new()
 		k.glow = true
 		k.shade = 0.08
-		k.seg(Vector3.ZERO, Vector3(0, 0, -1.0), Vector2(0.3, 0.3), Vector2(0.02, 0.02), 6, MechMeshes.TEAL)
+		k.seg(Vector3.ZERO, Vector3(0, 0, -1.0), Vector2(0.3, 0.3), Vector2(0.02, 0.02), 6, LowPolyPalette.TEAL)
 		k.seg(Vector3(0, 0, 0.05), Vector3(0, 0, -0.65), Vector2(0.18, 0.18), Vector2(0.01, 0.01), 6, CORE_COLOR)
 		for i in 4:
 			var a := TAU * float(i) / 4.0 + PI * 0.25
 			var out := Vector3(cos(a), sin(a), -0.25).normalized() * 0.5
-			k.seg(Vector3(0, 0, -0.05), Vector3(0, 0, -0.05) + out, Vector2(0.08, 0.08), Vector2(0.01, 0.01), 4, MechMeshes.TEAL)
-		_star_mesh = k.commit(MechMeshes.materials())
+			k.seg(Vector3(0, 0, -0.05), Vector3(0, 0, -0.05) + out, Vector2(0.08, 0.08), Vector2(0.01, 0.01), 4, LowPolyPalette.TEAL)
+		_star_mesh = k.commit(LowPolyMaterials.materials())
 	return _star_mesh
 
 
@@ -195,15 +195,20 @@ void fragment() {
 }
 """
 
+## The ribbon's shader (RIBBON_SHADER): one Shader object per session, made on first use (ShaderWarmup primes it).
+static func ribbon_shader() -> Shader:
+	if _ribbon_shader == null:
+		_ribbon_shader = Shader.new()
+		_ribbon_shader.code = RIBBON_SHADER
+	return _ribbon_shader
+
+
 ## The ribbon's mesh for this slug's whole flight (see RIBBON_SHADER): 2 bands × one quad per facet step.
 func _build_ribbon() -> void:
 	if _trail == null:
 		return
-	if _ribbon_shader == null:
-		_ribbon_shader = Shader.new()
-		_ribbon_shader.code = RIBBON_SHADER
 	_ribbon_mat = ShaderMaterial.new()
-	_ribbon_mat.shader = _ribbon_shader
+	_ribbon_mat.shader = ribbon_shader()
 	_ribbon_mat.set_shader_parameter("life", maxf(float(stats.get("trail", 0.0)), 0.0001))
 	var step_d := TWIST_PITCH / float(TWIST_FACETS)
 	var d1 := speed * max_time
@@ -222,7 +227,7 @@ func _build_ribbon() -> void:
 	var custom := PackedFloat32Array()
 	var idx := PackedInt32Array()
 	for band in 2:
-		var col := MechMeshes.TEAL if band == 0 else CORE_COLOR
+		var col := LowPolyPalette.TEAL if band == 0 else CORE_COLOR
 		var base := verts.size()
 		for i in n:
 			var e := ds[i] / speed

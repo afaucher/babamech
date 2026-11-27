@@ -15,7 +15,7 @@ extends TestCase
 const SEED := 7
 const PLAN := {"hold": 6.0, "linger": 600.0}
 
-var td: TestDrive
+var td: MissionScene
 
 
 func _init() -> void:
@@ -50,8 +50,8 @@ func _keep_out() -> void:
 	var dropped := 0
 	var rb := CityPlan.MECH_R_MAX
 	for sd in KEEP_SEEDS:
-		var t := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-		t.city_mode = TestDrive.MODE_STACK
+		var t := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+		t.city_mode = MissionScene.MODE_STACK
 		t.seed_value = sd
 		add_child(t)
 		await frames(3)
@@ -74,26 +74,26 @@ func _keep_out() -> void:
 			check(bool(st.get("ok", false)), tag + ": ok (no fallback placement)")
 			if sd == 22 and id == "d1_depot1":
 				print("[Test] seed 22 d1_depot1: placed at (%.1f, %.1f), tier %d (plan site (-88, -250))" % [at.x, at.y, tier])
-			var fr := MissionDepots.footprint_rect(at, f)
+			var fr := SiteFit.footprint_rect(at, f)
 			for sg: Dictionary in sec.segments(k):
-				if str(sg["form"]) != "none" and fr.grow(MissionDepots.KEEP_MARGIN).intersects(sg["rect"]):
+				if str(sg["form"]) != "none" and fr.grow(SiteFit.KEEP_MARGIN).intersects(sg["rect"]):
 					check(false, tag + ": clear of road %s %d/%d (%s) by 4 m" % [sg["axis"], int(sg["line"]), int(sg["index"]), sg["form"]])
 			var cp := t.stack.decks[k].plan
-			var g := cp.walk_graph(true)
+			var g := CityGraphs.walk_graph(cp, true)
 			for ed: Array in g["edges"]:
 				var a: Vector2 = g["nodes"][int(ed[0])]
 				var b: Vector2 = g["nodes"][int(ed[1])]
-				if tier < 2 and MissionDepots.rect_seg_dist(fr, a, b) < MissionDepots.WALK_GAP:
+				if tier < 2 and SiteFit.rect_seg_dist(fr, a, b) < SiteFit.WALK_GAP:
 					check(false, tag + ": 3 m off walk edge %s-%s" % [a, b])
 			for c: Rect2 in cp.floor_cuts():
-				check(not fr.grow(MissionDepots.KEEP_MARGIN).intersects(c), tag + ": clear of a floor cut")
+				check(not fr.grow(SiteFit.KEEP_MARGIN).intersects(c), tag + ": clear of a floor cut")
 			for rp: Dictionary in cp.ramps:
 				var rr := Rect2(float(rp["x0"]), minf(float(rp["s_top"]), float(rp["s_foot"])), float(rp["x1"]) - float(rp["x0"]),
 					absf(float(rp["s_top"]) - float(rp["s_foot"])))
-				check(not fr.grow(MissionDepots.KEEP_MARGIN).intersects(rr.grow(2.0)), tag + ": clear of a ramp")
-			eq(MissionDepots.keep_hit(dp.keep_out(k), at, f, tier < 2), "", tag + ": the whole keep-out (bay corridors, sources, masts)")
-			var sp := MissionDepots.stand_point(at, f)
-			check(bool(MissionProps.snap_site(t.stack.decks[k], sp, 0.0, MissionDepots.MECH_R)["ok"]),
+				check(not fr.grow(SiteFit.KEEP_MARGIN).intersects(rr.grow(2.0)), tag + ": clear of a ramp")
+			eq(SiteFit.keep_hit(dp.keep_outs[k], at, f, tier < 2), "", tag + ": the whole keep-out (bay corridors, sources, masts)")
+			var sp := SiteFit.stand_point(at, f)
+			check(bool(SiteFit.snap(t.stack.decks[k], sp, 0.0, SiteFit.MECH_R)["ok"]),
 				tag + ": a mech capsule fits in front of the socket wall")
 			check(dp.footprint_dist(id, sp.x, sp.y) <= MissionDepots.CLAIM_RANGE, tag + ": the standing spot is within claim range")
 			if sd == 2 and k == 0:
@@ -104,7 +104,7 @@ func _keep_out() -> void:
 			check(BotFit.clear_at(space, ring, sp.x, sp.y, rb, 8.0, h0), tag + ": the widest capsule stands at the standing spot")
 			check(_reaches_walk(space, ring, g, sp, rb), tag + ": the widest capsule gets to the standing spot from a walk-graph edge")
 			var stuck := []
-			for q: Vector2 in _loop_points(fr, MissionProps.fit_r() + 0.1):
+			for q: Vector2 in _loop_points(fr, SiteFit.fit_r() + 0.1):
 				if not BotFit.clear_at(space, ring, q.x, q.y, rb, 8.0, h0):
 					stuck.append("(%.1f, %.1f)" % [q.x, q.y])
 			check(stuck.is_empty(), tag + ": the widest capsule walks right round the depot (blocked at %s)" % [stuck])
@@ -278,8 +278,8 @@ func _view() -> void:
 # --- B-D. The solo drive ---------------------------------------------------------------------------------------
 
 func _drive() -> void:
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-	td.city_mode = TestDrive.MODE_STACK
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
 	td.seed_value = SEED
 	add_child(td)
 	await frames(4)
@@ -307,7 +307,7 @@ func _drive() -> void:
 		var plan_at := Vector2(float(d["site"]["x"]), float(d["site"]["s"]))
 		check(plan_at.distance_to(Vector2(float(st["x"]), float(st["s"]))) <= float(st.get("reach", MissionPlan.DEPOT_SNAP)) + 0.01,
 			id + ": placed within its search reach")
-		var fd: Vector2 = MissionDepots.FACE_DIRS[int(st["face"])]
+		var fd: Vector2 = SiteFit.FACE_DIRS[int(st["face"])]
 		var sa := td.stack.to_deck_arc(n.socket_world(0))
 		check(Vector2(float(sa["x"]) - float(st["x"]), float(sa["s"]) - float(st["s"])).dot(fd) > 1.0,
 			id + ": the socket wall faces its chosen open side (face %d)" % int(st["face"]))
@@ -337,7 +337,7 @@ func _drive() -> void:
 	# Out of range: the first gap past CLAIM_RANGE + RANGE_SLACK where a Strider capsule stands clear (a prop or a tree there
 	# would push the mech back toward the depot).
 	var gap := MissionDepots.CLAIM_RANGE + MissionDepots.RANGE_SLACK + 2.0
-	var fdir: Vector2 = MissionDepots.FACE_DIRS[int(site["face"])]
+	var fdir: Vector2 = SiteFit.FACE_DIRS[int(site["face"])]
 	var fhalf := SupplyDepot.footprint_half(int(site["face"]))
 	var ring0 := td.stack.deck_ring(int(site["deck"]))
 	var sp3 := td.get_world_3d().direct_space_state
@@ -363,7 +363,7 @@ func _drive() -> void:
 	var line := dp.progress_line()
 	check(line.begins_with("Taking power core: ") and int(line.trim_prefix("Taking power core: ").trim_suffix("%")) in range(35, 70),
 		"halfway: the progress line (%s)" % line)
-	var lines: Array = mf.hud_state().get("lines", [])
+	var lines: Array = mf.hud_model.build().get("lines", [])
 	check(lines.has(line), "the line is in the objective panel's lines (%s)" % [lines])
 	eq(int(dp.cores_left[id0]), full, "not taken before 2 s")
 	if not check(await _until(func() -> bool: return int(dp.cores_left[id0]) == full - 1, 2.0), "the core is taken after 2 s"):
@@ -374,7 +374,7 @@ func _drive() -> void:
 	await _seconds(0.1)
 	eq((dp.nodes[id0] as SupplyDepot).lit_cells(), full - 1, "the cell goes dark")
 	eq(dp.progress_line(), "", "the line is gone once taken")
-	check(not (mf.hud_state().get("lines", []) as Array).any(func(l: Variant) -> bool: return str(l).begins_with("Taking")),
+	check(not (mf.hud_model.build().get("lines", []) as Array).any(func(l: Variant) -> bool: return str(l).begins_with("Taking")),
 		"no core line in the panel after")
 	# Still standing: the second core after the cooldown (2 cores solo), then the depot is empty.
 	check(await _until(func() -> bool: return int(dp.cores_left[id0]) == 0,
@@ -410,7 +410,7 @@ func _drive() -> void:
 	await frames(3)
 
 
-## E. A host bot (pilot -1, a CrewBot made here as TestDrive does for a hangar bot, no AI): healthy, standing at a depot
+## E. A host bot (pilot -1, a CrewBot made here as MissionScene does for a hangar bot, no AI): healthy, standing at a depot
 ## it takes nothing (the need rule); damaged, it takes exactly one core after 2 s and the effect lands on ITS mech.
 func _bot(dp: MissionDepots) -> void:
 	var idb := ""
@@ -499,7 +499,7 @@ func _bot(dp: MissionDepots) -> void:
 ## Stand the mech `gap` m off the socket wall of the depot at `site` (its footprint, the side its stand spot is on), still.
 func _stand(site: Dictionary, gap: float) -> void:
 	var f := int(site.get("face", 0))
-	var dir: Vector2 = MissionDepots.FACE_DIRS[f]
+	var dir: Vector2 = SiteFit.FACE_DIRS[f]
 	var half := SupplyDepot.footprint_half(f)
 	var p := Vector2(float(site["x"]), float(site["s"])) + dir * (absf(dir.x) * half.x + absf(dir.y) * half.y + gap)
 	td.mech.global_position = td.stack.from_deck_arc(int(site["deck"]), p.x, p.y, float(site.get("h", 0.0)) + 0.5)

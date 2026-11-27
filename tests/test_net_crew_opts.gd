@@ -6,13 +6,13 @@ const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "
 ##   read-only (welcome or sys.crew_opts), and follows the host's changes live (on, then off again);
 ## - a client can't change it (Session.set_friendly_fire refused on a client);
 ## - the host launches: mission.launch carries friendly_fire false and both machines' test drives have
-##   td.friendly_fire == false (what TestDriveCombat reads). The default launch (true) is covered by net_mission_case.
+##   td.friendly_fire == false (what MissionCombat reads). The default launch (true) is covered by net_mission_case.
 
 const PEERS := 2
 const SEED := 11
 
 var fe: FrontEnd
-var td: TestDrive
+var td: MissionScene
 
 
 func _open_menu() -> void:
@@ -76,8 +76,8 @@ func run_host() -> void:
 	if not check(await wait_reports("closed", 1), "the client closes its menu"):
 		return
 	_close_menu()
-	check(Session.start_mission(SEED), "the host launches")
-	eq(Session.mission_params().get("friendly_fire", null), false, "the launch carries friendly_fire false")
+	check(Session.mission.host_launch(SEED), "the host launches")
+	eq(Session.mission.params.get("friendly_fire", null), false, "the launch carries friendly_fire false")
 	await _load()
 	if not check(await wait_reports("td", 1, 40.0), "the client loads the mission"):
 		return
@@ -110,15 +110,15 @@ func run_client() -> void:
 	if str(c.get("cmd", "")) == "close":
 		_close_menu()
 		report("closed", true)
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	await _load()
-	report("td", {"params_ff": Session.mission_params().get("friendly_fire", null), "td_ff": td.friendly_fire})
+	report("td", {"params_ff": Session.mission.params.get("friendly_fire", null), "td_ff": td.friendly_fire})
 
 
 func _load() -> void:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	check(td.crewed, "the test drive runs the crew mission")

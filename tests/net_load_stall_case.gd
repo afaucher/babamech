@@ -2,7 +2,7 @@ extends NetTest
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## A slow client's mission load (the UHD 620 LAN bug: CityStack.build blocked the laptop's main thread ~7.8 s, ENet's
 ## default peer timeout dropped it at ~5.8 s of silence and it went back to the menu with "The host left").
-## The client blocks its main thread STALL_MS right in the mission's _ready (TestDrive.test_stall_ms: OS.delay_msec, no
+## The client blocks its main thread STALL_MS right in the mission's _ready (MissionScene.test_stall_ms: OS.delay_msec, no
 ## transport servicing at all), before its build.
 ## - test_net_load_stall: STALL_MS (12 s) is past ENet's old 5 s minimum and past CLIENT_SILENCE (10 s), well under the
 ##   load timeout: the client still lands in the mission, the crew stays at 2 the whole time, nobody is dropped.
@@ -16,12 +16,12 @@ const STALL_MS := 12000
 const SLOW_TIMEOUT := 4.0
 
 var slow := false
-var td: TestDrive
+var td: MissionScene
 
 
 func _configure() -> void:
 	net_timeout = 110.0
-	TestDrive.stepped_load = true   # the game's load: the stack and life over frames, mission.ready after both
+	MissionScene.stepped_load = true   # the game's load: the stack and life over frames, mission.ready after both
 	if slow:
 		Session.mission.load_timeout = SLOW_TIMEOUT
 		expect_end = NetSession.LOAD_SLOW
@@ -35,7 +35,7 @@ func run_host() -> void:
 	var notes: Array[String] = []
 	Session.roster_changed.connect(func() -> void: min_crew[0] = mini(min_crew[0], Session.roster.size()))
 	Session.crew_note.connect(func(t: String) -> void: notes.append(t))
-	check(Session.start_mission(SEED), "the host launches")
+	check(Session.mission.host_launch(SEED), "the host launches")
 	# Reliable traffic to the stalled client the whole time (the real bug: unacked reliable resends hit ENet's limit).
 	var chatter := [true]
 	_chatter(chatter)
@@ -69,7 +69,7 @@ func run_host() -> void:
 	eq(int(theirs.get("crew", 0)), 2, "the client still sees a crew of 2")
 	eq(str(theirs.get("checksum", "")), td.mission_checksum(), "the client built the host's city")
 	chatter[0] = false
-	Session.end_mission()
+	Session.mission.end()
 	check(await wait_done(1, 30.0), "the client is done")
 
 
@@ -85,11 +85,11 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
-	TestDrive.test_stall_ms = STALL_MS
+	MissionScene.test_stall_ms = STALL_MS
 	await _load()
-	TestDrive.test_stall_ms = 0
+	MissionScene.test_stall_ms = 0
 	if slow:
 		check(await until(func() -> bool: return ended, 40.0), "the stalled client is sent out")
 		eq(ended_reason, NetSession.LOAD_SLOW, "it is told why")
@@ -105,7 +105,7 @@ func run_client() -> void:
 ## Wait for start_t on the shared clock, then load the mission (the test drive) as the hangar would.
 func _load() -> void:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	check(td.loading or slow or td.combat != null, "the stepped load is under way (or done)")

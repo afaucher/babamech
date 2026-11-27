@@ -405,7 +405,7 @@ func _pacing_stats() -> void:
 	eq(ps.close(100.0), 0.0, "closed while engaged: no open quiet stretch")
 	eq(ps.sample(110.0, false, 90.0), 0.0, "nothing after close")
 	eq(ps.peaks, 2, "two peaks (crossing 70, re-armed under 35)")
-	eq(PacingStats._times(ps.peak_t), "60.0;71.0", "peak times")
+	eq(PacingStats.times(ps.peak_t), "60.0;71.0", "peak times")
 	eq(ps.eng_s, 25.0, "engaged 35-50 and 90-100")
 	eq(roundi(ps.engaged_pct()), 25, "25 % of 100 s")
 	eq(ps.q_max, 40.0, "longest quiet")
@@ -566,7 +566,7 @@ func _threat_scene() -> void:
 	cb.mech = bm
 	bp.mech = bm
 	var bots := {-2: cb}   # (captured as a dictionary: a lambda capturing cb itself errors once cb is freed)
-	c.bots_fn = func() -> Dictionary: return bots
+	c.threat.bots_fn = func() -> Dictionary: return bots
 	ta._target_id = "player-2"   # A turns on the bot
 	_step_log(c, 8.5)
 	var bth := _recs_bot(lines, "threat", "1")
@@ -575,17 +575,17 @@ func _threat_scene() -> void:
 		eq(bl["pilot"], "-2", "the bot's pilot id")
 		eq(bl["engaging"], "1", "A engages the bot (target, awake, within 60 m)")
 		eq(bl["seen_by"], "1", "A sees the bot")
-		check(int(bl["rays"]) <= CombatLog.LOS_RAYS, "the bot's own ray budget")
+		check(int(bl["rays"]) <= CombatThreatProbe.LOS_RAYS, "the bot's own ray budget")
 		eq(bl["heat"], "0.70", "the bot's heat from its MechController")
 		eq(bl["shut"], "0", "not shut down")
-	var bi0 := (c.tracks[1] as PilotTrack).intensity.value if c.tracks.size() > 1 else -1.0
+	var bi0 := (c.threat.tracks[1] as PilotTrack).intensity.value if c.threat.tracks.size() > 1 else -1.0
 	bm.add_heat(bm.heat_cap)   # overheat: shutdown
 	th = _recs_bot(lines, "threat", "0")
 	eq(th[th.size() - 1]["pilot"], "0", "the local pilot's line: pilot = the line's peer")
 	eq(th[th.size() - 1]["seen_by"], "0", "A no longer has the local pilot as target")
 	eq(th[th.size() - 1]["near"], "17", "17 enemies within 200 m")
 	eq(th[th.size() - 1]["rays"], "12", "12 rays in the last second")
-	check(c.rays_max_sec <= CombatLog.LOS_RAYS, "never more than 12 rays a second (max %d)" % c.rays_max_sec)
+	check(c.threat.rays_max_sec <= CombatThreatProbe.LOS_RAYS, "never more than 12 rays a second (max %d)" % c.threat.rays_max_sec)
 	los = _recs_bot(lines, "los", "0")
 	eq(str(los[los.size() - 1]["list"]).split(",").size(), 12, "the 12 nearest listed")
 	# Intensity and director state from mission state (the host director's, when it exists).
@@ -596,7 +596,7 @@ func _threat_scene() -> void:
 	eq(bth[bth.size() - 1]["i"], "30", "the bot's intensity from mission state (negative id key)")
 	eq(bth[bth.size() - 1]["heat"], "1.00", "the bot overheated: its controller's heat")
 	eq(bth[bth.size() - 1]["shut"], "1", "the bot's shutdown in its threat line")
-	var bi1 := (c.tracks[1] as PilotTrack).intensity.value if c.tracks.size() > 1 else -1.0
+	var bi1 := (c.threat.tracks[1] as PilotTrack).intensity.value if c.threat.tracks.size() > 1 else -1.0
 	check(bi1 >= minf(bi0 + 4.9, 100.0), "the bot's own intensity gets +5/s while shut down (its controller's shutdown): %.1f -> %.1f" % [bi0, bi1])
 	th = _recs_bot(lines, "threat", "0")
 	eq(th[th.size() - 1]["src"], "host", "intensity from mission state")

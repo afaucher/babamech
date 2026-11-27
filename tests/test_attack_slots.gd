@@ -1,6 +1,6 @@
 extends TestCase
 ## Attack-slot pruning (EnemySquad.request_attack_slot / prune_attack_slots). Regression: solo play allows one attacker
-## per pilot (TestDriveCombat: max_attackers 1) and a holder that went to sleep (its deck lost its crew) kept the slot
+## per pilot (MissionCombat: max_attackers 1) and a holder that went to sleep (its deck lost its crew) kept the slot
 ## forever, so no other enemy could ever fire at that pilot (a bot run: no enemy fired for 340 s). A holder now loses its
 ## slot when it is dead, asleep, switched target, or held it SLOT_STALE s without telegraphing or firing.
 

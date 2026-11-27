@@ -56,10 +56,10 @@ func _on_fired(record: Dictionary) -> void:
 	for t in world.targets:
 		if is_instance_valid(t) and t is EnemyBase and t.target_id == sh:
 			var e := t as EnemyBase
-			if not world.owns(e) or e._target_id == "":
+			if not world.owns(e) or e.current_target_id() == "":
 				return
 			var now := _t()
-			_eng_p[e._target_id] = now
+			_eng_p[e.current_target_id()] = now
 			_eng_e[e.get_instance_id()] = now
 			return
 
@@ -94,8 +94,8 @@ func collect(pilots: Array, stack: Node, live: Array, decks: int) -> Dictionary:
 				e.comms_relayed.connect(_on_relayed.bind(stack))
 		var pos := e.global_position if e.is_inside_tree() else e.position
 		var k := clampi(e.spawn_deck, 0, decks - 1)
-		var tid := e._target_id
-		if tid != "" and tid_pos.has(tid) and e._is_awake() \
+		var tid := e.current_target_id()
+		if tid != "" and tid_pos.has(tid) and e.is_awake() \
 				and pos.distance_to(tid_pos[tid]) <= PilotIntensity.ENGAGE_RANGE:
 			_eng_p[tid] = now
 			_eng_e[iid] = now

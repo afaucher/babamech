@@ -110,7 +110,7 @@ func _airborne_hits(w: CombatWorld, dr: EnemyDrone) -> void:
 	for n: Vector3 in [Vector3(1, 0, 0), Vector3(0, 0, -1), Vector3(0.7, 0.2, 0.7).normalized(), Vector3.UP, Vector3.DOWN]:
 		for explosive: bool in [false, true]:
 			var tag := "normal %s, %s" % [n, "explosive" if explosive else "plain"]
-			var fx := w.spawn_impact(c + n * r, n, 2.0 if explosive else 1.0, MechMeshes.GREY, explosive)
+			var fx := w.spawn_impact(c + n * r, n, 2.0 if explosive else 1.0, LowPolyPalette.GREY, explosive)
 			if not check(fx != null, "an impact on the drone (%s)" % tag):
 				continue
 			eq(_decals(fx), 0, "no scorch / ember / ring / pebble on the airborne drone (%s)" % tag)
@@ -164,9 +164,9 @@ func _airborne_kill(w: CombatWorld, dr: EnemyDrone) -> void:
 ## (c) A hit on the side of a grounded target's hull 4 m up: no wall scorch (no static wall there; a mech-like
 ## CharacterBody3D there is not one either).
 func _grounded_target(w: CombatWorld) -> void:
-	var fx := w.spawn_impact(Vector3(8, 4, 0), Vector3(-1, 0, 0), 1.0, MechMeshes.GREY, false)
+	var fx := w.spawn_impact(Vector3(8, 4, 0), Vector3(-1, 0, 0), 1.0, LowPolyPalette.GREY, false)
 	eq(_decals(fx), 0, "a hull hit 4 m up places no wall scorch")
-	var fx2 := w.spawn_impact(Vector3(30, 4, 0), Vector3(-1, 0, 0), 1.0, MechMeshes.GREY, true)
+	var fx2 := w.spawn_impact(Vector3(30, 4, 0), Vector3(-1, 0, 0), 1.0, LowPolyPalette.GREY, true)
 	eq(_decals(fx2), 0, "a hit on a CharacterBody3D's face places no decal (a mech is not a wall)")
 	check(_count(fx2, "flash") == 1, "but still bursts")
 	# A real shot at a grounded dummy's hull.
@@ -201,7 +201,7 @@ func _grounded_target(w: CombatWorld) -> void:
 
 ## (d) A hit on the real wall: the scorch sits flush on the wall normal.
 func _wall(w: CombatWorld) -> void:
-	var fx := w.spawn_impact(Vector3(WALL_X, 4, 5), Vector3(1, 0, 0), 1.0, MechMeshes.GREY, false)
+	var fx := w.spawn_impact(Vector3(WALL_X, 4, 5), Vector3(1, 0, 0), 1.0, LowPolyPalette.GREY, false)
 	eq(_count(fx, "scorch"), 1, "a wall hit places a scorch")
 	eq(_count(fx, "ember"), 1, "and a cooling ember")
 	check(fx.scorch_normal().dot(Vector3(1, 0, 0)) > 0.99, "flush on the wall normal (%s)" % fx.scorch_normal())
@@ -224,7 +224,7 @@ func _wall(w: CombatWorld) -> void:
 
 ## (e) A hit on the ground: ring + scorch + ember + pebbles.
 func _ground(w: CombatWorld) -> void:
-	var fx := w.spawn_impact(Vector3(5, GROUND_Y, 5), Vector3.UP, 2.0, MechMeshes.GREY, true)
+	var fx := w.spawn_impact(Vector3(5, GROUND_Y, 5), Vector3.UP, 2.0, LowPolyPalette.GREY, true)
 	eq(_count(fx, "ring"), 1, "a ground hit places a ring")
 	eq(_count(fx, "scorch"), 1, "a scorch")
 	eq(_count(fx, "ember"), 1, "an ember")
@@ -237,11 +237,11 @@ func _ground(w: CombatWorld) -> void:
 
 ## (f) A blast low over the ground (within its radius) still craters the ground under it.
 func _low_blast(w: CombatWorld) -> void:
-	var fx := w.spawn_impact(Vector3(5, GROUND_Y + 2.0, -5), Vector3.UP, 3.0, MechMeshes.GREY, true)
+	var fx := w.spawn_impact(Vector3(5, GROUND_Y + 2.0, -5), Vector3.UP, 3.0, LowPolyPalette.GREY, true)
 	eq(_count(fx, "ring"), 1, "a low blast rings the ground")
 	eq(_count(fx, "scorch"), 1, "and scorches it")
 	eq(_stray(fx), 0, "on the ground, not in the air")
-	var hi := w.spawn_impact(Vector3(5, GROUND_Y + 6.0, -5), Vector3.UP, 3.0, MechMeshes.GREY, true)
+	var hi := w.spawn_impact(Vector3(5, GROUND_Y + 6.0, -5), Vector3.UP, 3.0, LowPolyPalette.GREY, true)
 	eq(_decals(hi), 0, "a blast higher than its radius leaves the ground alone")
 	_clear(w)
 
@@ -286,7 +286,7 @@ func _city_props() -> void:
 				var h := w.first_hit(a, b, Combat.PROJECTILE_RADIUS, "me")
 				w.hit_prop(rec, st, h, (b - a).normalized())
 				w.splash(rec, st, h["point"], null)
-				w.spawn_impact(h["point"], h["normal"], float(st.get("impact_radius", 1.0)), h.get("color", MechMeshes.GREY), true)
+				w.spawn_impact(h["point"], h["normal"], float(st.get("impact_radius", 1.0)), h.get("color", LowPolyPalette.GREY), true)
 			else:
 				w.fire(Combat.fire_record("me", 1, "side_r", "autocannon", a, b, w.now, shot))
 				for i in 60:
@@ -347,8 +347,8 @@ func _clean_prop_shot(w: CombatWorld, props: CityProps, type: String, skip: Arra
 
 ## A moving body (a tram car's roof or side) is no ground and no wall.
 func _moving_bodies(w: CombatWorld) -> void:
-	var fx := w.spawn_impact(Vector3(20, 3.0, 20), Vector3.UP, 1.0, MechMeshes.GREY, true)
+	var fx := w.spawn_impact(Vector3(20, 3.0, 20), Vector3.UP, 1.0, LowPolyPalette.GREY, true)
 	eq(_decals(fx), 0, "no crater on a tram roof")
-	var fx2 := w.spawn_impact(Vector3(17, 2.0, 20), Vector3(-1, 0, 0), 1.0, MechMeshes.GREY, false)
+	var fx2 := w.spawn_impact(Vector3(17, 2.0, 20), Vector3(-1, 0, 0), 1.0, LowPolyPalette.GREY, false)
 	eq(_decals(fx2), 0, "no scorch on a tram's side")
 	_clear(w)

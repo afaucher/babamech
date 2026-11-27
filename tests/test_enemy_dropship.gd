@@ -281,10 +281,9 @@ func _multi_seed_stack_reachable_drop_zones() -> void:
 				Vector2(lane, dp.extent.position.y + 28.0),
 				Vector2(lane, 0.0),
 			]
-			if sec.has_method("arrival"):
-				var arr: Dictionary = sec.arrival(k)
-				if arr.has("x") and arr.has("s"):
-					samples[0] = Vector2(float(arr["x"]), float(arr["s"]))
+			var arr: Dictionary = SectionEncounters.arrival(sec, k)
+			if arr.has("x") and arr.has("s"):
+				samples[0] = Vector2(float(arr["x"]), float(arr["s"]))
 			for sp_arc in samples:
 				total_checks += 1
 				sq._drop_seq += 1
@@ -299,7 +298,7 @@ func _multi_seed_stack_reachable_drop_zones() -> void:
 				var drop_arc := Vector2(da3.x, da3.y)
 				if not EnemySquad._valid_ground_drop_point(dp, drop_arc):
 					invalid_ground += 1
-				var path := sq.find_arc_path(sp_arc, drop_arc, k)
+				var path := sq.nav.find_arc_path(sp_arc, drop_arc, k)
 				if path.is_empty():
 					unreachable += 1
 
@@ -409,7 +408,7 @@ func _coop_enemy_sync_add_and_gone() -> void:
 	await frames(1)
 
 
-## 6. One flight per deck per seed in the real game (TestDrive, plan mode), at 2x game speed; then deck 0 again with the
+## 6. One flight per deck per seed in the real game (MissionScene, plan mode), at 2x game speed; then deck 0 again with the
 ## air doors off (EnemySquad.air_doors_enabled = false: the in-deck fallback).
 func _stack_round_trips_clear() -> void:
 	var box := BoxShape3D.new()
@@ -421,8 +420,8 @@ func _stack_round_trips_clear() -> void:
 	var through_doors := 0
 	Engine.time_scale = 2.0
 	for seed_n: int in ROUND_TRIP_SEEDS:
-		var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
-		td.city_mode = TestDrive.MODE_STACK
+		var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+		td.city_mode = MissionScene.MODE_STACK
 		td.seed_value = seed_n
 		add_child(td)
 		await frames(4)
@@ -441,7 +440,7 @@ func _stack_round_trips_clear() -> void:
 			var doors_on: bool = run[1]
 			sq.air_doors_enabled = doors_on
 			var plan: CityPlan = sq.deck_plan(k)
-			var nodes: Array = plan.walk_graph()["nodes"]
+			var nodes: Array = CityGraphs.walk_graph(plan)["nodes"]
 			var tn: Vector2 = nodes[(7919 * (k + 1) + seed_n) % nodes.size()]
 			var mp := td.stack.from_deck_arc(k, tn.x, tn.y, 0.5)
 			td.mech.global_position = mp

@@ -1,7 +1,7 @@
 extends NetTest
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## Mission assets across machines (docs/design/weapons.md §5 "Mission assets") over a real crew mission of 2, once per
-## link (off, coast). Both machines TestDriveCombat.add_asset("relay", node) at the same point (the host sends it); the
+## link (off, coast). Both machines MissionCombat.add_asset("relay", node) at the same point (the host sends it); the
 ## drive's combat `_drive` is pointed at a stand-in with a stub `mission` (damage_asset recorder) on both machines.
 ## 1. Enemy fire (the host fires an enemy record, as EnemyBase._fire_one_round builds it; EnemySync carries it to the
 ##    client) on the asset: the host's stub gets damage_asset exactly once with the weapon's damage; the client's nothing,
@@ -28,7 +28,7 @@ class StubDrive extends Node:
 	var mission: Node = null
 
 
-var td: TestDrive
+var td: MissionScene
 var world: CombatWorld
 var net: CombatNet
 var stub: StubMission
@@ -40,7 +40,7 @@ func run_host() -> void:
 	net_timeout = 90.0
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	for e in td.combat.squad.enemies:
@@ -106,7 +106,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -153,7 +153,7 @@ func _add(at: Vector3) -> void:
 
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.crew_sync != null and td.combat.net != null and td.enemy_sync != null,
@@ -173,7 +173,7 @@ func _load_and_go() -> bool:
 	world.remote_hit.connect(func(id: String, _h: Hit) -> void:
 		if id == "asset_" + ID:
 			remote_hits += 1)
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes"):
 		return false
 	return true

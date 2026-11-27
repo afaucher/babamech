@@ -10,7 +10,7 @@ extends Node3D
 ## heat fraction of the chassis' own cap.
 
 ## Force this mech to count as the local pilot's (SFX_Player + cockpit cues). Default false: a mech counts as local only
-## when it is the `mech` of its parent (TestDrive.mech, ThrusterLab.mech: the one this machine pilots) and not a puppet;
+## when it is the `mech` of its parent (MissionScene.mech, ThrusterLab.mech: the one this machine pilots) and not a puppet;
 ## every other mech (teammate puppets, host-run hangar / mission bots, lab bots) is REMOTE: positional on SFX_World,
 ## no cockpit cues, no pilot voice, no heat duck. (_local())
 var is_local := false
@@ -62,7 +62,7 @@ func _ready() -> void:
 
 func _exit_tree() -> void:
 	_unbind_gait()
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null:
 		a.stop_loop(_thrust_tag())
 		a.stop_loop(_heat_tag())
@@ -78,7 +78,7 @@ func _physics_process(delta: float) -> void:
 func step(delta: float) -> void:
 	if _body == null or delta <= 0.0:
 		return
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null or a.skip_cues():   # headless: no sound (AudioDirector.silent)
 		_step_queue.clear()
 		return
@@ -169,7 +169,7 @@ func _unbind_gait() -> void:
 
 
 ## The mech the person at this machine pilots: never a puppet (MechPuppet sets MechController.puppet); then either forced
-## by is_local, or the parent's `mech` (TestDrive.mech = the local pilot's; a CrewBot's / offline crew's mech is not it).
+## by is_local, or the parent's `mech` (MissionScene.mech = the local pilot's; a CrewBot's / offline crew's mech is not it).
 func _local() -> bool:
 	if _body == null or _body.puppet:
 		return false
@@ -242,7 +242,7 @@ func _step_heat(a: AudioDirector, delta: float) -> void:
 			_heat_tick_in = lerpf(0.40, 0.14, u)
 	else:
 		_heat_tick_in = 0.0
-	if _body.shutdown and _body.heat <= _body.reboot_heat and not _reboot_spooled:
+	if _body.is_rebooting() and not _reboot_spooled:
 		_reboot_spooled = true
 		a.play_2d("mech.heat.reboot_spool", 0.0, 1.0, AudioDirector.BUS_SFX_PLAYER)
 	a.set_heat_duck(_body.shutdown or hf > 0.85)
@@ -250,7 +250,7 @@ func _step_heat(a: AudioDirector, delta: float) -> void:
 
 func _on_hard_landing(_speed: float, severity: float) -> void:
 	_hard_landed_step = true
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null or _body == null:
 		return
 	var bus := AudioDirector.BUS_SFX_PLAYER if _local() else AudioDirector.BUS_SFX_WORLD
@@ -264,7 +264,7 @@ func _on_hard_landing(_speed: float, severity: float) -> void:
 
 func _on_overheated() -> void:
 	_reboot_spooled = false
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null or _body == null:
 		return
 	a.stop_loop(_heat_tag())
@@ -278,7 +278,7 @@ func _on_overheated() -> void:
 
 func _on_rebooted() -> void:
 	_reboot_spooled = false
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null or _body == null:
 		return
 	if _local():
@@ -346,9 +346,3 @@ func _thrust_tag() -> String:
 
 func _heat_tag() -> String:
 	return "mech.heat.%d" % get_instance_id()
-
-
-func _audio() -> AudioDirector:
-	if not is_inside_tree():
-		return null
-	return get_tree().root.get_node_or_null("Audio") as AudioDirector

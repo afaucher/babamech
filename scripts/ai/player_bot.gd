@@ -109,6 +109,11 @@ func net_fields() -> Dictionary:
 	}
 
 
+## The enemy this bot is fighting, or null. Untyped: it may already be freed (callers check is_instance_valid).
+func current_target() -> Variant:
+	return _current_enemy
+
+
 ## True when enemy `eid` is remembered and in line of sight now.
 func sees(eid: String) -> bool:
 	return _memory.has(eid) and bool((_memory[eid] as Dictionary).get("has_los", false))
@@ -415,15 +420,15 @@ func _update_threats(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 			continue
 		var e: EnemyBase = m["enemy"]
 		if e.ai_state == EnemyBase.STATE_TELEGRAPH:
-			var tkey := "%s:%d" % [eid, e._shot_index]
+			var tkey := "%s:%d" % [eid, e.shot_index()]
 			if _telegraph_is_new(eid, e):
 				_threat_queue.append({
 					"key": tkey,
 					"trigger_t": _sim_t + _sample_reaction(),
-					"kind": e._active_weapon,
-					"origin": e.muzzle_world(e._active_weapon),
+					"kind": e.active_weapon(),
+					"origin": e.muzzle_world(e.active_weapon()),
 					"landing": Vector3.ZERO,
-					"is_mortar": e._active_weapon == "enemy_mortar",
+					"is_mortar": e.active_weapon() == "enemy_mortar",
 				})
 
 	# Detect incoming enemy MortarShell ground-ring telegraphs (visible to any player on the ground).
@@ -506,12 +511,12 @@ func _update_threats(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 ## its `_shot_index`, so the instance is told apart by its start (bot time minus the enemy's elapsed telegraph time):
 ## a timer that went backwards or a start that moved more than TELEGRAPH_SAME_EPS is a new telegraph.
 func _telegraph_is_new(eid: String, e: EnemyBase) -> bool:
-	var tel_t := e._telegraph_t
+	var tel_t := e.telegraph_elapsed()
 	var start := _sim_t - tel_t
 	var prev: Dictionary = _seen_telegraphs.get(eid, {})
-	var fresh := prev.is_empty() or int(prev["shot"]) != e._shot_index \
+	var fresh := prev.is_empty() or int(prev["shot"]) != e.shot_index() \
 			or tel_t < float(prev["tel_t"]) - 0.0001 or absf(start - float(prev["start"])) > TELEGRAPH_SAME_EPS
-	_seen_telegraphs[eid] = {"shot": e._shot_index, "start": start, "tel_t": tel_t, "seen_t": _sim_t}
+	_seen_telegraphs[eid] = {"shot": e.shot_index(), "start": start, "tel_t": tel_t, "seen_t": _sim_t}
 	return fresh
 
 
@@ -798,7 +803,7 @@ func _update_movement(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 	mech.running = want_run
 	mech.thrust_input = want_thrust
 
-	# Turn body toward target/aim heading (identical gain to TestDrive._physics_process).
+	# Turn body toward target/aim heading (identical gain to MissionScene._physics_process).
 	var td := turn_target_dir - up * turn_target_dir.dot(up)
 	if td.length_squared() > 1e-5:
 		var yaw_err := -mf.signed_angle_to(td.normalized(), up)

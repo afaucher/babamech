@@ -81,13 +81,14 @@ extends Node
 ## after, synchronously) for its weapon; damage left unpaired by the next step had no hit (fall, wall slam, burn).
 ## Windows and the summary accumulate numbers only; strings are built only when a line prints.
 ## Threat: shots pair with hits by shot key (Hit.shot, CombatWorld.hit_landed / remote_hit); enemy fire is CombatWorld.fired
-## with record.enemy (the host reads the firing EnemyBase's _target_id). A SCAN_EVERY s scan of world.targets reads the AI
+## with record.enemy (the host reads the firing EnemyBase's _target_id). The threat model is CombatThreatProbe (`threat`:
+## engagement, line of sight, intensity, bot tracks); this logger prints its records. A SCAN_EVERY s scan of world.targets reads the AI
 ## (host: _target_id, _is_awake; client: replicated ai_state), notices kills (a live enemy now destroyed) and samples the
 ## pacing stats. p>e line of sight: at most LOS_RAYS rays per second (the nearest awake enemies within THREAT_RANGE, chosen
 ## at each threat tick), RAYS_PER_FRAME per physics step, through CombatWorld.shot_ray (the weapons' sight: same query,
 ## mech capsules excluded), enemy eye to pilot centre with the AI's own 2.6 m slack. No other raycasts.
 ## Other systems call note_release / note_scout / note_depot / note_pace / note_scale (static, no-ops when no log is running).
-## Attached by TestDrive once its MissionFlow exists (attach); off with `--no-combat-log` (or `enabled = false`); never in
+## Attached by MissionScene once its MissionFlow exists (attach); off with `--no-combat-log` (or `enabled = false`); never in
 ## the lab or a district drive (no mission). Starts when the mission is released (solo at once, crew at mission_go).
 
 const WIN_IN := 0.5          ## s: dmg_in coalescing window per source + weapon + component
@@ -100,16 +101,10 @@ const WIN_SHOT := 1.0        ## s: shot coalescing window per shooter + weapon +
 const SHOT_PAD := 0.5        ## s past a shot's flight time (range / speed) before it counts as a miss
 const SHOT_WAIT_MIN := 0.3   ## s: beams, arcs (no flight)
 const SHOT_WAIT_MAX := 12.0
-const THREAT_EVERY := 1.0    ## s between threat records
 const SCAN_EVERY := 0.25     ## s between AI / kill scans
-const THREAT_RANGE := 200.0  ## m
-const LOS_RAYS := 12         ## p>e rays per pilot per second at most
-const RAYS_PER_FRAME := 3
-const LOS_SLACK := 2.6       ## m short of the eye a hit still counts as in sight (EnemyBase._check_los)
 const EST_AIM_R := 8.0       ## m: a client counts an enemy shot aimed this close to its pilot as fired at it
 const DECK_HOLD := 3.0       ## s on another deck before the deck summary closes
 const GIVEN_HOLD := 1.5      ## s after this pilot's drone last beamed a downed crewmate its standing up still counts as given
-const ENGAGED_STATES := ["engage", "flank", "telegraph", "fire", "cooldown"]   ## client estimate from replicated ai_state
 
 static var enabled := not OS.get_cmdline_user_args().has(FLAG)
 static var current: CombatLog = null   ## the running log (note_* calls); null when none
@@ -170,22 +165,15 @@ var _long_c_t := 0.0
 var _long_q := 0.0
 var _long_q_t := 0.0
 var state_fn := Callable()         ## () -> Dictionary: the latest mission state (host: sent, client: received), or invalid
-var deck_at_fn := Callable()       ## (pos: Vector3) -> int: the deck at a point (bot tracks), or invalid
-var bots_fn := Callable()          ## () -> Dictionary: the host's hangar bots (pilot id -> CrewBot), or invalid
-var tracks: Array = []             ## PilotTrack: [0] = the local pilot, then the host's bots
-var intensity := PilotIntensity.new()   ## the local pilot's (tracks[0].intensity), computed here (threat src=local)
-var rays_total := 0                ## p>e rays cast
-var rays_max_sec := 0              ## most p>e rays one pilot cast between two threat ticks (<= LOS_RAYS)
+## The threat model (engagement, p>e line of sight, per-pilot intensity, the host's bot tracks; scripts/game/
+## combat_threat_probe.gd): asked for the `threat` / `los` facts, crew engagement and intensity; its `mt` follows ours.
+var threat := CombatThreatProbe.new()
 var _shots: Dictionary = {}        ## shot key -> [t_fire, shooter, wpn, tgt ("" own), dist, deadline, est, origin]
 var _shot_due := INF               ## earliest deadline in _shots
 var _win_shot: Array = []          ## [t0, shooter, wpn, tgt, n, hits, dist_sum, est, open_mt]
 var _wait_by_wpn: Dictionary = {}  ## weapon -> s a shot may fly
-var _next_threat := THREAT_EVERY
+var _next_threat := CombatThreatProbe.THREAT_EVERY
 var _next_scan := 0.0
-var _eng_p: Dictionary = {}        ## player target id -> mt an enemy last engaged it
-var _eng_est := false              ## engagement estimated from replicated enemy state (a client)
-var _alive: Dictionary = {}        ## enemy instance id -> CombatTarget (alive at the last scan)
-var _players: Dictionary = {}      ## player target id -> PlayerTarget (refreshed each scan)
 var _deck := -1
 var _deck_cand := -1
 var _deck_cand_t := 0.0
@@ -193,7 +181,6 @@ var _deck_stats := PacingStats.new()
 var _mission_stats := PacingStats.new()
 var _pace_prev: Dictionary = {}    ## deck (String) -> director state seen in mission state
 var _pace_api := false             ## note_pace was called: mission state `pace` is not diffed
-var _crew_i := 0.0
 
 
 func net_fields() -> Dictionary:
@@ -203,16 +190,16 @@ func net_fields() -> Dictionary:
 			"_sum_out", "_tot_in", "_tot_out", "_kills", "_est_out", "_by_wpn_out", "_by_kind_in", "_hp_min", "_hp_min_t",
 			"_core_min", "_core_min_t", "_deaths", "_respawns", "_down", "_down_cause", "_last_src", "_last_wpn", "_last_act",
 			"_combat", "_cstart", "_qstart", "_combat_s", "_quiet_s", "_long_c", "_long_c_t", "_long_q", "_long_q_t",
-			"state_fn", "deck_at_fn", "bots_fn", "tracks", "intensity", "rays_total", "rays_max_sec", "_shots", "_shot_due",
-			"_win_shot", "_wait_by_wpn", "_next_threat", "_next_scan", "_eng_p", "_eng_est", "_alive", "_players", "_deck",
-			"_deck_cand", "_deck_cand_t", "_deck_stats", "_mission_stats", "_pace_prev", "_pace_api", "_crew_i",
+			"state_fn", "threat", "_shots", "_shot_due",
+			"_win_shot", "_wait_by_wpn", "_next_threat", "_next_scan", "_deck",
+			"_deck_cand", "_deck_cand_t", "_deck_stats", "_mission_stats", "_pace_prev", "_pace_api",
 			"help_fn", "_downs", "_down_at", "_down_s", "_revives", "_revives_given", "_given_seen"]:
 		f[v] = Net.LOCAL
 	return f
 
 
-## The mission drive's log (TestDrive._finish_setup, once MissionFlow exists), or null when off / no mission.
-static func attach(td: TestDrive) -> CombatLog:
+## The mission drive's log (MissionScene._finish_setup, once MissionFlow exists), or null when off / no mission.
+static func attach(td: MissionScene) -> CombatLog:
 	if not enabled or td == null or td.mission == null or td.combat == null or td.combat.player_target == null:
 		return null
 	var cl := CombatLog.new()
@@ -224,16 +211,16 @@ static func attach(td: TestDrive) -> CombatLog:
 	if td.stack != null:
 		var st := td.stack
 		cl.deck_fn = func() -> int: return int(st.deck_at(td.mech.global_position)) if is_instance_valid(td.mech) else -1
-		cl.deck_at_fn = func(at: Vector3) -> int: return int(st.deck_at(at))
-	cl.bots_fn = func() -> Dictionary: return td.crew_bots if is_instance_valid(td) else {}   # host only (else empty)
+		cl.threat.deck_at_fn = func(at: Vector3) -> int: return int(st.deck_at(at))
+	cl.threat.bots_fn = func() -> Dictionary: return td.crew_bots if is_instance_valid(td) else {}   # host only (else empty)
 	cl.objective_fn = func() -> String: return mf.rules.current() if is_instance_valid(mf) and mf.rules != null else ""
 	cl.state_fn = func() -> Dictionary:   # read only: the host's last sent state, a client's last received one
 		if not is_instance_valid(mf):
 			return {}
 		var s := Net.session()
 		if mf.crew and s != null and not mf.deciding():
-			return s.mission_state()
-		return mf._sent
+			return s.mission.state
+		return mf.last_sent_state()
 	mf.outcome_reached.connect(cl.finish)
 	if td.combat.squad != null:
 		td.combat.squad.enemy_spawned.connect(cl.hook_target)
@@ -245,12 +232,7 @@ func bind(w: CombatWorld, p: PlayerTarget, m: MechController = null) -> void:
 	pt = p
 	mech = m
 	me = p.target_id
-	var tr := PilotTrack.new()
-	tr.target = p
-	tr.mech = m
-	tr.peer = CombatWorld.local_peer()
-	tr.intensity = intensity
-	tracks = [tr]
+	threat.bind(w, p, m)
 	p.damaged.connect(_on_in_damaged)
 	p.player_disabled.connect(_on_down)
 	p.player_revived.connect(_on_revived)
@@ -276,13 +258,14 @@ func start() -> void:
 		return
 	started = true
 	mt = 0.0
+	threat.mt = mt
 	_qstart = 0.0
 	_next_sum = SUMMARY_EVERY
-	_next_threat = THREAT_EVERY
+	_next_threat = CombatThreatProbe.THREAT_EVERY
 	_next_scan = 0.0
 	current = self
-	intensity.reset()
-	intensity.structure(_tot_pct())
+	threat.intensity.reset()
+	threat.intensity.structure(_tot_pct())
 	_deck = int(deck_fn.call()) if deck_fn.is_valid() else -1
 	_deck_cand = _deck
 	_deck_stats = PacingStats.new()
@@ -319,6 +302,7 @@ func step(dt: float) -> void:
 				_fold_out(t, t.target_id, "dot", float(e[1]), false, t.destroyed())
 		_pend_out.clear()
 	mt += dt
+	threat.mt = mt
 	if _down_cause != "":
 		_close_in(true)
 		_say("down", "cause=%s src=%s/%s wpn=%s" % [_down_cause, _v(_last_src), _kind_of(_last_src), _v(_last_wpn)])
@@ -344,19 +328,14 @@ func step(dt: float) -> void:
 	_update_combat()
 	if mt >= _shot_due or not _win_shot.is_empty():
 		_step_shots(false)
-	for tr: PilotTrack in tracks:
-		if tr.ray_i < tr.ray_q.size():
-			_step_rays(tr)
+	threat.cast_rays()
 	if mt >= _next_scan - 1e-6:
 		_next_scan = floorf(mt / SCAN_EVERY + 1e-6) * SCAN_EVERY + SCAN_EVERY
 		_scan()
-	intensity.step(dt, _engaged(me) and not (pt != null and pt.disabled), _shut())   # downed: never engaged
-	for i in range(1, tracks.size()):
-		var bt := tracks[i] as PilotTrack
-		if bt.valid():
-			bt.intensity.step(dt, _engaged(bt.id()), bt.shutdown())
+	threat.step(dt, pt != null and pt.disabled, _shut())   # downed: never engaged
 	if mt >= _next_threat - 1e-6:
-		_next_threat = floorf(mt / THREAT_EVERY + 1e-6) * THREAT_EVERY + THREAT_EVERY
+		var te := CombatThreatProbe.THREAT_EVERY
+		_next_threat = floorf(mt / te + 1e-6) * te + te
 		_threat()
 	if mt >= _next_sum - 1e-6:
 		_next_sum += SUMMARY_EVERY
@@ -456,21 +435,16 @@ func _on_fired(record: Dictionary) -> void:
 			return
 		if world.owns(e):
 			# Host / solo: the real enemy; its target when it fired is exact.
-			var tid: String = (e as EnemyBase)._target_id if e is EnemyBase else ""
+			var tid: String = (e as EnemyBase).current_target_id() if e is EnemyBase else ""
 			var p := _target_of(tid)
 			if p is PlayerTarget:
-				_eng_p[tid] = mt
-				var tr := _track_of(tid)
-				if tr != null:
-					tr.eng_e[e.get_instance_id()] = mt
+				threat.engage(tid, e)
 				_shot_add(record, sh, tid, not world.owns(p))
 		else:
 			# Client: a replayed enemy shot; aimed close to the local pilot counts as fired at it (estimate).
 			var aim: Variant = record.get("target")
 			if aim is Vector3 and (aim as Vector3).distance_to(_me_pos()) <= EST_AIM_R:
-				(tracks[0] as PilotTrack).eng_e[e.get_instance_id()] = mt
-				_eng_p[me] = mt
-				_eng_est = true
+				threat.engage_est(e)
 
 
 func _on_down(cause: String) -> void:
@@ -481,7 +455,7 @@ func _on_down(cause: String) -> void:
 	_deaths.append(mt)          # a death unless a revive takes it back (_on_revived)
 	_downs += 1
 	_down_at = mt
-	intensity.disabled()
+	threat.intensity.disabled()
 	_deck_stats.deaths += 1
 	_mission_stats.deaths += 1
 
@@ -532,7 +506,7 @@ func _watch_given() -> void:
 
 func _on_comp_destroyed(_component: String) -> void:
 	if _live():
-		intensity.component_destroyed()
+		threat.intensity.component_destroyed()
 
 
 ## The outcome (MissionFlow.outcome_reached), or "quit" when the scene goes first. Prints the end record once.
@@ -566,12 +540,12 @@ func finish(outcome: String, reason: String = "") -> void:
 		+ " eng_s=%.1f eng_pct=%d quiet_max=%.1f quiet_max_mt=%.1f quiet30=%s peaks=%d peak_mt=%s kint_med=%.1f kint_p90=%.1f"
 		+ " kint_max=%.1f in_pm=%.1f out_pm=%.1f core_min_c=%s est_eng=%d") % [_v(outcome), _v(reason),
 		_tot_in, _tot_out, _kills, 1 if _est_out else 0, _map(_by_kind_in), _map(_by_wpn_out), roundi(_hp_min), _hp_min_t,
-		roundi(_core_min), _core_min_t, _deaths.size(), _times(_deaths), _respawns.size(), _times(_respawns), _downs, _revives,
+		roundi(_core_min), _core_min_t, _deaths.size(), PacingStats.times(_deaths), _respawns.size(), PacingStats.times(_respawns), _downs, _revives,
 		_revives_given, _down_s + (maxf(mt - _down_at, 0.0) if _down and _down_at >= 0.0 else 0.0), _combat_s,
 		_quiet_s, _long_c, _long_c_t, _long_q, _long_q_t,
 		ms.eng_s, roundi(ms.engaged_pct()), ms.q_max, ms.q_max_t, PacingStats._pairs(ms.quiet30), ms.peaks,
-		PacingStats._times(ms.peak_t), k[0], k[1], k[2], ms.per_minute(ms.dmg_in), ms.per_minute(ms.dmg_out),
-		_v(ms.core_min_c), 1 if _eng_est else 0])
+		PacingStats.times(ms.peak_t), k[0], k[1], k[2], ms.per_minute(ms.dmg_in), ms.per_minute(ms.dmg_out),
+		_v(ms.core_min_c), 1 if threat.eng_est else 0])
 
 
 func _exit_tree() -> void:
@@ -646,7 +620,7 @@ func _track_hp() -> void:
 	if cp < _core_min:
 		_core_min = cp
 		_core_min_t = mt
-	intensity.structure(tp)
+	threat.intensity.structure(tp)
 	var cc := _core_low()
 	_deck_stats.structure(mt, tp, cp, cc)
 	_mission_stats.structure(mt, tp, cp, cc)
@@ -798,128 +772,25 @@ func _fold_shot(a: Array, hit_tid: String, hit: bool, dist: float) -> void:
 	_win_shot.append([float(a[0]), sh, wpn, tgt, 1, 1 if hit else 0, dist, bool(a[6]), mt])
 
 
-# --- Threat --------------------------------------------------------------------------------------------------
+# --- Threat (the model is CombatThreatProbe; the records are printed here) -----------------------------------
 
-func _engaged(pid: String) -> bool:
-	var v: Variant = _eng_p.get(pid)
-	return v != null and PilotIntensity.engaged(mt, float(v))
-
-
-func _crew_engaged() -> bool:
-	for k: Variant in _eng_p:
-		if PilotIntensity.engaged(mt, float(_eng_p[k])):
-			return true
-	return false
-
-
-static func _is_enemy(t: CombatTarget) -> bool:
-	return t.team == "enemy" and not (t is AssetTarget) and not (t is BannerTarget)
-
-
-## The track of pilot target `tid` (the local pilot, or a host bot), or null.
-func _track_of(tid: String) -> PilotTrack:
-	for tr: PilotTrack in tracks:
-		if tr.id() == tid and tid != "":
-			return tr
-	return null
-
-
-## The host's hangar bots (bots_fn: CrewBot by pilot id): one track each, `bot=1`.
-func _sync_bots() -> void:
-	var i := 1
-	while i < tracks.size():
-		if not (tracks[i] as PilotTrack).valid():
-			tracks.remove_at(i)
-		else:
-			i += 1
-	if not bots_fn.is_valid():
-		return
-	var bots: Dictionary = bots_fn.call()
-	for id: Variant in bots:
-		var cb: Variant = bots[id]
-		if not is_instance_valid(cb):
-			continue
-		var bt: Variant = cb.get("target")
-		if not is_instance_valid(bt) or not (bt is PlayerTarget) or _track_of((bt as PlayerTarget).target_id) != null:
-			continue
-		var tr := PilotTrack.new()
-		tr.target = bt as PlayerTarget
-		var bm: Variant = cb.get("mech")
-		tr.mech = bm as Node3D if is_instance_valid(bm) and bm is Node3D else null
-		tr.peer = int(id)
-		tr.bot = true
-		var bpt := tr.pt()
-		tr.intensity.structure(_tot_pct_of(bpt))
-		var pi := tr.intensity
-		bpt.player_component_destroyed.connect(func(_c: String) -> void: pi.component_destroyed())
-		bpt.player_disabled.connect(func(_c: String) -> void: pi.disabled())
-		tracks.append(tr)
-
-
-## SCAN_EVERY s: the AI's targets (engagement), kills, the pacing stats' sample, the director state in mission state.
+## SCAN_EVERY s: the probe's AI / kill scan (kills into the pacing stats, new enemies hooked), the director state in
+## mission state, the pacing stats' sample.
 func _scan() -> void:
 	if world == null:
 		return
-	var local := tracks[0] as PilotTrack
-	_players.clear()
-	for t in world.targets:
-		if is_instance_valid(t) and t is PlayerTarget:
-			_players[t.target_id] = t
-	for t in world.targets:
-		if not is_instance_valid(t) or not _is_enemy(t):
-			continue
-		var iid := t.get_instance_id()
-		if t.destroyed():
-			if _alive.has(iid):
-				_alive.erase(iid)
-				for tr: PilotTrack in tracks:
-					tr.eng_e.erase(iid)
-					tr.pe.erase(iid)
-				_on_kill(t)
-			continue
-		if not _alive.has(iid):
-			_alive[iid] = t
-			hook_target(t)
-		if not (t is EnemyBase):
-			continue
-		var e := t as EnemyBase
-		if world.owns(e):
-			var tid := e._target_id
-			if tid != "" and e._is_awake():
-				var p: Variant = _players.get(tid)
-				if p != null and _pos(e).distance_to(_pos(p)) <= PilotIntensity.ENGAGE_RANGE:
-					_eng_p[tid] = mt
-					var tr := _track_of(tid)
-					if tr != null:
-						tr.eng_e[iid] = mt
-		else:
-			_eng_est = true
-			if e.ai_state in ENGAGED_STATES and _pos(e).distance_to(local.pos()) <= PilotIntensity.ENGAGE_RANGE:
-				local.eng_e[iid] = mt
-				_eng_p[me] = mt
-	# Enemies gone from the world without being destroyed (despawned): forget them.
-	if not _alive.is_empty():
-		for iid: int in _alive.keys():
-			if not is_instance_valid(_alive[iid]):
-				_alive.erase(iid)
-	for i in range(1, tracks.size()):   # bots: structure from their own target (the local pilot's comes with its damage)
-		var tr := tracks[i] as PilotTrack
-		if tr.valid():
-			tr.intensity.structure(_tot_pct_of(tr.pt()))
+	var r := threat.scan()
+	for i in int(r["kills"]):
+		_deck_stats.kill(mt)
+		_mission_stats.kill(mt)
+	for t: Variant in r["fresh"]:
+		hook_target(t)
 	_read_state()
-	var crew := _crew_engaged()
-	_deck_stats.sample(mt, crew, _crew_i)
-	var q := _mission_stats.sample(mt, crew, _crew_i)
+	var crew := threat.crew_engaged()
+	_deck_stats.sample(mt, crew, threat.crew_i)
+	var q := _mission_stats.sample(mt, crew, threat.crew_i)
 	if q > PacingStats.QUIET_LIST:
 		_say("quiet", "from=%.1f dur=%.1f deck=%d" % [mt - q, q, _deck], mt - q)
-
-
-func _on_kill(t: CombatTarget) -> void:
-	for tr: PilotTrack in tracks:
-		if tr.valid():
-			tr.intensity.kill_near(_pos(t).distance_to(tr.pos()))
-	_deck_stats.kill(mt)
-	_mission_stats.kill(mt)
 
 
 ## Intensity and director state from mission state (the host director's), when present.
@@ -927,15 +798,7 @@ func _read_state() -> void:
 	var st: Dictionary = state_fn.call() if state_fn.is_valid() else {}
 	var iv: Variant = _state_key(st, "intensity")
 	var d: Dictionary = iv if iv is Dictionary else {}
-	_crew_i = 0.0
-	for tr: PilotTrack in tracks:
-		var peer := CombatWorld.local_peer() if not tr.bot else tr.peer
-		var v: Variant = d.get(peer, d.get(str(peer))) if not d.is_empty() else null
-		tr.i_src = "host" if v != null else "local"
-		tr.host_i = float(v) if v != null else 0.0
-		_crew_i = maxf(_crew_i, tr.shown_intensity())
-	for k: Variant in d:   # the host's values for pilots this machine has no track of
-		_crew_i = maxf(_crew_i, float(d[k]))
+	threat.read_intensity(d)
 	if _pace_api:
 		return
 	var pv: Variant = _state_key(st, "pace")
@@ -947,7 +810,7 @@ func _read_state() -> void:
 			if s != prev:
 				_pace_prev[str(k)] = s
 				var why := str((row as Array)[3]) if row is Array and (row as Array).size() > 3 else ""
-				_say("pace", "deck=%s from=%s to=%s i=%d reason=%s" % [_v(str(k)), _v(prev), _v(s), roundi(_crew_i), _v(why)])
+				_say("pace", "deck=%s from=%s to=%s i=%d reason=%s" % [_v(str(k)), _v(prev), _v(s), roundi(threat.crew_i), _v(why)])
 
 
 static func _state_key(st: Dictionary, k: String) -> Variant:
@@ -959,155 +822,33 @@ static func _state_key(st: Dictionary, k: String) -> Variant:
 	return null
 
 
-## THREAT_EVERY s: the deck, then per pilot track the threat (and los) record and its next second's p>e rays.
+## THREAT_EVERY s: the deck, then per pilot track the threat (and los) record (CombatThreatProbe.tick: its facts, and its
+## next second's p>e rays).
 func _threat() -> void:
 	_check_deck()
-	_sync_bots()
-	intensity.structure(_tot_pct())   # repairs move the baseline
+	threat.sync_bots()
+	threat.intensity.structure(_tot_pct())   # repairs move the baseline
 	if world == null:
 		return
-	for tr: PilotTrack in tracks:
-		if tr.valid():
-			_threat_for(tr)
-
-
-func _threat_for(tr: PilotTrack) -> void:
-	var tid := tr.id()
-	var at := tr.pos()
-	var deck := _deck
-	if tr.bot:
-		deck = int(deck_at_fn.call(at)) if deck_at_fn.is_valid() else _deck
-	var near := 0
-	var nearest := -1.0
-	var sees := 0
-	var seen_by := 0
-	var alive := 0
-	var host_ai := true
-	tr.cands.clear()
-	for t in world.targets:
-		if not is_instance_valid(t) or not _is_enemy(t) or t.destroyed() or not t.is_hittable():
-			continue
-		var e := t as EnemyBase
-		if deck < 0 or e == null or e.spawn_deck == deck:
-			alive += 1
-		var d := _pos(t).distance_to(at)
-		if d > THREAT_RANGE:
-			continue
-		near += 1
-		if nearest < 0.0 or d < nearest:
-			nearest = d
-		var owned := e == null or world.owns(e)
-		var awake := e == null or (e._is_awake() if owned else true)
-		if not awake:
-			continue
-		tr.cands.append([d, t])
-		var pe := _pe_of(tr, t.get_instance_id())
-		if pe == 1:
-			sees += 1
-		if e != null:
-			if owned:
-				if e._target_id == tid and e._has_los:
-					seen_by += 1
-			else:
-				host_ai = false
-				if e.ai_state in ENGAGED_STATES and d <= e.sight_range and pe == 1:
-					seen_by += 1
-	var engaging := 0
-	for iid: int in tr.eng_e.keys():
-		if PilotIntensity.engaged(mt, float(tr.eng_e[iid])):
-			engaging += 1
-		elif mt - float(tr.eng_e[iid]) > 30.0:
-			tr.eng_e.erase(iid)
-	tr.cands.sort_custom(func(a: Array, b: Array) -> bool: return float(a[0]) < float(b[0]))
-	if tr.cands.size() > LOS_RAYS:
-		tr.cands.resize(LOS_RAYS)
-	var est := _eng_est or not host_ai
-	rays_max_sec = maxi(rays_max_sec, tr.rays_sec)
-	var p := tr.pt()
-	var heat := _heat() if not tr.bot else tr.heat_frac()   # a bot's heat lives on its MechController (PilotTrack)
-	var shut := _shut() if not tr.bot else tr.shutdown()
-	var pilot := _pilot_no(tr)
-	_say("threat", ("i=%d src=%s eng=%d engaging=%d near=%d sees=%d seen_by=%d nearest=%.1f est=%d crew_i=%d crew_eng=%d"
-		+ " deck=%d alive=%d tot=%d core=%d heat=%.2f shut=%d rays=%d pilot=%d bot=%d") % [roundi(tr.shown_intensity()), tr.i_src,
-		1 if _engaged(tid) else 0, engaging, near, sees, seen_by, nearest, 1 if est else 0, roundi(_crew_i),
-		1 if _crew_engaged() else 0, deck, alive, roundi(_tot_pct_of(p)), roundi(_core_pct_of(p)), heat, 1 if shut else 0,
-		tr.rays_sec, pilot, 1 if tr.bot else 0])
-	if not tr.cands.is_empty():
-		var parts := PackedStringArray()
-		for c: Array in tr.cands:
-			var t := c[1] as CombatTarget
-			var pe := _pe_of(tr, t.get_instance_id())
-			var ep := 0
-			if t is EnemyBase:
-				var e := t as EnemyBase
-				if world.owns(e):
-					ep = 1 if e._target_id == tid and e._has_los else 0
-				else:
-					ep = 1 if e.ai_state in ENGAGED_STATES and float(c[0]) <= e.sight_range and pe == 1 else 0
-			parts.append("%s:%s:%d" % [_v(t.target_id), "-" if pe < 0 else str(pe), ep])
-		_say("los", "list=%s pilot=%d bot=%d" % [",".join(parts), pilot, 1 if tr.bot else 0])
-	# Next second's rays: these enemies, a few per physics step.
-	tr.rays_sec = 0
-	tr.ray_q.clear()
-	for c: Array in tr.cands:
-		tr.ray_q.append(c[1])
-	tr.ray_i = 0
-
-
-## The pilot number printed: the line's own peer for the local pilot, the bot's (negative) pilot id for a bot.
-func _pilot_no(tr: PilotTrack) -> int:
-	if tr.bot:
-		return tr.peer
-	var s := Net.session()
-	return s.local_id() if s != null else 0
-
-
-## p>e for this enemy from the last second's ray: 1 in sight, 0 not, -1 no fresh ray.
-func _pe_of(tr: PilotTrack, iid: int) -> int:
-	var v: Variant = tr.pe.get(iid)
-	if v == null or mt - float((v as Array)[1]) > THREAT_EVERY + 0.5:
-		return -1
-	return 1 if bool((v as Array)[0]) else 0
-
-
-func _step_rays(tr: PilotTrack) -> void:
-	var n := 0
-	while n < RAYS_PER_FRAME and tr.ray_i < tr.ray_q.size() and tr.rays_sec < LOS_RAYS:
-		var v: Variant = tr.ray_q[tr.ray_i]
-		tr.ray_i += 1
-		if not is_instance_valid(v):
-			continue
-		var t := v as CombatTarget
-		if t.destroyed():
-			continue
-		tr.pe[t.get_instance_id()] = [_ray_sight(tr, t), mt]
-		n += 1
-		tr.rays_sec += 1
-		rays_total += 1
-
-
-## Line of sight pilot -> enemy through the weapons' sight query (CombatWorld.shot_ray). No physics (tests): in sight.
-func _ray_sight(tr: PilotTrack, t: CombatTarget) -> bool:
-	var sp := world.space()
-	if sp == null:
-		return true
-	var a := _center(tr.pt()) if tr.valid() else tr.pos()
-	var b := (t as EnemyBase).eye_world() if t is EnemyBase else _center(t)
-	var d := a.distance_to(b)
-	if d < 2.0:
-		return true
-	var h := world.shot_ray(sp, a, b)
-	return h.is_empty() or a.distance_to(h["position"] as Vector3) >= d - LOS_SLACK
-
-
-static func _center(t: CombatTarget) -> Vector3:
-	if t.hit_shapes.size() > 0:
-		var xf := t.global_transform if t.is_inside_tree() else t.transform
-		if t.wc_rev != t.shapes_rev or t.wc_xf != xf or t.wc_n != t.hit_shapes.size():
-			t.refresh_world_cache(xf)
-		if t.wc_n > 0:
-			return t.wc_centers[0]
-	return _pos(t) + t.up * 3.5
+	for f: Dictionary in threat.tick(_deck):
+		var tr := f["track"] as PilotTrack
+		var bot := bool(f["bot"])
+		var heat := _heat() if not bot else tr.heat_frac()   # a bot's heat lives on its MechController (PilotTrack)
+		var shut := _shut() if not bot else tr.shutdown()
+		var pilot := int(f["pilot"])
+		_say("threat", ("i=%d src=%s eng=%d engaging=%d near=%d sees=%d seen_by=%d nearest=%.1f est=%d crew_i=%d crew_eng=%d"
+			+ " deck=%d alive=%d tot=%d core=%d heat=%.2f shut=%d rays=%d pilot=%d bot=%d") % [roundi(float(f["i"])), str(f["src"]),
+			1 if bool(f["eng"]) else 0, int(f["engaging"]), int(f["near"]), int(f["sees"]), int(f["seen_by"]), float(f["nearest"]),
+			1 if bool(f["est"]) else 0, roundi(float(f["crew_i"])), 1 if bool(f["crew_eng"]) else 0, int(f["deck"]),
+			int(f["alive"]), roundi(float(f["tot"])), roundi(float(f["core"])), heat, 1 if shut else 0, int(f["rays"]), pilot,
+			1 if bot else 0])
+		var los: Array = f["los"]
+		if not los.is_empty():
+			var parts := PackedStringArray()
+			for l: Array in los:
+				var pe := int(l[1])
+				parts.append("%s:%s:%d" % [_v(str(l[0])), "-" if pe < 0 else str(pe), int(l[2])])
+			_say("los", "list=%s pilot=%d bot=%d" % [",".join(parts), pilot, 1 if bot else 0])
 
 
 func _me_pos() -> Vector3:
@@ -1127,22 +868,6 @@ func _target_of(tid: String) -> CombatTarget:
 	return null
 
 
-static func _tot_pct_of(p: PlayerTarget) -> float:
-	if p == null or not is_instance_valid(p):
-		return 100.0
-	return 100.0 * p.total_hp() / maxf(p.total_max_hp(), 0.001)
-
-
-static func _core_pct_of(p: PlayerTarget) -> float:
-	if p == null or not is_instance_valid(p):
-		return 100.0
-	var lo := 1.0
-	for c: String in PlayerTarget.CORE_COMPONENTS:
-		if p.max_hp.has(c):
-			lo = minf(lo, float(p.hp.get(c, 0.0)) / maxf(float(p.max_hp[c]), 0.001))
-	return 100.0 * lo
-
-
 ## The local pilot's deck: a change holds DECK_HOLD s before the deck summary closes.
 func _check_deck() -> void:
 	if not deck_fn.is_valid():
@@ -1159,7 +884,7 @@ func _check_deck() -> void:
 		_close_deck()
 		_deck = d
 		_deck_stats = PacingStats.new()
-		_deck_stats.begin(mt, _crew_engaged(), _crew_i)
+		_deck_stats.begin(mt, threat.crew_engaged(), threat.crew_i)
 		_deck_stats.structure(mt, _tot_pct(), _core_pct(), _core_low())   # the deck starts from the damage carried in
 
 
@@ -1167,7 +892,7 @@ func _close_deck() -> void:
 	if _deck_stats.closed:
 		return
 	_deck_stats.close(mt)
-	_say("deck_sum", "deck=%d from=%.1f %s" % [_deck, _deck_stats.t0, _deck_stats.body(_eng_est)])
+	_say("deck_sum", "deck=%d from=%.1f %s" % [_deck, _deck_stats.t0, _deck_stats.body(threat.eng_est)])
 
 
 # --- Notes from other systems (static; no-ops when no log runs) ----------------------------------------------
@@ -1384,12 +1109,3 @@ static func _map(d: Dictionary) -> String:
 	for k: Variant in d:
 		parts.append("%s:%.1f" % [_v(str(k)), float(d[k])])
 	return ",".join(parts)
-
-
-static func _times(a: PackedFloat64Array) -> String:
-	if a.is_empty():
-		return "-"
-	var parts := PackedStringArray()
-	for x in a:
-		parts.append("%.1f" % x)
-	return ";".join(parts)

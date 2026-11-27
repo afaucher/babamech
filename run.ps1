@@ -1,6 +1,7 @@
 # run.ps1 - play babamech (windowed). Extra args go to the game (known Godot engine options such as --log-file,
 # --resolution, --headless go to the engine, before "--"), e.g.
 #   .\run.ps1 --scene res://scenes/lab.tscn
+#   .\run.ps1 -Mission -Seed 7                   # straight into the mission scene (scenes/mission.tscn); -TestDrive is an alias
 #   .\run.ps1 --menu-shot C:\shots\menu.png      # save the menu after --menu-after s (default 1.5) and quit
 #
 # A local crew over ENet (no Steam needed), one window per player (from cast):
@@ -26,7 +27,7 @@ for ($i = 0; $i -lt $args.Count; $i++) {
     elseif ($args[$i] -eq "-ShotDir" -and $i + 1 -lt $args.Count) { $shotDir = [string]$args[$i + 1]; $i++ }
     elseif ($args[$i] -eq "-Size" -and $i + 1 -lt $args.Count) { $size = [string]$args[$i + 1]; $i++ }
     elseif ($args[$i] -eq "-JoinLate" -and $i + 1 -lt $args.Count) { $late = [double]$args[$i + 1]; $i++ }
-    elseif ($args[$i] -eq "-TestDrive") { $rest += @("--scene", "res://scenes/test_drive.tscn") }
+    elseif ($args[$i] -eq "-Mission" -or $args[$i] -eq "-TestDrive") { $rest += @("--scene", "res://scenes/mission.tscn") }
     elseif ($args[$i] -eq "-Seed" -and $i + 1 -lt $args.Count) { $rest += @("--seed", [string]$args[$i + 1]); $i++ }
     elseif ($args[$i] -is [array]) { $rest += ($args[$i] -join ",") }
     else { $rest += $args[$i] }

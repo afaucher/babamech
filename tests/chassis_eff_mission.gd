@@ -14,7 +14,7 @@ const TEST_TIMEOUT := 900
 var chassis := "bulwark"
 var loadout := {}
 var _saved_path := ""
-var _td: TestDrive
+var _td: MissionScene
 var _t := 0.0
 var _r := {"hp_damage": {}, "w_damage": {}, "taken": 0.0, "deaths": 0, "kills": {}, "ttk_sum": {}, "sight_s": 0.0,
 	"bear": {}, "heat_hold_s": 0.0, "dry_s": {}, "outcome": "", "time": 0.0, "combat_s": 0.0}
@@ -51,9 +51,9 @@ func setup() -> void:
 
 func _physics_process(_dt: float) -> void:
 	if _td == null:
-		var found: TestDrive = null
+		var found: MissionScene = null
 		for c in get_children():
-			if c is TestDrive:
+			if c is MissionScene:
 				found = c
 		if found == null or not found.loaded or found.combat == null or found.combat.rack == null \
 				or found.combat.player_target == null:

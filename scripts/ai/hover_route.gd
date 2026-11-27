@@ -137,7 +137,7 @@ func _add_edge(a: int, b: int, cost: float, alt: float, kind: String) -> void:
 func _build_deck_airways(k: int, p: CityPlan) -> void:
 	if p == null:
 		return
-	var rg := p.road_graph()
+	var rg := CityGraphs.road_graph(p)
 	var rnodes: Array = rg.get("nodes", [])
 	var map: Array[int] = []
 	map.resize(rnodes.size())

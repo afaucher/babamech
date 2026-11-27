@@ -1,7 +1,7 @@
 class_name CombatNet
 extends Node
 ## Combat across machines (co-op step 3, docs/design/weapons.md §5): the crew mission's bridge between the local
-## CombatWorld and the crew. Built by TestDriveCombat in a crew mission (child "CombatNet"). It never touches the wire
+## CombatWorld and the crew. Built by MissionCombat in a crew mission (child "CombatNet"). It never touches the wire
 ## itself: it only talks to the Session autoload through its existing reliable-event API (send_event / event_received).
 ##
 ## FIRE RECORDS are SCHEDULED EFFECTS. Every record this machine's own WeaponRack fires (CombatWorld.fired with
@@ -94,7 +94,7 @@ const RECORD_KEYS := ["hardpoint", "weapon", "origin", "dir", "target", "t", "sh
 
 var world: CombatWorld
 var rack: WeaponRack
-var drive: Node                   ## the TestDrive (its crew_sync is read lazily: it is built after combat)
+var drive: Node                   ## the MissionScene (its crew_sync is read lazily: it is built after combat)
 var local_peer := 0
 var local_shooter := ""
 ## Counters for tests and diagnostics.
@@ -313,7 +313,7 @@ func _on_shot_decided(rec: Dictionary, pt: Vector3, n: Vector3, c: Color) -> voi
 		return
 	var k := Combat.shot_key(rec)
 	var end: Array = [pt, n]
-	if not c.is_equal_approx(MechMeshes.GREY):
+	if not c.is_equal_approx(LowPolyPalette.GREY):
 		end.append(c)
 	stats["drops_sent"] = int(stats["drops_sent"]) + 1
 	if not s.hosting and not _hit_out.is_empty():
@@ -384,7 +384,7 @@ func flush(force: bool = false) -> void:
 	_next_flush = now + FLUSH_INTERVAL
 
 
-# --- Per step (TestDriveCombat calls these around CombatWorld.advance) --------------------------------------
+# --- Per step (MissionCombat calls these around CombatWorld.advance) --------------------------------------
 
 ## Before the world advances: mirror every puppet's guided track into world.designators, register its muzzles.
 func pre_advance() -> void:
@@ -718,7 +718,7 @@ static func decode_drop(a: Variant) -> Dictionary:
 	var n: Vector3 = v[2]
 	if not (pt.is_finite() and n.is_finite()):
 		return {}
-	var c: Color = MechMeshes.GREY
+	var c: Color = LowPolyPalette.GREY
 	if v.size() == 4:
 		if not (v[3] is Color):
 			return {}

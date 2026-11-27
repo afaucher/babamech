@@ -64,7 +64,7 @@ func setup() -> void:
 	var k := MeshKit.new()
 	k.box(box.size, Color(0.52, 0.5, 0.46))
 	var wm := MeshInstance3D.new()
-	wm.mesh = k.commit(MechMeshes.materials())
+	wm.mesh = k.commit(LowPolyMaterials.materials())
 	wall.add_child(wm)
 	add_child(wall)
 	wall.global_transform = Transform3D(Basis.looking_at(flat, Vector3.UP), Vector3(from.x, 3.5, from.z) + flat * 8.2)

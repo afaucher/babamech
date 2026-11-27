@@ -33,8 +33,6 @@ const PANT_HZ := 3.0
 const PANT_JAW := 0.3
 const SNARL := 6.0
 
-var _tic := ""
-var _tic_t0 := 0.0
 
 
 func _init() -> void:
@@ -152,23 +150,6 @@ func pose_extra(ch: Dictionary, _neck: PilotNeck, extra: Dictionary) -> void:
 	set_pose("Tongue", Basis(Vector3.RIGHT, -TONGUE_DROOP * tongue), Vector3(0.0, 0.0, -TONGUE_SLIDE * girth.z * tongue))
 
 
-func _tic_age(want: String, t: float) -> float:
-	var ph := head as PilotHead
-	var tic := ph.idle.tic_id if ph != null and ph.idle_enabled else ""
-	if tic != _tic:
-		_tic = tic
-		_tic_t0 = t
-	return t - _tic_t0 if tic != "" and tic == want else -1.0
-
-
 
 static func _ring(s: Array, scale: float = 1.0) -> PackedVector3Array:
 	return MeshKit.ring(Vector3(0, s[0], s[1]), float(s[2]) * scale, float(s[3]) * scale, 8, "y", 2.2)
-
-
-static func _lerp_sec(a: Array, b: Array, y: float) -> Array:
-	var t := (y - float(a[0])) / (float(b[0]) - float(a[0]))
-	var out := []
-	for i in 4:
-		out.append(lerpf(float(a[i]), float(b[i]), t))
-	return out

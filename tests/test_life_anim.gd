@@ -67,12 +67,12 @@ func _pack_checks() -> void:
 
 func _one_mmi() -> void:
 	var life := _life()
-	var f := life.figures
+	var f := life.unit(0).figures
 	var mmis := f.find_children("*", "MultiMeshInstance3D", true, false)
 	eq(mmis.size(), 1, "one MultiMeshInstance3D per deck (was 45: 9 pose meshes x 5 clothes)")
 	if mmis.size() == 1:
 		var mi := mmis[0] as MultiMeshInstance3D
-		eq(mi.multimesh.instance_count, life.plan.total(), "one instance per person")
+		eq(mi.multimesh.instance_count, life.unit(0).plan.total(), "one instance per person")
 		check(mi.multimesh.use_custom_data, "custom data on")
 		eq(mi.layers, district.render_layer, "on the deck's render layer")
 		check(mi.material_override is ShaderMaterial, "posed by the shader")
@@ -91,15 +91,15 @@ func _deterministic() -> void:
 	var diff := 0
 	var drawn := 0
 	for id in a.count():
-		if a.figures.custom_of(id) != b.figures.custom_of(id) or a.figures.shown(id) != b.figures.shown(id):
+		if a.unit(0).figures.custom_of(id) != b.unit(0).figures.custom_of(id) or a.unit(0).figures.shown(id) != b.unit(0).figures.shown(id):
 			diff += 1
-		if a.figures.shown(id) >= 0:
+		if a.unit(0).figures.shown(id) >= 0:
 			drawn += 1
 	check(drawn > 5, "people drawn (%d)" % drawn)
 	eq(diff, 0, "two instances hold identical animation data for every figure")
 	var seeds := {}
 	for id in a.count():
-		seeds[snappedf(float(LifeAnimRig.unpack(a.figures.custom_of(id))["seed"]), 0.001)] = true
+		seeds[snappedf(float(LifeAnimRig.unpack(a.unit(0).figures.custom_of(id))["seed"]), 0.001)] = true
 	check(seeds.size() > a.count() / 2, "seeds vary per person (%d distinct of %d)" % [seeds.size(), a.count()])
 	a.queue_free()
 	b.queue_free()
@@ -108,7 +108,7 @@ func _deterministic() -> void:
 func _writes_only_on_change() -> void:
 	var life := _life(60)
 	life.advance_to(1200.0)
-	var f := life.figures
+	var f := life.unit(0).figures
 	var last: Array = []
 	var seen: Array = []
 	for id in life.count():
@@ -155,10 +155,10 @@ func _debug_states() -> void:
 		var bad := 0
 		var n := 0
 		for id in life.count():
-			if life.figures.shown(id) < 0 or life.crowd.dead.has(id):
+			if life.unit(0).figures.shown(id) < 0 or life.unit(0).crowd.dead.has(id):
 				continue
 			n += 1
-			if life.figures.shown(id) != want or int(LifeAnimRig.unpack(life.figures.custom_of(id))["motion"]) != want:
+			if life.unit(0).figures.shown(id) != want or int(LifeAnimRig.unpack(life.unit(0).figures.custom_of(id))["motion"]) != want:
 				bad += 1
 		check(n > 0, "forced %s: figures drawn" % key)
 		eq(bad, 0, "forced %s: every figure shows %s" % [key, LifeAnimRig.MOTION_NAMES[maxi(want, 0)]])
@@ -173,7 +173,7 @@ func _kill_direction() -> void:
 	_run([life], 0.5)
 	var victims: Array[int] = []
 	for id in life.count():
-		if life.figures.shown(id) >= 0 and life.state_of(id) == "calm":
+		if life.unit(0).figures.shown(id) >= 0 and life.state_of(id) == "calm":
 			victims.append(id)
 		if victims.size() == 2:
 			break
@@ -186,13 +186,13 @@ func _kill_direction() -> void:
 	_run([life], 2.0)
 	for k in 2:
 		var id := victims[k]
-		var u := LifeAnimRig.unpack(life.figures.custom_of(id))
+		var u := LifeAnimRig.unpack(life.unit(0).figures.custom_of(id))
 		eq(int(u["motion"]), LifeAnimRig.FALL, "victim %d falls" % k)
 		var d: Vector2 = dirs[k]
-		var want := wrapf(atan2(d.x, d.y) - life._yaw[id], -PI, PI)
+		var want := wrapf(atan2(d.x, d.y) - life.unit(0)._yaw[id], -PI, PI)
 		check(absf(wrapf(float(u["param"]) - want, -PI, PI)) < 1e-3, "victim %d: the fall direction is the hit's (%.3f vs %.3f)" % [
 				k, float(u["param"]), want])
-		check(absf(float(u["t0"]) + life.figures._epoch - float(life.crowd.dead[id]["t"])) < 0.01,
+		check(absf(float(u["t0"]) + life.unit(0).figures._epoch - float(life.unit(0).crowd.dead[id]["t"])) < 0.01,
 				"victim %d: the fall starts at the kill" % k)
 	life.queue_free()
 
@@ -202,7 +202,7 @@ func _low_high() -> void:
 	var lo := _life()
 	lo.set_quality(CityQuality.LOW)
 	hi.set_quality(CityQuality.HIGH)
-	check(hi.figures.shadows() and not lo.figures.shadows(), "shadows at HIGH, none at LOW")
+	check(hi.unit(0).figures.shadows() and not lo.unit(0).figures.shadows(), "shadows at HIGH, none at LOW")
 	hi.advance_to(1500.0)
 	lo.advance_to(1500.0)
 	_run([hi, lo], 5.0)

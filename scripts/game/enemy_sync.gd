@@ -1,9 +1,9 @@
 class_name EnemySync
 extends Node
-## Enemies in a crew mission (W4, cast's M3: the host-owned world). Built by TestDrive in a crew mission, child
-## "EnemySync" (`TestDrive.enemy_sync`). Solo and offline play never build it: the enemies are exactly as before.
+## Enemies in a crew mission (W4, cast's M3: the host-owned world). Built by MissionScene in a crew mission, child
+## "EnemySync" (`MissionScene.enemy_sync`). Solo and offline play never build it: the enemies are exactly as before.
 ##
-## THE HOST spawns the encounter (TestDrive.spawn_enemies: EnemySpawner from the mission seed, in front of the entry on
+## THE HOST spawns the encounter (MissionScene.spawn_enemies: EnemySpawner from the mission seed, in front of the entry on
 ## the entry deck) and runs every enemy's AI, as solo. Each enemy gets a net id (`EnemyBase.net_id`, its number in the
 ## manifest) and `spawn_deck`. This node then
 ##   - answers a client's "enemy.req" with the MANIFEST "enemy.spawn" {e: [entry...]} (entry = [n, id, type, deck, xform,
@@ -21,7 +21,7 @@ extends Node
 ##                          own mech (CombatWorld.decides). CombatNet's fire_gate drops a duplicate on a client.
 ## A puppet never fires (EnemyBase._fire_one_round is gated to the host), and its muzzles are posed from the streamed aim
 ## (EnemyBase.muzzle_world(weapon_id)), so beams and flashes can start at the puppet.
-## THE CLIENT spawns nothing itself (TestDrive.spawn_enemies returns none): it asks for the manifest (every REQ_EVERY s
+## THE CLIENT spawns nothing itself (MissionScene.spawn_enemies returns none): it asks for the manifest (every REQ_EVERY s
 ## until it has it), builds a PUPPET per entry (`EnemyBase.puppet`: same class, meshes and hit spheres, so its own shots
 ## hit it and CombatNet carries them to the host by target id; CombatWorld never ticks it here, so no AI runs), poses it
 ## every physics frame from Session.enemies.pose(n) and EnemyBase.puppet_apply / puppet_tick, shows a telegraph from its
@@ -30,7 +30,7 @@ extends Node
 ##
 ## DAMAGE TO ENEMIES (rule 3): the attacker's machine decides; a client's hit reaches the host's real enemy through
 ## CombatNet ("combat.hit" by target id), and its HP / destruction come back through the stream and the events.
-## MISSIONS: alive_per_deck(enemies, decks) (TestDrive.enemies_alive_per_deck()) counts alive enemies by spawn_deck.
+## MISSIONS: alive_per_deck(enemies, decks) (MissionScene.enemies_alive_per_deck()) counts alive enemies by spawn_deck.
 
 signal telegraph_received(enemy: EnemyBase, t0: float, dur: float, arrival: float)
 signal manifest_received(count: int)
@@ -42,7 +42,7 @@ const REQ_EVERY := 0.75           ## s between a client's manifest requests unti
 const MAX_FIRE_RECORDS := 64
 const SETTLE := 0.25              ## s an enemy keeps the active rate after its last change (the puppet sees it stop)
 
-var drive: TestDrive
+var drive: MissionScene
 var world: CombatWorld
 var squad: EnemySquad
 var ring: RingFrame
@@ -86,10 +86,10 @@ static func alive_per_deck(enemies: Array, decks: int) -> Array[int]:
 
 
 func _ready() -> void:
-	process_physics_priority = 30   # after TestDriveCombat advanced the world (0): this frame's events go out now
+	process_physics_priority = 30   # after MissionCombat advanced the world (0): this frame's events go out now
 
 
-func setup(td: TestDrive) -> void:
+func setup(td: MissionScene) -> void:
 	drive = td
 	world = td.combat.world
 	squad = td.combat.squad
@@ -427,9 +427,11 @@ func _remote_fire(d: Variant) -> void:
 		return
 	var r := d as Dictionary
 	var w := str(r.get("weapon", ""))
-	var ok := EnemyCatalog.WEAPONS.has(w) and r.get("origin") is Vector3 and r.get("dir") is Vector3 		and r.get("target") is Vector3 and (r.get("t") is float or r.get("t") is int)
+	var ok := EnemyCatalog.WEAPONS.has(w) and r.get("origin") is Vector3 and r.get("dir") is Vector3 \
+		and r.get("target") is Vector3 and (r.get("t") is float or r.get("t") is int)
 	if ok:
-		ok = (r["origin"] as Vector3).is_finite() and (r["dir"] as Vector3).is_finite() and (r["target"] as Vector3).is_finite() 			and (r["dir"] as Vector3).length_squared() > 1e-8
+		ok = (r["origin"] as Vector3).is_finite() and (r["dir"] as Vector3).is_finite() and (r["target"] as Vector3).is_finite() \
+			and (r["dir"] as Vector3).length_squared() > 1e-8
 	if not ok:
 		stats["fire_refused"] = int(stats["fire_refused"]) + 1
 		return

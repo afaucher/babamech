@@ -8,7 +8,7 @@ extends CombatEffect
 ## that way (a thin 3-sided core, no shell).
 ##
 ##   var b := Beam.new()
-##   b.look = {"core": MechMeshes.TEAL, "sides": 6, "w0": 0.15, "w1": 0.6, "w_full": 150.0}
+##   b.look = {"core": LowPolyPalette.TEAL, "sides": 6, "w0": 0.15, "w1": 0.6, "w_full": 150.0}
 ##   b.start(world, record, stats)       # or setup_cosmetic(world, a, b, life)
 ##   b.set_points(a, b)
 ##
@@ -70,11 +70,11 @@ func shell_width(d: float) -> float:
 
 
 func core_color() -> Color:
-	return look.get("core", MechMeshes.TEAL)
+	return look.get("core", LowPolyPalette.TEAL)
 
 
 func shell_color() -> Color:
-	return look.get("shell", core_color().lerp(MechMeshes.WHITE, 0.55))
+	return look.get("shell", core_color().lerp(LowPolyPalette.WHITE, 0.55))
 
 
 func _build() -> void:
@@ -95,7 +95,7 @@ func _build() -> void:
 		rings.append(MeshKit.ring_uv(Vector3(0, 0, -d), Vector3(r, 0, 0), Vector3(0, r, 0), sides))
 	# Flat per-facet shades (unlit, so the facets read by colour, not by light).
 	k.loft(rings, func(_c: Vector3, n: Vector3) -> Color: return core.lightened(0.18 * (n.y * 0.5 + 0.5)), true, true)
-	_core = CombatMeshes.instance(k.commit(MechMeshes.materials()))
+	_core = CombatMeshes.instance(k.commit(LowPolyMaterials.materials()))
 	add_child(_core)
 	if bool(look.get("has_shell", true)):
 		var ks := MeshKit.new()
@@ -116,10 +116,10 @@ func _build() -> void:
 					continue        # alternate facets only: the core shows through the gaps
 				var s2 := (s + 1) % sides
 				ks.quad(ra[s], rb[s], rb[s2], ra[s2], pale if s % 4 == 0 else pale.darkened(0.1), c)
-		_shell = CombatMeshes.instance(ks.commit(MechMeshes.materials()))
+		_shell = CombatMeshes.instance(ks.commit(LowPolyMaterials.materials()))
 		add_child(_shell)
 	if bool(look.get("flash", true)):
-		_flash = CombatMeshes.instance(CombatMeshes.ico(core.lerp(MechMeshes.WHITE, 0.35), true))
+		_flash = CombatMeshes.instance(CombatMeshes.ico(core.lerp(LowPolyPalette.WHITE, 0.35), true))
 		add_child(_flash)
 
 

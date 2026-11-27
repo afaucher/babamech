@@ -225,17 +225,17 @@ func _falling_aerial_wrecks() -> void:
 	gunship.apply_damage(999.0, "hull", "player1")
 	dropship.apply_damage(999.0, "hull", "player1")
 
-	for e: EnemyBase in [drone, gunship, dropship]:
+	for e: EnemyFlier in [drone, gunship, dropship]:
 		check(e.destroyed(), "%s destroyed cleanly" % e.enemy_type)
 		check(e._wreck_falling, "%s enters deterministic falling-wreck crash on death" % e.enemy_type)
 		check(e.has_charred_hulk(), "%s keeps visible charred hull while crashing" % e.enemy_type)
-		check(e.has_active_flame(), "%s trails active LowPolyFlame.Stream while crashing" % e.enemy_type)
+		check(e.wreck.has_active_flame(), "%s trails active LowPolyFlame.Stream while crashing" % e.enemy_type)
 
 	# Simulate 4.5 s of gravity + bounce + settle.
 	for _i in 270:
 		w.advance(DT)
 
-	for e: EnemyBase in [drone, gunship, dropship]:
+	for e: EnemyFlier in [drone, gunship, dropship]:
 		var rest_r := e._wreck_ground_radius()
 		check(not e._wreck_falling, "%s wreck finished falling and settled" % e.enemy_type)
 		check(e.global_position.y >= 0.0 and e.global_position.y <= rest_r + 0.5,

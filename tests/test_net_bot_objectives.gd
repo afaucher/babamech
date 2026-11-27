@@ -13,20 +13,20 @@ const NET_TIMEOUT := 620   # test_runner reads this literal: WIN_TIMEOUT + 80 (l
 const SEED := 6
 const WIN_TIMEOUT := 540.0   # measured 2026-11-23: won 247.5 s, later 271.4 s, then 318.1 s wall after the barrier as layouts grew (real time); ~1.7x. docs/design/player-ai.md §9.6
 
-var td: TestDrive
+var td: MissionScene
 
 
 func _configure() -> void:
 	net_timeout = float(NET_TIMEOUT) - 5.0
-	TestDrive.bot_profile = "veteran"
-	TestDrive.dev_bot_travel = false
+	MissionScene.bot_profile = "veteran"
+	MissionScene.dev_bot_travel = false
 	CombatWorld.dev_enemy_damage = 1.0
 	MissionBot.bonuses = false
 
 
 func _restore() -> void:
-	TestDrive.bot_profile = ""
-	TestDrive.dev_bot_travel = false
+	MissionScene.bot_profile = ""
+	MissionScene.dev_bot_travel = false
 	MissionBot.bonuses = true
 
 
@@ -35,7 +35,7 @@ func run_host() -> void:
 	if not check(await until(func() -> bool: return Session.roster.size() == 2, 30.0), "the crew gathers"):
 		_restore()
 		return
-	check(Session.start_mission(SEED), "the host launches")
+	check(Session.mission.host_launch(SEED), "the host launches")
 	await _load()
 	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING, 40.0), "the barrier passes"):
 		_restore()
@@ -78,7 +78,7 @@ func run_client() -> void:
 		return
 	var ended := [""]
 	Session.mission_ended.connect(func(r: String) -> void: ended[0] = r)
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the launch arrives"):
 		_restore()
 		return
 	await _load()
@@ -105,6 +105,6 @@ func _task_ids() -> Array:
 
 func _load() -> void:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await until(func() -> bool: return td.loaded, 30.0)

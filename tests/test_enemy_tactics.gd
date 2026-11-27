@@ -297,8 +297,8 @@ func _cover_bounding_and_peek_in_city() -> void:
 
 	# Compare 2D LOS exposure ratio of find_cover_path vs straight find_arc_path across the full district (s: -78..+92).
 	var start_arc := Vector2(0.0, 92.0)
-	var raw_path := sq.find_arc_path(start_arc, threat_arc)
-	var cov_path := sq.find_cover_path(start_arc, threat_arc, threat_arc, -1, EnemyCatalog.engage_range("strider_breacher"))
+	var raw_path := sq.nav.find_arc_path(start_arc, threat_arc)
+	var cov_path := sq.nav.find_cover_path(start_arc, threat_arc, threat_arc, -1, EnemyCatalog.engage_range("strider_breacher"))
 	check(not raw_path.is_empty() and not cov_path.is_empty(), "both road-graph paths found across city district")
 	var raw_exp := _path_exposure(sq, raw_path, threat_arc)
 	var cov_exp := _path_exposure(sq, cov_path, threat_arc)
@@ -349,7 +349,7 @@ func _path_exposure(sq: EnemySquad, pts: Array[Vector2], threat_arc: Vector2) ->
 		return 1.0
 	var exposed := 0
 	for pt in pts:
-		if not sq.arc_segment_occluded(pt, threat_arc):
+		if not sq.nav.arc_segment_occluded(pt, threat_arc):
 			exposed += 1
 	return float(exposed) / float(pts.size())
 

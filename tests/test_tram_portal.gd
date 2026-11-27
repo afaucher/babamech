@@ -24,7 +24,7 @@ const DT := 1.0 / 60.0
 
 var stack: CityStack
 var life: AmbientLife
-var u: AmbientLife
+var u: LifeDeck
 var tram: LifeTram
 var ring: RingFrame
 var r := 2.2
@@ -79,8 +79,6 @@ func setup() -> void:
 	add_child(life)
 	life.set_process(false)
 	life.setup_stack(stack)
-	for un in life.units:
-		un.set_process(false)
 	u = life.unit(0)
 	tram = u.tram
 	ring = stack.deck_ring(0)
@@ -90,7 +88,7 @@ func setup() -> void:
 	o = 1.0 if tram.portal_hi else -1.0
 	wall = tram.wall_hi if tram.portal_hi else tram.wall_lo
 	# CityDistrict._col_walls: the plate box is centred GATE_RECESS - 0.05 + PORTAL_PLATE / 2 out, PORTAL_PLATE + 0.1 thick.
-	plate_face = CityStreets.GATE_RECESS - 0.05 + CityDistrict.PORTAL_PLATE * 0.5 - (CityDistrict.PORTAL_PLATE + 0.1) * 0.5
+	plate_face = CityWalls.GATE_RECESS - 0.05 + CityDistrict.PORTAL_PLATE * 0.5 - (CityDistrict.PORTAL_PLATE + 0.1) * 0.5
 	print("[tram portal] capsule r %.2f h %.2f; portal %s wall s %.1f, track x %.2f, period %.0f s" % [r, h, "hi" if o > 0 else "lo", wall, tram.x, tram.period])
 	t = 1000.0
 	life.advance_to(t)

@@ -115,7 +115,7 @@ func _on_packet(from: int, type: int, _seq: int, stamp_ms: int, payload: PackedB
 	stats["in_packets"] = int(stats["in_packets"]) + 1
 	stats["in_bytes"] = int(stats["in_bytes"]) + NetWire.HEADER + payload.size()
 	var arrival := _now()
-	var stamp := NetMechStream._unwrap_stamp(stamp_ms, arrival)
+	var stamp := NetWire.unwrap_stamp(stamp_ms, arrival)
 	for s in NetEnemyCodec.decode(payload, stamp):
 		stats["in_entries"] = int(stats["in_entries"]) + 1
 		var b := buffer(s.n)

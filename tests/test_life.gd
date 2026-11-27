@@ -148,7 +148,7 @@ func _threat_checks() -> void:
 func _threat_check(T: float) -> void:
 	var life := _life()
 	life.advance_to(T)
-	var c := life.crowd
+	var c := life.unit(0).crowd
 	# Aim at the person with the most neighbours outdoors.
 	var best := -1
 	var best_n := -1
@@ -235,7 +235,7 @@ func _expected_hits(life: AmbientLife, a: Vector3, b: Vector3, reach: float) -> 
 		if not life.visible_now(id) or life.state_of(id) == "down":
 			continue
 		var xf := life.pose_of(id)
-		var head := xf.origin + xf.basis.y.normalized() * AmbientLife.HEIGHT
+		var head := xf.origin + xf.basis.y.normalized() * LifeDeck.HEIGHT
 		var pts := Geometry3D.get_closest_points_between_segments(a, b, xf.origin, head)
 		if pts[0].distance_to(pts[1]) <= reach:
 			out.append(id)
@@ -259,7 +259,7 @@ func _kill_checks() -> void:
 	var side := xf.basis.x.normalized()
 	var a := xf.origin + xf.basis.y * 1.0 + side * 6.0
 	var b := xf.origin + xf.basis.y * 1.0 - side * 6.0
-	var want := _expected_hits(life, a, b, 0.2 + AmbientLife.MARGIN)
+	var want := _expected_hits(life, a, b, 0.2 + LifeDeck.MARGIN)
 	var n := life.sweep(a, b, 0.2, 3)
 	eq(n, want.size(), "the sweep kills exactly those within r + 0.4 m (%s)" % str(want))
 	check(target in want, "including the person it was aimed at")
@@ -294,7 +294,7 @@ func _kill_checks() -> void:
 			inside = id
 			break
 	if check(inside >= 0, "someone indoors"):
-		var door := life.crowd.pose(inside, life.now)
+		var door := life.unit(0).crowd.pose(inside, life.now)
 		eq(life.blast(_world(district, door["x"], door["s"], 1.0), 2.5, 7) >= 0, true, "a blast at a door")
 		check(life.state_of(inside) != "down", "a person indoors is not killed")
 	# The dead fall in 0.4 s and stay down.

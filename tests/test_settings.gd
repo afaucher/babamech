@@ -58,7 +58,7 @@ func setup() -> void:
 	eq(str(GameSettings.load_settings()["head"]), "chicken", "an unknown head falls back to chicken")
 	# Accent colour: defaults to the livery's safety orange, persists, unknown ids fall back.
 	eq(str(GameSettings.DEFAULTS["accent"]), "orange", "the default accent is orange")
-	check(MechAccent.color("orange").is_equal_approx(MechMeshes.ORANGE), "the default accent is exactly the baked orange")
+	check(MechAccent.color("orange").is_equal_approx(LowPolyPalette.ORANGE), "the default accent is exactly the baked orange")
 	GameSettings.set_value("accent", "green")
 	eq(str(GameSettings.load_settings()["accent"]), "green", "the accent round-trips")
 	GameSettings.set_value("accent", "plaid")

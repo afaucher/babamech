@@ -111,7 +111,7 @@ static func built(id: String) -> bool:
 	return (BEHAVIOURS.has(id) or LOOKS.has(id)) and not disabled.has(id)
 
 
-## Build every enemy weapon's cached shot meshes (WeaponBehaviour.prewarm) at mission load (TestDriveCombat.setup), as
+## Build every enemy weapon's cached shot meshes (WeaponBehaviour.prewarm) at mission load (MissionCombat.setup), as
 ## WeaponRack.rebuild does for the player's mounts, so an enemy's first shot doesn't build them mid-fight.
 static func prewarm_enemy_weapons() -> void:
 	for id: String in EnemyCatalog.WEAPONS:

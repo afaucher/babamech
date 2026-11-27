@@ -32,7 +32,7 @@ const BOT_ALONE_WAIT := 2.0       ## s a downed bot waits when nobody standing c
 ## Respawn next to an ACTIVE defend / hold on the deck the pilot went down on (coordinator, 2026-11-24, from bot
 ## evidence: a relay died during the ~40 s walk back from the arrival point): a clear spot this far from the site,
 ## tried at the RESPAWN_NEAR_TRIES distances in order (75 m first, all within 60-90 m), 8 bearings each starting on the
-## side of the deck's arrival point; out of the objective's zone, on clear ground (MissionProps.snap_site), preferring
+## side of the deck's arrival point; out of the objective's zone, on clear ground (SiteFit.snap), preferring
 ## one with no live enemy within RESPAWN_ENEMY_CLEAR m.
 const RESPAWN_NEAR_TRIES := [75.0, 60.0, 90.0]
 const RESPAWN_ENEMY_CLEAR := 40.0  ## m: no live enemy this close to the respawn spot (when a candidate allows it)

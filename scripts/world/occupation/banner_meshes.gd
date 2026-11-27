@@ -45,7 +45,7 @@ static func bar() -> ArrayMesh:
 		for sx: float in [-1.0, 1.0]:
 			k.box(Vector3(0.12, 0.12, 0.75), IRON, Vector3(sx * (W * 0.5 - 0.1), 0.0, -0.38))
 			k.box(Vector3(0.24, 0.24, 0.24), IRON, Vector3(sx * (W * 0.5 + 0.25), 0.0, 0.0))
-		_cache["bar"] = k.commit(MechMeshes.materials())
+		_cache["bar"] = k.commit(LowPolyMaterials.materials())
 	return _cache["bar"]
 
 
@@ -55,7 +55,7 @@ static func pole() -> ArrayMesh:
 		k.box(Vector3(0.28, POLE_H, 0.28), IRON, Vector3(0.0, POLE_H * 0.5, 0.0))
 		k.box(Vector3(0.7, 0.4, 0.7), IRON, Vector3(0.0, 0.2, 0.0))
 		k.box(Vector3(W + 1.0, 0.16, 0.16), IRON, Vector3(W * 0.5 + 0.4, ARM_H, 0.0))
-		_cache["pole"] = k.commit(MechMeshes.materials())
+		_cache["pole"] = k.commit(LowPolyMaterials.materials())
 	return _cache["pole"]
 
 
@@ -78,7 +78,7 @@ static func fringe() -> ArrayMesh:
 			k.poly(pts, FIELD, front)
 			k.poly(pts, FIELD, back)
 		k.quad(Vector3(-hw, 0, 0.03), Vector3(hw, 0, 0.03), Vector3(hw, -0.3, 0.03), Vector3(-hw, -0.3, 0.03), TRIM, front)
-		_cache["fringe"] = k.commit(MechMeshes.materials())
+		_cache["fringe"] = k.commit(LowPolyMaterials.materials())
 	return _cache["fringe"]
 
 
@@ -97,7 +97,7 @@ static func heap() -> ArrayMesh:
 			Vector3(-1.55, 0.14, 0.72)]), TRIM, Vector3(0, -2, 0))
 		k.poly(PackedVector3Array([Vector3(0.9, 0.5, 0.3), Vector3(1.4, 0.36, 0.5), Vector3(1.3, 0.3, 0.62),
 			Vector3(0.85, 0.44, 0.45)]), SIGIL2, Vector3(0, -2, 0))
-		_cache["heap"] = k.commit(MechMeshes.materials())
+		_cache["heap"] = k.commit(LowPolyMaterials.materials())
 	return _cache["heap"]
 
 
@@ -110,7 +110,7 @@ static func shred() -> ArrayMesh:
 		k.poly(pts, FIELD, Vector3(0, 0, 1))
 		k.quad(Vector3(-0.28, 0.2, 0.01), Vector3(0.3, 0.16, 0.01), Vector3(0.3, 0.08, 0.01), Vector3(-0.28, 0.12, 0.01),
 			TRIM, Vector3(0, 0, -1))
-		_cache["shred"] = k.commit(MechMeshes.materials())
+		_cache["shred"] = k.commit(LowPolyMaterials.materials())
 	return _cache["shred"]
 
 
@@ -180,7 +180,7 @@ static func _cloth(h: float) -> ArrayMesh:
 		for q: Vector2 in pl[0]:
 			pts.append(place + (q - mid_box) * EMBLEM_SCALE)
 		_emblem_poly(k, pts, pl[1], front, hw, mw, fold, pl[2])
-	return k.commit(MechMeshes.materials())
+	return k.commit(LowPolyMaterials.materials())
 
 
 static func _emblem_poly(k: MeshKit, pts: Array, col: Color, away: Vector3, hw: float, mw: float, fold: float, lift: float) -> void:

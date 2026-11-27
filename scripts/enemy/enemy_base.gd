@@ -19,9 +19,6 @@ const STATE_DEAD := "dead"
 
 const HIT_FLASH_TIME := 0.07
 const WRECK_LINGER := 2.8
-const CORE_COOL_TIME := 8.0         ## s for ruptured glowing core to cool toward dark charcoal
-const SMOKE_DURATION := 13.0        ## s rising faceted smoke chunks emit from a downed wreck
-const SMOKE_PUFF_COUNT := 4
 const FALL_DAMAGE_SPEED := 12.0
 const FALL_DAMAGE_PER_MPS := 5.0
 const ALERT_DELAY := 0.35
@@ -210,17 +207,8 @@ var _prev_target_pos := Vector3.ZERO
 var _target_vel := Vector3.ZERO
 var _has_prev_pos := false
 var _last_hit_dir := Vector3.ZERO
-var _flame_entries: Array = []      ## [{stream, base_len, base_w, base_root, age, duration, done}]
-var _core_glow_mi: MeshInstance3D = null
-var _core_glow_mat: StandardMaterial3D = null
-var _core_cool_age := 0.0
-var _core_cooling := false
-var _smoke_puffs: Array = []        ## [{mi, age, life, start, vel, spin, size, done}]
-var _wreck_cooled := false
-var _wreck_falling := false         ## cosmetic deterministic falling-wreck physics for downed aerial enemies
-var _wreck_vel := Vector3.ZERO
-var _wreck_spin := Vector3.ZERO
-var _wreck_bounces := 0
+var _wreck_cooled := false             ## wreck fx and motion all finished: the dead unit stops ticking
+var wreck := EnemyWreckFx.new(self)     ## flames, core glow, smoke (presentation)
 var _ray_query := PhysicsRayQueryParameters3D.new()  ## reused ray query (zero per-frame alloc)
 # Stagger animation + the unit's seen motion (presentation only, every machine: docs in EnemyStaggerAnim / EnemyGait)
 var _stagger_anim := EnemyStaggerAnim.new()
@@ -277,10 +265,7 @@ func net_fields() -> Dictionary:
 		"_built_visuals": Net.LOCAL, "_was_shutdown": Net.PRIVATE, "_was_staggered": Net.PRIVATE,
 		"_home_xf": Net.SPAWN, "_last_target_ref": Net.LOCAL, "_last_seen_pos": Net.OWNER,
 		"_tracked_tid": Net.PRIVATE, "_prev_target_pos": Net.PRIVATE, "_target_vel": Net.PRIVATE,
-		"_has_prev_pos": Net.PRIVATE, "_last_hit_dir": Net.LOCAL, "_flame_entries": Net.LOCAL,
-		"_core_glow_mi": Net.LOCAL, "_core_glow_mat": Net.LOCAL, "_core_cool_age": Net.LOCAL,
-		"_core_cooling": Net.LOCAL, "_smoke_puffs": Net.LOCAL, "_wreck_cooled": Net.LOCAL,
-		"_wreck_falling": Net.LOCAL, "_wreck_vel": Net.LOCAL, "_wreck_spin": Net.LOCAL, "_wreck_bounces": Net.LOCAL,
+		"_has_prev_pos": Net.PRIVATE, "_last_hit_dir": Net.LOCAL, "_wreck_cooled": Net.LOCAL, "wreck": Net.LOCAL,
 		"_ray_query": Net.LOCAL, "_stagger_anim": Net.LOCAL, "_vis_prev": Net.LOCAL, "_vis_vel": Net.LOCAL,
 		"_vis_has_prev": Net.LOCAL, "_last_hit_age": Net.LOCAL, "anim_stagger_amp": Net.LOCAL,
 	})
@@ -640,18 +625,6 @@ func _step_transit(dt: float, space: PhysicsDirectSpaceState3D) -> bool:
 	return true
 
 
-func _is_aerial_wreck() -> bool:
-	return false
-
-
-func _wreck_ground_radius() -> float:
-	return 0.75
-
-
-func _wreck_body_pivot() -> Node3D:
-	return null
-
-
 func eye_world() -> Vector3:
 	var h := float(_cfg.get("eye_height", 4.2))
 	return global_transform * Vector3(0.0, h, 0.0) if is_inside_tree() else position + up * h
@@ -816,9 +789,8 @@ func _kill(cause: String) -> void:
 			fx.add_column(col_h)
 	_spawn_death_debris(cause)
 	_on_destroyed_visual()
-	_start_wreck_fx()
-	if _is_aerial_wreck():
-		_start_aerial_crash()
+	wreck.start(_wreck_flame_specs(), _core_rupture_pos(), _core_rupture_scale(), _looks_rng())
+	_start_wreck_motion()
 	if squad != null and squad.has_method("note_deck_activity"):
 		squad.note_deck_activity(spawn_deck)
 	if squad != null and squad.has_method("register_wreck"):
@@ -834,7 +806,7 @@ func _on_destroyed_visual() -> void:
 				mi.visible = false
 
 
-# --- Persistent Destruction: Pop-Off Debris, Socket/Wreck Flames, Ruptured Core & Rising Smoke -------------
+# --- Persistent Destruction: Pop-Off Debris & Wreck (flames, ruptured core, smoke: EnemyWreckFx) --------------
 
 func _spawn_component_debris(_comp_id: String) -> void:
 	pass
@@ -904,340 +876,21 @@ func _pop_plates(origin_world: Vector3, count: int, up_min: float = 6.0, up_max:
 		_pop_part(part, Transform3D(rot, origin_world + off), up_min, up_max, rad_min, rad_max, 6.5, i % 2 == 1, sc)
 
 
-## Attach a manual-stepped LowPolyFlame.Stream whose -Y points along `local_dir` (duration <= 0 burns while alive).
-func _attach_flame_stream(parent_node: Node3D, local_pos: Vector3, local_dir: Vector3,
-		length: float, width: float, speed: float, count: int, root_scale: float,
-		burn_duration: float, seed_tag: String) -> LowPolyFlame.Stream:
-	var host := parent_node if parent_node != null and is_instance_valid(parent_node) else self
-	var st := LowPolyFlame.Stream.new()
-	st.name = "Flame_%s" % seed_tag
-	st.position = local_pos
-	var d := local_dir.normalized() if local_dir.length_squared() > 1e-6 else Vector3.UP
-	var neg_d := -d
-	var ref := Vector3.RIGHT if absf(neg_d.x) < 0.92 else Vector3.FORWARD
-	var x := ref.cross(neg_d).normalized()
-	var z := x.cross(neg_d).normalized()
-	st.basis = Basis(x, neg_d, z)
-	st.length = length
-	st.width = width
-	st.speed = speed
-	st.count = count
-	st.spread = 0.16
-	st.tumble = 0.42
-	st.root = root_scale
-	st.jitter_seed = hash([target_id, seed_tag])
-	st.manual = true
-	st.emitting = true
-	host.add_child(st)
-	st.rebuild()
-	st.advance(0.18)
-	_flame_entries.append({
-		"stream": st, "base_len": length, "base_w": width, "base_root": root_scale,
-		"age": 0.0, "duration": burn_duration, "done": false,
-	})
-	return st
-
-
-func _spawn_core_glow(local_pos: Vector3, scale_val: float, cooling: bool) -> void:
-	if _core_glow_mi != null and is_instance_valid(_core_glow_mi):
-		_core_glow_mi.queue_free()
-	_core_glow_mi = EnemyMeshes.instance("rupture_core")
-	_core_glow_mi.name = "RuptureCoreGlow"
-	_core_glow_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	_core_glow_mi.position = local_pos
-	_core_glow_mi.scale = Vector3.ONE * scale_val
-	_core_glow_mat = StandardMaterial3D.new()
-	_core_glow_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	_core_glow_mat.albedo_color = LowPolyFlame.MID
-	_core_glow_mi.material_override = _core_glow_mat
-	add_child(_core_glow_mi)
-	_core_cool_age = 0.0
-	_core_cooling = cooling
-
-
-func _start_wreck_fx() -> void:
-	_clear_flames()
-	for sp: Dictionary in _wreck_flame_specs():
-		var host: Node3D = sp.get("parent", self)
-		_attach_flame_stream(
-			host,
-			sp["pos"] as Vector3,
-			sp["dir"] as Vector3,
-			float(sp["length"]),
-			float(sp["width"]),
-			float(sp.get("speed", 10.5)),
-			int(sp.get("count", 6)),
-			float(sp.get("root", 1.0)),
-			float(sp.get("duration", 7.5)),
-			str(sp.get("tag", "wreck")),
-		)
-	_spawn_core_glow(_core_rupture_pos(), _core_rupture_scale(), true)
-	_spawn_wreck_smoke()
-
-
-func _spawn_wreck_smoke() -> void:
-	_clear_smoke()
-	var rng := _looks_rng()
-	var origin := global_transform * _core_rupture_pos() if is_inside_tree() else position + up * probe_height
-	var up_b := ImpactFx.basis_for_normal(up)
-	for i in SMOKE_PUFF_COUNT:
-		var mi := CombatMeshes.instance(CombatMeshes.ico(ImpactFx.SMOKE))
-		mi.name = "WreckSmoke_%d" % i
-		mi.top_level = true
-		mi.visible = false
-		add_child(mi)
-		var life := rng.randf_range(1.9, 2.7)
-		var puff := {
-			"mi": mi, "age": -float(i) * 0.55, "life": life, "start": origin,
-			"vel": _smoke_vel(rng, up_b),
-			"spin": Vector3(rng.randf_range(-2.2, 2.2), rng.randf_range(-2.2, 2.2), rng.randf_range(-2.2, 2.2)),
-			"size": rng.randf_range(0.65, 1.15) * _core_rupture_scale(),
-			"done": false,
-		}
-		_smoke_puffs.append(puff)
-
-
-func _smoke_vel(rng: RandomNumberGenerator, up_b: Basis) -> Vector3:
-	var ang := rng.randf_range(0.0, TAU)
-	return up * rng.randf_range(2.6, 4.4) + (up_b.x * cos(ang) + up_b.z * sin(ang)) * rng.randf_range(0.35, 1.15)
-
-
-func _tick_flames(dt: float) -> bool:
-	var any_active := false
-	for e: Dictionary in _flame_entries:
-		if bool(e["done"]):
-			continue
-		var st: LowPolyFlame.Stream = e["stream"]
-		if not is_instance_valid(st):
-			e["done"] = true
-			continue
-		var dur := float(e["duration"])
-		var a := float(e["age"]) + dt
-		e["age"] = a
-		if dur > 0.0:
-			var taper_start := dur * 0.62
-			if a >= dur:
-				st.emitting = false
-				st.root = 0.0
-			elif a > taper_start:
-				var k := clampf(1.0 - (a - taper_start) / maxf(dur - taper_start, 0.01), 0.12, 1.0)
-				st.length = float(e["base_len"]) * k
-				st.width = float(e["base_w"]) * lerpf(0.45, 1.0, k)
-				st.root = float(e["base_root"]) * k
-		st.advance(dt)
-		if dur > 0.0 and not st.emitting and not st.active():
-			e["done"] = true
-		else:
-			any_active = true
-	return any_active
-
-
-func _tick_core_glow(dt: float) -> bool:
-	if not _core_cooling or _core_glow_mat == null:
-		return false
-	_core_cool_age += dt
-	var u := clampf(_core_cool_age / CORE_COOL_TIME, 0.0, 1.0)
-	var ember_dark := Color(0.45, 0.12, 0.04)
-	if u < 0.25:
-		_core_glow_mat.albedo_color = LowPolyFlame.MID.lerp(LowPolyFlame.OUTER, u / 0.25)
-	elif u < 0.65:
-		_core_glow_mat.albedo_color = LowPolyFlame.OUTER.lerp(ember_dark, (u - 0.25) / 0.40)
-	else:
-		_core_glow_mat.albedo_color = ember_dark.lerp(EnemyMeshes.CHARRED, (u - 0.65) / 0.35)
-	if u >= 1.0:
-		_core_glow_mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
-		_core_glow_mat.roughness = 0.95
-		_core_cooling = false
-		return false
-	return true
-
-
-func _tick_wreck_smoke(dt: float) -> bool:
-	var any_active := false
-	var rng := _looks_rng()
-	var up_b := ImpactFx.basis_for_normal(up)
-	var origin := global_transform * _core_rupture_pos() if is_inside_tree() else position + up * probe_height
-	for p: Dictionary in _smoke_puffs:
-		if bool(p["done"]):
-			continue
-		var mi: MeshInstance3D = p["mi"]
-		if not is_instance_valid(mi):
-			p["done"] = true
-			continue
-		var a := float(p["age"]) + dt
-		var life := float(p["life"])
-		if a >= life:
-			if _dead_time < SMOKE_DURATION:
-				a = 0.0
-				p["start"] = origin
-				p["vel"] = _smoke_vel(rng, up_b)
-				p["life"] = rng.randf_range(1.9, 2.7)
-				life = float(p["life"])
-			else:
-				mi.visible = false
-				p["done"] = true
-				continue
-		p["age"] = a
-		any_active = true
-		if a < 0.0:
-			mi.visible = false
-			continue
-		var u := clampf(a / maxf(life, 0.01), 0.0, 1.0)
-		if u > 0.92:
-			mi.visible = false
-			continue
-		mi.visible = true
-		var at := (p["start"] as Vector3) + (p["vel"] as Vector3) * a
-		var sz := float(p["size"]) * lerpf(0.35, 1.2, pow(u, 0.65))
-		var b := Basis.from_euler((p["spin"] as Vector3) * a)
-		mi.global_transform = Transform3D(b.scaled(Vector3.ONE * sz), at)
-	return any_active
-
-
-func _start_aerial_crash() -> void:
-	_wreck_falling = true
-	_wreck_bounces = 0
-	_wreck_cooled = false
-	var crng := RandomNumberGenerator.new()
-	crng.seed = hash([world.mission_seed if world != null else 1, target_id, "crash"])
-	var up_b := ImpactFx.basis_for_normal(up)
-	var ang := crng.randf_range(0.0, TAU)
-	var horiz := (up_b.x * cos(ang) + up_b.z * sin(ang)).normalized()
-	_wreck_vel = horiz * crng.randf_range(3.5, 6.8) + up * crng.randf_range(-2.2, 1.4)
-	_wreck_spin = Vector3(
-		crng.randf_range(-4.2, 4.2),
-		crng.randf_range(-3.2, 3.2),
-		crng.randf_range(-4.2, 4.2))
-	if _wreck_spin.length_squared() < 2.0:
-		_wreck_spin.x = 2.6
-
-
-func _step_aerial_crash(dt: float, space: PhysicsDirectSpaceState3D) -> void:
-	if not _wreck_falling:
-		return
-	var pos := _world_pos()
-	if ring != null:
-		up = ring.up_at(pos)
-	_wreck_vel -= up * 18.0 * dt
-	var next_pos := pos + _wreck_vel * dt
-	var piv := _wreck_body_pivot()
-	if piv != null and is_instance_valid(piv):
-		piv.rotation += _wreck_spin * dt
-	var rest_r := _wreck_ground_radius()
-	var hit_found := false
-	var hit_pos := Vector3.ZERO
-	var hit_n := up
-	if space != null:
-		_ray_query.from = pos + up * 0.25
-		_ray_query.to = next_pos - up * rest_r
-		var h := space.intersect_ray(_ray_query)
-		if not h.is_empty():
-			hit_found = true
-			hit_pos = h["position"] as Vector3
-			hit_n = (h["normal"] as Vector3).normalized()
-	else:
-		var cur_h := ring.height(next_pos) if ring != null else next_pos.y
-		if cur_h <= rest_r:
-			hit_found = true
-			hit_pos = next_pos - up * cur_h
-			hit_n = up
-	# Safety floor guard (e.g., crashing above an open shaft or physics-free void).
-	if not hit_found:
-		if ring != null and ring.height(next_pos) < -4.0:
-			hit_found = true
-			hit_pos = next_pos - up * ring.height(next_pos)
-			hit_n = up
-		elif ring == null and next_pos.y < -4.0:
-			hit_found = true
-			hit_pos = Vector3(next_pos.x, 0.0, next_pos.z)
-			hit_n = Vector3.UP
-	if hit_found:
-		var landed := hit_pos + hit_n * rest_r
-		if is_inside_tree():
-			global_position = landed
-		else:
-			position = landed
-		if ring != null:
-			up = ring.up_at(landed)
-		ground_y = landed.dot(up)
-		if _wreck_bounces == 0:
-			_wreck_bounces = 1
-			if world != null:
-				world.spawn_impact(hit_pos + hit_n * 0.15, hit_n, 3.0, EnemyMeshes.CHARRED, false)
-			var vn := _wreck_vel.dot(hit_n)
-			var vt := _wreck_vel - hit_n * vn
-			_wreck_vel = vt * 0.30 + hit_n * maxf(-vn * 0.28, 2.0)
-			_wreck_spin *= 0.45
-		else:
-			_wreck_falling = false
-			_wreck_vel = Vector3.ZERO
-			_wreck_spin = Vector3.ZERO
-	else:
-		if is_inside_tree():
-			global_position = next_pos
-		else:
-			position = next_pos
-		if ring != null:
-			up = ring.up_at(next_pos)
-		ground_y = next_pos.dot(up)
-
-
 func _tick_wreck_fx(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
-	if _wreck_falling:
-		var eff_space := space
-		if eff_space == null and world != null and world.use_physics:
-			eff_space = world.space()
-		_step_aerial_crash(dt, eff_space)
-	var flames_on := _tick_flames(dt)
-	var core_on := _tick_core_glow(dt)
-	var smoke_on := _tick_wreck_smoke(dt)
-	if not _wreck_falling and not flames_on and not core_on and not smoke_on:
+	var moving := _step_wreck_motion(dt, space)
+	var fx_on := wreck.step(dt, _dead_time, _looks_rng())
+	if not moving and not fx_on:
 		_wreck_cooled = true
 
 
-func _clear_flames() -> void:
-	for e: Dictionary in _flame_entries:
-		var st: LowPolyFlame.Stream = e["stream"]
-		if is_instance_valid(st):
-			st.queue_free()
-	_flame_entries.clear()
+## Hook: the wreck starts moving on its own (EnemyFlier: the aerial crash). Default: it stays where it fell.
+func _start_wreck_motion() -> void:
+	pass
 
 
-func _clear_smoke() -> void:
-	for p: Dictionary in _smoke_puffs:
-		var mi: MeshInstance3D = p["mi"]
-		if is_instance_valid(mi):
-			mi.queue_free()
-	_smoke_puffs.clear()
-
-
-func _clear_destruction_fx() -> void:
-	_clear_flames()
-	_clear_smoke()
-	if _core_glow_mi != null and is_instance_valid(_core_glow_mi):
-		_core_glow_mi.queue_free()
-	_core_glow_mi = null
-	_core_glow_mat = null
-	_core_cool_age = 0.0
-	_core_cooling = false
-	_wreck_cooled = false
-	_wreck_falling = false
-	_wreck_vel = Vector3.ZERO
-	_wreck_spin = Vector3.ZERO
-	_wreck_bounces = 0
-
-
-func active_flame_streams() -> Array[LowPolyFlame.Stream]:
-	var out: Array[LowPolyFlame.Stream] = []
-	for e: Dictionary in _flame_entries:
-		var st: LowPolyFlame.Stream = e["stream"]
-		if is_instance_valid(st) and (st.emitting or st.active()):
-			out.append(st)
-	return out
-
-
-func has_active_flame() -> bool:
-	return not active_flame_streams().is_empty()
+## Hook: one step of that motion, ahead of the wreck fx; true while still moving (keeps the wreck awake).
+func _step_wreck_motion(_dt: float, _space: PhysicsDirectSpaceState3D) -> bool:
+	return false
 
 
 func has_charred_hulk() -> bool:
@@ -1354,6 +1007,85 @@ func _is_awake() -> bool:
 	return false
 
 
+# --- Public API for other systems (squad, spawner, bots, logs): they use these, never the private state ----------
+
+## The id of the target this enemy is fighting ("" = none; owner state).
+func current_target_id() -> String:
+	return _target_id
+
+
+## True when this enemy ticks (see _is_awake).
+func is_awake() -> bool:
+	return _is_awake()
+
+
+## True while this enemy sees its current target (owner-private: meaningful on the owning machine only).
+func has_los() -> bool:
+	return _has_los
+
+
+## The current shot's number (one per shot, kept across a cancelled telegraph).
+func shot_index() -> int:
+	return _shot_index
+
+
+## The weapon of the current shot ("" between shots).
+func active_weapon() -> String:
+	return _active_weapon
+
+
+## Seconds into the current telegraph.
+func telegraph_elapsed() -> float:
+	return _telegraph_t
+
+
+## The catalog entry (EnemyCatalog.unit) this enemy was configured from. Read only.
+func unit_cfg() -> Dictionary:
+	return _cfg
+
+
+## World-space aim centre of `t` (zero allocation; the point this enemy aims at).
+func target_aim_center(t: CombatTarget) -> Vector3:
+	return _target_aim_center(t)
+
+
+## Kills this enemy outright with `cause` (squad culls: "fell_out", "timeout"). Owner only.
+func despawn(cause: String) -> void:
+	_kill(cause)
+
+
+## Spawner: this enemy gets no meshes (headless / skip_meshes); marks its visuals as already built.
+func skip_visuals() -> void:
+	_built_visuals = true
+
+
+## Host-only straggler hunt (EnemySquad step 1): true while hunting.
+func is_hunting() -> bool:
+	return _hunting
+
+
+## Starts the hunt (no-op when already hunting): the hunt timer starts at 0.
+func start_hunt() -> void:
+	if not _hunting:
+		_hunting = true
+		_hunt_t = 0.0
+
+
+## Step 2: advances the hunt timer by `dt` (reset while the target is in sight). True when it reaches `delay` s.
+func step_hunt(dt: float, delay: float) -> bool:
+	if _has_los:
+		_hunt_t = 0.0
+		return false
+	_hunt_t += dt
+	return _hunt_t >= delay
+
+
+## Step 3: advances the time spent revealed by `dt`. True when it reaches `cull` s.
+func step_revealed_idle(dt: float, cull: float) -> bool:
+	_revealed_idle_t += dt
+	return _revealed_idle_t >= cull
+
+
 func _can_lod_throttle() -> bool:
 	return not _has_los and ai_state != STATE_TELEGRAPH and ai_state != STATE_FIRE \
 		and not knock.moving() and _grounded_now and enemy_type != "dropship" \
@@ -1463,8 +1195,7 @@ func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
 			CombatWorld.prof_add("ai.visuals", Time.get_ticks_usec() - tv)
 		else:
 			_update_visuals(eff_dt)
-		if not _flame_entries.is_empty():
-			_tick_flames(eff_dt)
+		wreck.step_flames(eff_dt)
 
 
 func _update_dynamic_ground(pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
@@ -2337,12 +2068,12 @@ func _move_along_cover_plan(goal_w: Vector3, spd: float, engage_r: float, dt: fl
 		space: PhysicsDirectSpaceState3D) -> void:
 	var t0 := Time.get_ticks_usec() if CombatWorld.profiling else 0
 	_cover_path_timer -= dt
-	if _cover_path_timer <= 0.0 and squad != null and squad.has_method("find_cover_path"):
+	if _cover_path_timer <= 0.0 and _nav() != null:
 		if not squad.has_method("claim_cover_repath") or squad.claim_cover_repath():
 			_cover_path_timer = COVER_PATH_INTERVAL
 			var cur_arc := _world_to_arc2(_world_pos())
 			var goal_arc := _world_to_arc2(goal_w)
-			_path_points = squad.find_cover_path(cur_arc, goal_arc, goal_arc, spawn_deck, engage_r)
+			_path_points = _nav().find_cover_path(cur_arc, goal_arc, goal_arc, spawn_deck, engage_r)
 		else:
 			_cover_path_timer = 0.05
 	var steer_goal := Vector3.ZERO
@@ -2400,8 +2131,8 @@ func _pick_peek_point(pos: Vector3, target_pos: Vector3, space: PhysicsDirectSpa
 		if not has_fallback:
 			fallback = cand
 			has_fallback = true
-		if squad != null and squad.has_method("arc_segment_occluded"):
-			if not squad.arc_segment_occluded(_world_to_arc2(cand), t_arc, spawn_deck):
+		if _nav() != null:
+			if not _nav().arc_segment_occluded(_world_to_arc2(cand), t_arc, spawn_deck):
 				return cand
 	return fallback
 
@@ -2419,9 +2150,9 @@ func _move_along_plan(goal_w: Vector3, spd: float, dt: float, space: PhysicsDire
 					_steer_toward(exit_w, spd, dt, space)
 					return
 	_path_timer -= dt
-	if (_path_points.is_empty() or _path_timer <= 0.0) and squad != null and squad.has_method("find_arc_path"):
+	if (_path_points.is_empty() or _path_timer <= 0.0) and _nav() != null:
 		_path_timer = 2.5
-		_path_points = squad.find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(goal_w), spawn_deck)
+		_path_points = _nav().find_arc_path(_world_to_arc2(_world_pos()), _world_to_arc2(goal_w), spawn_deck)
 	var steer_goal := goal_w
 	while not _path_points.is_empty():
 		var wp := _arc_to_world_pos(_path_points[0])
@@ -2590,9 +2321,9 @@ func _keep_out_of_floor_cuts(pos: Vector3, step_vec: Vector3, dt: float) -> Vect
 	if _cut_far_t > 0.0:
 		_cut_far_t -= dt   # known to be well clear of every cut: skip (cheap path for most frames)
 		return step_vec
-	if ring == null or squad == null or step_vec.length_squared() < 1e-8 or not squad.has_method("deck_cuts"):
+	if ring == null or squad == null or step_vec.length_squared() < 1e-8 or _nav() == null:
 		return step_vec
-	var cuts: Array[Rect2] = squad.deck_cuts(spawn_deck)
+	var cuts: Array[Rect2] = _nav().deck_cuts(spawn_deck)
 	if cuts.is_empty():
 		_cut_far_t = 1.0
 		return step_vec
@@ -2675,8 +2406,8 @@ func _check_ground_unstick(next_pos: Vector3, step_vec: Vector3, dt: float) -> V
 			_cached_avoid_dir = Vector3.ZERO
 			_cached_block_n = Vector3.ZERO
 			_cached_slide_blocked = false
-			if squad != null and squad.has_method("nearest_road_point") and not _transit_ramp:
-				var rp: Vector2 = squad.nearest_road_point(_world_to_arc2(next_pos), spawn_deck, 8.0)
+			if _nav() != null and not _transit_ramp:
+				var rp: Vector2 = _nav().nearest_road_point(_world_to_arc2(next_pos), spawn_deck, 8.0)
 				if not is_nan(rp.x):
 					_unstick_goal = _arc_to_world_pos(rp)
 					_unstick_t = 2.6
@@ -2781,15 +2512,17 @@ func stagger_rock_basis(amp: float) -> Basis:
 	return Basis(axis.normalized(), amp * a.rock)
 
 
+## The squad's path service (EnemySquad.nav), or null without one (no squad, or a test stub without it).
+func _nav() -> EnemyNav:
+	return squad.get("nav") as EnemyNav if squad != null else null
+
+
 func _world_pos() -> Vector3:
 	return global_position if is_inside_tree() else position
 
 
 func _world_to_arc2(p: Vector3) -> Vector2:
-	if ring != null:
-		var a := ring.world_to_arc(p)
-		return Vector2(a.x, a.y)
-	return Vector2(p.x, p.z)
+	return RingFrame.world_to_arc2(ring, p)
 
 
 func _arc_to_world_pos(arc2: Vector2) -> Vector3:
@@ -2865,7 +2598,8 @@ func reset_enemy() -> void:
 	_stagger_anim.reset()
 	_vis_has_prev = false
 	_vis_vel = Vector3.ZERO
-	_clear_destruction_fx()
+	wreck.clear()
+	_wreck_cooled = false
 	_cancel_telegraph("reset")
 	_release_slot()
 	ai_state = STATE_IDLE
@@ -2996,5 +2730,4 @@ func puppet_tick(dt: float) -> void:
 	if ring != null:
 		up = ring.up_at(_world_pos())
 	_update_visuals(dt)
-	if not _flame_entries.is_empty():
-		_tick_flames(dt)
+	wreck.step_flames(dt)

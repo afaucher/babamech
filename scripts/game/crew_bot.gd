@@ -1,10 +1,10 @@
 class_name CrewBot
 extends Node
-## A hangar bot's body on the HOST (docs/design/hangar-bots.md §5): the machine that runs it. TestDrive builds one per
+## A hangar bot's body on the HOST (docs/design/hangar-bots.md §5): the machine that runs it. MissionScene builds one per
 ## bot in the launch crew, after combat, on the host only; on every other machine the bot is an ordinary puppet
 ## (CrewSync / MechPuppet).
 ##   mech     the bot's MechController (real physics, not a puppet; owner_peer 1 = this machine, pilot id in the
-##            MechSpawn "owner_peer" meta), made by TestDrive._spawn_crew
+##            MechSpawn "owner_peer" meta), made by MissionScene._spawn_crew
 ##   target   its PlayerTarget "player<id>" (owner 1: every hit on the bot is decided here); downed it holds still with
 ##            no weapons, waits for a revive and then redeploys (auto_redeploy, DownedCrew / DownedRules)
 ##   rack     its WeaponRack (shooter "player<id>", peer 1, no camera, no input), stepped here before CombatWorld.advance;
@@ -14,7 +14,7 @@ extends Node
 
 var id := 0                       ## the bot's pilot id (< 0)
 var skill := "veteran"            ## its BotProfile id (the hangar's)
-var drive: TestDrive
+var drive: MissionScene
 var mech: MechController
 var rig: MechRig
 var target: PlayerTarget
@@ -33,7 +33,7 @@ func _ready() -> void:
 
 
 ## Wire the bot's combat on `td` (its combat world exists); `m` is its mech, already in the tree.
-func setup(td: TestDrive, bot_id: int, m: MechController, skill_: String) -> void:
+func setup(td: MissionScene, bot_id: int, m: MechController, skill_: String) -> void:
 	drive = td
 	id = bot_id
 	skill = skill_
@@ -84,7 +84,7 @@ func _physics_process(delta: float) -> void:
 		mech.turn_input = 0.0
 		mech.running = false
 		mech.thrust_input = false
-	if drive.stack != null and drive.stack.fell_out(mech.global_position, TestDrive.FALL_OUT):
+	if drive.stack != null and drive.stack.fell_out(mech.global_position, MissionScene.FALL_OUT):
 		respawn()
 	if rack != null:
 		var pp0 := Time.get_ticks_usec() if PerfProbe.on else 0   # bench instrumentation (tests/bench_bot_perf.gd)

@@ -259,16 +259,16 @@ func _chunk() -> String:
 	return ""
 
 
-## What the load barrier compares (TestDrive.mission_checksum): the section checksum + per deck its plan checksum, its
+## What the load barrier compares (MissionScene.mission_checksum): the section checksum + per deck its plan checksum, its
 ## street props' layout (CityProps.layout_checksum of the props as built: host-arbitrated by index, they stop shots) and
-## its air doors (MissionWorld.air_checksum: wall cuts and dropship entries, placed from plan data alone). Equal on two
+## its air doors (MissionAirDoors.checksum: wall cuts and dropship entries, placed from plan data alone). Equal on two
 ## machines = the same stack, props and air doors; a build whose prop or air-door rule differs fails the barrier instead
 ## of desyncing by index (2026-11-25, code audit). A mission set up or not changes nothing here.
 func checksum() -> String:
 	var all := section.checksum()
 	for d in decks:
 		all += d.plan.checksum() + CityProps.layout_checksum(d.props.items if d.props != null else CityProps.layout(d.plan)) \
-				+ MissionWorld.air_checksum(d.plan)
+				+ MissionAirDoors.checksum(d.plan)
 	return all.sha256_text().substr(0, 16)
 
 
@@ -276,7 +276,7 @@ func checksum() -> String:
 static func sum_of(sec: SectionPlan, plans: Array[CityPlan]) -> String:
 	var all := sec.checksum()
 	for p in plans:
-		all += p.checksum() + CityProps.layout_checksum(CityProps.layout(p)) + MissionWorld.air_checksum(p)
+		all += p.checksum() + CityProps.layout_checksum(CityProps.layout(p)) + MissionAirDoors.checksum(p)
 	return all.sha256_text().substr(0, 16)
 
 

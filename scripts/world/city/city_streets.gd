@@ -34,10 +34,6 @@ const RAIL_GAUGE := 1.435
 const TREE_LEAVES := [["leaf_dark", "leaf", "leaf_light"], ["leaf_dark", "leaf_dark", "leaf"], ["leaf", "leaf_light", "leaf_light"]]
 
 
-static func _c(id: String) -> Color:
-	return CityPalette.C[id]
-
-
 # --- Ground ----------------------------------------------------------------------------------------------
 
 ## Everything on the deck's surface. The floor holes are left out of all of it (CityGeo.holes) and edged afterwards.
@@ -59,7 +55,7 @@ static func ground_part(geo: CityGeo, plan: CityPlan, part: int) -> void:
 		var e := plan.extent
 		geo.holes = plan.floor_cuts()
 		geo.tag("deck")
-		geo.g_rect(e.position.x, e.end.x, e.position.y, e.end.y, 0.0, _c("asphalt"))
+		geo.g_rect(e.position.x, e.end.x, e.position.y, e.end.y, 0.0, CityPalette.c("asphalt"))
 	elif part <= nx:
 		var i := part - 1
 		if plan.roads_x[i]["kind"] == "spine":
@@ -131,7 +127,7 @@ static func _road(geo: CityGeo, road: Dictionary, crossings: Array, swap: bool, 
 	var b: float = road["b"]
 	var mid := (a + b) * 0.5
 	var avenue: bool = road["kind"] == "avenue"
-	var white := _c("marking")
+	var white := CityPalette.c("marking")
 	for j in crossings.size() - 1:
 		var v0: float = crossings[j]["b"]
 		var v1: float = crossings[j + 1]["a"]
@@ -142,8 +138,8 @@ static func _road(geo: CityGeo, road: Dictionary, crossings: Array, swap: bool, 
 		# Gutters along both curbs.
 		if zebra:
 			geo.tag("road.gutter")
-			_r(geo, swap, a, a + 0.5, v0, v1, _c("asphalt_dark"), DECAL_PATCH)
-			_r(geo, swap, b - 0.5, b, v0, v1, _c("asphalt_dark"), DECAL_PATCH)
+			_r(geo, swap, a, a + 0.5, v0, v1, CityPalette.c("asphalt_dark"), DECAL_PATCH)
+			_r(geo, swap, b - 0.5, b, v0, v1, CityPalette.c("asphalt_dark"), DECAL_PATCH)
 		# Zebra crossings and stop lines at both ends.
 		geo.tag("road.zebra_stop")
 		for end in 2:
@@ -162,7 +158,7 @@ static func _road(geo: CityGeo, road: Dictionary, crossings: Array, swap: bool, 
 		if avenue:
 			# Tan centre carriageway, a planted median, dashed lane lines, solid edge lines.
 			geo.tag("road.lane_tan")
-			_r(geo, swap, mid - 5.2, mid + 5.2, v0, v1, _c("lane_tan"), DECAL_PATCH)
+			_r(geo, swap, mid - 5.2, mid + 5.2, v0, v1, CityPalette.c("lane_tan"), DECAL_PATCH)
 			geo.tag("road.median")
 			_median(geo, swap, mid - 1.5, mid + 1.5, m0 + 2.0, m1 - 2.0)
 			geo.tag("road.lines")
@@ -177,7 +173,7 @@ static func _road(geo: CityGeo, road: Dictionary, crossings: Array, swap: bool, 
 			geo.tag("road.parking")
 			for k in 2:
 				var p0 := a + 0.5 if k == 0 else b - 2.8
-				_r(geo, swap, p0, p0 + 2.3, m0, m1, _c("asphalt_light"), DECAL_PATCH)
+				_r(geo, swap, p0, p0 + 2.3, m0, m1, CityPalette.c("asphalt_light"), DECAL_PATCH)
 				var edge := p0 + 2.3 if k == 0 else p0 - 0.12
 				_r(geo, swap, edge, edge + 0.12, m0, m1, white)
 				var t := m0
@@ -196,15 +192,15 @@ static func _road(geo: CityGeo, road: Dictionary, crossings: Array, swap: bool, 
 ##               (no vehicles); the blocks' curbs stay as its one low step
 ##   none        nothing: the superblock's court covers it (drawn with the blocks)
 static func _form_segment(geo: CityGeo, form: String, a: float, b: float, v0: float, v1: float, swap: bool) -> void:
-	var white := _c("marking")
+	var white := CityPalette.c("marking")
 	var mid := (a + b) * 0.5
 	match form:
 		"lane":
 			var la := mid - CityPlan.LANE_W * 0.5
 			var lb := mid + CityPlan.LANE_W * 0.5
 			geo.tag("road.gutter")
-			_r(geo, swap, la, la + 0.5, v0, v1, _c("asphalt_dark"), DECAL_PATCH)
-			_r(geo, swap, lb - 0.5, lb, v0, v1, _c("asphalt_dark"), DECAL_PATCH)
+			_r(geo, swap, la, la + 0.5, v0, v1, CityPalette.c("asphalt_dark"), DECAL_PATCH)
+			_r(geo, swap, lb - 0.5, lb, v0, v1, CityPalette.c("asphalt_dark"), DECAL_PATCH)
 			geo.tag("road.zebra_stop")
 			_zebra(geo, swap, la - 0.4, lb + 0.4, v0 + 1.8)
 			_zebra(geo, swap, la - 0.4, lb + 0.4, v1 - 4.8)
@@ -218,12 +214,12 @@ static func _form_segment(geo: CityGeo, form: String, a: float, b: float, v0: fl
 				_r(geo, swap, lb - 0.9, lb - 0.75, m0, m1, white)
 		"pedestrian":
 			geo.tag("road.pedestrian")
-			_r(geo, swap, a, b, v0, v1, _c("plaza"), DECAL_PATCH)
+			_r(geo, swap, a, b, v0, v1, CityPalette.c("plaza"), DECAL_PATCH)
 			var n := maxi(int((v1 - v0) / 4.0), 1)
 			for i in n:
 				if i % 2 == 0:
 					var c0 := v0 + (v1 - v0) * float(i) / float(n)
-					_r(geo, swap, a + 0.6, b - 0.6, c0 + 0.3, c0 + (v1 - v0) / float(n) - 0.3, _c("plaza_alt"), DECAL_LINE)
+					_r(geo, swap, a + 0.6, b - 0.6, c0 + 0.3, c0 + (v1 - v0) / float(n) - 0.3, CityPalette.c("plaza_alt"), DECAL_LINE)
 		_:
 			pass
 
@@ -234,19 +230,19 @@ static func _form_segment(geo: CityGeo, form: String, a: float, b: float, v0: fl
 static func _raised(geo: CityGeo, q: Dictionary) -> void:
 	var r: Rect2 = q["rect"]
 	var along_s := int(q["seg"]) < 65536          # the segment's road runs along s
-	var curb := _c("curb")
+	var curb := CityPalette.c("curb")
 	var c := 0.3
 	if q["kind"] == "court":
 		if along_s:
 			geo.g_rect(r.position.x, r.end.x, r.position.y, r.position.y + c, CURB, curb)
 			geo.g_rect(r.position.x, r.end.x, r.end.y - c, r.end.y, CURB, curb)
-			geo.g_rect(r.position.x, r.end.x, r.position.y + c, r.end.y - c, CURB, _c("sidewalk"))
+			geo.g_rect(r.position.x, r.end.x, r.position.y + c, r.end.y - c, CURB, CityPalette.c("sidewalk"))
 			geo.g_wall_s(r.position.y, r.position.x, r.end.x, 0.0, CURB, -1.0, curb)
 			geo.g_wall_s(r.end.y, r.position.x, r.end.x, 0.0, CURB, 1.0, curb)
 		else:
 			geo.g_rect(r.position.x, r.position.x + c, r.position.y, r.end.y, CURB, curb)
 			geo.g_rect(r.end.x - c, r.end.x, r.position.y, r.end.y, CURB, curb)
-			geo.g_rect(r.position.x + c, r.end.x - c, r.position.y, r.end.y, CURB, _c("sidewalk"))
+			geo.g_rect(r.position.x + c, r.end.x - c, r.position.y, r.end.y, CURB, CityPalette.c("sidewalk"))
 			geo.g_wall_x(r.position.x, r.position.y, r.end.y, 0.0, CURB, -1.0, curb)
 			geo.g_wall_x(r.end.x, r.position.y, r.end.y, 0.0, CURB, 1.0, curb)
 		_plaza_paving(geo, r.grow(-1.2))
@@ -257,7 +253,7 @@ static func _raised(geo: CityGeo, q: Dictionary) -> void:
 		var xc := r.position.x if low else r.end.x
 		var xi := r.position.x + c if low else r.end.x - c
 		geo.g_rect(minf(xc, xi), maxf(xc, xi), r.position.y, r.end.y, CURB, curb)
-		geo.g_rect(r.position.x + (c if low else 0.0), r.end.x - (0.0 if low else c), r.position.y, r.end.y, CURB, _c("planting"))
+		geo.g_rect(r.position.x + (c if low else 0.0), r.end.x - (0.0 if low else c), r.position.y, r.end.y, CURB, CityPalette.c("planting"))
 		geo.g_wall_x(xc, r.position.y, r.end.y, 0.0, CURB, -1.0 if low else 1.0, curb)
 		geo.g_wall_s(r.position.y, r.position.x, r.end.x, 0.0, CURB, -1.0, curb)
 		geo.g_wall_s(r.end.y, r.position.x, r.end.x, 0.0, CURB, 1.0, curb)
@@ -265,7 +261,7 @@ static func _raised(geo: CityGeo, q: Dictionary) -> void:
 		var sc := r.position.y if low else r.end.y
 		var si := r.position.y + c if low else r.end.y - c
 		geo.g_rect(r.position.x, r.end.x, minf(sc, si), maxf(sc, si), CURB, curb)
-		geo.g_rect(r.position.x, r.end.x, r.position.y + (c if low else 0.0), r.end.y - (0.0 if low else c), CURB, _c("planting"))
+		geo.g_rect(r.position.x, r.end.x, r.position.y + (c if low else 0.0), r.end.y - (0.0 if low else c), CURB, CityPalette.c("planting"))
 		geo.g_wall_s(sc, r.position.x, r.end.x, 0.0, CURB, -1.0 if low else 1.0, curb)
 		geo.g_wall_x(r.position.x, r.position.y, r.end.y, 0.0, CURB, -1.0, curb)
 		geo.g_wall_x(r.end.x, r.position.y, r.end.y, 0.0, CURB, 1.0, curb)
@@ -274,7 +270,7 @@ static func _raised(geo: CityGeo, q: Dictionary) -> void:
 static func _zebra(geo: CityGeo, swap: bool, a: float, b: float, c0: float) -> void:
 	var u := a + 0.9
 	while u + 0.55 <= b - 0.9:
-		_r(geo, swap, u, u + 0.55, c0, c0 + 3.0, _c("marking"))
+		_r(geo, swap, u, u + 0.55, c0, c0 + 3.0, CityPalette.c("marking"))
 		u += 1.1
 
 
@@ -284,13 +280,13 @@ static func _zebra(geo: CityGeo, swap: bool, a: float, b: float, c0: float) -> v
 static func _spine(geo: CityGeo, road: Dictionary, crossings: Array) -> void:
 	var a: float = road["a"]
 	var b: float = road["b"]
-	var white := _c("marking")
+	var white := CityPalette.c("marking")
 	for j in crossings.size() - 1:
 		var v0: float = crossings[j]["b"]
 		var v1: float = crossings[j + 1]["a"]
 		geo.tag("spine.gutter")
-		_r(geo, false, a, a + 0.5, v0, v1, _c("asphalt_dark"), DECAL_PATCH)
-		_r(geo, false, b - 0.5, b, v0, v1, _c("asphalt_dark"), DECAL_PATCH)
+		_r(geo, false, a, a + 0.5, v0, v1, CityPalette.c("asphalt_dark"), DECAL_PATCH)
+		_r(geo, false, b - 0.5, b, v0, v1, CityPalette.c("asphalt_dark"), DECAL_PATCH)
 		geo.tag("spine.zebra")
 		_zebra(geo, false, a, b, v0 + 1.8)
 		_zebra(geo, false, a, b, v1 - 4.8)
@@ -317,14 +313,14 @@ static func _rail(geo: CityGeo, a: float, b: float, crossings: Array) -> void:
 	var s0: float = crossings[0]["a"]
 	var s1: float = crossings[-1]["b"]
 	for j in crossings.size() - 1:
-		_r(geo, false, a + 0.6, b - 0.6, float(crossings[j]["b"]), float(crossings[j + 1]["a"]), _c("concrete_dark"), DECAL_PATCH)
+		_r(geo, false, a + 0.6, b - 0.6, float(crossings[j]["b"]), float(crossings[j + 1]["a"]), CityPalette.c("concrete_dark"), DECAL_PATCH)
 	var mid := (a + b) * 0.5
 	geo.tag("spine.rail_track")
 	for track: float in [mid - (b - a) * 0.25, mid + (b - a) * 0.25]:
 		var s := s0 + 1.0
 		while s < s1:
 			if not geo.in_hole(track, s):
-				geo.box(geo.frame(track, s, 0.0), Vector3(0, 0.06, 0), Vector3(2.6, 0.12, 0.25), _c("trunk"), CityGeo.NO_BOTTOM)
+				geo.box(geo.frame(track, s, 0.0), Vector3(0, 0.06, 0), Vector3(2.6, 0.12, 0.25), CityPalette.c("trunk"), CityGeo.NO_BOTTOM)
 			s += 2.0
 		for k: float in [-1.0, 1.0]:
 			var x := track + k * RAIL_GAUGE * 0.5
@@ -332,16 +328,16 @@ static func _rail(geo: CityGeo, a: float, b: float, crossings: Array) -> void:
 				var br := CityGeo.breaks(sp[0], sp[1])
 				for i in br.size() - 1:
 					geo.box(geo.frame(x, (br[i] + br[i + 1]) * 0.5, 0.12), Vector3(0, 0.075, 0), Vector3(0.1, 0.15, br[i + 1] - br[i]),
-							_c("metal_dark"), CityGeo.NO_BOTTOM)
+							CityPalette.c("metal_dark"), CityGeo.NO_BOTTOM)
 
 
 ## The edge of a hole in this deck's floor: the cut face of the slab going down, a solid curb round it and a railing on
 ## the curb. Nothing is drawn below: the deck beneath is another district. `open` is a side (2: +s, 3: -s) left without
 ## curb and railing: a ramp's top, where it leaves the road.
 static func _floor_hole(geo: CityGeo, o: Rect2, slab: float, open: int = -1) -> void:
-	var cut := _c("concrete")
-	var curb := _c("curb")
-	var metal := _c("metal_dark")
+	var cut := CityPalette.c("concrete")
+	var curb := CityPalette.c("curb")
+	var metal := CityPalette.c("metal_dark")
 	var x0 := o.position.x
 	var x1 := o.end.x
 	var s0 := o.position.y
@@ -388,7 +384,7 @@ static func _soffits(geo: CityGeo, cuts: Array[Rect2], slab: float) -> void:
 	var done: Array[Rect2] = cuts.duplicate()
 	for o in cuts:
 		for q in CityGeo.cut(o.grow(maxf(PANEL_X, PANEL_S)), done):
-			geo.g_rect(q.position.x, q.end.x, q.position.y, q.end.y, 0.05 - slab, _c("concrete_dark"), false)
+			geo.g_rect(q.position.x, q.end.x, q.position.y, q.end.y, 0.05 - slab, CityPalette.c("concrete_dark"), false)
 			done.append(q)
 
 
@@ -515,9 +511,9 @@ static func _ramp(geo: CityGeo, plan: CityPlan, r: Dictionary) -> void:
 	var x0 := float(r["x0"])
 	var x1 := float(r["x1"])
 	var mid := (x0 + x1) * 0.5
-	var concrete := _c("concrete")
-	var dark := _c("concrete_dark")
-	var white := _c("marking")
+	var concrete := CityPalette.c("concrete")
+	var dark := CityPalette.c("concrete_dark")
+	var white := CityPalette.c("marking")
 	var emb := embankment_s(r)
 	# The stretch on piers (open underneath) and the stretch on the embankment (sides down to the floor).
 	var raised := span
@@ -530,7 +526,7 @@ static func _ramp(geo: CityGeo, plan: CityPlan, r: Dictionary) -> void:
 			low = Vector2(emb, span.y)
 			raised = Vector2(span.x, emb)
 	geo.tag("ramp.ribbon")
-	_slope_rect(geo, r, x0 + PARAPET_W, x1 - PARAPET_W, span.x, span.y, 0.0, _c("asphalt"))
+	_slope_rect(geo, r, x0 + PARAPET_W, x1 - PARAPET_W, span.x, span.y, 0.0, CityPalette.c("asphalt"))
 	geo.tag("ramp.lines")
 	for k: float in [-1.0, 1.0]:
 		var edge := mid + k * ((x1 - x0) * 0.5 - 0.9)
@@ -553,7 +549,7 @@ static func _ramp(geo: CityGeo, plan: CityPlan, r: Dictionary) -> void:
 		var out_x := x0 if side == 0 else x1
 		var in_x := x0 + PARAPET_W if side == 0 else x1 - PARAPET_W
 		var sgn := -1.0 if side == 0 else 1.0
-		_slope_rect(geo, r, minf(out_x, in_x), maxf(out_x, in_x), span.x, span.y, PARAPET_H, _c("curb"))
+		_slope_rect(geo, r, minf(out_x, in_x), maxf(out_x, in_x), span.x, span.y, PARAPET_H, CityPalette.c("curb"))
 		_slope_wall(geo, r, in_x, span.x, span.y, 0.0, PARAPET_H, -sgn, concrete)
 		_slope_wall(geo, r, out_x, raised.x, raised.y, deep, PARAPET_H, sgn, concrete)
 		if low.y > low.x:
@@ -564,7 +560,7 @@ static func _ramp(geo: CityGeo, plan: CityPlan, r: Dictionary) -> void:
 	var away := 1.0 if end_s > (span.x + span.y) * 0.5 else -1.0
 	geo.tag("ramp.end_block")
 	for eb in end_blocks(r, span):
-		geo.box(geo.frame(eb.x, eb.y, eb.z), Vector3(0, -(END_H + 0.3) * 0.5 + END_H, 0), Vector3(END_W, END_H + 0.3, END_L), concrete, CityGeo.NO_BOTTOM, _c("curb"))
+		geo.box(geo.frame(eb.x, eb.y, eb.z), Vector3(0, -(END_H + 0.3) * 0.5 + END_H, 0), Vector3(END_W, END_H + 0.3, END_L), concrete, CityGeo.NO_BOTTOM, CityPalette.c("curb"))
 	if low.y > low.x:
 		# The embankment's high end closes the space under the ribbon (and the edge beams' ends); piers carry the rest.
 		geo.tag("ramp.embankment_end")
@@ -592,8 +588,8 @@ static func end_blocks(r: Dictionary, span: Vector2) -> Array[Vector3]:
 ## One pier at s: a plinth on the floor, the 2 x 2 m shaft, a haunch widening into the cross-head, and the cross beam
 ## under the soffit that the cross-head carries (spanning the edge beams, a little deeper than them).
 static func _pier(geo: CityGeo, r: Dictionary, mid: float, width: float, s: float) -> void:
-	var concrete := _c("concrete")
-	var dark := _c("concrete_dark")
+	var concrete := CityPalette.c("concrete")
+	var dark := CityPalette.c("concrete_dark")
 	var hp := pier_heights(r, s)
 	var f := geo.frame(mid, s, 0.0)
 	geo.box(f, Vector3(0, PLINTH_H * 0.5, 0), Vector3(PLINTH_W, PLINTH_H, PLINTH_W), dark, CityGeo.NO_BOTTOM)
@@ -648,13 +644,13 @@ static func _dashes(geo: CityGeo, swap: bool, u: float, v0: float, v1: float, le
 static func _median(geo: CityGeo, swap: bool, u0: float, u1: float, v0: float, v1: float) -> void:
 	if v1 - v0 < 6.0:
 		return
-	var curb := _c("curb")
+	var curb := CityPalette.c("curb")
 	if swap:
 		geo.g_slab(v0, v1, u0, u1, 0.0, CURB, curb)
-		geo.g_rect(v0 + 0.3, v1 - 0.3, u0 + 0.3, u1 - 0.3, CURB + DECAL_PATCH, _c("lawn"))
+		geo.g_rect(v0 + 0.3, v1 - 0.3, u0 + 0.3, u1 - 0.3, CURB + DECAL_PATCH, CityPalette.c("lawn"))
 	else:
 		geo.g_slab(u0, u1, v0, v1, 0.0, CURB, curb)
-		geo.g_rect(u0 + 0.3, u1 - 0.3, v0 + 0.3, v1 - 0.3, CURB + DECAL_PATCH, _c("lawn"))
+		geo.g_rect(u0 + 0.3, u1 - 0.3, v0 + 0.3, v1 - 0.3, CURB + DECAL_PATCH, CityPalette.c("lawn"))
 
 
 ## A horizontal-ish quad with a height at each corner: (x0,s0) (x0,s1) (x1,s1) (x1,s0).
@@ -674,10 +670,10 @@ static func _block(geo: CityGeo, r: Rect2, flush: Array[bool] = []) -> void:
 	var x1 := r.end.x
 	var s0 := r.position.y
 	var s1 := r.end.y
-	var walk := _c("sidewalk")
-	var band := _c("sidewalk_band")
-	var curb := _c("curb")
-	var tactile := _c("tactile")
+	var walk := CityPalette.c("sidewalk")
+	var band := CityPalette.c("sidewalk_band")
+	var curb := CityPalette.c("curb")
+	var tactile := CityPalette.c("tactile")
 	geo.g_rect(x0 + EDGE, x1 - EDGE, s0 + EDGE, s1 - EDGE, CURB, walk)
 	# Corner pads.
 	for cx: float in [x0, x1 - EDGE]:
@@ -749,12 +745,12 @@ static func _block(geo: CityGeo, r: Rect2, flush: Array[bool] = []) -> void:
 ## Plaza paving over rectangle r of the sidewalk: the surface (decal layer 1) and bands across it (layer 2).
 static func _plaza_paving(geo: CityGeo, r: Rect2) -> void:
 	var h := CURB + DECAL_PATCH
-	geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, h, _c("plaza"))
+	geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, h, CityPalette.c("plaza"))
 	var n := maxi(int(r.size.y / 4.0), 1)
 	for i in n:
 		if i % 2 == 0:
 			var a := r.position.y + r.size.y * float(i) / float(n)
-			geo.g_rect(r.position.x + 0.6, r.end.x - 0.6, a + 0.3, a + r.size.y / float(n) - 0.3, h + DECAL_PATCH, _c("plaza_alt"))
+			geo.g_rect(r.position.x + 0.6, r.end.x - 0.6, a + 0.3, a + r.size.y / float(n) - 0.3, h + DECAL_PATCH, CityPalette.c("plaza_alt"))
 
 
 ## A service alley on the block's sidewalk slab (CityPlan.alleys): darker service paving (decal layer 1) with a dark
@@ -763,27 +759,27 @@ static func _alley(geo: CityGeo, a: Dictionary) -> void:
 	var r: Rect2 = a["rect"]
 	var h := CURB + DECAL_PATCH
 	var along := int(a["axis"])
-	geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, h, _c("service"))
+	geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, h, CityPalette.c("service"))
 	var hl := CURB + DECAL_LINE
 	if along == 0:
 		var c := r.get_center().y
-		geo.g_rect(r.position.x, r.end.x, r.position.y, r.position.y + 0.6, hl, _c("service_dark"))
-		geo.g_rect(r.position.x, r.end.x, r.end.y - 0.6, r.end.y, hl, _c("service_dark"))
-		geo.g_rect(r.position.x + 0.5, r.end.x - 0.5, c - 0.15, c + 0.15, hl, _c("drain"))
+		geo.g_rect(r.position.x, r.end.x, r.position.y, r.position.y + 0.6, hl, CityPalette.c("service_dark"))
+		geo.g_rect(r.position.x, r.end.x, r.end.y - 0.6, r.end.y, hl, CityPalette.c("service_dark"))
+		geo.g_rect(r.position.x + 0.5, r.end.x - 0.5, c - 0.15, c + 0.15, hl, CityPalette.c("drain"))
 		var x := r.position.x + 3.0
 		while x < r.end.x - 2.0:
-			geo.g_rect(x - 0.4, x + 0.4, c - 0.4, c - 0.15, hl, _c("drain"))
-			geo.g_rect(x - 0.4, x + 0.4, c + 0.15, c + 0.4, hl, _c("drain"))
+			geo.g_rect(x - 0.4, x + 0.4, c - 0.4, c - 0.15, hl, CityPalette.c("drain"))
+			geo.g_rect(x - 0.4, x + 0.4, c + 0.15, c + 0.4, hl, CityPalette.c("drain"))
 			x += 6.0
 	else:
 		var c := r.get_center().x
-		geo.g_rect(r.position.x, r.position.x + 0.6, r.position.y, r.end.y, hl, _c("service_dark"))
-		geo.g_rect(r.end.x - 0.6, r.end.x, r.position.y, r.end.y, hl, _c("service_dark"))
-		geo.g_rect(c - 0.15, c + 0.15, r.position.y + 0.5, r.end.y - 0.5, hl, _c("drain"))
+		geo.g_rect(r.position.x, r.position.x + 0.6, r.position.y, r.end.y, hl, CityPalette.c("service_dark"))
+		geo.g_rect(r.end.x - 0.6, r.end.x, r.position.y, r.end.y, hl, CityPalette.c("service_dark"))
+		geo.g_rect(c - 0.15, c + 0.15, r.position.y + 0.5, r.end.y - 0.5, hl, CityPalette.c("drain"))
 		var s := r.position.y + 3.0
 		while s < r.end.y - 2.0:
-			geo.g_rect(c - 0.4, c - 0.15, s - 0.4, s + 0.4, hl, _c("drain"))
-			geo.g_rect(c + 0.15, c + 0.4, s - 0.4, s + 0.4, hl, _c("drain"))
+			geo.g_rect(c - 0.4, c - 0.15, s - 0.4, s + 0.4, hl, CityPalette.c("drain"))
+			geo.g_rect(c + 0.15, c + 0.4, s - 0.4, s + 0.4, hl, CityPalette.c("drain"))
 			s += 6.0
 
 
@@ -792,23 +788,23 @@ static func _open_lot(geo: CityGeo, l: Dictionary) -> void:
 	var h := CURB + DECAL_PATCH
 	match str(l["open"]):
 		"garden":
-			geo.g_slab(r.position.x, r.end.x, r.position.y, r.end.y, CURB, CURB + 0.25, _c("curb"))
-			geo.g_rect(r.position.x + 0.3, r.end.x - 0.3, r.position.y + 0.3, r.end.y - 0.3, CURB + 0.25 + DECAL_PATCH, _c("lawn"))
+			geo.g_slab(r.position.x, r.end.x, r.position.y, r.end.y, CURB, CURB + 0.25, CityPalette.c("curb"))
+			geo.g_rect(r.position.x + 0.3, r.end.x - 0.3, r.position.y + 0.3, r.end.y - 0.3, CURB + 0.25 + DECAL_PATCH, CityPalette.c("lawn"))
 		"plaza":
 			_plaza_paving(geo, r)
 		"court":
-			geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, h, _c("asphalt_light"))
+			geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, h, CityPalette.c("asphalt_light"))
 			var x := r.position.x + 2.6
 			while x < r.end.x - 1.0:
-				geo.g_rect(x - 0.06, x + 0.06, r.position.y + 0.5, r.position.y + 5.0, h + DECAL_PATCH, _c("marking"))
-				geo.g_rect(x - 0.06, x + 0.06, r.end.y - 5.0, r.end.y - 0.5, h + DECAL_PATCH, _c("marking"))
+				geo.g_rect(x - 0.06, x + 0.06, r.position.y + 0.5, r.position.y + 5.0, h + DECAL_PATCH, CityPalette.c("marking"))
+				geo.g_rect(x - 0.06, x + 0.06, r.end.y - 5.0, r.end.y - 0.5, h + DECAL_PATCH, CityPalette.c("marking"))
 				x += 2.6
 		"park":
-			geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, h, _c("lawn"))
+			geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, h, CityPalette.c("lawn"))
 			var c := r.get_center()
-			geo.g_rect(c.x - 1.5, c.x + 1.5, r.position.y, r.end.y, h + DECAL_PATCH, _c("plaza"))
-			geo.g_rect(r.position.x, r.end.x, c.y - 1.5, c.y + 1.5, h + DECAL_PATCH, _c("plaza"))
-			geo.g_rect(c.x - 5.0, c.x + 5.0, c.y - 5.0, c.y + 5.0, h + DECAL_LINE, _c("plaza"))
+			geo.g_rect(c.x - 1.5, c.x + 1.5, r.position.y, r.end.y, h + DECAL_PATCH, CityPalette.c("plaza"))
+			geo.g_rect(r.position.x, r.end.x, c.y - 1.5, c.y + 1.5, h + DECAL_PATCH, CityPalette.c("plaza"))
+			geo.g_rect(c.x - 5.0, c.x + 5.0, c.y - 5.0, c.y + 5.0, h + DECAL_LINE, CityPalette.c("plaza"))
 
 
 # --- Furniture -------------------------------------------------------------------------------------------
@@ -821,7 +817,7 @@ static func furniture(geo: CityGeo, plan: CityPlan, items: Array) -> void:
 	geo.tag("furniture")
 	for it: Dictionary in items:
 		if it["pit"]:
-			geo.box(geo.frame(it["x"], it["s"], CURB), Vector3(0, 0.1, 0), Vector3(1.5, 0.2, 1.5), _c("curb"), CityGeo.NO_BOTTOM, _c("soil"))
+			geo.box(geo.frame(it["x"], it["s"], CURB), Vector3(0, 0.1, 0), Vector3(1.5, 0.2, 1.5), CityPalette.c("curb"), CityGeo.NO_BOTTOM, CityPalette.c("soil"))
 	for l: Dictionary in plan.lots:
 		if l["kind"] != "open":
 			continue
@@ -833,20 +829,20 @@ static func furniture(geo: CityGeo, plan: CityPlan, items: Array) -> void:
 			continue
 		match str(l["open"]):
 			"plaza":
-				geo.box(geo.frame(c.x, c.y, CURB), Vector3(0, 0.35, 0), Vector3(minf(r.size.x * 0.5, 4.0), 0.7, minf(r.size.y * 0.5, 4.0)), _c("cream_light"), CityGeo.NO_BOTTOM, _c("soil"))
+				geo.box(geo.frame(c.x, c.y, CURB), Vector3(0, 0.35, 0), Vector3(minf(r.size.x * 0.5, 4.0), 0.7, minf(r.size.y * 0.5, 4.0)), CityPalette.c("cream_light"), CityGeo.NO_BOTTOM, CityPalette.c("soil"))
 			"park":
 				# A fountain where the paths cross.
 				var f := geo.frame(c.x, c.y, CURB)
-				geo.prism(f, Vector3.ZERO, 3.4, 0.6, 8, _c("cream_light"), 3.4, _c("water"))
-				geo.prism(f, Vector3(0, 0.6, 0), 0.7, 1.6, 6, _c("cream_light"), 0.4)
-				geo.prism(f, Vector3(0, 2.2, 0), 1.3, 0.25, 8, _c("cream_light"), 1.3, _c("water"), _c("cream_light"))
+				geo.prism(f, Vector3.ZERO, 3.4, 0.6, 8, CityPalette.c("cream_light"), 3.4, CityPalette.c("water"))
+				geo.prism(f, Vector3(0, 0.6, 0), 0.7, 1.6, 6, CityPalette.c("cream_light"), 0.4)
+				geo.prism(f, Vector3(0, 2.2, 0), 1.3, 0.25, 8, CityPalette.c("cream_light"), 1.3, CityPalette.c("water"), CityPalette.c("cream_light"))
 	# A downtown plaza base's planters (CityPlan `planters`: fixed, looks only, like an open plaza's).
 	for b: Dictionary in plan.buildings:
 		for pl: Array in b.get("planters", []):
 			var at: Vector2 = pl[0]
 			var sz: Vector2 = pl[1]
 			if plan.clear_at(at):
-				geo.box(geo.frame(at.x, at.y, CURB), Vector3(0, 0.35, 0), Vector3(sz.x, 0.7, sz.y), _c("cream_light"), CityGeo.NO_BOTTOM, _c("soil"))
+				geo.box(geo.frame(at.x, at.y, CURB), Vector3(0, 0.35, 0), Vector3(sz.x, 0.7, sz.y), CityPalette.c("cream_light"), CityGeo.NO_BOTTOM, CityPalette.c("soil"))
 
 
 ## String lights over every pedestrian street (city-variety.md): slim posts just inside the strip's edges, zig-zagging
@@ -857,7 +853,7 @@ const STRING_H := 6.2
 static func string_lights(geo: CityGeo, bulbs: CityGeo, plan: CityPlan) -> void:
 	var keys := plan.forms.keys()
 	keys.sort()
-	var metal := _c("metal_dark")
+	var metal := CityPalette.c("metal_dark")
 	for k: int in keys:
 		if str(plan.forms[k]) != "pedestrian":
 			continue
@@ -889,7 +885,7 @@ static func string_lights(geo: CityGeo, bulbs: CityGeo, plan: CityPlan) -> void:
 					var basis := Basis.looking_at(d.normalized(), Vector3.UP if absf(d.normalized().y) < 0.95 else Vector3.RIGHT)
 					geo.box(Transform3D(basis, (prev + cur) * 0.5), Vector3.ZERO, Vector3(0.04, 0.04, d.length()), metal)
 				if st < steps:
-					bulbs.box(Transform3D(Basis.IDENTITY, cur - Vector3(0, 0.12, 0)), Vector3.ZERO, Vector3(0.2, 0.2, 0.2), _c("bulb"))
+					bulbs.box(Transform3D(Basis.IDENTITY, cur - Vector3(0, 0.12, 0)), Vector3.ZERO, Vector3(0.2, 0.2, 0.2), CityPalette.c("bulb"))
 				prev = cur
 
 
@@ -897,47 +893,47 @@ static func string_lights(geo: CityGeo, bulbs: CityGeo, plan: CityPlan) -> void:
 ## Closed underneath (trunk base + overhanging lower canopy) so walking beneath or toppling never reveals a hole.
 static func tree(geo: CityGeo, xf: Transform3D, variant: int) -> void:
 	var leaf: Array = TREE_LEAVES[variant]
-	geo.prism(xf, Vector3.ZERO, 0.22, 2.6, 5, _c("trunk"), 0.16, null, _c("trunk"))
-	geo.prism(xf, Vector3(0, 2.2, 0), 1.25, 1.1, 6, _c(leaf[0]), 1.75, _c(leaf[0]), _c(leaf[0]))
-	geo.prism(xf, Vector3(0, 3.3, 0), 1.75, 1.2, 6, _c(leaf[1]), 1.2, _c(leaf[1]))
-	geo.prism(xf, Vector3(0, 4.5, 0), 1.2, 1.1, 6, _c(leaf[2]), 0.0)
+	geo.prism(xf, Vector3.ZERO, 0.22, 2.6, 5, CityPalette.c("trunk"), 0.16, null, CityPalette.c("trunk"))
+	geo.prism(xf, Vector3(0, 2.2, 0), 1.25, 1.1, 6, CityPalette.c(leaf[0]), 1.75, CityPalette.c(leaf[0]), CityPalette.c(leaf[0]))
+	geo.prism(xf, Vector3(0, 3.3, 0), 1.75, 1.2, 6, CityPalette.c(leaf[1]), 1.2, CityPalette.c(leaf[1]))
+	geo.prism(xf, Vector3(0, 4.5, 0), 1.2, 1.1, 6, CityPalette.c(leaf[2]), 0.0)
 
 
 ## A street lamp; its arm reaches along local +Z (toward the road). Closed underneath: it can be knocked over.
 static func lamp(geo: CityGeo, xf: Transform3D) -> void:
-	geo.prism(xf, Vector3.ZERO, 0.2, 0.9, 6, _c("metal_dark"), 0.13, null, _c("metal_dark"))
-	geo.prism(xf, Vector3(0, 0.9, 0), 0.11, 5.6, 6, _c("metal_dark"), 0.09)
-	geo.box(xf, Vector3(0, 6.45, 0.8), Vector3(0.14, 0.14, 1.9), _c("metal_dark"))
-	geo.box(xf, Vector3(0, 6.36, 1.5), Vector3(0.42, 0.16, 0.95), _c("cream_light"))
+	geo.prism(xf, Vector3.ZERO, 0.2, 0.9, 6, CityPalette.c("metal_dark"), 0.13, null, CityPalette.c("metal_dark"))
+	geo.prism(xf, Vector3(0, 0.9, 0), 0.11, 5.6, 6, CityPalette.c("metal_dark"), 0.09)
+	geo.box(xf, Vector3(0, 6.45, 0.8), Vector3(0.14, 0.14, 1.9), CityPalette.c("metal_dark"))
+	geo.box(xf, Vector3(0, 6.36, 1.5), Vector3(0.42, 0.16, 0.95), CityPalette.c("cream_light"))
 
 
 ## A bench facing local +Z. Closed underneath: it can be knocked over.
 static func bench(geo: CityGeo, xf: Transform3D) -> void:
-	geo.box(xf, Vector3(0, 0.45, 0), Vector3(1.9, 0.1, 0.55), _c("trunk"))
-	geo.box(xf, Vector3(0, 0.8, -0.27), Vector3(1.9, 0.45, 0.08), _c("trunk"))
+	geo.box(xf, Vector3(0, 0.45, 0), Vector3(1.9, 0.1, 0.55), CityPalette.c("trunk"))
+	geo.box(xf, Vector3(0, 0.8, -0.27), Vector3(1.9, 0.45, 0.08), CityPalette.c("trunk"))
 	for x: float in [-0.8, 0.8]:
-		geo.box(xf, Vector3(x, 0.22, 0), Vector3(0.1, 0.44, 0.5), _c("metal_dark"), CityGeo.ALL)
+		geo.box(xf, Vector3(x, 0.22, 0), Vector3(0.1, 0.44, 0.5), CityPalette.c("metal_dark"), CityGeo.ALL)
 
 
 static func signal_pole(geo: CityGeo, xf: Transform3D) -> void:
-	geo.prism(xf, Vector3.ZERO, 0.12, 4.2, 6, _c("metal_dark"), 0.1, null, _c("metal_dark"))
-	geo.box(xf, Vector3(0, 4.7, 0), Vector3(0.45, 1.2, 0.4), _c("metal_dark"))
+	geo.prism(xf, Vector3.ZERO, 0.12, 4.2, 6, CityPalette.c("metal_dark"), 0.1, null, CityPalette.c("metal_dark"))
+	geo.box(xf, Vector3(0, 4.7, 0), Vector3(0.45, 1.2, 0.4), CityPalette.c("metal_dark"))
 	var lights := ["terracotta", "marking_yellow", "leaf"]
 	for i in 3:
-		geo.box(xf, Vector3(0, 5.05 - 0.35 * float(i), 0.22), Vector3(0.24, 0.24, 0.06), _c(lights[i]))
+		geo.box(xf, Vector3(0, 5.05 - 0.35 * float(i), 0.22), Vector3(0.24, 0.24, 0.06), CityPalette.c(lights[i]))
 
 
 ## A street-name sign post: a pole with two blades crossed on top.
 static func sign_post(geo: CityGeo, xf: Transform3D) -> void:
-	geo.prism(xf, Vector3.ZERO, 0.07, 3.2, 5, _c("metal_dark"), 0.06, null, _c("metal_dark"))
-	geo.box(xf, Vector3(0, 3.1, 0.35), Vector3(0.05, 0.28, 0.9), _c("sage_dark"))
-	geo.box(xf, Vector3(0.35, 3.42, 0), Vector3(0.9, 0.28, 0.05), _c("sage_dark"))
-	geo.box(xf, Vector3(0, 3.62, 0), Vector3(0.12, 0.08, 0.12), _c("metal_dark"))
+	geo.prism(xf, Vector3.ZERO, 0.07, 3.2, 5, CityPalette.c("metal_dark"), 0.06, null, CityPalette.c("metal_dark"))
+	geo.box(xf, Vector3(0, 3.1, 0.35), Vector3(0.05, 0.28, 0.9), CityPalette.c("sage_dark"))
+	geo.box(xf, Vector3(0.35, 3.42, 0), Vector3(0.9, 0.28, 0.05), CityPalette.c("sage_dark"))
+	geo.box(xf, Vector3(0, 3.62, 0), Vector3(0.12, 0.08, 0.12), CityPalette.c("metal_dark"))
 
 
 ## A litter bin. Closed underneath: it can be knocked over.
 static func bin(geo: CityGeo, xf: Transform3D) -> void:
-	geo.box(xf, Vector3(0, 0.45, 0), Vector3(0.55, 0.9, 0.55), _c("sage_dark"), CityGeo.ALL, _c("metal_dark"))
+	geo.box(xf, Vector3(0, 0.45, 0), Vector3(0.55, 0.9, 0.55), CityPalette.c("sage_dark"), CityGeo.ALL, CityPalette.c("metal_dark"))
 
 
 # --- Ceiling ---------------------------------------------------------------------------------------------
@@ -992,11 +988,11 @@ static func ceiling_range(geo: CityGeo, strips: CityGeo, area: Rect2, plan: City
 	var x1 := ceilf(area.end.x / GIRDER_PITCH) * GIRDER_PITCH
 	var s0 := floorf(area.position.y / RIB_PITCH) * RIB_PITCH
 	var s1 := ceilf(area.end.y / RIB_PITCH) * RIB_PITCH
-	var tones := [_c("ceil_a"), _c("ceil_b"), _c("ceil_c")]
+	var tones := [CityPalette.c("ceil_a"), CityPalette.c("ceil_b"), CityPalette.c("ceil_c")]
 	var nx := int(round((x1 - x0) / GIRDER_PITCH))
 	var ns := int(round((s1 - s0) / RIB_PITCH))
 	var strip_x := PackedFloat32Array()
-	var rib := _c("rib")
+	var rib := CityPalette.c("rib")
 	var walled := plan.p("walls") >= 0.5      # CityPlan.boundary() is non-empty: the ceiling's strips stop at the walls
 	var holes: Array[Rect2] = []
 	for o: Rect2 in plan.site.openings:
@@ -1021,8 +1017,8 @@ static func ceiling_range(geo: CityGeo, strips: CityGeo, area: Rect2, plan: City
 						geo.tag("ceil.hatch")
 						var cx := px + PANEL_X * 0.5 + 1.2
 						var cs := ps + PANEL_S * 0.5
-						geo.g_rect(cx - 1.5, cx + 1.5, cs - 1.5, cs + 1.5, height - 0.04, _c("metal_dark"), false)
-						geo.g_rect(cx - 1.2, cx + 1.2, cs - 1.2, cs + 1.2, height - 0.07, _c("concrete_dark"), false)
+						geo.g_rect(cx - 1.5, cx + 1.5, cs - 1.5, cs + 1.5, height - 0.04, CityPalette.c("metal_dark"), false)
+						geo.g_rect(cx - 1.2, cx + 1.2, cs - 1.2, cs + 1.2, height - 0.07, CityPalette.c("concrete_dark"), false)
 			# The light strip in this bay: one long line hung just below the ribs, in facet-long pieces.
 			var br := CityGeo.breaks(rs, rs + RIB_PITCH)
 			geo.tag("ceil.strip_rib")
@@ -1042,7 +1038,7 @@ static func ceiling_range(geo: CityGeo, strips: CityGeo, area: Rect2, plan: City
 				if _in_any(holes, mid_x, mid) or _in_any(pads, mid_x, mid):
 					continue
 				var length := (sb - sa) * 1.005
-				strips.box(geo.frame(mid_x, mid, height - 1.25), Vector3.ZERO, Vector3(1.3, 0.3, length), _c("strip"))
+				strips.box(geo.frame(mid_x, mid, height - 1.25), Vector3.ZERO, Vector3(1.3, 0.3, length), CityPalette.c("strip"))
 				geo.box(geo.frame(mid_x, mid, height - 0.55), Vector3.ZERO, Vector3(0.5, 1.1, length), rib)
 			# Ribs across, one piece per girder bay so an opening can interrupt them.
 			geo.tag("ceil.rib")
@@ -1069,7 +1065,7 @@ static func ceiling_range(geo: CityGeo, strips: CityGeo, area: Rect2, plan: City
 				geo.box(geo.frame(gx, mid, height - 0.7), Vector3.ZERO, Vector3(1.5, 2.2, RIB_PITCH * 0.505), rib)
 				if i % 2 == 0 and not _in_any(pads, gx + 1.7, mid):      # service duct
 					geo.tag("ceil.duct")
-					geo.box(geo.frame(gx + 1.7, mid, height - 1.5), Vector3.ZERO, Vector3(1.1, 0.8, RIB_PITCH * 0.505), _c("metal"))
+					geo.box(geo.frame(gx + 1.7, mid, height - 1.5), Vector3.ZERO, Vector3(1.1, 0.8, RIB_PITCH * 0.505), CityPalette.c("metal"))
 	if from <= 2 * nx + 1 and to > 2 * nx + 1:
 		geo.tag("ceil.opening")
 		strips.tag("rim_light")
@@ -1080,8 +1076,8 @@ static func ceiling_range(geo: CityGeo, strips: CityGeo, area: Rect2, plan: City
 
 ## The edge of a hole in the ceiling: the cut face of the slab above, a rim beam hanging below it, a rim light.
 static func _opening(geo: CityGeo, strips: CityGeo, o: Rect2, h: float, slab: float) -> void:
-	var cut := _c("concrete")
-	var beam := _c("concrete_dark")
+	var cut := CityPalette.c("concrete")
+	var beam := CityPalette.c("concrete_dark")
 	var lo := h - RIM_DROP
 	var hi := h + slab
 	var x0 := o.position.x
@@ -1104,547 +1100,10 @@ static func _opening(geo: CityGeo, strips: CityGeo, o: Rect2, h: float, slab: fl
 	geo.g_wall_s(s1 + RIM, x0 - RIM, x1 + RIM, lo, h, 1.0, beam)
 	# Rim light under the beam.
 	var m := RIM * 0.5
-	strips.g_rect(x0 - m - 0.3, x0 - m + 0.3, s0 - m, s1 + m, lo - 0.03, _c("strip"), false)
-	strips.g_rect(x1 + m - 0.3, x1 + m + 0.3, s0 - m, s1 + m, lo - 0.03, _c("strip"), false)
-	strips.g_rect(x0 - m, x1 + m, s0 - m - 0.3, s0 - m + 0.3, lo - 0.03, _c("strip"), false)
-	strips.g_rect(x0 - m, x1 + m, s1 + m - 0.3, s1 + m + 0.3, lo - 0.03, _c("strip"), false)
-
-
-# --- Boundary walls --------------------------------------------------------------------------------------
-
-const WALL_THICK := 6.0
-const GATE_RECESS := 6.0     ## m from the wall plane to the back of a portal's recess (CityDistrict seals it there)
-const HULL_SILL := 8.0       ## solid base of the hull's window wall
-
-
-## The map's edge (CityPlan.boundary()): bulkheads (panels between buttress fins, a gallery band) and window walls (a
-## solid sill, then a lattice of mullions and transoms; glazed when nothing is meant to be seen through it, open frames
-## when a backdrop lies beyond). Either kind stands on any side: across the arc it is one flat plane, along the arc it
-## follows the facets. Gates cut the wall. Same palette, same lit material: the light rig treats them like any surface.
-## Farm walls (_farm_wall) put their glowing light bars into `lights` (drawn with the strip material) when given.
-## `only_side` >= 0 draws that side alone (CityDistrict builds one side per chunk); each side has its own cosmetic
-## generators, so the result does not depend on how the sides are split. A farm side can be split further along its
-## length (`part` of `parts`, each with its own generator; parts > 0 draw only their share of the farm's bays, fins and
-## racks; part 0 draws everything else).
-static func walls(geo: CityGeo, plan: CityPlan, lights: CityGeo = null, only_side: int = -1, part: int = 0, parts: int = 1) -> void:
-	var e := plan.extent
-	var h := plan.p("ceiling")
-	var look := RandomNumberGenerator.new()
-	var farm_look := RandomNumberGenerator.new()
-	for w: Dictionary in plan.boundary():
-		var side: int = w["side"]
-		if only_side >= 0 and side != only_side:
-			continue
-		if part > 0 and w["kind"] != "farm":
-			continue
-		look.seed = plan.cosmetic_seed() + 31 + side * 1009
-		farm_look.seed = plan.cosmetic_seed() + 37 + side * 1013 + part * 7919
-		var across := side >= 2
-		var at: float = w["at"]
-		var inward := -1.0 if side % 2 == 0 else 1.0
-		var u0 := e.position.x if across else e.position.y
-		var u1 := e.end.x if across else e.end.y
-		var gates: Array = w["gates"]
-		var spans := wall_spans(u0, u1, gates)
-		var holes := _air_holes(plan, side)
-		geo.tag("wall." + str(w["kind"]))
-		if lights != null:
-			lights.tag("farm_light")
-		if w["kind"] == "farm":
-			_farm_wall(geo, lights, across, at, inward, u0, u1, h, gates, farm_look, part, parts, holes)
-			if part > 0:
-				continue      # the gates are part 0's
-		elif w["kind"] == "bulkhead":
-			var pitch := GIRDER_PITCH if across else RIB_PITCH * 0.5
-			var u := floorf(u0 / pitch) * pitch
-			var i := 0
-			while u < u1:
-				var col := _c("ceil_b") if i % 2 == 0 else _c("ceil_a")
-				for sp: Array in wall_spans(maxf(u, u0), minf(u + pitch, u1), gates):
-					_wface_holed(geo, across, at, sp[0], sp[1], 0.0, h, inward, col, holes)
-				if _in_gate(gates, maxf(u, u0)) < 0:
-					for yy: Array in _air_cut(holes, maxf(u, u0) - 0.8, maxf(u, u0) + 0.8, 0.0, h):
-						_wpost(geo, across, at, inward, maxf(u, u0), 0.7, (float(yy[0]) + float(yy[1])) * 0.5, Vector3(1.6, float(yy[1]) - float(yy[0]), 1.4), _c("rib"))
-				u += pitch
-				i += 1
-			for g: Dictionary in gates:
-				_wface(geo, across, at, g["a"], g["b"], g["h"], h, inward, _c("ceil_b"))
-			_wbox(geo, across, at, inward, u0, u1, 0.9, 16.0, Vector2(1.8, 1.2), _c("concrete_dark"))
-			for sp: Array in spans:
-				_wbox(geo, across, at, inward, sp[0], sp[1], 0.5, 1.0, Vector2(1.0, 2.0), _c("concrete"))
-		else:
-			var cream := _c("cream_light")
-			for sp: Array in spans:
-				_wface(geo, across, at, sp[0], sp[1], 0.0, HULL_SILL, inward, _c("concrete"))
-				if not w["backdrop"]:
-					_wface(geo, across, at, sp[0], sp[1], HULL_SILL, h, inward, _c("sky_blue"))
-				_wface(geo, across, at + inward * 0.5, sp[0], sp[1], HULL_SILL - 0.6, HULL_SILL + 0.4, inward, cream)
-				_wrect(geo, across, at, inward, 0.5, sp[0], sp[1], HULL_SILL + 0.4, cream, true)
-				_wrect(geo, across, at, inward, 0.5, sp[0], sp[1], HULL_SILL - 0.6, cream, false)
-				var t := HULL_SILL + (h - HULL_SILL) / 3.0
-				while t < h - 1.0:
-					_wface(geo, across, at + inward * 0.25, sp[0], sp[1], t - 0.3, t + 0.3, inward, cream)
-					_wrect(geo, across, at, inward, 0.25, sp[0], sp[1], t + 0.3, cream, true)
-					_wrect(geo, across, at, inward, 0.25, sp[0], sp[1], t - 0.3, cream, false)
-					t += (h - HULL_SILL) / 3.0
-				var u := ceilf(sp[0] / RIB_PITCH * 2.0) * RIB_PITCH * 0.5
-				while u <= sp[1]:
-					_wpost(geo, across, at, inward, u, 0.4, (HULL_SILL + h) * 0.5, Vector3(0.9, h - HULL_SILL, 0.8), cream)
-					u += RIB_PITCH * 0.5
-			for g: Dictionary in gates:
-				_wface(geo, across, at, g["a"], g["b"], g["h"], h, inward, _c("concrete"))
-		# A mission's wave door (MissionWorld) stands in this gate as its own node: no baked leaf there (plan meta
-		# "mission_doors": {"<side>:<a>": true}, set only by CityStack.setup_mission; absent = unchanged).
-		var doors: Dictionary = plan.get_meta("mission_doors", {})
-		geo.tag("wall.gate")
-		for g: Dictionary in gates:
-			if not doors.is_empty() and doors.has("%d:%.2f" % [side, float(g["a"])]):
-				g["leaf"] = false
-				g["frame"] = false      # its bunker frame (MissionProps.GateDoor) replaces the hazard portal
-			_gate(geo, across, at, inward, g, look)
-
-
-# --- Air doors (MissionWorld) ------------------------------------------------------------------------------
-# An air door is an opening high on an end wall (MissionWorld, docs/design/city-ramps-and-stack.md "Air doors"). Plan meta
-# "mission_air" = {side: [{a, b, y0, y1, fa, fb, fy0, fy1}]}, set only by CityStack.setup_mission: the opening a..b along
-# the wall, y0..y1 up (left out of the wall's face and a farm's backing), and its frame's rect fa..fb, fy0..fy1 (posts,
-# fins, racks and light bars stop round it). Absent: nothing changes.
-
-static func _air_holes(plan: CityPlan, side: int) -> Array:
-	var m: Dictionary = plan.get_meta("mission_air", {})
-	return m.get(side, [])
-
-
-## A wall face u0..u1, h0..h1 less the air openings in it (pieces left, right, below and above each).
-static func _wface_holed(geo: CityGeo, across: bool, at: float, u0: float, u1: float, h0: float, h1: float, inward: float, col: Color,
-		holes: Array) -> void:
-	var pieces := [[u0, u1, h0, h1]]
-	for ho: Dictionary in holes:
-		var next := []
-		for p: Array in pieces:
-			var ha := float(ho["a"])
-			var hb := float(ho["b"])
-			if hb <= p[0] or ha >= p[1] or float(ho["y1"]) <= p[2] or float(ho["y0"]) >= p[3]:
-				next.append(p)
-				continue
-			if ha > p[0]:
-				next.append([p[0], ha, p[2], p[3]])
-			if hb < p[1]:
-				next.append([hb, p[1], p[2], p[3]])
-			var m0 := maxf(p[0], ha)
-			var m1 := minf(p[1], hb)
-			if float(ho["y0"]) > p[2]:
-				next.append([m0, m1, p[2], float(ho["y0"])])
-			if float(ho["y1"]) < p[3]:
-				next.append([m0, m1, float(ho["y1"]), p[3]])
-		pieces = next
-	for p: Array in pieces:
-		_wface(geo, across, at, p[0], p[1], p[2], p[3], inward, col)
-
-
-## What is left of a vertical span y0..y1 of something standing across ua..ub after the air doors' frame rects: [[ya, yb]].
-static func _air_cut(holes: Array, ua: float, ub: float, y0: float, y1: float) -> Array:
-	var out := [[y0, y1]]
-	for ho: Dictionary in holes:
-		if ub <= float(ho["fa"]) or ua >= float(ho["fb"]):
-			continue
-		var next := []
-		for r: Array in out:
-			if r[1] <= float(ho["fy0"]) or r[0] >= float(ho["fy1"]):
-				next.append(r)
-				continue
-			if r[0] < float(ho["fy0"]):
-				next.append([r[0], float(ho["fy0"])])
-			if r[1] > float(ho["fy1"]):
-				next.append([float(ho["fy1"]), r[1]])
-		out = next
-	return out
-
-
-# --- Farm wall ---------------------------------------------------------------------------------------------
-# A vertical farm instead of a window onto a backdrop (docs/design/city-styles.md "Side walls: vertical farm"). The
-# solid backing stands FARM_RECESS behind the wall plane, inside the wall's collision slab, so the fins, racks and leaves
-# fill that recess and stick out into the street no further than the window wall's mullions did (FARM_REACH). Collision
-# is the wall's flat slab, the same for every kind (CityDistrict._col_walls).
-const FARM_RECESS := 1.6       ## backing this far behind the wall plane
-const FARM_REACH := 0.8        ## nothing below the haunches comes further into the map than this (the window posts' face)
-const FARM_PITCH_S := 8.0      ## fin pitch on a wall along the arc (a third of RIB_PITCH)
-const FARM_PITCH_X := 7.0      ## and across it (half GIRDER_PITCH)
-const FARM_FIN_W := 1.1
-const FARM_FIN_D0 := 0.6       ## fin face in front of the wall plane at the floor ...
-const FARM_FIN_D1 := 0.15      ## ... leaning back to this under the haunch ...
-const FARM_HAUNCH := 4.5       ## ... which flares out again over the top this many metres
-const FARM_HAUNCH_D := 0.75
-const FARM_PLINTH := 2.6       ## plinth band at the base: this tall, its face this far out
-const FARM_PLINTH_D := 0.25
-const FARM_COL_HALF := 2.6     ## half the width a rack and its leaves take (about two thirds of a bay)
-const FARM_TUFT_STEP := 2.05   ## one big leaf tuft per this much rack height (a medium and a small one every few rows)
-const FARM_BARS := [0.36, 0.58, 0.8]    ## light bar heights, fractions of the ceiling height
-const FARM_BAR_H := 0.35       ## light bar: this tall, this deep, standing this far proud of the fin faces on brackets
-const FARM_BAR_D := 0.3
-const FARM_BAR_GAP := 0.12
-const FARM_LEAVES := ["farm_leaf_dark", "farm_leaf", "farm_leaf", "farm_leaf_light"]
-
-
-## The frame at point u of a wall: local X along it, Y up, +Z into the map, origin on the wall plane at the floor.
-static func _wframe(geo: CityGeo, across: bool, at: float, inward: float, u: float, y: float = 0.0) -> Transform3D:
-	if across:
-		return geo.frame(u, at, y, 0.0 if inward > 0.0 else PI)
-	return geo.frame(at, u, y, PI * 0.5 if inward > 0.0 else -PI * 0.5)
-
-
-## Where the farm starts above the floor over [ua, ub]: on top of a gate's portal frame (its lintel) where it overlaps
-## one, else at the floor.
-static func _farm_floor(gates: Array, ua: float, ub: float) -> float:
-	var y := 0.0
-	for g: Dictionary in gates:
-		if ub > float(g["a"]) - 1.2 and ua < float(g["b"]) + 1.2:
-			y = maxf(y, float(g["h"]) + 1.6)
-	return y
-
-
-## The fin face's distance in front of the wall plane at height y.
-static func _fin_front(y: float, h: float) -> float:
-	var y1 := h - FARM_HAUNCH
-	if y <= y1:
-		return lerpf(FARM_FIN_D0, FARM_FIN_D1, clampf(y / y1, 0.0, 1.0))
-	return lerpf(FARM_FIN_D1, FARM_HAUNCH_D, (y - y1) / FARM_HAUNCH)
-
-
-static func _farm_wall(geo: CityGeo, lights: CityGeo, across: bool, at: float, inward: float, u0: float, u1: float, h: float,
-		gates: Array, look: RandomNumberGenerator, part: int = 0, parts: int = 1, holes: Array = []) -> void:
-	var r := FARM_RECESS
-	var ux := inward if across else -inward       # local +X of _wframe is +u (1) or -u (-1)
-	var pitch := FARM_PITCH_X if across else FARM_PITCH_S
-	var fin := _c("farm_fin")
-	var back := _c("farm_backing")
-	var spans := wall_spans(u0, u1, gates) if part == 0 else []
-	# This part's share of the bays, fins and racks (by where each one starts / stands): [wa, wb), the last part to u1.
-	var wa := -INF if part == 0 else u0 + (u1 - u0) * float(part) / float(parts)
-	var wb := INF if part == parts - 1 else u0 + (u1 - u0) * float(part + 1) / float(parts)
-	# Backing: floor to ceiling, above a gate from its lintel up; a ledge on the lintel; cheeks closing the recess at the
-	# wall's ends and beside each gate (part 0).
-	for sp: Array in spans:
-		_wface_holed(geo, across, at - inward * r, sp[0], sp[1], 0.0, h, inward, back, holes)
-		var y_a := 0.0 if is_equal_approx(float(sp[0]), u0) else _gate_top(gates, sp[0])
-		var y_b := 0.0 if is_equal_approx(float(sp[1]), u1) else _gate_top(gates, sp[1])
-		_farm_cheek(geo, across, at, inward, ux, sp[0], 1.0, h if y_a == 0.0 else y_a, back)
-		_farm_cheek(geo, across, at, inward, ux, sp[1], -1.0, h if y_b == 0.0 else y_b, back)
-	for g: Dictionary in (gates if part == 0 else []):
-		var top := float(g["h"]) + 1.6
-		_wface(geo, across, at - inward * r, g["a"], g["b"], top, h, inward, back)
-		_wrect(geo, across, at - inward * r, inward, r, g["a"], g["b"], top, fin, true)
-	# Bays: plinth, feed pipes and the top beam per bay piece (the plinth and pipes stop at gates), light bars across all.
-	var k := floorf(u0 / pitch)
-	while k * pitch < u1 - 0.01:
-		var pa := maxf(k * pitch, u0)
-		var pb := minf((k + 1.0) * pitch, u1)
-		k += 1.0
-		if pb - pa < 0.05 or pa < wa or pa >= wb:
-			continue
-		_farm_band(geo, across, at, inward, ux, pa, pb, h - 1.4, h, -r, 0.5, fin, CityGeo.PZ | CityGeo.NY)
-		for sp: Array in wall_spans(pa, pb, gates):
-			var ends := 0
-			if is_equal_approx(float(sp[0]), u0) or _gate_top(gates, sp[0]) > 0.0:
-				ends |= CityGeo.NX if ux > 0.0 else CityGeo.PX
-			if is_equal_approx(float(sp[1]), u1) or _gate_top(gates, sp[1]) > 0.0:
-				ends |= CityGeo.PX if ux > 0.0 else CityGeo.NX
-			_farm_band(geo, across, at, inward, ux, sp[0], sp[1], -0.3, FARM_PLINTH, -r, FARM_PLINTH_D, fin, CityGeo.PZ | CityGeo.PY | ends)
-			for py: float in [0.7, 1.55]:
-				_farm_band(geo, across, at, inward, ux, sp[0], sp[1], py - 0.2, py + 0.2, FARM_PLINTH_D, FARM_PLINTH_D + 0.4,
-						_c("farm_pipe"), CityGeo.PZ | CityGeo.PY)
-		if lights != null:
-			# Each bar: one straight box in a constant plane just proud of the fin faces, one piece per deck facet on a
-			# wall along the arc (so it follows the facets like everything else), front and underside only.
-			for f: float in FARM_BARS:
-				var y := h * f
-				var z0 := _fin_front(y, h) + FARM_BAR_GAP
-				for sp: Array in _bar_spans(pa, pb, gates, y, holes):
-					var br := PackedFloat32Array([sp[0], sp[1]]) if across else CityGeo.breaks(sp[0], sp[1])
-					for j in br.size() - 1:
-						_farm_band(lights, across, at, inward, ux, br[j], br[j + 1], y - FARM_BAR_H * 0.5, y + FARM_BAR_H * 0.5,
-								z0, z0 + FARM_BAR_D, _c("strip"), CityGeo.PZ | CityGeo.NY)
-	# Fins: every pitch, plus one at each end of the wall.
-	var fins: Array[float] = [u0 + FARM_FIN_W * 0.5, u1 - FARM_FIN_W * 0.5]
-	k = ceilf(u0 / pitch)
-	while k * pitch < u1:
-		var u := k * pitch
-		k += 1.0
-		if absf(u - fins[0]) > 2.0 and absf(u - fins[1]) > 2.0:
-			fins.append(u)
-	for u in fins:
-		if u < wa or u >= wb:
-			continue
-		var y0 := _farm_floor(gates, u - FARM_FIN_W * 0.5, u + FARM_FIN_W * 0.5)
-		var ff := _wframe(geo, across, at, inward, u)
-		var fin_cut := _air_cut(holes, u - FARM_FIN_W * 0.5, u + FARM_FIN_W * 0.5, y0, h)
-		if fin_cut.size() == 1 and is_equal_approx(float(fin_cut[0][1]), h):
-			_farm_fin(geo, ff, float(fin_cut[0][0]), h, fin)
-		else:
-			for yy: Array in fin_cut:       # an air door's frame splits the fin: a stub under it, the rest from over it
-				if is_equal_approx(float(yy[1]), h):
-					_farm_fin(geo, ff, float(yy[0]), h, fin)
-				else:
-					_farm_fin_stub(geo, ff, float(yy[0]), float(yy[1]), h, fin)
-		# A short dark bracket from the fin face to each light bar that runs past it.
-		if lights != null:
-			for f: float in FARM_BARS:
-				var y := h * f
-				if y > y0 + 0.5 and not _bar_spans(u - 0.05, u + 0.05, gates, y, holes).is_empty():
-					var d0 := _fin_front(y, h)
-					geo.box(ff, Vector3(0, y, d0 + FARM_BAR_GAP * 0.5), Vector3(0.3, 0.22, FARM_BAR_GAP + 0.06), _c("metal_dark"),
-							CityGeo.PX | CityGeo.NX | CityGeo.NY)
-	# Racks: one per bay, in the middle, wherever it fits clear of the ends.
-	k = floorf(u0 / pitch)
-	while k * pitch < u1:
-		var uc := (k + 0.5) * pitch
-		k += 1.0
-		if uc - FARM_COL_HALF < u0 + FARM_FIN_W or uc + FARM_COL_HALF > u1 - FARM_FIN_W or uc < wa or uc >= wb:
-			continue
-		var yb := _farm_floor(gates, uc - FARM_COL_HALF, uc + FARM_COL_HALF)
-		var rb := yb if yb > 0.0 else FARM_PLINTH
-		for yy: Array in _air_cut(holes, uc - FARM_COL_HALF, uc + FARM_COL_HALF, rb, h - 2.2):
-			var ya := float(yy[0])
-			var ye := float(yy[1]) - (0.0 if is_equal_approx(float(yy[1]), h - 2.2) else 0.5)
-			if ye - ya > 3.0:       # an air door's frame splits the rack: one under it, one over it
-				_farm_rack(geo, _wframe(geo, across, at, inward, uc), ya, ye, yb == 0.0 and is_equal_approx(ya, rb), look)
-
-
-## The top of the gate whose edge is at u (its lintel), 0 if no gate edge is there.
-static func _gate_top(gates: Array, u: float) -> float:
-	for g: Dictionary in gates:
-		if is_equal_approx(float(g["a"]), u) or is_equal_approx(float(g["b"]), u):
-			return float(g["h"]) + 1.6
-	return 0.0
-
-
-## [pa, pb] where a light bar at height y runs: everywhere but across a gate's opening and frame below its lintel.
-static func _bar_spans(pa: float, pb: float, gates: Array, y: float, holes: Array = []) -> Array:
-	var cut := []
-	for g: Dictionary in gates:
-		if y < float(g["h"]) + 1.6:
-			cut.append({"a": float(g["a"]) - 1.2, "b": float(g["b"]) + 1.2})
-	for ho: Dictionary in holes:      # an air door's frame (MissionWorld)
-		if y + FARM_BAR_H > float(ho["fy0"]) and y - FARM_BAR_H < float(ho["fy1"]):
-			cut.append({"a": float(ho["fa"]), "b": float(ho["fb"])})
-	return wall_spans(pa, pb, cut)
-
-
-## The lower piece of a fin an air door's frame cuts (frame f, y0 .. y1, all under the haunch): face, sides, a flat top.
-static func _farm_fin_stub(geo: CityGeo, f: Transform3D, y0: float, y1: float, h: float, col: Color) -> void:
-	if y1 - y0 < 0.05:
-		return
-	var hw := FARM_FIN_W * 0.5
-	var r := FARM_RECESS
-	var da := _fin_front(y0, h)
-	var db := _fin_front(y1, h)
-	geo.quad(f * Vector3(-hw, y0, da), f * Vector3(hw, y0, da), f * Vector3(hw, y1, db), f * Vector3(-hw, y1, db), col)
-	geo.quad(f * Vector3(hw, y0, da), f * Vector3(hw, y0, -r), f * Vector3(hw, y1, -r), f * Vector3(hw, y1, db), col)
-	geo.quad(f * Vector3(-hw, y0, -r), f * Vector3(-hw, y0, da), f * Vector3(-hw, y1, db), f * Vector3(-hw, y1, -r), col)
-	geo.quad(f * Vector3(-hw, y1, db), f * Vector3(hw, y1, db), f * Vector3(hw, y1, -r), f * Vector3(-hw, y1, -r), col)
-
-
-## A straight band along the wall from ua to ub (one piece: a bay at most), from y0 to y1 up and z0 to z1 out from the
-## wall plane (+ into the map). `faces` as CityGeo.box, in the frame at its middle.
-static func _farm_band(geo: CityGeo, across: bool, at: float, inward: float, _ux: float, ua: float, ub: float, y0: float, y1: float,
-		z0: float, z1: float, col: Color, faces: int) -> void:
-	var f := _wframe(geo, across, at, inward, (ua + ub) * 0.5)
-	geo.box(f, Vector3(0, (y0 + y1) * 0.5, (z0 + z1) * 0.5), Vector3(ub - ua + 0.04, y1 - y0, z1 - z0), col, faces)
-
-
-## A side wall of the recess at u, from the backing to the wall plane, floor to y1, facing +u (dir 1) or -u (dir -1).
-static func _farm_cheek(geo: CityGeo, across: bool, at: float, inward: float, ux: float, u: float, dir: float, y1: float, col: Color) -> void:
-	var f := _wframe(geo, across, at, inward, u)
-	var r := FARM_RECESS
-	if dir * ux > 0.0:
-		geo.quad(f * Vector3(0, 0, 0), f * Vector3(0, 0, -r), f * Vector3(0, y1, -r), f * Vector3(0, y1, 0), col)
-	else:
-		geo.quad(f * Vector3(0, 0, -r), f * Vector3(0, 0, 0), f * Vector3(0, y1, 0), f * Vector3(0, y1, -r), col)
-
-
-## A buttress fin in frame f from y0 to the ceiling: back on the backing, face leaning back from FARM_FIN_D0 to
-## FARM_FIN_D1, then a haunch flaring out to the ceiling. Face and two sides (12 triangles), plus two big plain details
-## on the face so it is not a blank plane at mech eye height: a darker kick plate at its foot and a dark service channel
-## up its middle (4 triangles).
-static func _farm_fin(geo: CityGeo, f: Transform3D, y0: float, h: float, col: Color) -> void:
-	var y1 := h - FARM_HAUNCH
-	if y1 - y0 > 4.0:
-		var e := DECAL_PATCH      # just proud of the face (the decal rule: 2 cm; was 1.5 cm)
-		var k1 := y0 + 1.4
-		geo.quad(f * Vector3(-FARM_FIN_W * 0.5, y0, _fin_front(y0, h) + e), f * Vector3(FARM_FIN_W * 0.5, y0, _fin_front(y0, h) + e),
-				f * Vector3(FARM_FIN_W * 0.5, k1, _fin_front(k1, h) + e), f * Vector3(-FARM_FIN_W * 0.5, k1, _fin_front(k1, h) + e), _c("concrete_dark"))
-		var c0 := k1 + 0.8
-		var c1 := y1 - 0.8
-		geo.quad(f * Vector3(-0.17, c0, _fin_front(c0, h) + e), f * Vector3(0.17, c0, _fin_front(c0, h) + e),
-				f * Vector3(0.17, c1, _fin_front(c1, h) + e), f * Vector3(-0.17, c1, _fin_front(c1, h) + e), _c("farm_backing"))
-	var hw := FARM_FIN_W * 0.5
-	var r := FARM_RECESS
-	var ys: Array[float] = [y0, maxf(h - FARM_HAUNCH, y0), h]
-	for i in 2:
-		var ya := ys[i]
-		var yb := ys[i + 1]
-		if yb - ya < 0.01:
-			continue
-		var da := _fin_front(ya, h)
-		var db := _fin_front(yb, h)
-		geo.quad(f * Vector3(-hw, ya, da), f * Vector3(hw, ya, da), f * Vector3(hw, yb, db), f * Vector3(-hw, yb, db), col)
-		geo.quad(f * Vector3(hw, ya, da), f * Vector3(hw, ya, -r), f * Vector3(hw, yb, -r), f * Vector3(hw, yb, db), col)
-		geo.quad(f * Vector3(-hw, ya, -r), f * Vector3(-hw, ya, da), f * Vector3(-hw, yb, db), f * Vector3(-hw, yb, -r), col)
-
-
-## A hydroponic rack in frame f from yb to yt: a planter at its foot (with a feed riser from the pipes when it stands on
-## the plinth), a pale spine, a hood at the top, and big faceted leaf tufts up its face in two or three greens.
-static func _farm_rack(geo: CityGeo, f: Transform3D, yb: float, yt: float, riser: bool, look: RandomNumberGenerator) -> void:
-	var r := FARM_RECESS
-	var rack := _c("farm_rack")
-	var side_faces := CityGeo.PX | CityGeo.NX | CityGeo.PZ
-	var wide := FARM_COL_HALF * 2.0 - 0.6
-	geo.box(f, Vector3(0, yb + 0.6, (-r + 0.35) * 0.5), Vector3(wide, 1.2, r + 0.35), _c("farm_planter"), side_faces | CityGeo.PY)
-	if riser:
-		geo.box(f, Vector3(1.6, (1.55 + yb + 0.4) * 0.5, 0.5), Vector3(0.34, yb + 0.4 - 1.55, 0.34), _c("farm_pipe"), side_faces)
-	# The green core: from far the rack reads as one solid column of leaves, the tufts give it facets up close.
-	geo.box(f, Vector3(0, (yb + 1.2 + yt) * 0.5, -r + 0.45), Vector3(wide - 1.2, yt - yb - 1.2, 0.9), _c("farm_leaf_dark"), side_faces)
-	geo.box(f, Vector3(0, yt + 0.25, (-r + 0.1) * 0.5), Vector3(wide, 0.5, r + 0.1), rack, side_faces | CityGeo.NY)
-	# Leaf mass: overlapping tufts of three sizes, a big one per row swapping sides, a medium one on the other side every
-	# other row and a small one tucked in every third, each jittered in size, turn, offset and depth, so the column reads
-	# as one lumpy mass rather than a stack of identical pyramids.
-	var zb := -r + 0.92
-	var y := yb + 1.2 + FARM_TUFT_STEP * 0.5
-	var i := 0
-	while y < yt - 0.6:
-		var s := 1.0 if i % 2 == 0 else -1.0
-		_tuft(geo, f, look, Vector2(s * 0.8, y), Vector2(2.05, 1.65), zb, 0.9)
-		if i % 2 == 1:
-			_tuft(geo, f, look, Vector2(-s * 1.3, y + 0.7), Vector2(1.4, 1.2), zb + 0.08, 0.7)
-		elif i % 3 == 0:
-			_tuft(geo, f, look, Vector2(-s * 1.0, y - 0.5), Vector2(0.95, 0.8), zb + 0.14, 0.55)
-		y += FARM_TUFT_STEP
-		i += 1
-
-
-## One leaf tuft on a rack's face: an irregular pentagon at depth zb in frame f around c (rack-local x, height), radii
-## up to `size`, with its tip pushed out up to `out` metres: five faceted triangles, a seeded green.
-static func _tuft(geo: CityGeo, f: Transform3D, look: RandomNumberGenerator, c: Vector2, size: Vector2, zb: float, out: float) -> void:
-	var k := look.randf_range(0.78, 1.0)
-	var cx := c.x + look.randf_range(-0.25, 0.25)
-	var cy := c.y + look.randf_range(-0.25, 0.25)
-	var col := _c(FARM_LEAVES[look.randi_range(0, FARM_LEAVES.size() - 1)])
-	var z := zb + look.randf_range(-0.04, 0.06)
-	var apex := f * Vector3(cx + look.randf_range(-0.3, 0.3) * k, cy + look.randf_range(-0.15, 0.3) * k, z + out * look.randf_range(0.7, 1.0))
-	var a0 := look.randf_range(0.0, TAU)
-	var rim: Array[Vector3] = []
-	for j in 5:
-		var a := a0 + TAU * float(j) / 5.0 + look.randf_range(-0.3, 0.3)
-		var m := look.randf_range(0.7, 1.0) * k
-		rim.append(f * Vector3(cx + cos(a) * size.x * m, cy + sin(a) * size.y * m, z))
-	for j in 5:
-		geo.tri(rim[j], rim[(j + 1) % 5], apex, col)
-
-
-## [u0, u1] minus the gate openings.
-static func wall_spans(u0: float, u1: float, gates: Array) -> Array:
-	var spans := [[u0, u1]]
-	for g: Dictionary in gates:
-		var next := []
-		for sp: Array in spans:
-			if float(g["b"]) <= sp[0] or float(g["a"]) >= sp[1]:
-				next.append(sp)
-				continue
-			if float(g["a"]) > sp[0]:
-				next.append([sp[0], float(g["a"])])
-			if float(g["b"]) < sp[1]:
-				next.append([float(g["b"]), sp[1]])
-		spans = next
-	return spans
-
-
-static func _in_gate(gates: Array, u: float) -> int:
-	for i in gates.size():
-		if u > float(gates[i]["a"]) and u < float(gates[i]["b"]):
-			return i
-	return -1
-
-
-## A wall face from u0 to u1 along the wall at `at`, facing into the map.
-static func _wface(geo: CityGeo, across: bool, at: float, u0: float, u1: float, h0: float, h1: float, inward: float, col: Color) -> void:
-	if across:
-		geo.g_wall_s(at, u0, u1, h0, h1, inward, col)
-	else:
-		geo.g_wall_x(at, u0, u1, h0, h1, inward, col)
-
-
-## A level strip on the wall, from the wall plane `depth` into the map.
-static func _wrect(geo: CityGeo, across: bool, at: float, inward: float, depth: float, u0: float, u1: float, hgt: float, col: Color, up: bool) -> void:
-	var d0 := minf(at, at + inward * depth)
-	var d1 := maxf(at, at + inward * depth)
-	if across:
-		geo.g_rect(u0, u1, d0, d1, hgt, col, up)
-	else:
-		geo.g_rect(d0, d1, u0, u1, hgt, col, up)
-
-
-## A box at one point u of the wall, `d` in from it at height y. size = (along the wall, up, into the map).
-static func _wpost(geo: CityGeo, across: bool, at: float, inward: float, u: float, d: float, y: float, size: Vector3, col: Color) -> void:
-	if across:
-		geo.box(geo.frame(u, at + inward * d, y), Vector3.ZERO, Vector3(size.x, size.y, size.z), col)
-	else:
-		geo.box(geo.frame(at + inward * d, u, y), Vector3.ZERO, Vector3(size.z, size.y, size.x), col)
-
-
-## A long box along the wall from u0 to u1 (facet-long pieces on a wall along the arc). size = (into the map, up).
-static func _wbox(geo: CityGeo, across: bool, at: float, inward: float, u0: float, u1: float, d: float, y: float, size: Vector2, col: Color) -> void:
-	if across:
-		geo.box(geo.frame((u0 + u1) * 0.5, at + inward * d, y), Vector3.ZERO, Vector3(u1 - u0, size.y, size.x), col)
-		return
-	var br := CityGeo.breaks(u0, u1)
-	for i in br.size() - 1:
-		geo.box(geo.frame(at + inward * d, (br[i] + br[i + 1]) * 0.5, y), Vector3.ZERO, Vector3(size.x, size.y, br[i + 1] - br[i]), col)
-
-
-## A gate in the wall, in a frame whose local +Z points into the map: a hazard portal round the opening, and behind it
-## the sealed door leaves (blast_door, and collapsed: since the 2026-11-23 playtest a collapsed gate is built as a plain
-## shut blast door, no rubble; its kind in the plan is unchanged), or a dark recess, the way in or out (portal).
-static func _gate(geo: CityGeo, across: bool, at: float, inward: float, g: Dictionary, _look: RandomNumberGenerator) -> void:
-	var ga: float = g["a"]
-	var gb: float = g["b"]
-	var gh: float = g["h"]
-	var mid := (ga + gb) * 0.5
-	var half := (gb - ga) * 0.5 - 0.6
-	var f: Transform3D
-	if across:
-		f = geo.frame(mid, at, 0.0, 0.0 if inward > 0.0 else PI)
-	else:
-		f = geo.frame(at, mid, 0.0, PI * 0.5 if inward > 0.0 else -PI * 0.5)
-	var kind := str(g["kind"])
-	if kind == "blast_door" or kind == "collapsed":
-		if g.get("leaf", true):      # false: a MissionWorld door node stands here instead
-			geo.box(f, Vector3(0, gh * 0.5, 0.5), Vector3(half * 2.0, gh, 1.0), _c("metal_dark"), CityGeo.NO_BACK)
-			geo.box(f, Vector3(0, gh * 0.5, 1.05), Vector3(0.5, gh, 0.12), _c("metal"), CityGeo.NO_BACK)
-			for k: float in [-1.0, 1.0]:
-				geo.box(f, Vector3(k * half * 0.5, gh * 0.55, 1.03), Vector3(half * 0.6, 1.0, 0.1), _c("marking_yellow"), CityGeo.NO_BACK)
-		# A hatched keep-clear box on the road in front of the gate.
-		var n := int(half * 2.0 / 2.0)
-		for k in n:
-			var gx := ga + 0.6 + (float(k) + 0.25) * (half * 2.0 / float(n))
-			_wrect(geo, across, at + inward * 1.5, inward, 5.0, gx, gx + 0.5, MARK, _c("marking_yellow"), true)
-	else:
-		_recess(geo, f, half + 0.6, gh, GATE_RECESS, _c("glass_dark"))
-	if not g.get("frame", true):    # a MissionWorld door draws its own frame
-		return
-	for k: float in [-1.0, 1.0]:
-		geo.box(f, Vector3(k * (half + 0.9), (gh + 1.6) * 0.5, 0.9), Vector3(1.8, gh + 1.6, 1.8), _c("tactile"), CityGeo.NO_BACK)
-	geo.box(f, Vector3(0, gh + 0.8, 0.9), Vector3(half * 2.0 + 3.6, 1.6, 1.8), _c("tactile"), CityGeo.NO_BACK)
-
-
-## The inside of a box behind a gate opening (local -Z is out of the map), faces turned inward: back, sides, top, floor.
-static func _recess(geo: CityGeo, f: Transform3D, w: float, gh: float, depth: float, col: Color) -> void:
-	var d := -depth
-	var fl := 0.02
-	geo.quad(f * Vector3(-w, 0, d), f * Vector3(w, 0, d), f * Vector3(w, gh, d), f * Vector3(-w, gh, d), col)
-	geo.quad(f * Vector3(-w, 0, 0), f * Vector3(-w, 0, d), f * Vector3(-w, gh, d), f * Vector3(-w, gh, 0), col)
-	geo.quad(f * Vector3(w, 0, d), f * Vector3(w, 0, 0), f * Vector3(w, gh, 0), f * Vector3(w, gh, d), col)
-	geo.quad(f * Vector3(-w, gh, 0), f * Vector3(-w, gh, d), f * Vector3(w, gh, d), f * Vector3(w, gh, 0), col)
-	geo.quad(f * Vector3(-w, fl, 0), f * Vector3(w, fl, 0), f * Vector3(w, fl, d), f * Vector3(-w, fl, d), col)
+	strips.g_rect(x0 - m - 0.3, x0 - m + 0.3, s0 - m, s1 + m, lo - 0.03, CityPalette.c("strip"), false)
+	strips.g_rect(x1 + m - 0.3, x1 + m + 0.3, s0 - m, s1 + m, lo - 0.03, CityPalette.c("strip"), false)
+	strips.g_rect(x0 - m, x1 + m, s0 - m - 0.3, s0 - m + 0.3, lo - 0.03, CityPalette.c("strip"), false)
+	strips.g_rect(x0 - m, x1 + m, s1 + m - 0.3, s1 + m + 0.3, lo - 0.03, CityPalette.c("strip"), false)
 
 
 # --- Backdrop --------------------------------------------------------------------------------------------
@@ -1671,7 +1130,7 @@ static func backdrop(geo: CityGeo, plan: CityPlan, rng: RandomNumberGenerator, a
 	var e := plan.extent
 	if not area.has_area():
 		area = backdrop_area(plan)
-	var ground := _c("sidewalk_band")
+	var ground := CityPalette.c("sidewalk_band")
 	var h := -0.02
 	_back_rect(geo, area.position.x, area.end.x, area.position.y, e.position.y, h, ground)
 	_back_rect(geo, area.position.x, area.end.x, e.end.y, area.end.y, h, ground)
@@ -1681,14 +1140,14 @@ static func backdrop(geo: CityGeo, plan: CityPlan, rng: RandomNumberGenerator, a
 	var av := plan.avenue_x()
 	var av_mid := (av.x + av.y) * 0.5
 	for road: Dictionary in plan.roads_x:
-		_back_rect(geo, float(road["a"]), float(road["b"]), area.position.y, e.position.y, 0.0, _c("asphalt"))
-		_back_rect(geo, float(road["a"]), float(road["b"]), e.end.y, area.end.y, 0.0, _c("asphalt"))
+		_back_rect(geo, float(road["a"]), float(road["b"]), area.position.y, e.position.y, 0.0, CityPalette.c("asphalt"))
+		_back_rect(geo, float(road["a"]), float(road["b"]), e.end.y, area.end.y, 0.0, CityPalette.c("asphalt"))
 		if road["kind"] == "avenue" or road["kind"] == "spine":
-			_back_rect(geo, av_mid - 5.2, av_mid + 5.2, area.position.y, e.position.y, 0.01, _c("lane_tan"))
-			_back_rect(geo, av_mid - 5.2, av_mid + 5.2, e.end.y, area.end.y, 0.01, _c("lane_tan"))
+			_back_rect(geo, av_mid - 5.2, av_mid + 5.2, area.position.y, e.position.y, 0.01, CityPalette.c("lane_tan"))
+			_back_rect(geo, av_mid - 5.2, av_mid + 5.2, e.end.y, area.end.y, 0.01, CityPalette.c("lane_tan"))
 	for road: Dictionary in plan.roads_s:
-		_back_rect(geo, area.position.x, e.position.x, float(road["a"]), float(road["b"]), 0.0, _c("asphalt"))
-		_back_rect(geo, e.end.x, area.end.x, float(road["a"]), float(road["b"]), 0.0, _c("asphalt"))
+		_back_rect(geo, area.position.x, e.position.x, float(road["a"]), float(road["b"]), 0.0, CityPalette.c("asphalt"))
+		_back_rect(geo, e.end.x, area.end.x, float(road["a"]), float(road["b"]), 0.0, CityPalette.c("asphalt"))
 	# Far blocks: one plain box per cell of a coarse grid, kept off the roads.
 	var far := ["far_a", "far_b", "far_c", "far_d", "far_a"]
 	var cell := 24.0
@@ -1711,9 +1170,9 @@ static func backdrop(geo: CityGeo, plan: CityPlan, rng: RandomNumberGenerator, a
 			var height := rng.randf_range(7.0, top)
 			var w := rng.randf_range(0.55, 0.8) * cell
 			var d := rng.randf_range(0.55, 0.8) * cell * (radius - height) / radius
-			var col := _c(far[rng.randi_range(0, far.size() - 1)])
+			var col := CityPalette.c(far[rng.randi_range(0, far.size() - 1)])
 			if not inside and not on_road and not e.grow(cell * 0.45).has_point(Vector2(x, s)) and roll < 0.85:
-				geo.box(geo.frame(x, s, 0.0), Vector3(0, height * 0.5 - 0.5, 0), Vector3(w, height + 1.0, d), col, CityGeo.NO_BOTTOM, _c("roof"))
+				geo.box(geo.frame(x, s, 0.0), Vector3(0, height * 0.5 - 0.5, 0), Vector3(w, height + 1.0, d), col, CityGeo.NO_BOTTOM, CityPalette.c("roof"))
 			s += cell
 		x += cell
 

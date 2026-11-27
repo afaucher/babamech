@@ -22,7 +22,7 @@ func _ready() -> void:
 	k.box(Vector3(14.0, 0.2, 4.0), Color("9a958c"), Vector3(0.0, 0.1, 2.0))        # the sidewalk
 	var wall := MeshInstance3D.new()
 	wall.name = "Facade"
-	wall.mesh = k.commit(MechMeshes.materials())
+	wall.mesh = k.commit(LowPolyMaterials.materials())
 	add_child(wall)
 	_rebuild()
 

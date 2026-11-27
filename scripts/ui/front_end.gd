@@ -147,14 +147,14 @@ func _ready() -> void:
 		show_invite_prompt(str(Session.pending_invite.get("inviter", "")))
 	if _shot_path != "":
 		_take_shot.call_deferred()
-	var audio := _audio()
+	var audio := AudioDirector.of(self)
 	if audio != null and audio.music != null and DisplayServer.get_name() != "headless":
 		audio.music.set_ambience("hangar")
 		audio.music.set_mode("hangar")
 
 
 func _exit_tree() -> void:
-	var audio := _audio()
+	var audio := AudioDirector.of(self)
 	if audio != null and audio.music != null:
 		if audio.music.ambience_mode == "hangar":
 			audio.music.set_ambience("off")
@@ -205,7 +205,7 @@ func _build_main() -> void:
 	_gap(18)
 	btn_play = _button("Play / Host", _on_play)
 	btn_join = _button("Join", _on_join)
-	_button("Test drive", func() -> void: get_tree().change_scene_to_file(TestDrive.SCENE))
+	_button("Test drive", func() -> void: get_tree().change_scene_to_file(MissionScene.SCENE))
 	btn_settings = _button("Settings", func() -> void: show_screen("settings"))
 	btn_lab = _button("Lab", _on_lab)
 	btn_quit = _button("Quit", func() -> void: get_tree().quit())
@@ -278,10 +278,10 @@ func _update_graphics_note() -> void:
 		lines.append("This run: --quality %s." % CityQuality.name_of(GraphicsQuality.override_level))
 	var r := GraphicsQuality.sync_renderer(str(settings["renderer"]))
 	lines.append("Renderer now: %s.%s" % [GraphicsQuality.renderer_label(GraphicsQuality.renderer_current()), (" " + r) if r != "" else ""])
-	quality_note.text = "
-".join(lines)
+	quality_note.text = "\n".join(lines)
 	if btn_restart != null and is_instance_valid(btn_restart):
-		btn_restart.visible = GraphicsQuality.can_switch_renderer() 			and GraphicsQuality.renderer_wanted(str(settings["renderer"])) != GraphicsQuality.renderer_current()
+		btn_restart.visible = GraphicsQuality.can_switch_renderer() \
+			and GraphicsQuality.renderer_wanted(str(settings["renderer"])) != GraphicsQuality.renderer_current()
 
 
 func _build_hangar() -> void:
@@ -384,19 +384,19 @@ func _on_lab() -> void:
 	get_tree().change_scene_to_file(LAB_SCENE)
 
 
-## Launch. In a crew only the host's counts: Session.start_mission sends the seed and the city mode to the crew and every
+## Launch. In a crew only the host's counts: Session.mission.host_launch sends the seed and the city mode to the crew and every
 ## machine (this one too) hears mission_started, plays the bay alert and loads the mission at the same moment on the
 ## shared clock. Solo (offline) this machine plays the alert and loads the test drive with the same seed + mode
-## (TestDrive.solo_launch). No mission yet: the test drive is it.
+## (MissionScene.solo_launch). No mission yet: the test drive is it.
 func _on_launch() -> void:
 	if launching:
 		return
 	var args := OS.get_cmdline_user_args()
 	if Session.online():
 		if Session.hosting:
-			Session.start_mission(mission_seed(args), TestDrive.MODE_STACK)
+			Session.mission.host_launch(mission_seed(args), MissionScene.MODE_STACK)
 		return
-	TestDrive.solo_launch = {"seed": mission_seed(args), "mode": TestDrive.MODE_STACK,
+	MissionScene.solo_launch = {"seed": mission_seed(args), "mode": MissionScene.MODE_STACK,
 		"friendly_fire": bool(settings["friendly_fire"])}
 	_play_launch(LAUNCH_ALERT_TIME)
 
@@ -427,7 +427,7 @@ func _play_launch(delay: float) -> void:
 	btn_launch.disabled = true
 	btn_launch.text = "Launching..."
 	stage.set_alert(true, delay)   # the egress (docs/design/hangar-v2/README.md); it plays on over the load (HangarHandoff)
-	var audio := _audio()
+	var audio := AudioDirector.of(self)
 	if audio != null:
 		audio.play_2d("ui.hangar.alert", 0.0, 1.0, AudioDirector.BUS_SFX_TELEGRAPH)
 	await get_tree().create_timer(maxf(delay, 0.0)).timeout
@@ -437,14 +437,14 @@ func _play_launch(delay: float) -> void:
 		if HangarHandoff.wanted(stage):
 			HangarHandoff.carry(stage)   # the egress keeps playing over the mission's loading screen
 		var cover := LoadingScreen.cover(self)
-		var seed_value := int(Session.mission_params().get("seed", 0)) if Session.online() else int(TestDrive.solo_launch.get("seed", 0))
+		var seed_value := int(Session.mission.params.get("seed", 0)) if Session.online() else int(MissionScene.solo_launch.get("seed", 0))
 		if seed_value > 0:
-			cover.set_mission(seed_value, str(Session.mission_params().get("mode", "")) if Session.online() else str(TestDrive.solo_launch.get("mode", "")))
+			cover.set_mission(seed_value, str(Session.mission.params.get("mode", "")) if Session.online() else str(MissionScene.solo_launch.get("mode", "")))
 		cover.set_phase("launch")
 		await get_tree().process_frame
 		await get_tree().process_frame
 		if is_inside_tree() and launching:
-			get_tree().change_scene_to_file(TestDrive.SCENE)
+			get_tree().change_scene_to_file(MissionScene.SCENE)
 
 
 ## Take a handed-over loading screen down once the menu has drawn a few frames behind it.
@@ -535,11 +535,9 @@ func show_invite_prompt(inviter: String) -> void:
 	invite_label.add_theme_font_size_override("font_size", 20)
 	var leaving := ""
 	if Session.online():
-		leaving = "
-Accepting leaves your current crew."
+		leaving = "\nAccepting leaves your current crew."
 	elif Session.busy():
-		leaving = "
-Accepting stops opening or joining a crew."
+		leaving = "\nAccepting stops opening or joining a crew."
 	invite_label.text = "%s invited you to their crew.%s" % [who, leaving]
 	col.add_child(invite_label)
 	var row := HBoxContainer.new()
@@ -664,16 +662,13 @@ static func _weapon_label(w: String, key: int = 5) -> String:
 	return "%s  (%.0ft, %.1f heat/s, %.0f per shot)" % [d["name"], d["weight"], d["passive_heat"], d["active_heat"]]
 
 
-## loadout_stats plus the back-mount equipment's cooling bonus (the radiator): MechCatalog.loadout_stats counts weight
-## and heat only, WeaponRack adds `cooling_bonus` in play, so the hangar adds it here to show the same cooling.
+## loadout_stats with the equipment's cooling bonus (the radiator, loadout_stats' `cooling_bonus`) added to cooling:
+## loadout_stats keeps cooling at the chassis value, WeaponRack adds the bonus in play, so the hangar shows the same cooling.
 static func hangar_stats(chassis_id: String, loadout: Dictionary) -> Dictionary:
 	var st := MechCatalog.loadout_stats(chassis_id, loadout)
-	var bonus := 0.0
-	for w: Variant in loadout.values():
-		bonus += float(MechCatalog.weapon(str(w)).get("cooling_bonus", 0.0))
+	var bonus := float(st["cooling_bonus"])
 	st["cooling"] = float(st["cooling"]) + bonus
 	st["net_cooling"] = float(st["net_cooling"]) + bonus
-	st["cooling_bonus"] = bonus
 	return st
 
 
@@ -886,7 +881,7 @@ func _check(on: bool, cb: Callable) -> CheckBox:
 	return c
 
 
-## The screen the next menu opens on ("" = the usual: hangar online, else main). A solo mission that ended (TestDrive,
+## The screen the next menu opens on ("" = the usual: hangar online, else main). A solo mission that ended (MissionScene,
 ## MissionFlow) sets "hangar"; consumed by _ready.
 static var next_screen := ""
 static var _box_icons: Dictionary = {}
@@ -929,13 +924,13 @@ func _slider(v: float, cb: Callable) -> HSlider:
 
 
 func _play_ui(cue_id: String, pitch: float = 1.0) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null:
 		a.play_ui(cue_id, pitch)
 
 
 func _play_mount_sfx(weapon_id: String) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null:
 		return
 	if weapon_id == "":
@@ -944,9 +939,3 @@ func _play_mount_sfx(weapon_id: String) -> void:
 	var w := float(MechCatalog.weapon(weapon_id).get("weight", 6.0))
 	# Heavier weapons bolt on with a beefier, lower clunk.
 	a.play_ui("ui.hangar.mount", clampf(1.12 - w * 0.025, 0.72, 1.12))
-
-
-func _audio() -> AudioDirector:
-	if not is_inside_tree():
-		return null
-	return get_tree().root.get_node_or_null("Audio") as AudioDirector

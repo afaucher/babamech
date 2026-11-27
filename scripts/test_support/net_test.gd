@@ -61,7 +61,7 @@ func setup() -> void:
 	Session.wire.link.configure(link)
 	# Crew tests check the mission scene two frames after adding it: load it in _ready (tests of the stepped load, which
 	# is what the game does, set it back: net_load_stall_case.gd).
-	TestDrive.stepped_load = false
+	MissionScene.stepped_load = false
 	Session.telemetry_dir = "user://net_tests"
 	Session.set_profile("host" if is_host() else "c%d" % index, head_for(index), NetSession.DEFAULT_CHASSIS, accent_for(index),
 		loadout_for(index))

@@ -4,7 +4,7 @@ extends TestCase
 
 
 func setup() -> void:
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(10)
 	check(td.city.plan != null and td.city.plan.buildings.size() > 10, "a city was generated")
@@ -53,7 +53,7 @@ func setup() -> void:
 	near(float(mh.heat()["fraction"]), td.mech.heat / td.mech.heat_cap, 0.001, "the mech HUD reads the mech's heat")
 	# Full-speed strafe, RMB camera zoom, and depth-tested 3D world aim markers.
 	near(td.mech.strafe_scale, 1.0, 0.001, "strafe speed matches forward walk/run speed")
-	check(mh.world_aim != null and mh.world_aim._aim_root.visible, "3D WorldAimMarkers active in live TestDrive")
+	check(mh.world_aim != null and mh.world_aim._aim_root.visible, "3D WorldAimMarkers active in live MissionScene")
 	var aim_mat := mh.world_aim._aim_ring.material_override as StandardMaterial3D
 	check(aim_mat != null and not aim_mat.no_depth_test, "3D WorldAimMarkers are depth-tested (occluded by cover)")
 	td.drive_override = true

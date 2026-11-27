@@ -27,7 +27,7 @@ extends CombatEffect
 ## (its owner applies the revive; nothing is sent). The scan shows on the wreck on every machine while it is beamed.
 ## The revive costs the drone nothing extra: the charge that launched it is the price (no life is taken off).
 ## LOOK (cosmetic, every machine): the Mech session's flying drone mesh (MechMeshes part `weapon_repair_drone_flying`,
-## origin at its centre, facing -Z) in the launcher's accent colour (MechMeshes.apply_accent, as MechModel tints its
+## origin at its centre, facing -Z) in the launcher's accent colour (LowPolyMaterials.apply_accent, as MechModel tints its
 ## parts), FLY_SCALE x (about 1.6 m across the rotor guards); it leaves from the docked drone's spot on the back mount
 ## (HP_<hardpoint> x MechMeshes.DRONE_DOCK, EquipmentLook.dock) at the mount's size and grows to FLY_SCALE while it
 ## rises, then turns slowly toward where it travels (yaw only, YAW_FOLLOW s smoothing) and bobs a little. While it is
@@ -432,7 +432,7 @@ func _build() -> void:
 		_body = MeshInstance3D.new()
 		_body.name = "weapon_" + flying_id
 		_body.mesh = fly
-		MechMeshes.apply_accent(_body, accent)
+		LowPolyMaterials.apply_accent(_body, accent)
 		_body.scale = Vector3.ONE * _body_scale()
 		add_child(_body)
 	else:
@@ -775,7 +775,7 @@ func _accent() -> Color:
 			next.append_array((n as Node).get_children())
 		stack = next
 		depth += 1
-	return MechMeshes.ORANGE
+	return LowPolyPalette.ORANGE
 
 
 ## The drone body: a flat hub, four arms, a sensor ball underneath; accent hub, grey arms. Cached per colour.
@@ -786,8 +786,8 @@ static func body_mesh(accent: Color) -> ArrayMesh:
 		for i in 4:
 			var ang := PI * 0.25 + PI * 0.5 * i
 			var tip := Vector3(cos(ang), 0.0, sin(ang)) * 0.8
-			k.tube(Vector3(0, 0.02, 0), tip, 0.05, 4, MechMeshes.GUN)
-			k.tube(tip - Vector3(0, 0.1, 0), tip + Vector3(0, 0.1, 0), 0.08, 6, MechMeshes.GUN)
+			k.tube(Vector3(0, 0.02, 0), tip, 0.05, 4, LowPolyPalette.GUN)
+			k.tube(tip - Vector3(0, 0.1, 0), tip + Vector3(0, 0.1, 0), 0.08, 6, LowPolyPalette.GUN)
 		k.glow = true
 		k.ico(Vector3(0, -0.16, 0), Vector3.ONE * 0.12, GREEN))
 

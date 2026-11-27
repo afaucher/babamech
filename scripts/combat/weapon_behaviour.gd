@@ -35,7 +35,7 @@ func on_shot(_mount: WeaponMount) -> void:
 
 
 func look() -> Dictionary:
-	return {"color": MechMeshes.AMBER, "trail_color": MechMeshes.AMBER, "width": 0.38}
+	return {"color": LowPolyPalette.AMBER, "trail_color": LowPolyPalette.AMBER, "width": 0.38}
 
 
 ## The effect for one shot (started, not yet in the tree: CombatWorld.fire adds it and fast-forwards it).

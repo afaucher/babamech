@@ -177,7 +177,7 @@ func _build_scene() -> void:
 	_drone.name = "weapon_repair_drone_flying"
 	_drone.mesh = MechMeshes.mesh("weapon_repair_drone_flying")
 	add_child(_drone)
-	MechMeshes.apply_accent(_drone, _mech.accent)
+	LowPolyMaterials.apply_accent(_drone, _mech.accent)
 	_ground_ring = CombatMeshes.instance(CombatMeshes.ring(RING_GREEN, 0.985, 48))
 	add_child(_ground_ring)
 	_mat_vol = _material(0)

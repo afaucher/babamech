@@ -1,6 +1,6 @@
 extends TestCase
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
-## Inter-frame performance & stutter profiler (runs real TestDrive combat with physics, AI, weapons, props, HUD, audio).
+## Inter-frame performance & stutter profiler (runs real MissionScene combat with physics, AI, weapons, props, HUD, audio).
 ## Measures per-frame CPU time (p50 / p95 / p99 / max) and breaks down CombatWorld/AI, WeaponRack, WorldAimMarkers,
 ## Audio prewarm, and warm vs. cold gameplay frames so bursty spikes are caught automatically.
 
@@ -19,7 +19,7 @@ func _profile_test_drive() -> void:
 		audio.silent = false   # time the live game's audio path (headless runs are silent by default: AudioDirector.silent)
 		audio.bank.clear_cache()
 		audio.bank.start_async_prewarm()   # exercise the exact non-blocking live-game audio path
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	if audio != null and audio.music != null:
 		audio.music.set_ambience("city")
@@ -157,8 +157,8 @@ func _profile_test_drive() -> void:
 
 ## The road crossing of deck `k` (CityPlan.road_graph: open street) whose distance to the nearest live enemy of that
 ## deck is closest to `want` m; the mech goes there, keeping its heading.
-func _place_near_garrison(td: TestDrive, k: int, want: float) -> void:
-	var nodes: Array = td.stack.decks[k].plan.road_graph()["nodes"]
+func _place_near_garrison(td: MissionScene, k: int, want: float) -> void:
+	var nodes: Array = CityGraphs.road_graph(td.stack.decks[k].plan)["nodes"]
 	var best := td.mech.global_position
 	var best_err := INF
 	var best_d := INF
@@ -185,7 +185,7 @@ func _place_near_garrison(td: TestDrive, k: int, want: float) -> void:
 		best_d, _on_deck(td, k), td.combat.enemies.size(), awake])
 
 
-func _on_deck(td: TestDrive, k: int) -> int:
+func _on_deck(td: MissionScene, k: int) -> int:
 	var n := 0
 	for e in td.combat.enemies:
 		if is_instance_valid(e) and not e.destroyed() and e.spawn_deck == k:

@@ -48,8 +48,8 @@ func apply(lab: CityLab) -> void:
 	_air_farm = _pick_air(lab, "farm")
 	if _air == null:
 		_air = _air_farm
-	_flag = _first_key(mw._flags)
-	_asset = _first_key(mw._assets)
+	_flag = _first_key(mw.flag_nodes())
+	_asset = _first_key(mw.asset_nodes())
 	t = 0.0
 	_cycle = -1
 	_pin()
@@ -83,13 +83,13 @@ func _pick(plan: Variant, kind: String, lab: CityLab) -> Variant:
 	var best: Variant = null
 	var best_score := -1
 	for s: Dictionary in MissionWorld.field(plan, "sources", []):
-		if s["kind"] != kind or not mw._doors.has(s["id"]):
+		if s["kind"] != kind or not mw.door_nodes().has(s["id"]):
 			continue
 		var score := 0
 		if lab.district != null and int(s["deck"]) == lab.district.plan.deck:
 			score += 4
-		var door: Node = mw._doors[s["id"]]
-		if door is MissionProps.GateDoor and (door as MissionProps.GateDoor).gh < 10.0:
+		var door: Node = mw.door_nodes()[s["id"]]
+		if door is MissionGateDoor and (door as MissionGateDoor).gh < 10.0:
 			score += 2
 		if score > best_score:
 			best = s["id"]
@@ -101,11 +101,11 @@ func _pick(plan: Variant, kind: String, lab: CityLab) -> Variant:
 func _pick_air(lab: CityLab, kind: String) -> Variant:
 	var best: Variant = null
 	var best_score := -1
-	for id: Variant in mw._sources:
-		var s: Dictionary = mw._sources[id]
-		if str(s.get("kind", "")) != "air" or not mw._doors.has(id):
+	for id: Variant in mw.source_info():
+		var s: Dictionary = mw.source_info()[id]
+		if str(s.get("kind", "")) != "air" or not mw.door_nodes().has(id):
 			continue
-		var d := mw._deck(int(s["deck"]))
+		var d := mw.deck_at(int(s["deck"]))
 		var side := CityPlan.SIDE_EDGE.find(str(s["edge"]))
 		if side < 0 or str(d.plan.boundary()[side]["kind"]) != kind:
 			continue
@@ -184,30 +184,30 @@ func view(cam: String) -> Dictionary:
 	var target := Vector3.ZERO
 	match cam:
 		"mission_gate":
-			node = mw._doors.get(_gate) if _gate != null else null
+			node = mw.door_nodes().get(_gate) if _gate != null else null
 			if node != null:
-				var gh := (node as MissionProps.GateDoor).gh
+				var gh := (node as MissionGateDoor).gh
 				eye = Vector3(-14.0, 8.0, 44.0)
 				target = Vector3(-6.0, gh * 0.55, 0.0)
 		"mission_air", "mission_air_farm":     # looking up at an air door from the street, 50 m off (its frame is at the sill)
 			var aid: Variant = _air if cam == "mission_air" else _air_farm
-			node = mw._doors.get(aid) if aid != null else null
+			node = mw.door_nodes().get(aid) if aid != null else null
 			if node != null:
-				eye = Vector3(-3.0, 8.0 - MissionWorld.AIR_SILL, 38.0)     # in its flight corridor (clear of tall buildings)
+				eye = Vector3(-3.0, 8.0 - MissionAirDoors.SILL, 38.0)     # in its flight corridor (clear of tall buildings)
 				target = Vector3(-1.0, 1.5, 0.0)
 		"mission_bay":
-			node = mw._doors.get(_gate) if _gate != null else null
+			node = mw.door_nodes().get(_gate) if _gate != null else null
 			if node != null:
 				eye = Vector3(0.0, 6.5, 22.0)
 				target = Vector3(0.0, 4.5, -20.0)
 		"mission_lift":
-			node = mw._doors.get(_lift) if _lift != null else null
+			node = mw.door_nodes().get(_lift) if _lift != null else null
 			eye = Vector3(-12.0, 8.0, 40.0)
 			target = Vector3(-6.0, 6.0, 0.0)
 		"mission_flag", "mission_flag_far", "mission_asset":     # from the clearest of 16 directions, 45 / 80 / 32 m off
 			var flag := cam != "mission_asset"
 			var dist: float = {"mission_flag": 45.0, "mission_flag_far": 80.0, "mission_asset": 32.0}[cam]
-			node = (mw._flags.get(_flag) if _flag != null else null) if flag else (mw._assets.get(_asset) if _asset != null else null)
+			node = (mw.flag_nodes().get(_flag) if _flag != null else null) if flag else (mw.asset_nodes().get(_asset) if _asset != null else null)
 			if node != null:
 				var dir := _open_dir(node, dist)
 				eye = Vector3(dir.x, 8.0, dir.y)
@@ -215,9 +215,9 @@ func view(cam: String) -> Dictionary:
 				var side := Vector2(-dir.y, dir.x).normalized() * dist * 0.22
 				target = Vector3(side.x, 9.0 if flag else 3.5, side.y)
 		"mission_portal":
-			node = mw._portal
+			node = mw.portal_node()
 			if node != null:
-				var gh := (node as MissionProps.Portal).gh
+				var gh := (node as MissionPortal).gh
 				eye = Vector3(-14.0, 8.0, 58.0)
 				target = Vector3(-10.0, gh * 0.5, 0.0)
 	if node == null or not is_instance_valid(node):
@@ -234,7 +234,7 @@ func view(cam: String) -> Dictionary:
 ## (sampled every 3 m), nearest to -x / -z first on a tie.
 func _open_dir(node: Node3D, dist: float) -> Vector2:
 	var d := node.get_parent() as CityDistrict
-	var blockers := MissionProps._blockers(d.plan)
+	var blockers := SiteFit.plan_blockers(d.plan)
 	var best := Vector2(-dist, -dist).normalized() * dist
 	var best_hits := 1 << 20
 	for i in 16:
@@ -245,7 +245,7 @@ func _open_dir(node: Node3D, dist: float) -> Vector2:
 		for j in range(1, n + 1):
 			var p := node.transform * Vector3(off.x * float(j) / float(n), 0.0, off.y * float(j) / float(n))
 			var arc := d.ring.world_to_arc(p)
-			if MissionProps._in_rects(blockers, Vector2(arc.x, arc.y), 1.0):
+			if SiteFit.in_rects(blockers, Vector2(arc.x, arc.y), 1.0):
 				hits += 1 + (4 if j == n else 0)
 		if hits < best_hits:
 			best_hits = hits

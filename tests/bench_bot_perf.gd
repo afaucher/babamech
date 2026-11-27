@@ -10,9 +10,9 @@ extends TestCase
 ## FRAMES frames are measured with PerfProbe.on (scripts/test_support/perf_probe.gd: flag-guarded timers in the bot,
 ## mech, rig, combat and crew-sync scripts) and CombatWorld.profiling (targets.tick vs effects). Probe nodes at physics
 ## priorities between the game's bands time each band of the physics frame:
-##   brains  -20 / -19  (TestDriveBotPilot -> PlayerBot.step, MissionBot)
+##   brains  -20 / -19  (MissionBotPilot -> PlayerBot.step, MissionBot)
 ##   racks   -10        (CrewBot: the bots' WeaponRack.step)
-##   main      0        (every MechController incl. move_and_slide, TestDrive, TestDriveCombat: local rack + CombatWorld)
+##   main      0        (every MechController incl. move_and_slide, MissionScene, MissionCombat: local rack + CombatWorld)
 ##   puppets 5..7, rigs 10 (MechRig: gait, IK, model pose; every mech)
 ##   post   20..41      (MechAudio, CrewSync sampling, EnemySync, MissionFlow, depots)
 ## plus the process frame and the physics server step as the rest of the wall frame.
@@ -22,7 +22,7 @@ const SEED := 11
 const PORT := 28394
 const DT := 1.0 / 60.0
 
-var td: TestDrive
+var td: MissionScene
 var _probe_t: Dictionary = {}      ## probe priority -> usec stamp this frame
 var _rows: Dictionary = {}         ## key -> PackedFloat32Array (ms per frame) / calls per frame under "n:" + key
 var _t0_usec := 0
@@ -82,15 +82,15 @@ func _run() -> void:
 		return
 	for i in n_bots:
 		check(Session.add_bot(skill) < 0, "bot %d seated" % (i + 1))
-	if not check(Session.start_mission(seed_v), "the host launches a crew mission"):
+	if not check(Session.mission.host_launch(seed_v), "the host launches a crew mission"):
 		return
 	await _until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0)
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(await _until(func() -> bool: return td.loaded, 60.0), "the mission load finishes"):
 		return
-	if not check(await _until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 30.0),
+	if not check(await _until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 30.0),
 			"the load barrier passes"):
 		return
 	eq(td.crew_bots.size(), n_bots, "the host runs %d bots" % n_bots)
@@ -194,7 +194,7 @@ func _run() -> void:
 			print("[botperf] bot %d: replans %s, goal %s" % [id, str(st.get("replans", "?")), cb.ai.goal_text])
 	_codec_bench()
 	_report()
-	Session.end_mission()
+	Session.mission.end()
 	td.queue_free()
 	await frames(2)
 	Session.leave()

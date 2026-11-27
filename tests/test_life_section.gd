@@ -63,8 +63,6 @@ func _stack_life() -> AmbientLife:
 	add_child(l)
 	l.set_process(false)
 	l.setup_stack(stack)
-	for u in l.units:
-		u.set_process(false)
 	l.advance_to(T0)
 	return l
 
@@ -130,8 +128,8 @@ func _standalone_unchanged() -> void:
 	l.set_process(false)
 	l.setup(d)
 	l.advance_to(T0)
-	check(l.units.is_empty() and l.unit(0) == l, "setup(district): the node is its own single unit")
-	check(l.tram == null and l.tram_cars == null and l.barriers == null, "setup(district): no tram, no barriers on a district of its own")
+	check(l.units.size() == 1 and l.unit(0).get_parent() == l and l.stack == null, "setup(district): one deck, routed by the node")
+	check(l.unit(0).tram == null and l.unit(0).tram_cars == null and l.unit(0).barriers == null, "setup(district): no tram, no barriers on a district of its own")
 	eq(l.ids().size(), l.count(), "setup(district): ids are 0..count-1")
 	eq(l.count(), 24 + LifePlan.RIDERS, "setup(district): the default 24 people (+ riders)")
 	check(l.is_in_group("ambient_life"), "setup(district): in the group")
@@ -581,9 +579,7 @@ func _on_killed(id: int, _p: Vector3, _src: int) -> void:
 ## Frames (not advance_to): the per-tick culling path, offline clock.
 func _frames(l: AmbientLife, n: int, dt: float) -> void:
 	for i in n:
-		l._process(dt)
-		for u in l.units:
-			u._process(dt)
+		l._process(dt)      # (steps every deck)
 
 
 func _viewer_checks() -> void:
@@ -634,7 +630,7 @@ func _viewer_checks() -> void:
 	if u.visible_now(far):
 		check(u.drawn_now(far), "viewer: drawn again once in range")
 		var f := clampf((u.now - u._ta[far]) / maxf(u._tb[far] - u._ta[far], 1e-6), 0.0, 1.0)
-		var drawn: Transform3D = u._to_world() * u._xa[far].interpolate_with(u._xb[far], f)
+		var drawn: Transform3D = u.to_world() * u._xa[far].interpolate_with(u._xb[far], f)
 		check(drawn.origin.distance_to(exact) < 1.0, "viewer: its drawn pose is on its exact pose (%.2f m)" % drawn.origin.distance_to(exact))
 	ref.queue_free()
 	life.remove_viewer(viewer)

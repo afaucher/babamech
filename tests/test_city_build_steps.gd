@@ -30,8 +30,6 @@ func _life(seed_: int) -> void:
 	a.setup_stack(st)
 	check(a.setup_done(), "%s: setup_stack leaves it done" % what)
 	a.set_process(false)
-	for u in a.units:
-		u.set_process(false)
 	var b := AmbientLife.new()
 	add_child(b)
 	b.setup_stack_begin(st)
@@ -46,11 +44,9 @@ func _life(seed_: int) -> void:
 			break
 	check(hidden, "%s: no unit is visible before the setup is done" % what)
 	check(b.setup_done(), "%s: done" % what)
-	eq(calls + 1, st.decks.size() * AmbientLife.SETUP_PARTS + 1, "%s: one chunk per call (%d decks x %d parts + 1)" % [what,
-			st.decks.size(), AmbientLife.SETUP_PARTS])
+	eq(calls + 1, st.decks.size() * LifeDeck.SETUP_PARTS + 1, "%s: one chunk per call (%d decks x %d parts + 1)" % [what,
+			st.decks.size(), LifeDeck.SETUP_PARTS])
 	b.set_process(false)
-	for u in b.units:
-		u.set_process(false)
 	eq(b.ids(), a.ids(), "%s: same people" % what)
 	eq(b.vehicle_ids(), a.vehicle_ids(), "%s: same vehicles" % what)
 	a.advance_to(5.0)

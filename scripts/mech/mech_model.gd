@@ -49,9 +49,9 @@ var loadout: Dictionary = {}
 var params: Dictionary = {}
 ## Seconds of idle bob / walk (the lab's speed scales it).
 var time_scale := 1.0
-## The player's accent colour (cosmetic): tints the low-poly parts' accent surfaces (MechMeshes.apply_accent) and the
+## The player's accent colour (cosmetic): tints the low-poly parts' accent surfaces (LowPolyMaterials.apply_accent) and the
 ## placeholder's trim. Set with set_accent().
-var accent: Color = MechMeshes.ORANGE
+var accent: Color = LowPolyPalette.ORANGE
 ## The pilot's expressive head in the cockpit (low-poly art only; null for the placeholder). Rebuilt (a new node) on
 ## every rebuild(). `pilot_seed`: its look seed (idle blinks / glances; e.g. the roster slot), set before configure().
 var pilot: PilotHead
@@ -158,7 +158,7 @@ func rebuild() -> void:
 	add_child(_body)
 	if art == "lowpoly":
 		_build_lowpoly(s)
-		MechMeshes.apply_accent(self, accent)
+		LowPolyMaterials.apply_accent(self, accent)
 	else:
 		_build_placeholder(s)
 	pose()
@@ -170,7 +170,7 @@ func set_accent(c: Color) -> void:
 	if _body == null:
 		return
 	if art == "lowpoly":
-		MechMeshes.apply_accent(self, accent)
+		LowPolyMaterials.apply_accent(self, accent)
 	else:
 		rebuild()
 
@@ -744,12 +744,7 @@ func _pose_hover() -> void:
 # --- Lab subject --------------------------------------------------------------------------------------
 
 func lab_params() -> Array:
-	var out: Array = []
-	for p: Dictionary in param_specs():
-		var d := p.duplicate()
-		d["value"] = params[p["id"]]
-		out.append(d)
-	return out
+	return LabRegistry.param_rows(param_specs(), params)
 
 
 func set_lab_param(id: String, v: float) -> void:
@@ -767,7 +762,7 @@ func lab_options() -> Array:
 		{"id": "art", "label": "Art", "choices": ART_ORDER, "value": art},
 		{"id": "head", "label": "Head", "choices": MechCatalog.HEAD_ORDER, "value": head_id},
 		{"id": "chassis", "label": "Chassis", "choices": ChassisParts.ORDER + ChassisParts.DRAFTS, "value": chassis_id},   # every built chassis, drafts too
-		{"id": "accent", "label": "Accent", "choices": MechMeshes.ACCENT_ORDER, "value": _accent_id()},
+		{"id": "accent", "label": "Accent", "choices": LowPolyPalette.ACCENT_ORDER, "value": _accent_id()},
 		{"id": "legs", "label": "Leg bend", "choices": BEND_ORDER, "value": bend_id()},
 	]
 	for hp: Dictionary in MechCatalog.entry(chassis_id)["hardpoints"]:
@@ -787,7 +782,7 @@ func set_lab_option(id: String, v: String) -> void:
 		show_drafts = true   # the lab shows the draft chassis (the Wasp) too
 		configure(head_id, v, loadout)
 	elif id == "accent":
-		set_accent(MechMeshes.ACCENTS.get(v, MechMeshes.ORANGE))
+		set_accent(LowPolyPalette.ACCENTS.get(v, LowPolyPalette.ORANGE))
 	elif id == "legs":
 		set_bend_id(v)
 	elif id.begins_with("hp:"):
@@ -808,8 +803,8 @@ func set_bend_id(v: String) -> void:
 
 ## The ACCENTS id of the current accent colour ("orange" when it is not one of them).
 func _accent_id() -> String:
-	for id: String in MechMeshes.ACCENT_ORDER:
-		if (MechMeshes.ACCENTS[id] as Color).is_equal_approx(accent):
+	for id: String in LowPolyPalette.ACCENT_ORDER:
+		if (LowPolyPalette.ACCENTS[id] as Color).is_equal_approx(accent):
 			return id
 	return "orange"
 

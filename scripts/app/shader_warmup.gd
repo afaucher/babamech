@@ -246,7 +246,7 @@ func _take_material(mat: Material, shadow: bool = true) -> void:
 	if not _keep.has(mat):
 		_keep.append(mat)
 	var mi := MeshInstance3D.new()
-	mi.mesh = CombatMeshes.ico(MechMeshes.GREY)
+	mi.mesh = CombatMeshes.ico(LowPolyPalette.GREY)
 	mi.material_override = mat
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON if shadow else GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_take_instance(mi)
@@ -256,7 +256,7 @@ func _take_material(mat: Material, shadow: bool = true) -> void:
 func _extras() -> void:
 	# Shared materials (StandardMaterial3D shares a compiled shader between materials with the same features, so one per
 	# feature set covers every copy and tint: the accents, each mech's radiator glow, each head's face).
-	for m: Variant in MechMeshes.materials():
+	for m: Variant in LowPolyMaterials.materials():
 		_take_material(m as Material)
 	_take_material(LowPolyFlame.material(), false)
 	_take_material(CombatMeshes.ribbon_material(), false)
@@ -264,9 +264,9 @@ func _extras() -> void:
 	_take_material(EnemyMeshes.flash_material(), false)
 	_take_material(EnemyMeshes.charred_material())
 	_take_material(EnemyMeshes.scanner_material(), false)
-	_take_material(MechParts.mat(MechMeshes.GREY))
-	_take_material(MechParts.mat(MechMeshes.GREY, 0.5))
-	_take_material(MechParts.mat(MechMeshes.GREY, 1.0, true))
+	_take_material(MechParts.mat(LowPolyPalette.GREY))
+	_take_material(MechParts.mat(LowPolyPalette.GREY, 0.5))
+	_take_material(MechParts.mat(LowPolyPalette.GREY, 1.0, true))
 	_take_material(CityPalette.surface_material())
 	_take_material(CityPalette.strip_material())
 	_take_material(_made("unshaded", func() -> Material: return _unshaded(1.0)), false)   # opaque aim markers
@@ -276,10 +276,10 @@ func _extras() -> void:
 	ImpactFx.flame_ball(LowPolyFlame.MID)
 	LowPolyFlame.jet()
 	MuzzleFlash.mesh()
-	CombatMeshes.ico(MechMeshes.WHITE, true)
-	CombatMeshes.shell(MechMeshes.AMBER, 0.38, true)
-	CombatMeshes.ring(MechMeshes.ORANGE, 0.9, 16)
-	for cache: Dictionary in [CombatMeshes._cache, ImpactFx._meshes, LowPolyFlame._cache, EnemyMeshes._cache]:
+	CombatMeshes.ico(LowPolyPalette.WHITE, true)
+	CombatMeshes.shell(LowPolyPalette.AMBER, 0.38, true)
+	CombatMeshes.ring(LowPolyPalette.ORANGE, 0.9, 16)
+	for cache: Dictionary in [CombatMeshes.cached_meshes(), ImpactFx.cached_meshes(), LowPolyFlame.cached_meshes(), EnemyMeshes.cached_meshes()]:
 		for m: Variant in cache.values():
 			if m is Mesh:
 				_take_mesh(m as Mesh)
@@ -310,7 +310,7 @@ static func _unshaded(alpha: float) -> StandardMaterial3D:
 func _trail() -> void:
 	var im := ImmediateMesh.new()
 	im.surface_begin(Mesh.PRIMITIVE_TRIANGLES, CombatMeshes.ribbon_material())
-	im.surface_set_color(MechMeshes.AMBER)
+	im.surface_set_color(LowPolyPalette.AMBER)
 	im.surface_add_vertex(Vector3(-0.5, -0.5, 0))
 	im.surface_add_vertex(Vector3(0.5, -0.5, 0))
 	im.surface_add_vertex(Vector3(0, 0.5, 0))
@@ -324,11 +324,8 @@ func _trail() -> void:
 ## A rail slug ribbon: RailSlug's own shader (the same Shader object, made the way RailSlug makes it) on its vertex
 ## format (vertex, colour, CUSTOM0 RGBA float).
 func _rail_ribbon() -> void:
-	if RailSlug._ribbon_shader == null:
-		RailSlug._ribbon_shader = Shader.new()
-		RailSlug._ribbon_shader.code = RailSlug.RIBBON_SHADER
 	var mat := ShaderMaterial.new()
-	mat.shader = RailSlug._ribbon_shader
+	mat.shader = RailSlug.ribbon_shader()
 	mat.set_shader_parameter("life", 1.0)
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)

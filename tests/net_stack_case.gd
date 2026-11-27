@@ -1,10 +1,10 @@
 extends NetTest
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## The crew mission in the multi-deck city stack (W2, docs/networking.md "Mission"), over a real crew, once per link:
-## - the host launches in stack mode (Session.start_mission(seed, NetMission.MODE_STACK)): the launch carries the mode;
-## - every machine builds the stack (TestDrive.stack), the load barrier compares CityStack.checksum(), and every machine
+## - the host launches in stack mode (Session.mission.host_launch(seed, NetMission.MODE_STACK)): the launch carries the mode;
+## - every machine builds the stack (MissionScene.stack), the load barrier compares CityStack.checksum(), and every machine
 ##   lands on the host's seed, mode and stack checksum (and the same entry transform);
-## - each machine's own mech spawns on the entry road: at TestDrive.entry_spawn(entry, entry deck, seat, n), within a few
+## - each machine's own mech spawns on the entry road: at MissionScene.entry_spawn(entry, entry deck, seat, n), within a few
 ##   metres of CityStack.entry_transform(), on the entry deck (CityStack.deck_at), inside that deck's plan, standing on
 ##   the floor (grounded, height ~0) after a couple of seconds, and no two mechs overlap (the host compares every pair of
 ##   the owners' true positions).
@@ -19,7 +19,7 @@ const SETTLE := 2.0          ## s after mission_go before each machine reports w
 const SPAWN_TOL := 0.75      ## m between the mech and its entry_spawn() slot after settling
 const MIN_GAP := 4.4         ## m between any two mechs (the capsule is 4.4 m across)
 
-var td: TestDrive
+var td: MissionScene
 var heard: Dictionary = {}   ## broadcast_event: sender peer -> times heard (each one's data names its sender)
 
 
@@ -28,8 +28,8 @@ func run_host() -> void:
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0),
 			"the crew gathers (%d of %d)" % [Session.roster.size(), peers]):
 		return
-	check(Session.start_mission(SEED, NetMission.MODE_STACK), "the host launches the mission in the stack")
-	eq(str(Session.mission_params().get("mode", "")), NetMission.MODE_STACK, "the launch carries the stack mode")
+	check(Session.mission.host_launch(SEED, NetMission.MODE_STACK), "the host launches the mission in the stack")
+	eq(str(Session.mission.params.get("mode", "")), NetMission.MODE_STACK, "the launch carries the stack mode")
 	if not await _load_and_go():
 		return
 	var mine := await _where()
@@ -69,9 +69,9 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
-	eq(str(Session.mission_params().get("mode", "")), NetMission.MODE_STACK, "the launch carries the stack mode")
+	eq(str(Session.mission.params.get("mode", "")), NetMission.MODE_STACK, "the launch carries the stack mode")
 	if not await _load_and_go():
 		return
 	var r := await _where()
@@ -104,7 +104,7 @@ func _load_and_go() -> bool:
 	Session.event_received.connect(func(from: int, kind: String, data: Dictionary, _stamp: float) -> void:
 		if kind == "probe.bcast":
 			heard[from] = int(heard.get(from, 0)) + (1 if int(data.get("peer", -1)) == from else -100))
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.stack != null and td.city != null, "the crew mission builds the stack (td.city = entry deck)"):
@@ -113,7 +113,7 @@ func _load_and_go() -> bool:
 	td.combat.enemies.clear()
 	td.drive_override = true
 	td.mech.move_input = Vector2.ZERO
-	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	if not check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 			"the load barrier passes (phase %s)" % Session.mission.phase):
 		return false
 	return true

@@ -113,13 +113,15 @@ var _pivots := {}
 var _rest_xf := {}
 var _flush := 0.0
 var _flash := 0.0
+var _tic := ""                   ## the idle tic _tic_age last saw, and the head time it started
+var _tic_t0 := 0.0
 
 
 ## Builds every piece under `h`. Called once by PilotHead.
 func build(h: Node3D) -> void:
 	head = h
 	rest = PilotExpressions.mood_row("stern", overrides)
-	material = (MechMeshes.materials()[0] as StandardMaterial3D).duplicate() as StandardMaterial3D
+	material = (LowPolyMaterials.materials()[0] as StandardMaterial3D).duplicate() as StandardMaterial3D
 	build_pieces()
 	for n: String in STANDARD:
 		if not _pieces.has(n):
@@ -197,7 +199,7 @@ func add_body(shell: MeshKit, extras: MeshKit) -> PilotBody:
 func add_mesh(piece_name: String, k: MeshKit, flush: bool = true) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.name = piece_name + "_mesh"
-	mi.mesh = k.commit(MechMeshes.materials())
+	mi.mesh = k.commit(LowPolyMaterials.materials())
 	mi.position = -(_pivots[piece_name] as Vector3)
 	if flush:
 		mi.set_surface_override_material(0, material)
@@ -439,3 +441,34 @@ func _apply_tint() -> void:
 	material.albedo_color = Color(1.0 - w, 1.0 - w, 1.0 - w)
 	material.emission_enabled = emi.r + emi.g + emi.b > 0.003
 	material.emission = emi
+
+
+# --- Shared by the head builders ---
+
+## Seconds since the idle tic `want` started (head time), or -1 when it is not playing.
+func _tic_age(want: String, t: float) -> float:
+	var ph := head as PilotHead
+	var tic := ph.idle.tic_id if ph != null and ph.idle_enabled else ""
+	if tic != _tic:
+		_tic = tic
+		_tic_t0 = t
+	return t - _tic_t0 if tic != "" and tic == want else -1.0
+
+
+## Body radius at height y (before girth), along `secs` ([y, z, rx, ry] rows, by height).
+static func _face_r(secs: Array, y: float) -> float:
+	for i in secs.size() - 1:
+		var a: Array = secs[i]
+		var b: Array = secs[i + 1]
+		if y <= float(b[0]):
+			return lerpf(float(a[3]), float(b[3]), (y - float(a[0])) / (float(b[0]) - float(a[0])))
+	return float(secs[secs.size() - 1][3])
+
+
+## The section row between `a` and `b` at height y (each of the four columns lerped).
+static func _lerp_sec(a: Array, b: Array, y: float) -> Array:
+	var t := (y - float(a[0])) / (float(b[0]) - float(a[0]))
+	var out := []
+	for i in 4:
+		out.append(lerpf(float(a[i]), float(b[i]), t))
+	return out

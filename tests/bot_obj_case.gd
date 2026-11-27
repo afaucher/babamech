@@ -33,14 +33,14 @@ func _init() -> void:
 
 
 func setup() -> void:
-	TestDrive.solo_launch = {"seed": seed_n, "mode": TestDrive.MODE_STACK}
-	TestDrive.bot_profile = profile()
-	print("[Test] bot profile %s" % TestDrive.bot_profile)
-	TestDrive.dev_bot_travel = false
+	MissionScene.solo_launch = {"seed": seed_n, "mode": MissionScene.MODE_STACK}
+	MissionScene.bot_profile = profile()
+	print("[Test] bot profile %s" % MissionScene.bot_profile)
+	MissionScene.dev_bot_travel = false
 	MissionBot.bonuses = bonuses
 	CombatWorld.dev_enemy_damage = 1.0
 	Engine.time_scale = speed()
-	var td := (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await until_loaded(td)
 	if not check(td.bot != null and td.mission != null and td.mission.plan != null, "the solo plan-mode drive runs the mission bot"):
@@ -99,7 +99,7 @@ func setup() -> void:
 	finish()
 
 
-func until_loaded(td: TestDrive) -> void:
+func until_loaded(td: MissionScene) -> void:
 	var w := 0.0
 	while not td.loaded and w < 60.0:
 		await get_tree().process_frame
@@ -109,6 +109,6 @@ func until_loaded(td: TestDrive) -> void:
 
 func _restore() -> void:
 	Engine.time_scale = 1.0
-	TestDrive.bot_profile = ""
-	TestDrive.dev_bot_travel = false
+	MissionScene.bot_profile = ""
+	MissionScene.dev_bot_travel = false
 	MissionBot.bonuses = true

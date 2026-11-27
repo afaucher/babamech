@@ -24,5 +24,5 @@ A headless bot mission that writes such a log (about 3.5 min of game time, no wi
 
 ```powershell
 & <godot console exe> --headless --path . --fixed-fps 60 --quit-after 12600 --log-file run.log -- `
-    --scene res://scenes/test_drive.tscn --seed 403112 --objectives --bot
+    --scene res://scenes/mission.tscn --seed 403112 --objectives --bot
 ```

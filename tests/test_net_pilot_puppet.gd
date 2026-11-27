@@ -15,14 +15,14 @@ const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "
 const PEERS := 2
 const SEED := 11
 
-var td: TestDrive
+var td: MissionScene
 
 
 func run_host() -> void:
 	net_timeout = 90.0
 	if not check(await until(func() -> bool: return Session.roster.size() == peers, 30.0), "the crew gathers"):
 		return
-	check(Session.start_mission(SEED), "the host launches the mission")
+	check(Session.mission.host_launch(SEED), "the host launches the mission")
 	if not await _load_and_go():
 		return
 	var a := 0
@@ -106,7 +106,7 @@ func run_client() -> void:
 	var why := await connect_client()
 	if not check(why == "", "welcomed (%s)" % why):
 		return
-	if not check(await until(func() -> bool: return not Session.mission_params().is_empty(), 40.0), "the host's launch arrives"):
+	if not check(await until(func() -> bool: return not Session.mission.params.is_empty(), 40.0), "the host's launch arrives"):
 		return
 	if not await _load_and_go():
 		return
@@ -158,12 +158,12 @@ func _profile_checks(a: int, pp: MechPuppet) -> void:
 ## Load the test drive at start_t and wait for the barrier; no enemies (nothing but the test's own shot may hit A).
 func _load_and_go() -> bool:
 	check(await until(func() -> bool: return Session.mission.seconds_to_load() <= 0.0, 10.0), "start_t comes on the shared clock")
-	td = (load(TestDrive.SCENE) as PackedScene).instantiate() as TestDrive
+	td = (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
 	add_child(td)
 	await frames(2)
 	if not check(td.crewed and td.crew_sync != null, "the test drive runs the crew mission"):
 		return false
 	td.combat.squad.clear_enemies()
 	td.combat.enemies.clear()
-	return check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td._held, 40.0),
+	return check(await until(func() -> bool: return Session.mission.phase == NetMission.RUNNING and not td.held, 40.0),
 		"the load barrier passes (phase %s)" % Session.mission.phase)

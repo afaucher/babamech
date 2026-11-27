@@ -207,7 +207,7 @@ func _land() -> void:
 	var b := a + flight_dir(flight_time) * 1.5
 	var h := world.first_hit(a, b, Combat.PROJECTILE_RADIUS, str(record.get("shooter", "")), pierced)
 	if h.is_empty():
-		h = {"target": null, "component": "", "point": landing, "normal": _up_at(landing), "frac": 0.0, "color": MechMeshes.GREY}
+		h = {"target": null, "component": "", "point": landing, "normal": _up_at(landing), "frac": 0.0, "color": LowPolyPalette.GREY}
 	on_hit(h, flight_time)
 	end_time = flight_time
 
@@ -236,7 +236,7 @@ func on_hit(h: Dictionary, e: float) -> bool:
 		world.resolve_hit(record, st, target, str(h["component"]), point, h["normal"], kv, float(stats.get("damage", 0.0)))
 	world.hit_prop(record, stats, h, flight_dir(e))
 	world.splash(record, stats, point, target)
-	var fx := world.spawn_impact(point, h["normal"], float(stats.get("impact_radius", 6.0)), h.get("color", MechMeshes.GREY), true)
+	var fx := world.spawn_impact(point, h["normal"], float(stats.get("impact_radius", 6.0)), h.get("color", LowPolyPalette.GREY), true)
 	if fx != null:
 		fx.add_column(COLUMN_HEIGHT)
 	return true
@@ -268,7 +268,7 @@ func _build_look() -> void:
 		_trail = CombatMeshes.instance(_trail_mesh)
 		_trail.top_level = true
 		add_child(_trail)
-	_ring_outer = CombatMeshes.instance(CombatMeshes.ring(MechMeshes.ORANGE, 0.93, SCATTER_RING_SIDES))
+	_ring_outer = CombatMeshes.instance(CombatMeshes.ring(LowPolyPalette.ORANGE, 0.93, SCATTER_RING_SIDES))
 	_ring_outer.top_level = true
 	add_child(_ring_outer)
 	_ring_inner = CombatMeshes.instance(CombatMeshes.ring(CombatMeshes.RED, 0.8, SCATTER_RING_SIDES))
@@ -281,7 +281,7 @@ func _build_look() -> void:
 static func prewarm_mortar(st: Dictionary) -> void:
 	shell_mesh()
 	Projectile.prewarm_trail(st)
-	CombatMeshes.ring(MechMeshes.ORANGE, 0.93, SCATTER_RING_SIDES)
+	CombatMeshes.ring(LowPolyPalette.ORANGE, 0.93, SCATTER_RING_SIDES)
 	CombatMeshes.ring(CombatMeshes.RED, 0.8, SCATTER_RING_SIDES)
 	MuzzleFlash.mesh()
 
@@ -291,11 +291,11 @@ static func shell_mesh() -> ArrayMesh:
 	return CombatMeshes._mesh("mortar_shell", func(k: MeshKit) -> void:
 		k.push(MeshKit.xf(Vector3.ZERO, Vector3(-90, 0, 0)))      # lathe +Y -> -Z
 		k.lathe([Vector2(0.13, -0.5), Vector2(0.2, -0.42), Vector2(0.29, -0.2), Vector2(0.3, 0.1), Vector2(0.22, 0.32),
-			Vector2(0.09, 0.46), Vector2(0.0, 0.5)], 6, MechMeshes.DARK)
-		k.lathe([Vector2(0.315, -0.06), Vector2(0.315, 0.08)], 6, MechMeshes.ORANGE)
+			Vector2(0.09, 0.46), Vector2(0.0, 0.5)], 6, LowPolyPalette.DARK)
+		k.lathe([Vector2(0.315, -0.06), Vector2(0.315, 0.08)], 6, LowPolyPalette.ORANGE)
 		for i in 4:
 			k.push(MeshKit.xf(Vector3.ZERO, Vector3(0, 45 + 90 * i, 0)))
-			k.box(Vector3(0.04, 0.22, 0.42), MechMeshes.GUN, Vector3(0, -0.4, 0.18))
+			k.box(Vector3(0.04, 0.22, 0.42), LowPolyPalette.GUN, Vector3(0, -0.4, 0.18))
 			k.pop()
 		k.pop())
 

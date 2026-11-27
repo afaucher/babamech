@@ -580,8 +580,8 @@ func _plan_labels() -> void:
 							missing[ch] = true
 	eq(missing.keys(), [], "the HUD font has every glyph the objective lines use")
 	# The world markers' labels (MissionFlow): plain words, no "?".
-	for ty: String in MissionFlow.MARK_LABEL:
-		var lab := str(MissionFlow.MARK_LABEL[ty])
+	for ty: String in MissionHudModel.MARK_LABEL:
+		var lab := str(MissionHudModel.MARK_LABEL[ty])
 		check(not lab.contains("?") and lab != "", "marker label %s" % lab)
 
 

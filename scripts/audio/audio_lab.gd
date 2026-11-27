@@ -60,7 +60,7 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a != null:
 		a.stop_loop(_thrust_tag())
 		a.stop_loop(_heat_tag())
@@ -74,7 +74,7 @@ func _exit_tree() -> void:
 
 func _build_stage() -> void:
 	# Plinth + low-poly mech silhouette at origin.
-	add_child(MechParts.box(Vector3(4.2, 0.4, 4.2), MechMeshes.GUN, Vector3(0.0, 0.2, 0.0)))
+	add_child(MechParts.box(Vector3(4.2, 0.4, 4.2), LowPolyPalette.GUN, Vector3(0.0, 0.2, 0.0)))
 	_mech = MechModel.new()
 	_mech.position = Vector3(0.0, 0.4, 0.0)
 	_mech.configure("chicken", "strider", MechCatalog.chassis("strider")["default_loadout"])
@@ -104,7 +104,7 @@ func _process(delta: float) -> void:
 	_t += dt
 	_pulse = maxf(_pulse - dt * 3.0, 0.0)
 	_sync_beacon()
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null or dt <= 0.0:
 		_update_label(a)
 		return
@@ -145,7 +145,7 @@ func _process(delta: float) -> void:
 
 ## Audition the currently selected telegraph or cue at the beacon's 3D distance.
 func trigger_now() -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	if a == null:
 		return
 	var pos := _emitter_pos()
@@ -215,7 +215,7 @@ func set_lab_param(id: String, value: float) -> void:
 		"thrust": thrust = clampf(value, 0.0, 1.0)
 		"combat_intensity":
 			combat_intensity = clampf(value, 0.0, 1.0)
-			var a := _audio()
+			var a := AudioDirector.of(self)
 			if a != null and a.music != null:
 				a.music.manual_intensity = true
 				a.music.set_intensity(combat_intensity)
@@ -224,7 +224,7 @@ func set_lab_param(id: String, value: float) -> void:
 		"sfx_trim": sfx_trim = clampf(value, 0.0, 1.0)
 		"music_trim":
 			music_trim = clampf(value, 0.0, 1.0)
-			var a := _audio()
+			var a := AudioDirector.of(self)
 			if a != null and a.music != null:
 				var db := linear_to_db(maxf(music_trim, 0.0001)) if music_trim < 0.999 else 0.0
 				a.music.set_trims(db, 0.0)
@@ -244,7 +244,7 @@ func lab_options() -> Array:
 
 
 func set_lab_option(id: String, value: String) -> void:
-	var a := _audio()
+	var a := AudioDirector.of(self)
 	match id:
 		"cue":
 			if SoundBank.has_cue(value):
@@ -295,9 +295,3 @@ func _thrust_tag() -> String:
 
 func _heat_tag() -> String:
 	return "audiolab.heat.%d" % get_instance_id()
-
-
-func _audio() -> AudioDirector:
-	if not is_inside_tree():
-		return null
-	return get_tree().root.get_node_or_null("Audio") as AudioDirector

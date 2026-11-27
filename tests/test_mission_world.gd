@@ -173,7 +173,7 @@ func _doors_over_time(mw: MissionWorld, id: Variant, kind: String) -> void:
 ## The gate's collision: shut blocks at the wall plane, open lets a ray into the staging bay (stopped by its back wall),
 ## sealed blocks again; physically, through the physics server. And source_bay / source_point agree with the bay.
 func _collision(stack: CityStack, mw: MissionWorld, id: Variant) -> void:
-	var door := mw._doors[id] as MissionProps.GateDoor
+	var door := mw._doors[id] as MissionGateDoor
 	var space := stack.get_world_3d().direct_space_state
 	var from := door.global_transform * Vector3(0, 3.0, 4.0)
 	var to := door.global_transform * Vector3(0, 3.0, -40.0)
@@ -181,8 +181,8 @@ func _collision(stack: CityStack, mw: MissionWorld, id: Variant) -> void:
 	var sp := mw.source_point(id)
 	var ext: Rect2 = stack.decks[int(sp["deck"])].plan.extent
 	var spt := Vector2(float(sp["x"]), float(sp["s"]))
-	check(not ext.grow(MissionProps.GateDoor.USE_FROM - 0.5).has_point(spt), "a gate's spawn point is in the bay, past the wall and the leaves")
-	check(ext.grow(MissionProps.GateDoor.USE_TO).has_point(spt), "and in front of the back door")
+	check(not ext.grow(MissionGateDoor.USE_FROM - 0.5).has_point(spt), "a gate's spawn point is in the bay, past the wall and the leaves")
+	check(ext.grow(MissionGateDoor.USE_TO).has_point(spt), "and in front of the back door")
 	_bay(mw, id, sp)
 	mw.advance_to(base)
 	await frames(2)
@@ -198,7 +198,7 @@ func _collision(stack: CityStack, mw: MissionWorld, id: Variant) -> void:
 	check(door.door_shape.disabled, "gate open: the door shape is off")
 	await frames(2)
 	hit = space.intersect_ray(PhysicsRayQueryParameters3D.create(from, to))
-	var back := 4.0 + MissionProps.GateDoor.BAY_DEPTH
+	var back := 4.0 + MissionGateDoor.BAY_DEPTH
 	check(not hit.is_empty() and from.distance_to(hit["position"]) > back - 1.5, "gate open: a ray goes through the bay (%s)" % str(hit.get("position")))
 	check(not hit.is_empty() and from.distance_to(hit["position"]) < back + 0.5, "and stops at the bay's back wall")
 	var close_at := base + 6.0 + MissionWorld.OPENING + 10.0
@@ -221,7 +221,7 @@ func _collision(stack: CityStack, mw: MissionWorld, id: Variant) -> void:
 ## an unknown id or a lift gives {ok = false}.
 func _bay(mw: MissionWorld, id: Variant, sp: Dictionary) -> void:
 	var b := mw.source_bay(id)
-	var door := mw._doors[id] as MissionProps.GateDoor
+	var door := mw._doors[id] as MissionGateDoor
 	if not check(bool(b.get("ok", false)), "source_bay is ok for a gate"):
 		return
 	for key: String in ["deck", "frame", "center", "x", "s", "h", "half_width", "depth_from", "depth_to", "height", "facing", "exit",
@@ -232,7 +232,7 @@ func _bay(mw: MissionWorld, id: Variant, sp: Dictionary) -> void:
 	check(float(b["width"]) >= 20.0 - 1e-3, "usable width >= 20 m (%.1f)" % float(b["width"]))
 	check(float(b["depth"]) >= 16.0 - 1e-3, "usable depth %.1f m" % float(b["depth"]))
 	check(float(b["height"]) >= 12.0, "clear height >= 12 m (%.2f)" % float(b["height"]))
-	check(float(b["depth_to"]) <= MissionProps.GateDoor.BAY_DEPTH - 1.0, "usable depth ends clear of the back door")
+	check(float(b["depth_to"]) <= MissionGateDoor.BAY_DEPTH - 1.0, "usable depth ends clear of the back door")
 	near(float(b["door_w"]), door.half * 2.0, 1e-3, "door_w")
 	near(float(b["door_h"]), door.gh, 1e-3, "door_h")
 	near((b["out"] as Vector2).length(), 1.0, 1e-4, "out is a unit vector")
@@ -250,7 +250,7 @@ func _bay(mw: MissionWorld, id: Variant, sp: Dictionary) -> void:
 			break
 	var panel := mw.source_sign_panel(id)
 	if check(bool(panel.get("ok", false)), "a sign panel beside the frame"):
-		eq(panel["size"], MissionProps.GateDoor.PANEL, "panel size")
+		eq(panel["size"], MissionGateDoor.PANEL, "panel size")
 		var pf := panel["frame"] as Transform3D
 		check(pf.basis.z.normalized().dot(fr.basis.z.normalized()) > 0.999, "the panel faces the street")
 		check(absf((fr.affine_inverse() * pf.origin).x) > door.half + 4.0, "beside the opening, past the buttress")
@@ -460,7 +460,7 @@ func _flag_sites(stack: CityStack, mw: MissionWorld, plan: Dictionary) -> void:
 		check(got.distance_to(at) <= MissionWorld.snap_reach(o) + 0.01, "%s stands within its snap distance" % o["id"])
 		if site["ok"]:
 			var r := MissionWorld.FLAG_CLEAR if o["type"] == "flag" else MissionWorld.ASSET_CLEAR
-			check(MissionProps.clear_at(d, got, r, MissionProps._blockers(d.plan), d.plan.floor_cuts()), "%s stands on clear ground" % o["id"])
+			check(SiteFit.clear_at(d, got, r, SiteFit.plan_blockers(d.plan), d.plan.floor_cuts()), "%s stands on clear ground" % o["id"])
 		var avoid := []          # the pieces placed before it on its deck, as MissionWorld._site does
 		for id: Variant in mw._sites:
 			if id == o["id"]:
@@ -468,8 +468,8 @@ func _flag_sites(stack: CityStack, mw: MissionWorld, plan: Dictionary) -> void:
 			var o2: Dictionary = mw._sites[id]
 			if int(o2["deck"]) == int(o["deck"]):
 				avoid.append([Vector2(float(o2["x"]), float(o2["s"])), float(o2["clear"])])
-		# The rule MissionWorld._site uses (the fit rule: snap_site's pick unless the widest mech cannot reach it; test_site_fit).
-		var again := MissionProps.snap_site_fit(d, at, MissionWorld.snap_reach(o), MissionWorld.FLAG_CLEAR if o["type"] == "flag" else MissionWorld.ASSET_CLEAR,
+		# The rule MissionWorld._site uses (the fit rule: SiteFit.snap's pick unless the widest mech cannot reach it; test_site_fit).
+		var again := SiteFit.snap_fit(d, at, MissionWorld.snap_reach(o), MissionWorld.FLAG_CLEAR if o["type"] == "flag" else MissionWorld.ASSET_CLEAR,
 				avoid, MissionWorld.obj_radius(o))
 		check(is_equal_approx(float(again["x"]), got.x) and is_equal_approx(float(again["s"]), got.y), "%s: the snap is deterministic" % o["id"])
 
@@ -558,7 +558,7 @@ func _door_vs_point(seed_: int, stack: CityStack, mw: MissionWorld, s: Dictionar
 	var inv := door.transform.affine_inverse()
 	var local := inv * d.ring.arc_to_world(pt.x, pt.y, 1.0)
 	var what := "seed %d %s (%s, deck %d, (%.0f, %.0f))" % [seed_, str(s["id"]), s["kind"], k, pt.x, pt.y]
-	if MissionProps._in_rects(MissionProps._blockers(d.plan), pt):
+	if SiteFit.in_rects(SiteFit.plan_blockers(d.plan), pt):
 		issues.append(what + ": the source point is inside a building / pillar footprint")
 	if local.z < 1.5:
 		issues.append(what + ": the source point is at or behind the door plane (local z %.1f m)" % local.z)
