@@ -143,6 +143,7 @@ func setup(w: CombatWorld, p: CityPlan = null, r: RingFrame = null) -> void:
 	_wave_spawned_total.clear()
 	_wave_unreleased_pending.clear()
 	_wave_decks.clear()
+	_staged.clear()
 	_awake.clear()
 	_awake_at = -INF
 	_awake_targets_n = -1
@@ -215,6 +216,7 @@ func clear_enemies() -> void:
 	_wave_spawned_total.clear()
 	_wave_unreleased_pending.clear()
 	_wave_decks.clear()
+	_staged.clear()
 	_awake.clear()
 	_awake_at = -INF
 	_awake_targets_n = -1
@@ -360,6 +362,156 @@ func _player_near_wave_source(source_def: Dictionary, use_ring: RingFrame, deck:
 	return false
 
 
+const ARRIVE_QUEUE := 4.5       ## m between ranks of a ramp group on its ramp
+const RAMP_UP_START := 18.0     ## m up the ramp from this deck's end a ramp group's first rank starts
+const SHAFT_SPREAD := 2.5       ## m: a shaft group's units start this far apart inside the shaft opening
+const SHAFT_UNDER := 1.5        ## m under the upper deck's floor a shaft group starts (inside the opening)
+const SHAFT_MIN_GAP := 6.0      ## m: no decks this close (a test fixture): no descent
+const LIFT_DOOR_HALF := 5.0     ## m: half the lift door's clear width (MissionLiftDoor.W: two 5 m leaves)
+const LIFT_STEP_OUT := 4.0      ## m in front of the lift door a unit steps to before heading for its spot
+
+
+## Where a ramp / shaft group really comes from (playtest R2.24: "no unit ever appears in the open with no visible source"):
+##   ramp  {kind, far_deck, start (world: RAMP_ENTRY_BACK m before the ramp on the deck at its other end), path: [world
+##         points: start, the far lip, this deck's end of the ramp], dir_far (Vector2 arc: along s on the far deck, toward
+##         the ramp), half (the ramp's half width), xc (this end's centre x)}: the group walks down / up the ramp;
+##   shaft {kind, h_up (m: the upper deck's floor above this deck's landing, this deck's frame)}: the group descends
+##         through the shaft's opening from just under the upper floor.
+## {} for any other source, or when the geometry is missing (a test fixture without decks): the old mouth spawn.
+func connector_arrival(source_def: Dictionary, deck: int) -> Dictionary:
+	var kind := str(source_def.get("kind", ""))
+	var ci := int(source_def.get("connector", -1))
+	var here_r := deck_ring(deck)
+	if here_r == null:
+		return {}
+	if kind == "lift" and not source_def.has("bay"):
+		# No car interior yet (R2.22 switches staging on by itself): the group steps out of the opening lift doors.
+		var mw := mission_world()
+		var door: Variant = mw.call("door_nodes").get(str(source_def.get("id", ""))) if mw != null and mw.has_method("door_nodes") else null
+		if door == null or not is_instance_valid(door) or not (door is Node3D):
+			return {}
+		var xf := (door as Node3D).global_transform if (door as Node3D).is_inside_tree() else (door as Node3D).transform
+		return {"kind": "lift", "frame": xf}
+	if ci < 0 or (kind != "ramp" and kind != "shaft"):
+		return {}
+	if kind == "shaft":
+		var up_r: RingFrame = _deck_rings.get(deck - 1) as RingFrame
+		if up_r == null:
+			var st := world.city_stack() if world != null else null
+			if st != null and st.has_method("deck_ring") and deck - 1 >= 0:
+				up_r = st.call("deck_ring", deck - 1) as RingFrame
+		if up_r == null:
+			return {}
+		var gap := here_r.radius - up_r.radius
+		if gap < SHAFT_MIN_GAP:
+			return {}
+		return {"kind": "shaft", "h_up": gap}
+	var here_p := deck_plan(deck)
+	if here_p == null:
+		return {}
+	var near_part := {}
+	for r: Dictionary in here_p.ramps:
+		if int(r["connector"]) == ci:
+			near_part = r
+	if near_part.is_empty():
+		return {}
+	for kk: Variant in _deck_plans.keys():
+		var k2 := int(kk)
+		if k2 == deck or absi(k2 - deck) != 1:
+			continue
+		var fp := _deck_plans[kk] as CityPlan
+		var fr := deck_ring(k2)
+		if fp == null or fr == null:
+			continue
+		for r: Dictionary in fp.ramps:
+			if int(r["connector"]) != ci:
+				continue
+			var down := deck > k2   # deck k + 1 is below deck k: coming down from the far (upper) deck
+			var fxc := (float(r["x0"]) + float(r["x1"])) * 0.5
+			var fdir := signf(float(r["s_foot"]) - float(r["s_top"]))   # downhill along s on the far deck
+			var lip_s := float(r["s_top"]) if down else float(r["s_foot"])
+			var toward := fdir if down else -fdir                         # walking direction on the far deck
+			var start_a := Vector2(fxc, lip_s - toward * RAMP_ENTRY_BACK)
+			var nxc := (float(near_part["x0"]) + float(near_part["x1"])) * 0.5
+			var end_s := float(near_part["s_foot"]) if down else float(near_part["s_top"])
+			var start_w := fr.arc_to_world(start_a.x, start_a.y, CityPlan.CURB_H)
+			return {"kind": "ramp", "far_deck": k2, "start": start_w,
+				"path": [start_w, fr.arc_to_world(fxc, lip_s, CityPlan.CURB_H), here_r.arc_to_world(nxc, end_s, CityPlan.CURB_H)],
+				"dir_far": Vector2(0.0, toward), "half": (float(near_part["x1"]) - float(near_part["x0"])) * 0.5, "xc": nxc,
+				"far_ring": fr}
+	return {}
+
+
+## Ramp / shaft group: each unit starts at the connector (ramp: queued on the far deck behind the ramp's lip, in its lane;
+## shaft: inside the opening under the upper floor) and walks / flies its arrival kinematically (EnemyBase.roll_out) to the
+## spot the spawner gave it on this deck; the AI takes over there. Its spawn_deck stays this deck (re-homing skips units
+## rolling out).
+func _arrive_through_connector(entry: Dictionary, specs: Array[Dictionary], spawned: Array[EnemyBase]) -> void:
+	var src_def: Dictionary = entry["source"]
+	var deck := int(entry["deck"])
+	var arr := connector_arrival(src_def, deck)
+	if arr.is_empty():
+		return
+	var ring_h := deck_ring(deck)
+	for i in mini(spawned.size(), specs.size()):
+		var e := spawned[i]
+		var sp := specs[i]
+		var goal := Vector3(float(sp["x"]), float(sp["s"]), float(sp["h"]))
+		var air := BayFormation.is_air(e.enemy_type)
+		var r := BayFormation.radius_of(e.enemy_type)
+		var path: Array[Vector3] = []
+		var start_w: Vector3
+		var wait := 0.0
+		if str(arr["kind"]) == "lift":
+			# Just behind the leaves (hidden while they are shut), across the 10 m door; out once the doors are open.
+			var fxf: Transform3D = arr["frame"]
+			var lat := clampf((float(i % 3) - 1.0) * 3.0, -(LIFT_DOOR_HALF - r), LIFT_DOOR_HALF - r)
+			start_w = fxf * Vector3(lat, 0.0, -1.0 - float(i / 3) * 2.5)
+			var step_w := fxf * Vector3(lat, 0.0, LIFT_STEP_OUT)
+			var a0 := ring_h.world_to_arc(step_w)
+			path.append(Vector3(a0.x, a0.y, CityPlan.CURB_H if not air else goal.z))
+			path.append(goal)
+			wait = MissionWorld.LIFT_OPEN + float(i) * 0.35
+		elif str(arr["kind"]) == "ramp":
+			var lane_half := maxf(float(arr["half"]) - r - 0.4, 0.0)
+			var lane := clampf(goal.x - float(arr["xc"]), -lane_half, lane_half)
+			# On the ramp itself, RAMP_UP_START m up it from this deck's end (ranks ARRIVE_QUEUE m further up, never past the
+			# far lip), coming down / up it in its lane: the crew sees them come along the ramp, and contact stays as quick
+			# as a ramp release is tuned for (the whole ramp from the far deck added 20+ s: test_wave_pursuit).
+			var rank := i / 2
+			var pts: Array = arr["path"]
+			var lip_a := ring_h.world_to_arc(pts[1] as Vector3)
+			var end_a := ring_h.world_to_arc(pts[2] as Vector3)
+			var along := lip_a - end_a
+			var up_d := minf(RAMP_UP_START + ARRIVE_QUEUE * float(rank), along.length())
+			var st_a := end_a + along.normalized() * up_d if along.length() > 0.01 else end_a
+			start_w = ring_h.arc_to_world(st_a.x + lane, st_a.y, st_a.z)
+			path.append(Vector3(end_a.x + lane, end_a.y, end_a.z))
+			path.append(goal)
+		else:
+			var h_up := float(arr["h_up"])
+			var off := Vector2(SHAFT_SPREAD * (float(i % 2) - 0.5) * 2.0, SHAFT_SPREAD * (float((i / 2) % 2) - 0.5) * 2.0)
+			var src_pt := Vector2(float(src_def.get("x", goal.x)), float(src_def.get("s", goal.y)))
+			var top_h := h_up - SHAFT_UNDER
+			start_w = ring_h.arc_to_world(src_pt.x + off.x, src_pt.y + off.y, top_h)
+			var low := minf(goal.z, top_h) if air else CityPlan.CURB_H
+			path.append(Vector3(src_pt.x + off.x, src_pt.y + off.y, low))
+			path.append(goal)
+		var up := ring_h.up_at(start_w)
+		var f := ring_h.arc_to_world(path[0].x, path[0].y, path[0].z) - start_w
+		f -= up * f.dot(up)
+		e.up = up
+		var xf := Transform3D(e.transform.basis, start_w)
+		if f.length_squared() > 1e-4:
+			f = f.normalized()
+			xf = Transform3D(Basis(f.cross(up).normalized(), up, -f), start_w)
+		if e.is_inside_tree():
+			e.global_transform = xf
+		else:
+			e.transform = xf
+		e.roll_out(path, wait)
+
+
 func _release_wave_entry(entry: Dictionary) -> Array[EnemyBase]:
 	var wave_id := str(entry["wave"])
 	var deck := int(entry["deck"])
@@ -379,6 +531,8 @@ func _release_wave_entry(entry: Dictionary) -> Array[EnemyBase]:
 			lst.append({"e": spawned[i], "path": path, "wait": float(specs[i].get("exit_wait", 0.0))})
 		_staged[wave_id] = lst
 		return spawned
+	# Ramp / shaft groups come in through their connector (playtest R2.24: never appear in the open with no source).
+	_arrive_through_connector(entry, specs, spawned)
 	# Wave units arrive immediately hunting the nearest standing crew mech on their deck (docs/design/mission-objectives.md §5.7).
 	var src_def: Dictionary = entry["source"]
 	var sx := float(src_def.get("x", 0.0))
@@ -424,6 +578,48 @@ func roll_out_wave(wave_id: String) -> int:
 		n += 1
 	if n > 0 and deck >= 0:
 		note_deck_activity(deck)
+	return n
+
+
+## Host: the units of `wave_id` still staged (waiting for their door), live ones only.
+func staged_units(wave_id: String) -> Array[EnemyBase]:
+	var out: Array[EnemyBase] = []
+	for st: Dictionary in _staged.get(wave_id, []):
+		var ev: Variant = st["e"]
+		if ev != null and is_instance_valid(ev) and not (ev as EnemyBase).destroyed():
+			out.append(ev as EnemyBase)
+	return out
+
+
+## Host: take `e` out of the mission without a death (docs/design/pacing-director.md 1.6b, playtest R2.4): a unit left in
+## a bay behind a door that will not open again, or a staged unit whose door never opens. No wreck, no explosion, no kill
+## credit (PacingFacts skips it: meta "withdrawn"); it leaves the squad (EnemySync sends "gone"), so a deck's sweep and the
+## director's "group beaten" never wait on it. Returns false when it was already gone.
+func withdraw(e: EnemyBase, cause: String) -> bool:
+	if e == null or not is_instance_valid(e) or e.is_queued_for_deletion() or not (e in enemies):
+		return false
+	for wid: Variant in _staged.keys():
+		var lst: Array = _staged[wid]
+		for i in range(lst.size() - 1, -1, -1):
+			if lst[i]["e"] == e:
+				lst.remove_at(i)
+	e.set_meta("withdrawn", cause)
+	var pos := e.global_position if e.is_inside_tree() else e.position
+	remove_enemy(e)
+	if world != null:
+		world.unregister(e)
+	emit_enemy_event("withdrawn", e, {"id": e.target_id, "cause": cause, "pos": pos, "wave": e.wave})
+	e.queue_free()
+	return true
+
+
+## Host: withdraw every unit of `wave_id` still staged (its door got sealed / never opened: rule 5). Returns how many.
+func unstage_wave(wave_id: String, cause: String) -> int:
+	var n := 0
+	for e in staged_units(wave_id):
+		if withdraw(e, cause):
+			n += 1
+	_staged.erase(wave_id)
 	return n
 
 
@@ -583,8 +779,9 @@ func _step_deck_rehome() -> void:
 		max_deck = maxi(max_deck, int(dk))
 	var lowest_ring: RingFrame = deck_ring(max_deck) if max_deck >= 0 else ring
 	for e in enemies:
-		if not is_instance_valid(e) or e.puppet or e.destroyed() or e.enemy_type == "dropship":
-			continue
+		if not is_instance_valid(e) or e.puppet or e.destroyed() or e.enemy_type == "dropship" or e.staged \
+				or e.is_rolling_out():
+			continue   # staged in a bay, or walking a scripted arrival / roll-out path (in its spawn deck's frame)
 		var pos := e.global_position if e.is_inside_tree() else e.position
 		# 1. Fell completely out below the lowest deck -> cull so it never counts toward the mission!
 		if lowest_ring != null and lowest_ring.height(pos) < -18.0:
@@ -910,6 +1107,14 @@ func request_dropship(target_pos: Vector3, deck: int) -> EnemyDropDrone:
 	var zone := _pick_drop_zone(d_plan, d_ring, target_pos, deck)
 	if zone.is_empty():
 		return null
+	# Only ever through an air door (playtest R2.24: "no unit appears from nowhere"): a deck with no usable air door RIGHT
+	# NOW (none built, sealed, not usable) gets no dropship: the call is dropped (the scout's director call still goes to
+	# a ground source). There is no in-deck appear point any more.
+	var drop_a := d_ring.world_to_arc(zone["drop"] as Vector3) if d_ring != null else Vector3.ZERO
+	var air := pick_air_door(deck, Vector2(drop_a.x, drop_a.y), true)
+	if air.is_empty():
+		print("[enemy] dropship on deck %d dropped: no usable air door" % deck)
+		return null
 	_drop_seq += 1
 	_deck_drops[deck] = count + 1
 	var ds := EnemySpawner.make_enemy("dropship") as EnemyDropDrone
@@ -926,20 +1131,17 @@ func request_dropship(target_pos: Vector3, deck: int) -> EnemyDropDrone:
 	ds.up = u
 	ds.transform = Transform3D(Basis(f.cross(u).normalized(), u, -f), spawn_w)
 	ds.configure_drop(drop_w, bool(zone["is_roof"]), float(zone["half_span"]), exfil_w)
-	# Through an air door when the deck has one: created hidden in its recess, dormant (staged), the door ordered open.
-	var air := pick_air_door(deck, Vector2(d_ring.world_to_arc(drop_w).x, d_ring.world_to_arc(drop_w).y) if d_ring != null else Vector2.ZERO, true)
-	if not air.is_empty():
-		var fw: Vector3 = air["facing"]
-		var hu := d_ring.up_at(air["hide"] as Vector3) if d_ring != null else Vector3.UP
-		fw = (fw - hu * fw.dot(hu)).normalized()
-		ds.up = hu
-		ds.transform = Transform3D(Basis(fw.cross(hu).normalized(), hu, -fw), air["hide"] as Vector3)
-		ds.configure_air_arrival(air)
+	# Created hidden in the air door's recess, dormant (staged, not hittable), the door ordered open (the crew's alert).
+	var fw: Vector3 = air["facing"]
+	var hu := d_ring.up_at(air["hide"] as Vector3) if d_ring != null else Vector3.UP
+	fw = (fw - hu * fw.dot(hu)).normalized()
+	ds.up = hu
+	ds.transform = Transform3D(Basis(fw.cross(hu).normalized(), hu, -fw), air["hide"] as Vector3)
+	ds.configure_air_arrival(air)
 	add_enemy(ds)
-	if not air.is_empty():
-		var now := air_door_clock()
-		ds.air_ordered_at = now
-		order_air_door(str(air["id"]), deck, now + EnemyDropDrone.AIR_ORDER_LEAD, EnemyDropDrone.AIR_ARRIVE_HOLD)
+	var now := air_door_clock()
+	ds.air_ordered_at = now
+	order_air_door(str(air["id"]), deck, now + EnemyDropDrone.AIR_ORDER_LEAD, EnemyDropDrone.AIR_ARRIVE_HOLD, true)
 	return ds
 
 
@@ -950,8 +1152,9 @@ func mission_world() -> Object:
 	return mw if mw is Object and (mw as Object).has_method("air_door_count") else null
 
 
-## Host: the air door of `deck` a dropship should use near arc point `near` ({} = none usable: the in-deck fallback).
-## Usable: it exists and is not sealed. Score: the straight distance from its `out` point to `near`, + AIR_SEEN_PENALTY
+## Host: the air door of `deck` a dropship should use near arc point `near` ({} = none usable: no dropship).
+## Usable: it exists (`ok`), Environment calls it usable (`usable`, when the key exists: a clear straight approach for the
+## hull at door height) and it is not sealed. Score: the straight distance from its `out` point to `near`, + AIR_SEEN_PENALTY
 ## when `hidden_from_crew` and a standing crew mech on the deck is within AIR_SEEN_R of `out` with a clear sightline over
 ## the plan's buildings (a cheap check: the crew should not watch it come out). Deterministic (ties: lower index).
 func pick_air_door(deck: int, near: Vector2, hidden_from_crew: bool) -> Dictionary:
@@ -971,7 +1174,7 @@ func pick_air_door(deck: int, near: Vector2, hidden_from_crew: bool) -> Dictiona
 	var best_score := INF
 	for i in int(mw.call("air_door_count", deck)):
 		var d: Dictionary = mw.call("air_door", deck, i)
-		if not bool(d.get("ok", false)):
+		if not bool(d.get("ok", false)) or not bool(d.get("usable", true)):
 			continue
 		if str((mw.call("source_state", d["id"]) as Dictionary).get("state", "")) == "sealed":
 			continue
@@ -991,9 +1194,10 @@ func pick_air_door(deck: int, near: Vector2, hidden_from_crew: bool) -> Dictiona
 
 ## Host: order air door `id` open at `open_at` for `hold` s (after its opening) on every machine (air_door_hook), or
 ## here only. Called again with the same open_at and a longer hold it only extends the hold (MissionWorld.open_source).
-func order_air_door(id: String, deck: int, open_at: float, hold: float) -> void:
+## `arriving`: a dropship comes out through it (the crew's "Dropship, north air door" alert; not for its way back in).
+func order_air_door(id: String, deck: int, open_at: float, hold: float, arriving: bool = false) -> void:
 	if air_door_hook.is_valid():
-		air_door_hook.call(id, deck, open_at, hold)
+		air_door_hook.call(id, deck, open_at, hold, arriving)
 		return
 	var mw := mission_world()
 	if mw != null:

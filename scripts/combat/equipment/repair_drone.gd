@@ -14,23 +14,34 @@ extends CombatEffect
 ## it lands on a walking mech), shrinking from FLY_SCALE to the mount's scale and turning into the dock's orientation;
 ## then it is removed and the back mount shows the docked drone again. It does not return early when everyone is full.
 ## It dies at once (no return) with the launcher: the launcher's PlayerTarget is disabled (downed; on a remote machine
-## its puppet target mirrors that from snapshots) or the launcher's node is gone.
+## its puppet target mirrors that from snapshots) or the launcher's node is gone (a self-revive drone: see SELF-REVIVE).
 ## REPAIR (only while on its orbit: after the rise, before `life`): each step, every target THIS MACHINE OWNS
-## (CombatWorld.owns) that is not on the enemy team and stands within `radius` m (15) of the LAUNCHER (the orbit centre,
+## (CombatWorld.owns) that is not on the enemy team and stands within `radius` m (30) of the LAUNCHER (the orbit centre,
 ## so the orbit never makes the range flicker), measured across the launcher's up axis (horizontal), gets
-## heal(heal_rate × its max HP × dt) (1 %/s), most damaged component first (CombatTarget.heal). So each machine repairs
+## heal(heal_rate × its max HP × dt) (1 %/s), most damaged component first (CombatTarget.heal; a PlayerTarget's
+## DESTROYED weapon hardpoint counts as the most damaged and is rebuilt: PlayerTarget.heal). So each machine repairs
 ## only its own mech (and the host its host-owned non-enemy targets): no heal is ever sent and nobody writes another
-## mech's HP.
+## mech's HP. Two drones of one mech (the Bulwark's two saddles) both heal: 2 %/s.
 ## REVIVE (docs/design/pacing-director.md "Downed, revive, respawn", DownedRules): a DOWNED PlayerTarget in range
-## (revivable: disabled, not redeploying; never the launcher's own) is not healed: the machine that owns it calls
-## PlayerTarget.revive_tick(dt, shooter) each repair step, and DownedRules.REVIVE_TIME s of beam stand it up in place
-## (its owner applies the revive; nothing is sent). The scan shows on the wreck on every machine while it is beamed.
-## The revive costs the drone nothing extra: the charge that launched it is the price (no life is taken off).
-## LOOK (cosmetic, every machine): RepairDroneLook (`look`): the flying drone, the scan on every target being repaired
-## and the faint ground ring; this drone hands it its state each step (look.update) and never reads anything back.
+## (revivable: disabled, not redeploying; not the launcher's own, except for a self-revive drone) is not healed: the
+## machine that owns it calls PlayerTarget.revive_tick(dt, shooter) each repair step, and DownedRules.REVIVE_TIME s of
+## beam stand it up in place (its owner applies the revive; nothing is sent). The scan shows on the wreck on every
+## machine while it is beamed. The revive costs the drone nothing extra: the charge that launched it is the price.
+## SELF-REVIVE (user decision 2026-11-26, reverses "a drone never revives its launcher"): a record with "self": true
+## (WeaponRack._self_revive launched it, on the owner's machine, when its mech went down; CombatNet carries the flag) is
+## a drone that revives its OWN launcher once: while self_pending() it does not die because the launcher is down (only
+## when the launcher is redeploying or its node is gone), and it beams the launcher with revive_tick(dt × REVIVE_TIME /
+## self_revive_time, shooter) on the launcher's owner machine (catalog `self_revive_time`, 4 s = REVIVE_TIME today). Once
+## the launcher has been seen down and then standing again (or, never seen down, after SELF_GRACE s: a remote machine
+## can get the launch before the snapshot that shows the launcher down), `self_done` is set and it is an ordinary drone
+## for the rest of its life (heals, revives others, dies if the launcher goes down again). It also revives other downed
+## crewmates in range, as any drone does.
+## LOOK (cosmetic, every machine): RepairDroneLook (`look`): the flying drone and the scan on every target being
+## repaired (no ground ring); this drone hands it its state each step (look.update) and never reads anything back.
 
 const MAX_STEP := 0.25            ## s: the longest repair step (a stall or a fast-forward never heals in one burst)
 const ANCHOR_GRACE := 1.0         ## s a drone waits for its launcher's node before it dies (remote: the puppet appears)
+const SELF_GRACE := 2.0           ## s a self-revive drone waits to see its launcher down before it counts as done
 
 var anchor: Callable              ## () -> Node3D: the launcher (its mech / puppet / lab model) on this machine
 var pos := Vector3.ZERO           ## the drone's world position now (derived each step)
@@ -44,13 +55,15 @@ var _dock: Dictionary = {}        ## {pos, scale, basis} of the docked drone (Eq
 var centre := Vector3.ZERO        ## the launcher's position now (orbit centre on the ground: range and ring measure from it)
 var _follow := Vector3.ZERO       ## the smoothed orbit centre at hover height (derived each step)
 var look := RepairDroneLook.new() ## the cosmetic side: drawn from this drone's state, writes none of it
+var self_done := false            ## a self-revive drone that revived its launcher (or never will): ordinary from now on
+var _seen_down := false           ## a self-revive drone saw its launcher down here
 
 
 func net_fields() -> Dictionary:
 	var f := super.net_fields()
 	f.merge({"anchor": Net.LOCAL, "pos": Net.LOCAL, "up_dir": Net.LOCAL, "healed_total": Net.LOCAL, "dead": Net.LOCAL,
 		"_last": Net.LOCAL, "_missing": Net.LOCAL, "_beam_targets": Net.LOCAL, "_dock": Net.LOCAL, "centre": Net.LOCAL,
-		"_follow": Net.LOCAL, "look": Net.LOCAL})
+		"_follow": Net.LOCAL, "look": Net.LOCAL, "self_done": Net.LOCAL, "_seen_down": Net.LOCAL})
 	return f
 
 
@@ -114,6 +127,27 @@ func finished() -> bool:
 	return dead or age() >= life() + dock_time()
 
 
+## Launched to revive its own launcher (record "self": true; see SELF-REVIVE).
+func is_self() -> bool:
+	return bool(record.get("self", false))
+
+
+## A self-revive drone that is out and has not revived its launcher yet (CombatWorld.self_reviving).
+func self_pending() -> bool:
+	return is_self() and not self_done and not finished()
+
+
+## Seconds of beam a self-revive takes (catalog `self_revive_time`, default DownedRules.REVIVE_TIME's 4 s).
+func self_revive_time() -> float:
+	return float(stats.get("self_revive_time", 4.0))
+
+
+## Dies now (no flight home): the launcher went down (WeaponRack._self_revive kills the mech's other drones first).
+func kill() -> void:
+	dead = true
+	visible = false
+
+
 ## The orbit angle at clock time `now` (rad about up_dir in _frame(), 0 = the frame's +X): a pure function of the time
 ## since launch, identical on every machine.
 func orbit_angle(now: float) -> float:
@@ -126,15 +160,16 @@ func beamed() -> Array:
 
 
 ## `t` is being repaired by a drone in range right now: hittable, not destroyed, and a component below full that isn't
-## destroyed (exactly when CombatTarget.heal would restore something). The owner's own target and a puppet's streamed
-## mirror (PlayerTarget hp / max_hp) answer the same way.
+## destroyed, or (a PlayerTarget) a destroyed weapon hardpoint (exactly when CombatTarget.heal / PlayerTarget.heal would
+## restore something). The owner's own target and a puppet's streamed mirror (PlayerTarget hp / max_hp) answer the same way.
 static func repairable(t: CombatTarget) -> bool:
 	if t == null or not t.is_hittable() or t.destroyed():
 		return false
+	var player := t is PlayerTarget
 	for c: String in t.hp:
 		var cap := float(t.max_hp.get(c, 0.0))
 		var v := float(t.hp[c])
-		if v > 0.0 and cap > 0.0 and v < cap - 1e-6:
+		if cap > 0.0 and v < cap - 1e-6 and (v > 0.0 or (player and not c in PlayerTarget.CORE_COMPONENTS)):
 			return true
 	return false
 
@@ -195,7 +230,7 @@ func advance_to(now: float) -> void:
 			dead = true
 		return
 	_missing = 0.0
-	if _launcher_down():
+	if _launcher_lost():
 		dead = true
 		visible = false
 		return
@@ -227,7 +262,7 @@ func advance_to(now: float) -> void:
 		pos = from.lerp(_dock["pos"] as Vector3, smoothstep(0.0, 1.0, home_fraction()))
 	visible = true
 	look.update({"pos": pos, "up": up_dir, "frame": b, "base": base, "now": now, "dt": dt, "first": first,
-		"radius": float(stats.get("radius", 15.0)), "beamed": _beam_targets, "age": age(), "life": life(),
+		"beamed": _beam_targets, "age": age(), "life": life(),
 		"rise": rise, "home": home_fraction(), "dock": _dock, "launcher": node})
 
 
@@ -244,12 +279,29 @@ func _dock_now(base: Vector3) -> Dictionary:
 	return {"pos": base + up_dir * _launcher_back_height()}
 
 
-## The launcher is down: its PlayerTarget (own, or the puppet's mirror) is disabled.
-func _launcher_down() -> bool:
+## The launcher's PlayerTarget here (own, or the puppet's mirror), or null.
+func _launcher_target() -> PlayerTarget:
 	for t in world.targets:
 		if is_instance_valid(t) and t.target_id == shooter() and t is PlayerTarget:
-			return (t as PlayerTarget).disabled
-	return false
+			return t as PlayerTarget
+	return null
+
+
+## The drone dies with its launcher: an ordinary drone when the launcher is disabled (down or redeploying); a self-revive
+## drone still pending (SELF-REVIVE) only when the launcher is redeploying (it stays to revive a downed one). Also
+## settles the self-revive state: launcher seen down, then standing (or never seen down within SELF_GRACE s) = done.
+func _launcher_lost() -> bool:
+	var lt := _launcher_target()
+	if lt == null:
+		return false
+	if is_self() and not self_done:
+		if lt.disabled:
+			_seen_down = true
+		elif _seen_down or age() > SELF_GRACE:
+			self_done = true
+	if is_self() and not self_done:
+		return lt.redeploying
+	return lt.disabled
 
 
 static func _up_of(node: Node3D) -> Vector3:
@@ -272,7 +324,7 @@ func orbit_distance() -> float:
 
 
 func _repair(dt: float) -> void:
-	var r := float(stats.get("radius", 15.0))
+	var r := float(stats.get("radius", 30.0))
 	var rate := float(stats.get("heal_rate", 0.01))
 	for t in world.targets:
 		if not is_instance_valid(t) or t.team == "enemy" or not t.is_inside_tree():
@@ -280,11 +332,14 @@ func _repair(dt: float) -> void:
 		if reach_to(t.global_position) > r:
 			continue
 		if t is PlayerTarget and (t as PlayerTarget).revivable():
-			# REVIVE (DownedRules): a downed crewmate in range (never the launcher itself) gets the beam; the machine that
-			# owns it counts the beam toward the revive (PlayerTarget.revive_tick), every machine draws the scan on it.
-			if t.target_id != shooter():
+			# REVIVE (DownedRules): a downed crewmate in range (the launcher itself only for a pending self-revive drone)
+			# gets the beam; the machine that owns it counts the beam toward the revive (PlayerTarget.revive_tick), every
+			# machine draws the scan on it. A self-revive beams at REVIVE_TIME / self_revive_time speed.
+			var own := t.target_id == shooter()
+			if not own or self_pending():
 				if dt > 0.0 and world.owns(t):
-					(t as PlayerTarget).revive_tick(dt, shooter())
+					var k := DownedRules.REVIVE_TIME / maxf(self_revive_time(), 1e-3) if own else 1.0
+					(t as PlayerTarget).revive_tick(dt * k, shooter())
 				_beam_targets.append(t)
 			continue
 		if dt > 0.0 and world.owns(t):

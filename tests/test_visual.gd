@@ -73,6 +73,20 @@ func setup() -> void:
 		var ca := await sc.grab("menu_hangar_crew%d_alert" % n)
 		sc.not_blank(ca, stage, "hangar crew %d alert" % n)
 	fe.stage.set_alert(false)
+	# The debrief board in the hangar (R2.15a; stub numbers): a crew of four with a bot, the board over the bay.
+	var crew4 := [{"peer": 1, "name": "Visual"}, {"peer": 2, "name": "Ripley"}, {"peer": 3, "name": "Vasquez"}, {"peer": -1, "name": "Bishop"}]
+	NetMission.last_debrief = NetMission.clean_debrief(DebriefStats.stub(crew4))
+	fe.show_screen("debrief")
+	var bay4: Array = []
+	for i in 4:
+		bay4.append({"head": heads[i % heads.size()], "name": str(crew4[i]["name"]), "accent": MechAccent.ORDER[(i + 1) % MechAccent.ORDER.size()]})
+	fe.stage.show_mechs(bay4, true)
+	fe.stage.bay.show_tags(false)   # as FrontEnd._refresh_stage does on the debrief (this crew bypasses it)
+	await frames(90)
+	var deb := await sc.grab("menu_debrief")
+	sc.not_blank(deb, Rect2(0.4, 0.03, 0.55, 0.45), "debrief board")
+	NetMission.clear_debrief()
+	fe.show_screen("hangar")
 	fe.queue_free()
 	await frames(2)
 

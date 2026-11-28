@@ -14,8 +14,10 @@ extends CombatTarget
 ##     decision 2026-11-24): torso / head / leg_l / leg_r at 0 HP downs the mech (`disabled`, `player_disabled(cause)`).
 ##     It stays where it fell, takes no damage and is not hittable (enemies drop it); the owner's input layer stops its
 ##     movement and weapons (MissionScene / MissionCombat / CrewBot). NO automatic respawn. Then, on the OWNER's machine:
-##       revive    a crewmate's repair drone beaming it (RepairDrone calls revive_tick on the machine that owns this
-##                 target, so nobody writes another pilot's mech): REVIVE_TIME s of beam -> revive(from): stands up in
+##       revive    a repair drone beaming it: a crewmate's, or its OWN self-revive drone (WeaponRack launches one when
+##                 the mech goes down with a charged drone slot; RepairDrone "SELF-REVIVE"). RepairDrone calls revive_tick
+##                 on the machine that owns this target, so nobody writes another pilot's mech; a self-revive's beam is
+##                 scaled to the catalog self_revive_time. REVIVE_TIME s of beam -> revive(from): stands up in
 ##                 place, destroyed components at REVIVE_STRUCTURE, every other at least that, heat 0, shutdown cleared,
 ##                 REVIVE_INVULN s of no damage, `player_revived(by, time_down)`. Beam gone: the bar drains over
 ##                 REVIVE_DECAY s.
@@ -31,6 +33,14 @@ extends CombatTarget
 ##     damages both legs (and the torso above FALL_TORSO_SPEED) through apply_damage, src "fall", on the owner's machine
 ##     only (a puppet's controller never steps, and its landings are ignored here). Landing thrusters avoid it by keeping
 ##     the impact low; a shut down mech has none. Component HP reaches the crew in the mech snapshots as usual.
+##   - REPAIR (heal: the repair drone, 2026-11-26 R2.1): like CombatTarget.heal (most damaged first), but a DESTROYED
+##     WEAPON HARDPOINT (never a core component: that is downed, the revive's job) is rebuilt too: it counts as the most
+##     damaged (its fraction is the HP banked toward it so far) and the heal it gets is banked (`_rebuild`, owner-only)
+##     while its hp stays 0, so it stays destroyed (hits on it still go to the torso) until REBUILD_AT of its max is banked;
+##     then hp jumps to that and it is an ordinary damaged component: is_slot_destroyed false, the rack slot usable again
+##     (deselected, WeaponRack UNUSABLE SLOTS), the crew sees it through the snapshot's component byte. The threshold keeps
+##     a fraction-of-an-HP hardpoint from soaking a whole hit (damage does not spill) and the destroyed / alive state from
+##     flickering under a beam.
 
 signal player_component_destroyed(component: String)
 signal player_disabled(cause: String)
@@ -40,6 +50,7 @@ signal player_respawned(time_down: float, held: bool)
 const CORE_COMPONENTS := ["torso", "head", "leg_l", "leg_r"]
 const COMPONENT_HP := {"torso": 400.0, "leg_l": 200.0, "leg_r": 200.0, "head": 100.0}
 const WEAPON_HP := 80.0
+const REBUILD_AT := 0.25          ## share of max HP a destroyed weapon hardpoint must bank from heal before it works again
 const FALL_DAMAGE_SPEED := 20.0   ## m/s down at touchdown: below this no damage (a 9 m drop uncushioned is ~19.9)
 const FALL_LEG_PER_MS := 3.0      ## HP to EACH leg per m/s above FALL_DAMAGE_SPEED
 const FALL_LEG_MAX := 0.9         ## one fall takes at most this share of a leg's max HP (a healthy mech survives it)
@@ -234,6 +245,7 @@ var sight_legs_down := 3.4
 var sight_legs_side := 1.5
 var _respawn_left := -1.0
 var _beamed := false              ## a drone beam reached it since the last tick (one beam per step counts)
+var _rebuild: Dictionary = {}     ## destroyed weapon hardpoint -> HP banked toward its rebuild (heal; owner only)
 
 
 func _init() -> void:
@@ -253,7 +265,7 @@ func net_fields() -> Dictionary:
 		"redeploying": Net.OWNER, "revive_progress": Net.OWNER, "aid_charges": Net.OWNER, "respawn_held": Net.LOCAL,
 		"respawn_hold": Net.PRIVATE, "redeploy_left": Net.PRIVATE, "down_time": Net.PRIVATE, "invuln_left": Net.PRIVATE,
 		"auto_redeploy": Net.SPAWN, "revive_wait": Net.LOCAL, "revived_by": Net.PRIVATE,
-		"auto_respawn_delay": Net.SPAWN, "on_respawn": Net.LOCAL, "_respawn_left": Net.PRIVATE, "_beamed": Net.PRIVATE,
+		"auto_respawn_delay": Net.SPAWN, "on_respawn": Net.LOCAL, "_respawn_left": Net.PRIVATE, "_beamed": Net.PRIVATE, "_rebuild": Net.PRIVATE,
 		"chassis": Net.SPAWN, "sight_head_up": Net.SPAWN, "sight_legs_down": Net.SPAWN, "sight_legs_side": Net.SPAWN})
 	return f
 
@@ -343,6 +355,7 @@ func _setup_components(loadout: Dictionary, chassis_id: String = "strider", head
 			var sp: Dictionary = spheres[hp_id]
 			add_hit_sphere(hp_id, sp["center"] as Vector3, float(sp["radius"]))
 	set_max_hp(caps)
+	_rebuild.clear()
 	_clear_down()
 	invuln_left = 0.0
 
@@ -528,7 +541,8 @@ func start_redeploy() -> void:
 	revive_progress = 0.0
 
 
-## The penalty is over: every component at RESPAWN_STRUCTURE, heat 0, placed by on_respawn. Ammo unchanged. A death.
+## The penalty is over: every component at RESPAWN_STRUCTURE (full, R2.12), heat 0; on_respawn (DownedCrew, which has
+## the rack) rearms and places the mech. A death.
 func _finish_redeploy() -> void:
 	var t := down_time
 	_set_structure(DownedRules.RESPAWN_STRUCTURE, false)
@@ -542,6 +556,7 @@ func _finish_redeploy() -> void:
 ## Every component to `fraction` of its max (`at_least`: only those below it are raised; destroyed ones are rebuilt
 ## either way).
 func _set_structure(fraction: float, at_least: bool) -> void:
+	_rebuild.clear()
 	for c: String in hp:
 		var v := float(max_hp.get(c, 0.0)) * fraction
 		hp[c] = maxf(float(hp[c]), v) if at_least else v
@@ -561,8 +576,56 @@ func _clear_down() -> void:
 
 func repair_all() -> void:
 	reset_state()
+	_rebuild.clear()
 	_clear_down()
 	invuln_left = 0.0
+
+
+## The repair drone's heal (see REPAIR in the header): CombatTarget.heal's most-damaged-first spend, plus destroyed
+## weapon hardpoints rebuilt through the REBUILD_AT bank. Nothing while disabled (the revive's job). Returns the HP
+## restored (banked HP counts); emits healed per spend.
+func heal(amount: float, src: String) -> float:
+	if amount <= 0.0 or hp.is_empty() or destroyed() or not is_hittable():
+		return 0.0
+	var left := amount
+	var done := 0.0
+	while left > 1e-9:
+		var best := ""
+		var best_f := 2.0
+		for c: String in hp:
+			var cap := float(max_hp.get(c, 0.0))
+			var v := float(hp[c])
+			if cap <= 0.0 or v >= cap:
+				continue
+			var f := v / cap
+			if v <= 0.0:
+				if c in CORE_COMPONENTS:
+					continue
+				f = float(_rebuild.get(c, 0.0)) / cap   # a destroyed weapon hardpoint: what is banked toward it
+			if f < best_f:
+				best_f = f
+				best = c
+		if best == "":
+			break
+		var cap_b := float(max_hp[best])
+		var add := 0.0
+		if float(hp[best]) <= 0.0:
+			var need := cap_b * REBUILD_AT
+			var banked := float(_rebuild.get(best, 0.0))
+			add = minf(left, need - banked)
+			banked += add
+			if banked >= need - 1e-6:
+				_rebuild.erase(best)
+				hp[best] = need                       # rebuilt: an ordinary damaged component from here
+			else:
+				_rebuild[best] = banked
+		else:
+			add = minf(left, cap_b - float(hp[best]))
+			hp[best] = float(hp[best]) + add
+		left -= add
+		done += add
+		healed.emit(add, best, src)
+	return done
 
 
 # --- Resupply verbs (the owner only, on its own mech: a supply depot's power core, MissionDepots) -------------------
@@ -595,6 +658,7 @@ func rebuild_destroyed(fraction: float, src: String) -> Array[String]:
 		var cap := float(max_hp.get(c, 0.0))
 		if float(hp[c]) <= 0.0 and cap > 0.0:
 			hp[c] = cap * clampf(fraction, 0.0, 1.0)
+			_rebuild.erase(c)
 			out.append(c)
 			healed.emit(float(hp[c]), c, src)
 	return out

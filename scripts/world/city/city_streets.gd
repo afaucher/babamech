@@ -55,7 +55,7 @@ static func ground_part(geo: CityGeo, plan: CityPlan, part: int) -> void:
 	elif part <= nx:
 		var i := part - 1
 		if plan.roads_x[i]["kind"] == "spine":
-			_spine(geo, plan.roads_x[i], plan.roads_s)
+			_spine(geo, plan)
 		else:
 			_road(geo, plan.roads_x[i], plan.roads_s, false, true, _line_forms(plan, "s", i))
 	elif part == nx + 1:
@@ -270,61 +270,573 @@ static func _zebra(geo: CityGeo, swap: bool, a: float, b: float, c0: float) -> v
 		u += 1.1
 
 
-## The transit spine (section mode), lanes side by side: the avenue (today's avenue look fitted to its lane), the rail
-## (ballast, two tracks on sleepers, running on through the crossings) and the two ramp lanes (plain, edge lines). Its
-## zebra crossings span the whole spine.
-static func _spine(geo: CityGeo, road: Dictionary, crossings: Array) -> void:
-	var a: float = road["a"]
-	var b: float = road["b"]
-	var white := CityPalette.c("marking")
-	for j in crossings.size() - 1:
-		var v0: float = crossings[j]["b"]
-		var v1: float = crossings[j + 1]["a"]
-		geo.tag("spine.gutter")
-		_r(geo, false, a, a + 0.5, v0, v1, CityPalette.c("asphalt_dark"), DECAL_PATCH)
-		_r(geo, false, b - 0.5, b, v0, v1, CityPalette.c("asphalt_dark"), DECAL_PATCH)
-		geo.tag("spine.zebra")
-		_zebra(geo, false, a, b, v0 + 1.8)
-		_zebra(geo, false, a, b, v1 - 4.8)
-	for lane: Dictionary in road["lanes"]:
-		var la: float = lane["a"]
-		var lb: float = lane["b"]
-		match str(lane["lane"]):
-			"avenue":
-				_road(geo, {"a": la, "b": lb, "kind": "avenue"}, crossings, false, false)
-			"rail":
-				geo.tag("spine.rail")
-				_rail(geo, la, lb, crossings)
+# --- The transit spine (docs/design/city-spine.md sections 2 and 3) ---------------------------------------------
+# Right-hand traffic, two-way roads, one lane per direction: a vehicle going +s drives in the -x half of its road
+# (LifeTraffic does the same). Each spine lane gets one of five looks on a deck (spine_lanes):
+#   main       the avenue lane: edge lines, a planted median in the centre strip that becomes a left-turn pocket for the
+#              last CityDims.AV_POCKET m before each junction (left arrow), the through lane's straight + right arrow, a
+#              stop line across lane + pocket, a zebra behind it; dashed guide lines carry its edges across each box;
+#              a stop line DOOR_STOP before a road door in a bulkhead. Split across its width: CityDims.avenue_split.
+#   tram       the rail lane on the tram deck (deck 0): one track on its centre line, a yellow keep-clear hatch in
+#              every junction box as wide as the strip
+#   verge      the rail lane on every other deck: a planted strip like the median, broken at the junctions
+#   service    a ramp lane with a ramp mouth on this deck (a cut going down or a ramp landing from above): two-way, the
+#              ramp's own edge lines and dashed centre line, a stop line, zebra and arrow before each junction (a down
+#              arrow in the descending lane before the junction the ramp leaves from; a merge arrow before the last
+#              junction ahead of a bulkhead), hatched over its last SVC_END m before a bulkhead
+#   promenade  a ramp lane without one: paved, no road markings
+# Plus, from the spine's part: the cross streets' combined arrows on their approach to the spine, and a keep-clear apron
+# in front of each freight lift door that faces the spine. Everything is first laid out as data (spine_layout, read by
+# tests/test_spine_markings.gd), then drawn by _spine. Zebras are per roadway: on the main road and service roads only.
+const STOP_AT := 6.0         ## a stop line's back edge, metres before the junction box (STOP_D deep: 5.6..6.0)
+const STOP_D := 0.4
+const ZEBRA_AT := CityDims.ZEBRA_AT     ## a zebra ZEBRA_D deep from this far off the box (1.8..4.8)
+const ZEBRA_D := CityDims.ZEBRA_D
+const ARROW_AT := 11.5       ## an arrow's middle this far before the box (its tip 2.5 m behind the stop line)
+const ARROW_L := 6.0         ## an arrow glyph's length (tail -3 .. tip +3 about its middle)
+const LINE_W := 0.15
+const SVC_LINE := 0.9        ## a service road's edge lines this far in from its lane's edges (the ramp's own lines)
+const SVC_END := 20.0        ## a service road ends this far short of a bulkhead wall (hatched)
+const DOOR_STOP := 8.0       ## the stop line before a road door in a bulkhead
+const CROSS_LANE := 4.45     ## a cross street's lane centre out from its curb (as LifeTraffic.STREET_LANE)
+const TRACK_BALLAST := 4.4   ## the tram track's ballast bed, at most this wide
+const HATCH_PITCH := 1.6     ## a keep-clear hatch: 45 degree stripes this far apart (measured along x)
+const HATCH_STRIPE := 0.7
+const HATCH_EDGE := 0.15
+const LIFT_DOOR_W := CityDims.LIFT_DOOR_W    ## the freight lift door's width (CityBuildings._pillar)
+
+
+## The spine road of the plan (roads_x entry of kind "spine"), {} for a district on its own.
+static func spine_road(plan: CityPlan) -> Dictionary:
+	for r: Dictionary in plan.roads_x:
+		if r["kind"] == "spine":
+			return r
+	return {}
+
+
+## Whether the tram strip carries track on this deck (CityDims.has_track: the tram deck, a strip of kind "rail").
+static func has_track(plan: CityPlan) -> bool:
+	return CityDims.has_track(plan)
+
+
+## The ramp parts of this deck that lie in the lane a..b.
+static func lane_ramps(plan: CityPlan, a: float, b: float) -> Array:
+	var out := []
+	for r: Dictionary in plan.ramps:
+		if absf(float(r["x0"]) - a) < 0.01 and absf(float(r["x1"]) - b) < 0.01:
+			out.append(r)
+	return out
+
+
+## The spine's lanes on this deck, west to east: {lane id: {a, b, kind: main | tram | verge | service | promenade}}.
+static func spine_lanes(plan: CityPlan) -> Dictionary:
+	var out := {}
+	var road := spine_road(plan)
+	if road.is_empty():
+		return out
+	for l: Dictionary in road["lanes"]:
+		var id := str(l["lane"])
+		var a := float(l["a"])
+		var b := float(l["b"])
+		var kind := "main"
+		if id == "rail":
+			kind = "tram" if has_track(plan) else "verge"
+		elif id.begins_with("ramp"):
+			kind = "promenade" if lane_ramps(plan, a, b).is_empty() else "service"
+		out[id] = {"a": a, "b": b, "kind": kind}
+	return out
+
+
+## Every marking of the spine on this deck as data: {lanes (spine_lanes), marks: [{kind, lane, ...}]}. Kinds:
+##   line / stop / gutter / median / verge / ballast / promenade / zebra   {rect}; stop: + dir (travel along s, or along x
+##                        for a cross street), junction (roads_s index), door (true: before a bulkhead's road door)
+##   dash / guide         {u, v0, v1, len, pitch}: a dashed line along s at x = u (guide: inside a junction box)
+##   hatch                {rect, color (yellow | white), what (tram_box | svc_end | lift_apron | nose), h}
+##   arrow                {at, fwd, glyph (straight_right | left | down | merge | combined), junction}
+##   track                {x, s0, s1}
+## lane: a spine lane id, "cross" (a cross street's arrow) or "lift" (a lift door's apron).
+static func spine_layout(plan: CityPlan) -> Dictionary:
+	var lanes := spine_lanes(plan)
+	var marks: Array = []
+	if lanes.is_empty() or plan.roads_s.size() < 2:
+		return {"lanes": lanes, "marks": marks}
+	var walls := end_walls(plan)
+	for id: String in lanes:
+		var ln: Dictionary = lanes[id]
+		match str(ln["kind"]):
+			"main":
+				_main_marks(plan, ln, walls, marks)
+			"tram":
+				_tram_marks(plan, ln, marks)
+			"verge":
+				_verge_marks(plan, ln, marks)
+			"service":
+				_service_marks(plan, id, ln, walls, marks)
 			_:
-				geo.tag("spine.ramp_lane")
-				for j in crossings.size() - 1:
-					var m0: float = float(crossings[j]["b"]) + 7.0
-					var m1: float = float(crossings[j + 1]["a"]) - 7.0
-					if m1 - m0 >= 4.0:
-						_r(geo, false, la + 0.6, la + 0.75, m0, m1, white)
-						_r(geo, false, lb - 0.75, lb - 0.6, m0, m1, white)
+				_promenade_marks(plan, id, ln, marks)
+	_cross_marks(plan, marks)
+	_lift_marks(plan, marks)
+	return {"lanes": lanes, "marks": marks}
 
 
-static func _rail(geo: CityGeo, a: float, b: float, crossings: Array) -> void:
-	var s0: float = crossings[0]["a"]
-	var s1: float = crossings[-1]["b"]
-	for j in crossings.size() - 1:
-		_r(geo, false, a + 0.6, b - 0.6, float(crossings[j]["b"]), float(crossings[j + 1]["a"]), CityPalette.c("concrete_dark"), DECAL_PATCH)
+## The bulkheads at the spine's two ends: {roads_s index of the cross road against the wall (0 or last): {at (the wall's
+## s), gates}}: the walls across the arc (whatever they are dressed as: a bulkhead, a farm).
+static func end_walls(plan: CityPlan) -> Dictionary:
+	var out := {}
+	for w: Dictionary in plan.boundary():
+		if int(w["side"]) < 2:
+			continue
+		out[0 if int(w["side"]) == 3 else plan.roads_s.size() - 1] = {"at": float(w["at"]), "gates": w["gates"]}
+	return out
+
+
+## Spine segment j: the s range between junction boxes j and j + 1.
+static func _seg(plan: CityPlan, j: int) -> Vector2:
+	return Vector2(float(plan.roads_s[j]["b"]), float(plan.roads_s[j + 1]["a"]))
+
+
+## Junction box j's s range (its cross road).
+static func _box(plan: CityPlan, j: int) -> Vector2:
+	return Vector2(float(plan.roads_s[j]["a"]), float(plan.roads_s[j]["b"]))
+
+
+## The s range d0..d1 metres off the box at end `end` (0: v.x, 1: v.y) of segment v, toward the segment's middle.
+static func _near(v: Vector2, end: int, d0: float, d1: float) -> Vector2:
+	return Vector2(v.x + d0, v.x + d1) if end == 0 else Vector2(v.y - d1, v.y - d0)
+
+
+static func _mk(kind: String, lane: String, rect: Rect2, more: Dictionary = {}) -> Dictionary:
+	var m := {"kind": kind, "lane": lane, "rect": rect}
+	m.merge(more)
+	return m
+
+
+static func _arrow_mark(lane: String, at: Vector2, fwd: Vector2, glyph: String, junction: int) -> Dictionary:
+	return {"kind": "arrow", "lane": lane, "at": at, "fwd": fwd, "glyph": glyph, "junction": junction}
+
+
+static func _main_marks(plan: CityPlan, ln: Dictionary, walls: Dictionary, marks: Array) -> void:
+	var a := float(ln["a"])
+	var b := float(ln["b"])
+	var sp := CityDims.avenue_split(b - a)
+	var xl0 := a + float(sp["edge"])          # the +s lane: xl0..xl1; centre strip xl1..xr0; the -s lane xr0..xr1
+	var xl1 := xl0 + float(sp["lane"])
+	var xr1 := b - float(sp["edge"])
+	var xr0 := xr1 - float(sp["lane"])
 	var mid := (a + b) * 0.5
-	geo.tag("spine.rail_track")
-	for track: float in [mid - (b - a) * 0.25, mid + (b - a) * 0.25]:
-		var s := s0 + 1.0
-		while s < s1:
-			if not geo.in_hole(track, s):
-				geo.box(geo.frame(track, s, 0.0), Vector3(0, 0.06, 0), Vector3(2.6, 0.12, 0.25), CityPalette.c("trunk"), CityGeo.NO_BOTTOM)
-			s += 2.0
-		for k: float in [-1.0, 1.0]:
-			var x := track + k * RAIL_GAUGE * 0.5
-			for sp: Array in geo.open_spans(s0, s1, x, true):
-				var br := CityGeo.breaks(sp[0], sp[1])
-				for i in br.size() - 1:
-					geo.box(geo.frame(x, (br[i] + br[i + 1]) * 0.5, 0.12), Vector3(0, 0.075, 0), Vector3(0.1, 0.15, br[i + 1] - br[i]),
-							CityPalette.c("metal_dark"), CityGeo.NO_BOTTOM)
+	var centres := CityDims.avenue_lanes(Vector2(a, b))
+	var ns := plan.roads_s.size()
+	for j in ns - 1:
+		var v := _seg(plan, j)
+		var l0 := v.x + STOP_AT
+		var l1 := v.y - STOP_AT
+		if l1 - l0 > 1.0:
+			for x0: float in [xl0 - LINE_W, xl1, xr0 - LINE_W, xr1]:
+				marks.append(_mk("line", "avenue", Rect2(x0, l0, LINE_W, l1 - l0)))
+		var med := CityDims.avenue_median(Vector2(a, b), v.x, v.y)
+		if med.has_area():
+			marks.append(_mk("median", "avenue", med))
+		elif l1 - l0 > 10.0:
+			# No room for a median: the two pockets meet, and a hatched nose keeps them apart.
+			var c := (v.x + v.y) * 0.5
+			marks.append(_mk("hatch", "avenue", Rect2(xl1 + LINE_W, c - 3.0, xr0 - xl1 - 2.0 * LINE_W, 6.0),
+					{"color": "white", "what": "nose", "h": MARK}))
+		for end in 2:
+			var dir := -1.0 if end == 0 else 1.0
+			var jn := j + end
+			var z := _near(v, end, ZEBRA_AT, ZEBRA_AT + ZEBRA_D)
+			marks.append(_mk("zebra", "avenue", Rect2(a, z.x, b - a, ZEBRA_D), {"junction": jn}))
+			var st := _near(v, end, STOP_AT - STOP_D, STOP_AT)
+			var sx := Vector2(xl0, xr0) if dir > 0.0 else Vector2(xl1, xr1)
+			marks.append(_mk("stop", "avenue", Rect2(sx.x, st.x, sx.y - sx.x, STOP_D), {"dir": dir, "junction": jn, "door": false}))
+			if (v.y - v.x) * 0.5 >= ARROW_AT + ARROW_L * 0.5:
+				var s := _near(v, end, ARROW_AT, ARROW_AT).x
+				var fwd := Vector2(0.0, dir)
+				marks.append(_arrow_mark("avenue", Vector2(centres.x if dir > 0.0 else centres.y, s), fwd, "straight_right", jn))
+				marks.append(_arrow_mark("avenue", Vector2(mid, s), fwd, "left", jn))
+	for j in ns:
+		var bx := _box(plan, j)
+		for u: float in [xl0 - LINE_W * 0.5, xr1 + LINE_W * 0.5]:
+			marks.append({"kind": "guide", "lane": "avenue", "u": u, "v0": bx.x, "v1": bx.y, "len": 1.0, "pitch": 2.5, "junction": j})
+	# Road doors in the bulkheads: a stop line DOOR_STOP before the door, across the door-bound half (the hatched keep-clear
+	# box in front of the door is the wall's: CityWalls._gate).
+	for jn: int in walls:
+		var w: Dictionary = walls[jn]
+		var at := float(w["at"])
+		var inward := 1.0 if jn == 0 else -1.0
+		var dir := -inward
+		var half := Vector2(xl0, mid) if dir > 0.0 else Vector2(mid, xr1)
+		for g: Dictionary in w["gates"]:
+			var x0 := maxf(half.x, float(g["a"]))
+			var x1 := minf(half.y, float(g["b"]))
+			if x1 - x0 < 1.0:
+				continue
+			var s0 := at + inward * DOOR_STOP
+			marks.append(_mk("stop", "avenue", Rect2(x0, minf(s0, s0 + inward * STOP_D), x1 - x0, STOP_D),
+					{"dir": dir, "junction": jn, "door": true}))
+			break
+
+
+static func _tram_marks(plan: CityPlan, ln: Dictionary, marks: Array) -> void:
+	var a := float(ln["a"])
+	var b := float(ln["b"])
+	var mid := (a + b) * 0.5
+	var bw := minf(b - a - 1.2, TRACK_BALLAST)
+	var ns := plan.roads_s.size()
+	for j in ns - 1:
+		var v := _seg(plan, j)
+		marks.append(_mk("ballast", "rail", Rect2(mid - bw * 0.5, v.x, bw, v.y - v.x)))
+	marks.append({"kind": "track", "lane": "rail", "x": mid, "s0": float(plan.roads_s[0]["a"]), "s1": float(plan.roads_s[ns - 1]["b"])})
+	for j in ns:
+		var bx := _box(plan, j)
+		marks.append(_mk("hatch", "rail", Rect2(a, bx.x, b - a, bx.y - bx.x), {"color": "yellow", "what": "tram_box", "junction": j, "h": MARK}))
+
+
+static func _verge_marks(plan: CityPlan, ln: Dictionary, marks: Array) -> void:
+	var a := float(ln["a"])
+	var b := float(ln["b"])
+	for j in plan.roads_s.size() - 1:
+		var v := _seg(plan, j)
+		var g := CityDims.verge_rect(a, b, v.x, v.y)      # clear of the zebras beside it, where the walkers cross
+		if g.has_area():
+			marks.append(_mk("verge", "rail", g))
+
+
+static func _promenade_marks(plan: CityPlan, id: String, ln: Dictionary, marks: Array) -> void:
+	var a := float(ln["a"])
+	var b := float(ln["b"])
+	for j in plan.roads_s.size() - 1:
+		var v := _seg(plan, j)
+		marks.append(_mk("promenade", id, Rect2(a, v.x, b - a, v.y - v.x)))
+
+
+## The s ranges of service lane a..b taken by its ramp: the floor cuts in it (a top part dives there) and a bottom part's
+## drawn ribbon (on its slope run).
+static func lane_taken(plan: CityPlan, a: float, b: float) -> Array[Vector2]:
+	var out: Array[Vector2] = []
+	if plan.site != null:
+		for o in plan.floor_cuts():
+			if o.end.x > a + 0.01 and o.position.x < b - 0.01:
+				out.append(Vector2(o.position.y, o.end.y))
+	for r: Dictionary in lane_ramps(plan, a, b):
+		if r["role"] == "bottom":
+			out.append(ramp_span(r, plan.site.slab, true))
+	return out
+
+
+static func _free(taken: Array[Vector2], r: Vector2) -> bool:
+	for t in taken:
+		if r.y > t.x + 0.01 and r.x < t.y - 0.01:
+			return false
+	return true
+
+
+static func _free_spans(taken: Array[Vector2], lo: float, hi: float) -> Array[Vector2]:
+	var spans: Array[Vector2] = [Vector2(lo, hi)]
+	for t in taken:
+		var next: Array[Vector2] = []
+		for sp in spans:
+			if t.y <= sp.x or t.x >= sp.y:
+				next.append(sp)
+				continue
+			if t.x > sp.x:
+				next.append(Vector2(sp.x, t.x))
+			if t.y < sp.y:
+				next.append(Vector2(t.y, sp.y))
+		spans = next
+	return spans
+
+
+## Whether traffic going `dir` along s through junction box jn drives on into the cut of one of the ramps whose runs are
+## listed (CityDims.ramp_run of the lane's top parts): the cut starts inside the box or within RAMP_MOUTH_REACH past it
+## (the plan's slope run starts a few metres past the box, R2.17).
+const RAMP_MOUTH_REACH := 20.0
+
+
+static func _down_at(plan: CityPlan, runs: Array[Vector2], jn: int, dir: float) -> bool:
+	var bx := _box(plan, jn)
+	var near := bx.x if dir > 0.0 else bx.y
+	for run in runs:
+		if signf(run.y - run.x) != dir:
+			continue
+		var d := (run.x - near) * dir
+		if d >= -0.01 and d <= (bx.y - bx.x) + RAMP_MOUTH_REACH:
+			return true
+	return false
+
+
+static func _service_marks(plan: CityPlan, id: String, ln: Dictionary, walls: Dictionary, marks: Array) -> void:
+	var a := float(ln["a"])
+	var b := float(ln["b"])
+	var mid := (a + b) * 0.5
+	var e0 := a + SVC_LINE
+	var e1 := b - SVC_LINE
+	var road := spine_road(plan)
+	var taken := lane_taken(plan, a, b)
+	var runs: Array[Vector2] = []
+	for r: Dictionary in lane_ramps(plan, a, b):
+		if r["role"] == "top":
+			runs.append(CityDims.ramp_run(plan, r))
+	var ns := plan.roads_s.size()
+	for j in ns - 1:
+		var v := _seg(plan, j)
+		if absf(a - float(road["a"])) < 0.01:
+			marks.append(_mk("gutter", id, Rect2(a, v.x, 0.5, v.y - v.x)))
+		if absf(b - float(road["b"])) < 0.01:
+			marks.append(_mk("gutter", id, Rect2(b - 0.5, v.x, 0.5, v.y - v.x)))
+		var lo := v.x + STOP_AT
+		var hi := v.y - STOP_AT
+		var dead := [false, false]
+		for end in 2:
+			var jn := j + end
+			if not walls.has(jn):
+				continue
+			# The end against a bulkhead: no door there, so the road stops SVC_END short of the wall, hatched.
+			dead[end] = true
+			var inward := 1.0 if jn == 0 else -1.0
+			var stop_s := float(walls[jn]["at"]) + inward * SVC_END
+			var edge := v.x if end == 0 else v.y
+			if (stop_s - edge) * inward > 1.0:
+				marks.append(_mk("hatch", id, Rect2(e0, minf(edge, stop_s), e1 - e0, absf(stop_s - edge)),
+						{"color": "white", "what": "svc_end", "junction": jn, "h": MARK}))
+				marks.append(_mk("line", id, Rect2(e0, stop_s if inward > 0.0 else stop_s - LINE_W, e1 - e0, LINE_W)))
+				if end == 0:
+					lo = maxf(lo, stop_s)
+				else:
+					hi = minf(hi, stop_s)
+		for spn in _free_spans(taken, lo, hi):
+			if spn.y - spn.x < 1.0:
+				continue
+			marks.append(_mk("line", id, Rect2(e0, spn.x, LINE_W, spn.y - spn.x)))
+			marks.append(_mk("line", id, Rect2(e1 - LINE_W, spn.x, LINE_W, spn.y - spn.x)))
+			marks.append({"kind": "dash", "lane": id, "u": mid, "v0": spn.x, "v1": spn.y, "len": 2.5, "pitch": 6.0})
+		for end in 2:
+			if dead[end]:
+				continue
+			var dir := -1.0 if end == 0 else 1.0
+			var jn := j + end
+			var z := _near(v, end, ZEBRA_AT, ZEBRA_AT + ZEBRA_D)
+			if _free(taken, z):
+				marks.append(_mk("zebra", id, Rect2(a, z.x, b - a, ZEBRA_D), {"junction": jn}))
+			var st := _near(v, end, STOP_AT - STOP_D, STOP_AT)
+			if _free(taken, st):
+				var sx := Vector2(e0 + LINE_W, mid - 0.1) if dir > 0.0 else Vector2(mid + 0.1, e1 - LINE_W)
+				marks.append(_mk("stop", id, Rect2(sx.x, st.x, sx.y - sx.x, STOP_D), {"dir": dir, "junction": jn, "door": false}))
+			var ar := _near(v, end, ARROW_AT - ARROW_L * 0.5, ARROW_AT + ARROW_L * 0.5)
+			if (v.y - v.x) * 0.5 >= ARROW_AT + ARROW_L * 0.5 and _free(taken, ar):
+				var glyph := "straight_right"
+				if _down_at(plan, runs, jn, dir):
+					glyph = "down"
+				elif walls.has(jn + int(dir)):
+					glyph = "merge"     # straight on is the hatched dead end before the bulkhead: turn off here
+				var x := (e0 + LINE_W + mid) * 0.5 if dir > 0.0 else (mid + e1 - LINE_W) * 0.5
+				marks.append(_arrow_mark(id, Vector2(x, _near(v, end, ARROW_AT, ARROW_AT).x), Vector2(0.0, dir), glyph, jn))
+
+
+## The cross streets' approaches to the spine: one combined arrow in the approach lane (the stop line and the zebra are
+## the street's own: _road).
+static func _cross_marks(plan: CityPlan, marks: Array) -> void:
+	if plan.section == null:
+		return
+	var road := spine_road(plan)
+	var sl := plan.section.spine_line
+	for j in plan.roads_s.size():
+		var cr: Dictionary = plan.roads_s[j]
+		for side in 2:
+			var idx := sl - 1 if side == 0 else sl       # the cross street's segment west / east of the spine
+			if idx < 0 or idx + 1 >= plan.roads_x.size():
+				continue
+			if not plan.forms.is_empty() and plan.seg_form("x", j, idx) != "street":
+				continue
+			var near := float(road["a"]) if side == 0 else float(road["b"])
+			var far := float(plan.roads_x[idx]["b"]) if side == 0 else float(plan.roads_x[idx + 1]["a"])
+			if absf(near - far) * 0.5 < ARROW_AT + ARROW_L * 0.5:
+				continue
+			var dir := 1.0 if side == 0 else -1.0       # going +x into the spine from the west, -x from the east
+			var s := float(cr["b"]) - CROSS_LANE if dir > 0.0 else float(cr["a"]) + CROSS_LANE
+			marks.append(_arrow_mark("cross", Vector2(near - dir * ARROW_AT, s), Vector2(dir, 0.0), "combined", j))
+
+
+## A hatched keep-clear apron in front of every freight lift door that faces the spine: the door's width, from the door to
+## the block's curb (where the service road or promenade begins), on the sidewalk / plaza.
+static func _lift_marks(plan: CityPlan, marks: Array) -> void:
+	for r: Rect2 in CityDims.lift_aprons(plan):
+		marks.append(_mk("hatch", "lift", r, {"color": "yellow", "what": "lift_apron", "h": CURB + DECAL_LINE}))
+
+
+## The spine, drawn from spine_layout.
+static func _spine(geo: CityGeo, plan: CityPlan) -> void:
+	var lay := spine_layout(plan)
+	var white := CityPalette.c("marking")
+	for m: Dictionary in lay["marks"]:
+		var r: Rect2 = m.get("rect", Rect2())
+		match str(m["kind"]):
+			"gutter":
+				geo.tag("spine.gutter")
+				geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, DECAL_PATCH, CityPalette.c("asphalt_dark"))
+			"promenade":
+				geo.tag("spine.promenade")
+				_promenade(geo, r)
+			"ballast":
+				geo.tag("spine.rail")
+				geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, DECAL_PATCH, CityPalette.c("concrete_dark"))
+			"track":
+				geo.tag("spine.rail_track")
+				_track(geo, float(m["x"]), float(m["s0"]), float(m["s1"]))
+			"median":
+				geo.tag("spine.median")
+				_median(geo, false, r.position.x, r.end.x, r.position.y, r.end.y)
+			"verge":
+				geo.tag("spine.verge")
+				_median(geo, false, r.position.x, r.end.x, r.position.y, r.end.y)
+			"line", "stop":
+				geo.tag("spine.lines")
+				geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, MARK, white)
+			"dash", "guide":
+				geo.tag("spine.lines")
+				_dashes(geo, false, float(m["u"]), float(m["v0"]), float(m["v1"]), float(m["len"]), float(m["pitch"]), white)
+			"zebra":
+				geo.tag("spine.zebra")
+				_zebra(geo, false, r.position.x, r.end.x, r.position.y)
+			"hatch":
+				geo.tag("spine.hatch")
+				var col := CityPalette.c("marking_yellow") if m["color"] == "yellow" else white
+				hatch(geo, r, float(m.get("h", MARK)), col)
+			"arrow":
+				geo.tag("spine.arrow")
+				arrow(geo, m["at"], m["fwd"], str(m["glyph"]), MARK, white)
+
+
+## Promenade paving over r: the sidewalk colour (decal layer 1) with bands across it every other 4 m (layer 2).
+static func _promenade(geo: CityGeo, r: Rect2) -> void:
+	geo.g_rect(r.position.x, r.end.x, r.position.y, r.end.y, DECAL_PATCH, CityPalette.c("sidewalk"))
+	var n := maxi(int(r.size.y / 4.0), 1)
+	for i in n:
+		if i % 2 == 0:
+			var c0 := r.position.y + r.size.y * float(i) / float(n)
+			geo.g_rect(r.position.x + 0.6, r.end.x - 0.6, c0 + 0.3, c0 + r.size.y / float(n) - 0.3, DECAL_LINE, CityPalette.c("sidewalk_band"))
+
+
+## One tram track on its sleepers along x from s0 to s1 (through the junctions; not over a floor hole).
+static func _track(geo: CityGeo, track: float, s0: float, s1: float) -> void:
+	var s := s0 + 1.0
+	while s < s1:
+		if not geo.in_hole(track, s):
+			geo.box(geo.frame(track, s, 0.0), Vector3(0, 0.06, 0), Vector3(2.6, 0.12, 0.25), CityPalette.c("trunk"), CityGeo.NO_BOTTOM)
+		s += 2.0
+	for k: float in [-1.0, 1.0]:
+		var x := track + k * RAIL_GAUGE * 0.5
+		for sp: Array in geo.open_spans(s0, s1, x, true):
+			var br := CityGeo.breaks(sp[0], sp[1])
+			for i in br.size() - 1:
+				geo.box(geo.frame(x, (br[i] + br[i + 1]) * 0.5, 0.12), Vector3(0, 0.075, 0), Vector3(0.1, 0.15, br[i + 1] - br[i]),
+						CityPalette.c("metal_dark"), CityGeo.NO_BOTTOM)
+
+
+# --- Flat glyphs: keep-clear hatches and road arrows --------------------------------------------------------------
+# Flat polygons on the ground at height h (a decal layer), split at the deck's facets so they lie on it.
+
+## A keep-clear box over r: a border HATCH_EDGE wide and 45 degree stripes, in col.
+static func hatch(geo: CityGeo, r: Rect2, h: float, col: Color) -> void:
+	var e := HATCH_EDGE
+	geo.g_rect(r.position.x, r.end.x, r.position.y, r.position.y + e, h, col)
+	geo.g_rect(r.position.x, r.end.x, r.end.y - e, r.end.y, h, col)
+	geo.g_rect(r.position.x, r.position.x + e, r.position.y + e, r.end.y - e, h, col)
+	geo.g_rect(r.end.x - e, r.end.x, r.position.y + e, r.end.y - e, h, col)
+	var inner := r.grow(-e)
+	if inner.size.x <= 0.0 or inner.size.y <= 0.0:
+		return
+	var tall := inner.size.y
+	var u := inner.position.x - tall
+	while u < inner.end.x:
+		var poly := [Vector2(u, inner.position.y), Vector2(u + HATCH_STRIPE, inner.position.y),
+				Vector2(u + HATCH_STRIPE + tall, inner.end.y), Vector2(u + tall, inner.end.y)]
+		var c := CityGeo.clip_rect(poly, inner)
+		if c.size() >= 3:
+			flat_poly(geo, c, h, col)
+		u += HATCH_PITCH
+
+
+## A road arrow `glyph` (arrow_polys) with its middle at arc point `at`, pointing along the unit vector fwd (x, s).
+static func arrow(geo: CityGeo, at: Vector2, fwd: Vector2, glyph: String, h: float, col: Color) -> void:
+	var right := Vector2(-fwd.y, fwd.x)      # right-hand side of the direction of travel (+s: -x)
+	for poly: Array in arrow_polys(glyph):
+		var pts := []
+		for p: Vector2 in poly:
+			pts.append(at + right * p.x + fwd * p.y)
+		flat_poly(geo, pts, h, col)
+
+
+## The convex pieces of a road arrow in its own frame (x: to the right of travel, y: forward), ARROW_L long about its
+## middle. straight, left, right, straight_right, combined (left + straight + right), down (straight with two chevrons:
+## a ramp going down ahead), merge (bending off to the right).
+static func arrow_polys(glyph: String) -> Array:
+	var out := []
+	var w := 0.15
+	var straight := glyph in ["straight", "straight_right", "combined", "down"]
+	var tail := -ARROW_L * 0.5
+	var tip := ARROW_L * 0.5
+	if straight:
+		out.append(_box_poly(-w, w, tail, tip - 1.6))
+		out.append([Vector2(-0.6, tip - 1.6), Vector2(0.6, tip - 1.6), Vector2(0.0, tip)])
+	elif glyph != "merge":
+		out.append(_box_poly(-w, w, tail, -0.25))
+	for k: float in [1.0, -1.0]:
+		var want := (k > 0.0 and glyph in ["right", "straight_right", "combined"]) or (k < 0.0 and glyph in ["left", "combined"])
+		if not want:
+			continue
+		out.append(_box_poly(minf(k * w, k * 0.8), maxf(k * w, k * 0.8), -0.6, -0.25))
+		out.append([Vector2(k * 0.8, -1.0), Vector2(k * 0.8, 0.15), Vector2(k * 1.7, -0.425)])
+	if glyph == "down":
+		for c: float in [-0.9, -2.1]:
+			out.append(_seg_poly(Vector2(-0.6, c - 0.6), Vector2(0.0, c), 0.12))
+			out.append(_seg_poly(Vector2(0.0, c), Vector2(0.6, c - 0.6), 0.12))
+	if glyph == "merge":
+		var bend := Vector2(0.0, -1.0)
+		var end := Vector2(0.9, 0.9)
+		var d := (end - bend).normalized()
+		var n := Vector2(-d.y, d.x)
+		out.append(_box_poly(-w, w, tail, bend.y))
+		out.append(_seg_poly(bend, end, w))
+		out.append([end + n * 0.6, end - n * 0.6, end + d * 1.5])
+	return out
+
+
+static func _box_poly(u0: float, u1: float, v0: float, v1: float) -> Array:
+	return [Vector2(u0, v0), Vector2(u1, v0), Vector2(u1, v1), Vector2(u0, v1)]
+
+
+## A bar of half width hw from a to b.
+static func _seg_poly(a: Vector2, b: Vector2, hw: float) -> Array:
+	var d := (b - a).normalized()
+	var n := Vector2(-d.y, d.x) * hw
+	return [a + n, b + n, b - n, a - n]
+
+
+## A convex polygon (arc points x, s) flat at height h, facing up, split at the facets.
+static func flat_poly(geo: CityGeo, pts: Array, h: float, col: Color) -> void:
+	var lo := INF
+	var hi := -INF
+	for p: Vector2 in pts:
+		lo = minf(lo, p.y)
+		hi = maxf(hi, p.y)
+	var br := CityGeo.breaks(lo, hi)
+	for i in br.size() - 1:
+		var c := pts if br.size() == 2 else CityGeo.clip_rect(pts, Rect2(-1.0e6, br[i], 2.0e6, br[i + 1] - br[i]))
+		for k in range(1, c.size() - 1):
+			_up_tri(geo, c[0], c[k], c[k + 1], h, col)
+
+
+## A flat triangle facing up (the winding CityGeo.g_rect uses), whatever order its corners come in.
+static func _up_tri(geo: CityGeo, a: Vector2, b: Vector2, c: Vector2, h: float, col: Color) -> void:
+	var cr := (b - a).cross(c - a)
+	if absf(cr) < 1e-6:
+		return
+	if cr > 0.0:
+		var t := b
+		b = c
+		c = t
+	geo.g_tri(Vector3(a.x, a.y, h), Vector3(b.x, b.y, h), Vector3(c.x, c.y, h), col)
 
 
 ## The edge of a hole in this deck's floor: the cut face of the slab going down, a solid curb round it and a railing on
@@ -497,6 +1009,7 @@ static func ramp_frame(geo: CityGeo, r: Dictionary, x: float, s: float, dh: floa
 	return Transform3D(Basis(Vector3.RIGHT, z.cross(Vector3.RIGHT), z), geo.g_point(x, s, CityPlan.ramp_height(r, s) + dh))
 
 
+## Every ramp part, on the plan's slope run (CityPlan._make_ramps builds the parts on it, R2.17).
 static func ramps(geo: CityGeo, plan: CityPlan) -> void:
 	for r: Dictionary in plan.ramps:
 		_ramp(geo, plan, r)

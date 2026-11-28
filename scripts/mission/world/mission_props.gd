@@ -3,7 +3,7 @@ extends RefCounted
 ## Shared presentation helpers for the pieces MissionWorld puts in the city for mission objectives phase 1
 ## (docs/design/city-ramps-and-stack.md "Mission world (phase 1)"): palette colours and emissive / matte materials, mesh and
 ## collision-box helpers, the gate frame, the upright site frame, and the zone marks on the ground. The pieces themselves
-## are their own classes (MissionGateDoor, MissionLiftDoor, MissionFlagMast, MissionRelayAsset, MissionPortal); where a
+## are their own classes (MissionGateDoor, MissionLiftDoor, MissionFlagMast, MissionRelayAsset); where a
 ## piece may stand is SiteFit's rule. Presentation only: no clock, no state, no network, no gameplay rule. Flat-shaded
 ## CityGeo boxes in CityPalette colours; glows use the emissive materials below (no Light3D here). Every mesh gets its
 ## render layer before it enters the tree (the stack's rule).
@@ -85,9 +85,10 @@ static func gate_frame(d: CityDistrict, w: Dictionary, g: Dictionary) -> Transfo
 	return geo.frame(at, mid, 0.0, PI * 0.5 if inward > 0.0 else -PI * 0.5)
 
 
-## Half the clear opening of gate g (between the hazard portal's posts), as CityWalls._gate draws it.
+## Half the clear opening of gate g (between the frame's jambs), as CityWalls._gate draws it (CityWalls.clear_half: a
+## road door keeps 0.6 m of reveal each side of it in the wall, a tram door's gate is its clear width).
 static func gate_half(g: Dictionary) -> float:
-	return (float(g["b"]) - float(g["a"])) * 0.5 - 0.6
+	return CityWalls.clear_half(g)
 
 
 ## A flat polygon `pts` (counter-clockwise in local x / y, star-shaped round its centroid) drawn on both sides, `half`

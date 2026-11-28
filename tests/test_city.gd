@@ -321,7 +321,12 @@ func _check_deck(section: SectionPlan, deck: int, what: String) -> void:
 		# A section window that would look out at a backdrop is a vertical farm (docs/design/city-styles.md): no backdrop.
 		var farm: bool = src["kind"] == "window" and bool(src["backdrop"])
 		eq(w["kind"], "farm" if farm else src["kind"], "%s: wall %d is a %s" % [what, w["side"], "farm" if farm else src["kind"]])
-		eq((w["gates"] as Array).size(), (src["gates"] as Array).size(), "%s: wall %d has the section's gates" % [what, w["side"]])
+		# (plus a tram door in each arc-end wall of deck 0 when the section plan does not name one: CityWalls.section_gates)
+		var tram_extra := 0
+		for g: Dictionary in w["gates"]:
+			if str(g["kind"]) == "tram_door" and not (src["gates"] as Array).any(func(sg: Dictionary) -> bool: return str(sg["kind"]) == "tram_door"):
+				tram_extra += 1
+		eq((w["gates"] as Array).size() - tram_extra, (src["gates"] as Array).size(), "%s: wall %d has the section's gates" % [what, w["side"]])
 		eq(bool(w["backdrop"]), bool(src["backdrop"]) and not farm, "%s: wall %d backdrop as the section says (none behind a farm)" % [what, w["side"]])
 	eq(plan.checksum(), CityPlan.for_deck(section, deck).checksum(), "%s: same inputs, same checksum" % what)
 	check(plan.checksum() != CityPlan.for_deck(section, (deck + 1) % section.deck_count).checksum(), "%s: another deck, another checksum" % what)
@@ -531,7 +536,7 @@ func _district() -> void:
 	e.queue_free()
 
 
-## Seed 1 deck 0 has a ramp cut (bridged by the cross roads), a shaft, an entry portal and blast doors.
+## Seed 1 deck 0 has a ramp cut (bridged by the cross roads), a shaft, the entry road door, other road doors and two tram doors.
 func _section_district() -> void:
 	var section := SectionPlan.make({"seed": 1})
 	var d := CityDistrict.new()
@@ -586,9 +591,11 @@ func _section_district() -> void:
 				bridged += 1
 	check(bridged >= 1, "a cross road bridges the ramp cut (%d)" % bridged)
 	check(open >= 1, "the first cross road past the ramp's head does not (%d)" % open)
-	# Gates: through the portal is the way out; a blast door is solid.
-	var portal := 0
+	# Gates (docs/design/city-spine.md §4): a road door (the entry door too, without a mission) is solid; through a tram
+	# door a ray goes into its tunnel and stops at the back plate (the map stays sealed: test_map_sealed).
+	var tram := 0
 	var sealed := 0
+	var roles := []
 	for w: Dictionary in d.plan.boundary():
 		if int(w["side"]) < 2:
 			continue
@@ -596,17 +603,24 @@ func _section_district() -> void:
 		var at: float = w["at"]
 		for g: Dictionary in w["gates"]:
 			var gx := (float(g["a"]) + float(g["b"])) * 0.5
+			if g["kind"] == "tram_door":
+				var tr := PhysicsRayQueryParameters3D.create(ring.arc_to_world(gx, at + inward * 5.0, 2.3),
+						ring.arc_to_world(gx, at - inward * (CityWalls.TUNNEL_DEPTH + 5.0), 2.3))
+				var th := space.intersect_ray(tr)
+				var beyond := -inward * (ring.world_to_arc(th["position"]).y - at) if not th.is_empty() else INF
+				check(not th.is_empty() and absf(beyond - CityWalls.TUNNEL_DEPTH) < 0.5,
+						"a ray through the tram door goes down its tunnel and stops at the back plate (%.1f m past the wall plane)" % beyond)
+				near(float(g["b"]) - float(g["a"]), CityWalls.TRAM_DOOR_W, 1e-3, "the tram door is 3.8 m wide")
+				tram += 1
+				continue
 			var ray := PhysicsRayQueryParameters3D.create(ring.arc_to_world(gx, at + inward * 10.0, 4.0), ring.arc_to_world(gx, at - inward * 10.0, 4.0))
 			var hit := space.intersect_ray(ray)
-			if g["kind"] == "portal":
-				# 2026-11-23 (map sealed): was "a ray through the portal hits nothing"; a mech walked out that way and
-				# fell off the map. Now the ray goes into the recess and stops at its back plate (test_map_sealed).
-				var beyond := -inward * (ring.world_to_arc(hit["position"]).y - at) if not hit.is_empty() else INF
-				check(not hit.is_empty() and absf(beyond - CityWalls.GATE_RECESS) < 0.3,
-						"a ray through the portal goes into the recess and stops at its back plate (%.1f m past the wall plane)" % beyond)
-				portal += 1
-			elif g["kind"] == "blast_door":
-				check(not hit.is_empty(), "a ray into a blast door hits the wall")
+			if g["kind"] == "blast_door":
+				check(not hit.is_empty(), "a ray into a road door hits the wall")
 				sealed += 1
-	check(portal >= 1 and sealed >= 1, "deck 0 has a portal (%d) and a blast door (%d)" % [portal, sealed])
+				if str(g["role"]) != "":
+					roles.append(str(g["role"]))
+					near(float(g["b"]) - float(g["a"]), CityWalls.ROAD_DOOR_W, 1e-3, "the %s door is a standard road door" % g["role"])
+	check(tram == 2 and sealed >= 1, "deck 0 has two tram doors (%d) and a road door (%d)" % [tram, sealed])
+	check(roles.has("entry"), "deck 0 has the entry door (%s)" % str(roles))
 	d.queue_free()

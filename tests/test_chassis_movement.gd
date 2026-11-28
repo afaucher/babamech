@@ -5,7 +5,7 @@ extends TestCase
 ##     gait numbers), and a bare MechController's defaults are the Strider's catalog block.
 ## (2) The Bulwark measured against its targets: walk / run / strafe top speeds, the side-step strafe (no hip twist),
 ##     time to turn 180 deg (about 1 / 0.61 of the Strider's), time to walk speed, a climb from cold limited by heat alone
-##     (no hop ceiling since 2026-11-25: ~1.9 s of burn to shutdown, ~20 m peak; a 12 m roof yes with real heat, a 30 m
+##     (no hop ceiling since 2026-11-25; thrust heat 64 /s since R2.3: ~2.5 s of burn to shutdown, ~34 m peak; a 12 m roof yes with real heat, a 30 m
 ##     roof no; the Strider climbs both), step-up (1.6 m climbs, 2.0 m does not), a 100 m drop under the fall-damage speed
 ##     (the full sweep: test_auto_land_bulwark), and the wedge (jammed between two blocks: bounded speed, nudged free).
 ## Prints a table of both chassis.
@@ -102,9 +102,10 @@ func setup() -> void:
 		b["walk_t"], s["walk_t"]])
 	check(float(b["hop"]) > 20.0, "no hop ceiling: the Bulwark's thrust (heat held at 0) climbs freely (%.1f m in 3 s)" % b["hop"])
 	check(float(s["hop"]) > 20.0, "the Strider's thrust still climbs freely (%.1f m in the same burn)" % s["hop"])
-	# Heat is the limit: from cold the Bulwark burns ~1.9 s (heat 80 /s - cooling 12 into 130), the Strider ~6.7 s.
-	check(float(b["shut_t"]) > 1.7 and float(b["shut_t"]) < 2.2, "a cold Bulwark burns %.2f s before it shuts down (1.7..2.2)" % b["shut_t"])
-	check(float(b["peak_cold"]) > 16.0 and float(b["peak_cold"]) < 24.0, "a cold Bulwark's one-burn peak is %.1f m (16..24)" % b["peak_cold"])
+	# Heat is the limit: from cold the Bulwark burns ~2.5 s (heat 64 /s - cooling 12 into 130; was 80 /s and ~1.9 s
+	# before playtest R2.3, 2026-11-26), the Strider ~6.7 s.
+	check(float(b["shut_t"]) > 2.3 and float(b["shut_t"]) < 2.8, "a cold Bulwark burns %.2f s before it shuts down (2.3..2.8)" % b["shut_t"])
+	check(float(b["peak_cold"]) > 30.0 and float(b["peak_cold"]) < 38.0, "a cold Bulwark's one-burn peak is %.1f m (30..38)" % b["peak_cold"])
 	check(float(s["shut_t"]) > 6.0, "a cold Strider burns %.2f s before it shuts down (unchanged ~6.7)" % s["shut_t"])
 
 	# Roofs from cold with real heat (thrust up a wall, then forward onto the top): 6 and 12 m yes, 30 m no.

@@ -16,9 +16,9 @@ extends RefCounted
 ## pass under it where it is UNDER_RAMP_H high and no pier stands). Blocks (cells) are never crossed by line edges.
 ##
 ## BETWEEN DECKS.
-##   ramp   two-way. In at the mouth (MOUTH m before its top cross line on the upper deck, ON the lane centre line, so the
+##   ramp   two-way. In at the mouth (MOUTH m before its slope starts on the upper deck (SectionPlan.ramp_run), ON the lane centre line, so the
 ##          bot lines up along the lane before the slope: the mouth node is reachable only along the lane, the top cross
-##          road's half over the cut is blocked), out FOOT_OUT m past the foot on the lower deck, the leg a straight line
+##          road's half over the cut is blocked), out FOOT_OUT m past the slope's end on the lower deck, the leg a straight line
 ##          down the lane centre between the parapets.
 ##   shaft  down only. From the middle of any side of the shaft's cell (on the road around it) straight in to the hole's
 ##          centre; the drop lands at the same (x, theta) on the first deck below that has floor there (a stacked atrium
@@ -32,8 +32,8 @@ extends RefCounted
 
 const CUT_GROW := 1.5          ## m: a walk edge keeps this far from any floor cut
 const LANE_SPLIT := 4.5        ## m either side of the avenue lane's median: its two carriageway lines
-const MOUTH := 7.0             ## m before the ramp's top cross line: the ramp's entry node (on the lane centre)
-const FOOT_OUT := 8.0          ## m past the ramp's foot cross line on the lower deck: its exit node
+const MOUTH := 7.0             ## m before the ramp's slope starts (SectionPlan.ramp_run): its entry node (on the lane centre)
+const FOOT_OUT := 8.0          ## m past the ramp's slope end on the lower deck (ramp_run): its exit node
 const UNDER_RAMP_H := 10.0     ## m: a cross road passes under a ramp where it is at least this high
 const PIER_CLEAR := 5.0        ## m: ...and no pier stands within this
 const RAMP_EXTRA := 15.0       ## route cost added to a ramp's length
@@ -70,7 +70,7 @@ var _key: Dictionary = {}      ## "k:x:s" -> node
 var body_r := 0.0
 var lane_split := LANE_SPLIT
 var unfit: Dictionary = {}    ## edge id -> true: left out by fit_body (too narrow / glide for a hop-only chassis)
-const MEDIAN_HALF := 1.5       ## m: half the avenue lane's planted median (CityStack.CARRIAGE's comment)
+const MEDIAN_HALF := 1.5       ## m: half the avenue lane's planted median (CityStack.carriage(): lane centres +-4 m on the 14 m road)
 const LANE_CLEAR := 0.15       ## m kept between a wide capsule and the median
 
 
@@ -142,9 +142,13 @@ func setup_plans(section: SectionPlan, plans: Array[CityPlan]) -> void:
 		var top := int(cn["from"])
 		var low := int(cn["to"])
 		var lane := (float(cn["x0"]) + float(cn["x1"])) * 0.5
-		var dir := signf(float(sec.row_theta[int(cn["foot_line"])]) - float(sec.row_theta[int(cn["top_line"])]))
-		var mt := Vector2(lane, sec.line_s(top, int(cn["top_line"])) - dir * MOUTH)
-		var mf := Vector2(lane, sec.line_s(low, int(cn["foot_line"])) + dir * FOOT_OUT)
+		# The slope itself (SectionPlan.ramp_run: it starts RAMP_END_INSET past the top cross line and ends as far short
+		# of the foot line), not the cross lines.
+		var run_top := sec.ramp_run(ci, top)
+		var run_low := sec.ramp_run(ci, low)
+		var dir := signf(float(cn["run_foot"]) - float(cn["run_top"]))
+		var mt := Vector2(lane, run_top.x - dir * MOUTH)
+		var mf := Vector2(lane, run_low.y + dir * FOOT_OUT)
 		(extras[top] as Array).append(mt)
 		(extras[low] as Array).append(mf)
 		var a := xt(top, mt)

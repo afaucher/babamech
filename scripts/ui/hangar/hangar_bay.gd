@@ -477,6 +477,15 @@ const TAG_PIXEL := 0.006
 const TAG_NEAR := 13.0
 const TAG_MAX_SCALE := 2.2
 
+## Show / hide the crew's name tags (FrontEnd hides them under the debrief board, which names the pilots itself).
+func show_tags(on: bool) -> void:
+	if _crew_root == null:
+		return
+	for c in _crew_root.get_children():
+		if c is Label3D:
+			(c as Label3D).visible = on
+
+
 func scale_tags(cam_pos: Vector3) -> void:
 	if _crew_root == null:
 		return

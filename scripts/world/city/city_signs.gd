@@ -1,9 +1,10 @@
 class_name CitySigns
 extends RefCounted
 ## Deck lettering (docs/design/city-signs.md): "DECK" + the deck's two-digit number, ONE sign above every boundary-wall
-## gate / portal and every freight lift door, and a way-finding sign (arrow + the destination deck) at both ends of every
-## ramp. Nothing beside doors, nothing over shafts or ceiling openings (user feedback 2026-11-25). Number = section deck
-## index + 1 (the top deck, with the entry portal, is 01), as the mission HUD says.
+## road door and every freight lift door (none over a tram door: a civic sign is for the roads), and a way-finding sign
+## (arrow + the destination deck) at both ends of every ramp. Nothing beside doors, nothing over shafts or ceiling
+## openings (user feedback 2026-11-25). Number = section deck index + 1 (the top deck, with the entry door, is 01), as
+## the mission HUD says.
 ##
 ## Cosmetic only: baked flat polygons drawn through CityGeo (one flat colour per face, no textures, no fonts, no Label3D),
 ## no collision, not in the plan checksum, not in CityDistrict.geometry_digest() or stats.triangles (its own
@@ -29,7 +30,7 @@ const OVER_SHARE := 0.75             ## its panel is this share of the gate's wi
 const OVER_U := Vector2(0.4, 0.8)    ## ... with its glyph unit in this range (numeral 4-8 m) ...
 const OVER_TOP := 4.0                ## ... and its top this far under the ceiling (the girders)
 
-const LIFT_U := 0.36                 ## lift signs: numeral 3.6 m, the panel's bottom over the door's lamps (9.0-9.8 m)
+const LIFT_U := 0.36                 ## lift signs: numeral 3.6 m, the panel's bottom over the 9 m doorway
 const LIFT_BOTTOM := 10.4
 const LIFT_Z := Vector2(0.3, 0.9)    ## the lift panel's back and face, out of the core's face (pilasters 0.5, channel 0.62)
 const HANG_U := 0.4                  ## hung signs: numeral 4 m, the panel's bottom 10 m up (over a mech)
@@ -118,8 +119,9 @@ static func _sign(kind: String, surface: String, xf: Transform3D, u: float, base
 			"h": base + (fp.y + fp.z) * 0.5, "side": -1, "u0": 0.0, "u1": 0.0, "gate": -1, "pillar": -1, "ramp": -1}
 
 
-## One sign per gate of every bulkhead / farm wall (portals too): the over-gate sign, and nothing beside the gate (user
-## feedback 2026-11-25: "Just one sign above doors, not 3"). Window walls (the hull, a district on its own only) carry none.
+## One sign per road door of every bulkhead / farm wall (the entry / exit doors too: every road door looks the same):
+## the over-gate sign, and nothing beside the gate (user feedback 2026-11-25: "Just one sign above doors, not 3"). No
+## sign over a tram door. Window walls (the hull, a district on its own only) carry none.
 static func _gates(out: Array, plan: CityPlan, geo: CityGeo, n: int) -> void:
 	var gi := 0
 	for w: Dictionary in plan.boundary():
@@ -127,6 +129,8 @@ static func _gates(out: Array, plan: CityPlan, geo: CityGeo, n: int) -> void:
 		var gates: Array = w["gates"]
 		if kind == "bulkhead" or kind == "farm":
 			for gk in gates.size():
+				if str(gates[gk]["kind"]) == "tram_door":
+					continue
 				var over := _over_gate(plan, geo, w, gates[gk], n)
 				if not over.is_empty():
 					over["gate"] = gi + gk
@@ -172,7 +176,7 @@ static func _over_gate(plan: CityPlan, geo: CityGeo, w: Dictionary, g: Dictionar
 	return s
 
 
-## Over every freight lift door (the core's `front` face: CityBuildings._pillar), on a panel above the door's lamps:
+## Over every freight lift door (the core's `front` face: CityBuildings._pillar), on a panel above the doorway:
 ## beside the door the leaves slide over the face when they open (MissionLiftDoor).
 static func _lifts(out: Array, plan: CityPlan, ring: RingFrame, n: int) -> void:
 	for i in plan.buildings.size():
@@ -430,7 +434,28 @@ static func glyph(ch: String) -> Array:
 
 
 static func glyph_w(ch: String) -> float:
-	return {"E": 5.0, "C": 5.6, "arrow_up": ARROW_W, "arrow_down": ARROW_W}.get(ch, 6.0)
+	return {"E": 5.0, "C": 5.6, "L": 5.4, "arrow_up": ARROW_W, "arrow_down": ARROW_W}.get(ch, 6.0)
+
+
+## A word's width in glyph units (a space is 3 units); the station name board (CityStation) writes with these.
+static func word_w(text: String) -> float:
+	var w := -LETTER_GAP
+	for ch in text:
+		w += (3.0 if ch == " " else glyph_w(ch)) + LETTER_GAP
+	return maxf(w, 0.0)
+
+
+## A word's glyph pieces in frame metres, centred on x = 0, letters `u` m per unit (10 units tall) standing on `base`.
+## Letters the stencil face lacks are left out (CityStation.NAMES uses only A C D E H K L N O R S T).
+static func word_polys(text: String, u: float, base: float) -> Array:
+	var out := []
+	var x := -word_w(text) * 0.5
+	for ch in text:
+		if ch != " ":
+			for poly: PackedVector2Array in glyph(ch):
+				out.append(_place(poly, x, base, u, 1.0))
+		x += (3.0 if ch == " " else glyph_w(ch)) + LETTER_GAP
+	return out
 
 
 static func _p(a: Array) -> PackedVector2Array:
@@ -479,6 +504,18 @@ static func _make_glyphs() -> Dictionary:
 	g["E"] = [stem, _p([2.6, 8.1, 5, 8.1, 5, 10, 2.6, 10]), _p([2.6, 4.15, 4.4, 4.15, 4.4, 5.85, 2.6, 5.85]), _p([2.6, 0, 5, 0, 5, 1.9, 2.6, 1.9])]
 	g["C"] = [_p([5.6, 10, 1.7, 10, 0, 8.3, 0, 1.7, 1.7, 0, 5.6, 0, 5.6, 1.9, 2.4, 1.9, 1.9, 2.4, 1.9, 7.6, 2.4, 8.1, 5.6, 8.1])]
 	g["K"] = [stem, _p([3.95, 0, 6, 0, 4.5, 3.7, 2.7, 3.7]), _p([2.6, 4.4, 3.9, 4.4, 6, 10, 4.0, 10, 2.6, 6.3])]
+	# The station name board's letters (CityStation, 2026-11-27): the same stencil face (stroke 1.9, gaps 0.7).
+	g["O"] = g["0"]
+	var a_leg := _p([0, 0, 1.9, 0, 1.9, 7.6, 2.4, 8.1, 2.65, 8.1, 2.65, 10, 1.7, 10, 0, 8.3])
+	g["A"] = [a_leg, _mirror(a_leg, DIGIT_W), _p([2.6, 3.9, 3.4, 3.9, 3.4, 5.6, 2.6, 5.6])]
+	g["H"] = [stem, _p([4.1, 0, 6, 0, 6, 10, 4.1, 10]), _p([2.6, 4.15, 3.4, 4.15, 3.4, 5.85, 2.6, 5.85])]
+	g["L"] = [stem, _p([2.6, 0, 5.4, 0, 5.4, 1.9, 2.6, 1.9])]
+	g["N"] = [stem, _p([4.1, 0, 6, 0, 6, 10, 4.1, 10]), _p([2.3, 6.6, 3.7, 0, 3.7, 3.4, 2.3, 10])]
+	g["R"] = [stem, _p([2.6, 4.15, 4.3, 4.15, 6, 5.85, 6, 8.3, 4.3, 10, 2.6, 10, 2.6, 8.1, 3.6, 8.1, 4.1, 7.6, 4.1, 6.4,
+			3.6, 5.85, 2.6, 5.85]), _p([3.0, 3.45, 4.0, 0, 6, 0, 5.0, 3.45])]
+	g["S"] = [_p([5.8, 10, 1.7, 10, 0, 8.3, 0, 6.0, 1.6, 4.4, 2.8, 4.4, 2.8, 6.1, 2.4, 6.1, 1.9, 6.6, 1.9, 7.6, 2.4, 8.1, 5.8, 8.1]),
+			_p([0.2, 0, 4.3, 0, 6, 1.7, 6, 4.0, 4.4, 5.6, 3.5, 5.6, 3.5, 3.9, 3.6, 3.9, 4.1, 3.4, 4.1, 2.4, 3.6, 1.9, 0.2, 1.9])]
+	g["T"] = [_p([2.05, 0, 3.95, 0, 3.95, 7.4, 2.05, 7.4]), _p([0, 8.1, 6, 8.1, 6, 10, 0, 10])]
 	g["arrow_down"] = [_p([0, 9, 8, 9, 4, 1])]
 	g["arrow_up"] = [_p([4, 9, 0, 1, 8, 1])]
 	return g

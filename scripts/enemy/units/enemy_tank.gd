@@ -99,7 +99,7 @@ func _update_visuals(dt: float) -> void:
 	if _turret_pivot != null:
 		var off_y := (0.35 * sa.aim_off * sa.side + 0.1 * sa.shake) * anim_stagger_amp
 		var off_p := 0.12 * sa.aim_off * anim_stagger_amp
-		var pitch := deg_to_rad(-10.0) if heat.shutdown else 0.0
+		var pitch := deg_to_rad(-12.0) * heat_look.slump   # heat shutdown: the barrel droops (eased, heat_look)
 		_turret_pivot.transform = Transform3D(rock * Basis.from_euler(Vector3(pitch + off_p, _turret_yaw + off_y, 0.0)),
 			rock * Vector3(0.0, 2.7, -0.3))
 

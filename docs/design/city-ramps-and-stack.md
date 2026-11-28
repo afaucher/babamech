@@ -70,8 +70,8 @@ Geometry (`CityStreets.ramps`), same palette and material as roads:
 
 ## 4. Smaller fixes in the same pass
 
-- **Spine gate**: a gate on the 50 m spine is one portal across all four lanes (door leaves or opening spanning the whole
-  spine, `h` = 14 m), so the rails and ramp lanes meet a door, not blank wall.
+- **Spine gate** (superseded 2026-11-27: the 40 m spine's end is one 14 m road door on the main road, plus a tram door on
+  deck 0; city-spine.md §4): a gate on the 50 m spine was one portal across all four lanes (`h` = 14 m).
 - **Lab**: `site` gains `stack` (all decks; the `deck` slider picks the active deck and the deck the cameras stand on).
   New cameras: `ramp` (standing on the upper deck at the top of the first ramp looking down it; falls back to `avenue` if
   the section has no ramp) and `shaft` (at the railing of the first open-air shaft looking down; falls back likewise).
@@ -103,6 +103,11 @@ main session's file: `CityStack.build`, `ring()`, `entry_transform()`, `follow(m
 Built as specified (`CityStack`, `CityPlan.ramps`, `CityStreets.ramps`, `CityLightRig.setup_decks`), with these differences:
 - The ramp is flush with the upper road only at the cross line's centre, so the floor is cut across half that cross road
   (`CityPlan.floor_cuts()`), with no curb or railing across the ramp's mouth. `site.floor_holes` is unchanged.
+  **Since 2026-11-27 (R2.17)** the slope runs over the plan's run (connector `run_top` / `run_foot`), which starts and ends
+  `SectionPlan.RAMP_END_PAST_BOX` (6 m) past the junction boxes: every `CityPlan.ramps` part lies on it (and carries the
+  run as `run_top` / `run_foot` in the deck's s), the mouth is the floor cut's plain open edge on flat service road, the
+  foot lands on flat road short of the next box, and `floor_cuts()` no longer reaches into a cross road
+  (city-spine.md "Ramp ends").
 - The stretch where the two parts meet is drawn once (the top part's mesh stops at the lower deck's ceiling plane);
   collision overlaps by 1 m of height.
 - Slab undersides are drawn round floor holes, so the lower deck's ceiling opening does not show through bridges.
@@ -323,8 +328,9 @@ this PC (seed 1: 18 doors on 3 decks; it was 0.3-0.4 s before the site search we
 `stack.setup_mission_done()`, `stack.setup_mission_progress()` (0..1, never goes down). `stack.mission` is null until done,
 then the finished MissionWorld. `setup_mission(plan)` is begin + step to the end, with the same result (tested: snapshot,
 sites, nodes, walls and collision). Chunks (`MissionWorld.chunk_log`): plan (match sources to doors, ~2 ms), one per wave
-door (2-3 ms), each deck's walls in CityDistrict's own parts (one per side, a farm side in its parts; 0.4-10 ms), pose
-doors, per flag / defend its site search (0.5-3 ms) and its build (~1 ms), hold, portal, finish. Largest chunk ~9-10 ms.
+door (2-3 ms; the entry / exit and tram doors one each too), each deck's walls in CityDistrict's own parts (one per side,
+a farm side in its parts; 0.4-10 ms), pose doors, per flag / defend its site search (0.5-3 ms) and its build (~1 ms),
+hold, finish. Largest chunk ~9-10 ms.
 Before done, every call that changes state (open_source, set_flag, advance_to, restore, ...) returns at once. A rebuild,
 a second begin or a teardown mid-setup leaves nothing behind. Without `setup_mission` nothing
 changes: plan, props and stack checksums, every Walls mesh and every collision shape are the build's own. The test checks
@@ -339,8 +345,9 @@ snaps to the right state. Idle cost: one comparison (about 0.2-0.3 us) until the
 every gate wave door is a **staging bay** (below).
 - **Timing (2026-11-23): `open_at` is the moment the leaves START to move, and the siren is the opening signal.**
   `open_source(id, open_at, hold := 12, order_at := now)`:
-  - `open_at - 5 .. open_at`: state `warn` (`source_event("warn")` at its start). Silent and dark at a gate; a lift's five
-    lamps count it down, one going out each second.
+  - `open_at - 5 .. open_at`: state `warn` (`source_event("warn")` at its start). Silent and dark at a gate and at a lift
+    (the lift's countdown lamps went 2026-11-27, R2.22: the station is a real place, a freight lift shows nothing of a
+    wave's arrival; its doors' motion is the tell).
   - `open_at .. open_at + OPENING` (gate 3.0 s, `MissionWorld.OPENING`; lift 1.5 s): state `opening`, the reveal. The leaves
     slide apart. At a gate the siren loops, the recessed amber lamps under the lintel flash in turn (0.8 s), the beacons on
     the lintel turn, the bay's `WarnLight` comes on. `source_event("open")` fires at `open_at`.
@@ -381,15 +388,16 @@ leaves in a projecting concrete bunker frame (`bay_sliding_bunker_s61.png`). Sho
 cameras `mission_gate` / `mission_bay`).
 - **Room.** Behind the wall a hangar room `BAY_DEPTH` 26 m deep from the wall plane (the 6 m wall + 20 m). Interior width:
   the gate's own width, widened behind the wall thickness to `BAY_MIN_W` 22 m (20 m clear after 1 m margins);
-  `MissionWorld.bay_half` shrinks it symmetrically (never below the gate) to stay 0.5 m clear of a neighbouring gate's bay,
-  a portal's back plate, and 2 m inside the deck's corners (no clamp was needed on seeds 1, 4, 7, 403112: gates on one wall
-  are 40 m+ apart). Roof underside `BAY_H` 18 m above the floor at the wall plane: taller inside than the opening (the
+  `MissionWorld.plan_bay_span` shrinks it symmetrically (never below the gate) to stay 0.5 m clear of a neighbouring gate's
+  bay, a collapsed gate, and 2 m inside the deck's corners (no clamp was needed on seeds 1, 4, 7, 403112: gates on one wall
+  are 40 m+ apart); beside a tram tunnel it moves sideways instead (2026-11-27: the entry bay sits off centre). Roof underside `BAY_H` 18 m above the floor at the wall plane: taller inside than the opening (the
   roof steps up behind the lintel). Light bars hang 0.25 m under it; nothing else hangs inside.
 - **Floor** level with the street, no lip or sill: drawn (3 cm up, like the old recess) and collided on the deck's own
   facets in the district's arc coordinates (one 1 m slab per facet, as `CityDistrict._col_floor`), so it meets the deck
   floor flush on the ring's curve (an end-wall bay's floor rises ~0.85 m over its depth against a flat frame).
 - **Gates** (unchanged plan data): lane / street gates 14 m in the wall, 12.8 m clear between the jambs, 9 m to the lintel's
-  underside; avenue gates 50 m (48.8 m clear), 14 m high. Every narrow gate is under 14 m clear and under 10 m high. The
+  underside; avenue gates 50 m (48.8 m clear), 14 m high (until 2026-11-27: on the 40 m spine the avenue gate is an ordinary
+  14 m road door, 12.8 x 9 m clear). Every narrow gate is under 14 m clear and under 10 m high. The
   opening is clear up to the lintel underside (lamps sit recessed above it).
 - **Look** (flat colours, every choice in `GateDoor`'s `_build_*`): a pale concrete bunker frame projecting 2 m into the
   street (lintel 2.4 m) with sloped buttresses (2.4 m jambs, 2.2 m wider at the foot) and a deep chamfered lintel with a
@@ -412,7 +420,8 @@ cameras `mission_gate` / `mission_bay`).
   wall.
 - **Cost** per bay: 1040-1080 triangles (narrow gate), 1340-1360 (avenue gate); 16-18 collision shapes (door box, 4 plates,
   7-8 floor slabs, 2 jambs, lintel, pier) besides the rebuilt wall pieces; its setup chunk 6.5-13 ms.
-- `source_bay(id)`, for placing a wave inside (Missions): `{ok = false}` for lifts, ramps, shafts, unknown ids (test `ok`).
+- `source_bay(id)`, for placing a wave inside (Missions): `{ok = false}` for ramps, shafts, unknown ids (test `ok`); a lift
+  answers with its car since 2026-11-27 ("Lift cars" below).
   Otherwise `{ok: true, deck, frame (global in the tree: origin on the wall plane at floor mid-gate, +Z into the map),
   center (the usable floor's centre, same space), x, s, h (its arc coordinates, h 0), origin (Vector2(x, s)), out (unit
   arc vector into the deck), facing (unit, into the map), exit (on the street 6 m in front of the door), half_width (10 on
@@ -435,25 +444,79 @@ cameras `mission_gate` / `mission_bay`).
   The door is centred on that face of the core (size from `core.size`). `source_point` gives the right point whichever
   face it is.
 
+**Lift cars** (2026-11-27, playtest backlog R2.22; `MissionLiftDoor`, `CityBuildings._lift_doorway`). Units are staged in
+the freight lift's car and walk out when its doors open, like a gate's staging bay.
+- **Measured** (section seeds 1..200, every deck, 996 lift cores incl. the express lift): every lift core is bare (no podium,
+  no solid, no other footprint, no floor hole in it), 25.13 / 25.44 / 25.69 m along the door face (the s size: 28 m leaned
+  to the ceiling, by deck radius) x 28.00 m deep (every door is on a +-x face: front 0 in 438, 1 in 558), the deck's
+  ceiling 40 m. Inside it today: one solid collision box per deck district (`CityDistrict._col_buildings`, kind `core`), no
+  shaft, stairs or other deck's lift (each deck is its own district; the lift's other stops have their own cars).
+- **The car** (every lift, guaranteed): interior 16 m wide (`CAR_HALF` 8) from the 1 m front wall (`LIFT_WALL`) to the back
+  wall at 18.5 m (`CAR_BACK`), roof 10 m over the floor (`CAR_H`; light bars 0.25 m under it: clear 9.67-9.7 m). Usable
+  (source_bay): **14 m wide x 16 m deep x 9.6 m high** (`half_width` 7, `depth_from` 1.5, `depth_to` 17.5). It leaves 4.6 m
+  of core each side and 9.5 m behind. `MissionLiftDoor.car_fit` builds a smaller car where a core is smaller (never under
+  11 x 12 m: below it the lift keeps its solid core, `source_bay` `{ok = false}`); none is in seeds 1..200.
+- **Doorway** 10 x 9 m (`CityDims.LIFT_DOOR_W`, `CityBuildings.LIFT_DOOR_H`; 9 m since R2.22 so an 8 m mech capsule walks in
+  with a step's room), in the hazard frame (now 9.8 m to its top); the windows start at 10 m, pilasters over the doorway
+  start above the frame. The district draws the core's front face round the doorway, a 1 m reveal and the shut doors
+  baked across it 0.3 m behind the face (`lift_leaves` / `lift_leaf`: two leaves, seam, hazard band); a call panel on the
+  right jamb's face. No mission: the core is solid, the baked doors shut.
+- **In a mission** (`MissionWorld._c_lift`): the district's core box is disabled (`_cut`, restored by teardown) and
+  `MissionLiftDoor.body` ("LiftBody") stands in for it with walls round the car (sides, back, front wall beside and over the
+  doorway, roof) and `door_shape` in the doorway (solid while shut / warn / sealed, never while the leaves move); the
+  baked doors are taken out of the block mesh (`hide_fill`, the triangles inside `in_fill`; the original mesh is kept in
+  `_lift_meshes` and put back by teardown). The car itself: steel walls with ribs, yellow bump rails at 1.4 / 3.2 m, roof
+  light bars and wall strips (warm, always lit), a dark floor on the deck's facets with a threshold plate and a hazard line;
+  an OmniLight in the car while its doors open / stand open / close. The floor is the deck's own (the plaza's sidewalk
+  slab under the core: the car is level with the plaza, `h` = `CityPlan.CURB_H`).
+- **API.** `source_bay(lift)`: the gate bay's keys with the same frame convention (origin on the door plane at floor
+  mid-door, +Z out of the car), plus `kind` "lift" and `bay_depth` 18.5; `edge` "", `offset` 0. `bay_contains(lift, p)`:
+  inside the throat (|x| <= 5) or the car; doorway within 1.5 m of the door plane. `bay_slots(lift, n)`: columns 8 m apart,
+  rows 5.5 / 13.5 m in (two Bulwark capsules abreast fit). `source_point(lift)` unchanged (the lobby in front of the door).
+  Timing unchanged: passable at `open_at + LIFT_OPEN` (1.5 s).
+- **Tests**: tests/test_mission_world.gd (`_lift_car`), test_map_sealed.gd (`_lift_car`: both capsules and a 1.4 m sphere in
+  through the doorway, never out but by it), test_collision_survey.gd (`lift_car_inside`, `lift_car_exit`; the jambs as
+  kind `lift_car`, though the survey's corner finder skips boxes as tall as a deck, as it does the cores and columns).
+  Shots: docs/design/city-spine/lift_shut.png, lift_open.png (lab camera `mission_lift`).
+
 **Air doors** (2026-11-24; the user approved "flying doors in the walls" for dropships). High hangar doors in the END walls
 (s0 / s1), derived by MissionWorld from the stack itself (not from MissionPlan: they exist whenever a mission world is set
 up), so every machine builds the same ones. Shots: `docs/design/city-gates/air_shut.png`, `air_open.png` (bulkhead),
 `air_farm_open.png` (farm wall); lab `mission=doors`, cameras `mission_air` / `mission_air_farm`.
-- **Placement rule** (`MissionWorld.air_spot(plan, wall)` / `air_doors(plan)`, plan data only, no random draw): on each
+- **Guarantee** (2026-11-26, playtest R2.24: dropships always come and go through an air door, so Missions can drop the
+  in-deck fallback): every deck of a section has one or two air doors, and every one is **usable**: a box the opening's
+  size (12 m + 1 m a side across, 20.5-27 m up) flies straight in from the wall plane for at least `APPROACH` 30 m
+  without touching a building tier or solid (gables included), pillar core, park column, ramp keep-out or ceiling opening.
+  `MissionAirDoors.approach_len(plan, wall, c)` measures it exactly for the ring (the line is straight while the floor
+  curves up to meet it, plan s is arc length on the floor, a building box tangent at its centre overhangs its footprint as
+  it rises), up to `REACH` 80 m; the doors carry it as `clear_len` (and `usable`). The rule below gained the usable test
+  and a second pass: when no spot passes the first pass (the old rule + usable), the nearest spot that is usable and
+  clear of the gates is taken, sliding along the whole wall. Measured over section seeds 1-300 (doors per deck: before ->
+  after): 3 decks (the game's): 833 decks with 2, 66 with 1, 1 with none (seed 261 deck 1: buildings over 20 m in front
+  of both farm walls) -> 900 decks with 2, all usable; 2 decks: 551 / 49 -> 599 / 1 (seed 48 deck 1 keeps one); 5 decks:
+  1415 / 84 / 1 -> 1500 with 2. Before, 97 of the 1732 doors (3 decks) failed usable, all only because of the curve (a
+  building 18-20 m tall 20-30 m in sits in the straight line's way; with a flat floor every one passed): those moved
+  (97, 5.6 %); 68 walls gained a door; the rest kept their spot. Physics agrees (the opening's box cast `clear_len` m in,
+  every door of seeds 1-140). Side walls (x0 / x1) were not needed (no deck without an end-wall door over 2700 decks).
+  API for Missions: `air_door_count(deck)` >= 1, `air_door(deck, i)` (+ `usable`, `clear_len`),
+  `air_door_approach(deck, i) -> {ok, from (the opening's centre, mid height), to (clear_len m along facing), clear_len}`.
+- **Placement rule** (`MissionAirDoors.spot(plan, wall)` / `doors(plan)`, plan data only, no random draw): on each
   end wall the spot nearest the avenue's centre line (candidates every 0.5 m, + before -) whose door (`air_half()` 9.1 m
   each side) stays 4 m inside the wall's ends and 1 m clear of every gate's staging bay footprint (`plan_bay_half` +
   plates) and span, whose frame rect (19.5-29.1 m up, +-8.6 m) is 1 m clear of the band kept over every gate for its deck
   sign (`GATE_SIGN_HALF` 6.5 m either side of the gate's centre line), and whose flight corridor (the opening +-1.6 m,
   40 m straight into the deck) crosses no building taller than 20 m, pillar core, park column, ramp (`ramp_keep_out`: the
-  ramp +2 m across, + `RAMP_SIGN_REACH` 5 m past both ends for its hung sign) or ceiling opening; the ceiling must leave 4 m
-  over the lintel. **In the load checksum** (2026-11-25, code audit): `CityStack.checksum()` joins every deck's
-  `MissionWorld.air_checksum(plan)` (side and position of each door), so two builds that place air doors differently fail
+  ramp +2 m across, + `RAMP_SIGN_REACH` 5 m past both ends for its hung sign) or ceiling opening (that corridor: the first pass only; both passes need the door usable, above); the ceiling must leave
+  4 m over the lintel. **In the load checksum** (2026-11-25, code audit): `CityStack.checksum()` joins every deck's
+  `MissionAirDoors.checksum(plan)` (side, position and, since R2.24, `clear_len` of each door), so two builds that place air doors differently fail
   the load barrier. Until then the rule read the cosmetic `CitySigns.layout` itself (side signs, hung ramp / shaft
   signs): a sign constant could move wall cuts and dropship entries with no checksum change. Now the looks fit the
   gameplay: `tests/test_air_doors.gd` checks every over-gate sign fits `GATE_SIGN_HALF`, every hung ramp sign lies in its
   `ramp_keep_out` or clear of every corridor, and no sign on an end wall overlaps a door's frame. Placement over seeds 1,
-  4, 7, 403112 is unchanged by the switch (all 24 end walls, before and after). Zero, one or two per deck (one per end wall). Seeds 1, 4, 7, 403112: two on every deck but seed 1 deck
-  2 (one: its s0 wall, with the collapsed spine gate, has no clear corridor). Most sit just beside the avenue gate's bay
+  4, 7, 403112 is unchanged by the switch (all 24 end walls, before and after). One or two per deck (one per end wall;
+  zero, one or two before R2.24). Seeds 1, 4, 7, 403112: two on every deck (before R2.24 seed 1 deck 2 had one: its s0
+  wall, with the collapsed spine gate, had no corridor clear by the first pass; it now has one at x -8.5; seed 1 deck 1's
+  two moved for the usable test). Most sit just beside the avenue gate's bay
   (30.5 m from the avenue's centre line, or 42.5 m on the other side); a few go out to 120-160 m where buildings block the
   corridor nearer.
 - **Sizes.** Opening 12 m wide x 6 m high clear, sill 21 m, head 27 m above the deck floor at the wall (`AIR_SILL`,
@@ -557,32 +620,51 @@ every chassis in `MechCatalog`). The fit disc is that + 0.5 m = 4.1 m, so the wa
 
 Missions calls `MissionRules.set_site(id, x, s)` with the result.
 
-**Extraction portal.**
-- Before: the extraction was the spine's `portal` gate in the lowest deck's end wall (a dark recess, open collision under
-  its lintel) plus a HUD waypoint (`MissionRules.marker()`, Engine's "EXTRACT"). There was no prop.
-- Now a charging frame stands in that gate: 12 pairs of segments up both posts and along the lintel to its middle, lit
-  pair by pair (the first `progress` of them), and an energy curtain across the opening: none below 0.15, then rising
-  from the floor with a bright top edge, thin until 1.0, where it fills the opening and turns solid.
-- `set_portal(progress)` takes 0..1 (clamped): dark at 0, every segment lit at 1.
-- Collision (2026-11-23, playtest: a mech walked out through the open portal and off the map): every `portal` gate's
-  recess is sealed in the district's own collision (`CityDistrict._col_walls`): a 1 m back plate at
-  `CityStreets.GATE_RECESS` (6 m, where the recess is drawn), past its sides and over its lintel; the sides and roof are
-  the wall slab and lintel. A mech steps into the recess, no further. `tests/test_map_sealed.gd` sweeps the mech capsule
-  through every gate and along every deck's perimeter. Wave doors: `MissionWorld._cut_wall` also cuts slabs an earlier
-  door on the deck rebuilt (two doors in one end wall: the second's opening was still filled by the first's slab).
+**Bulkhead doors: entry / exit doors, tram doors (2026-11-27, R2.11a; docs/design/city-spine.md §4).** The extraction
+portal, its charging frame, its energy curtain (`MissionPortal`) and `portal_event` are gone (no blue curtain anywhere).
+- Gates (`CityPlan.boundary()` through `CityWalls.section_gates`, either shape of the section plan): every spine-end
+  gate (the old 50 m `portal` / `blast_door` / `collapsed`, or Missions' `road_door`) is a standard road door 14 m wide
+  in the wall (12.8 x 9 m clear) centred on the avenue lane; the rest of the old span is plain wall. Portal / road_door
+  become kind `blast_door` with a `role` (entry / exit / ""). Deck 0 gets a `tram_door` (3.8 x 4.6 m clear) in both
+  arc-end walls on the rail lane's centre (the plan's `tram_door` gates when it has them).
+- Every road door looks the same, whatever its role (no lamps, no marking; siren and lamps only while the leaves open).
+  Without a mission a road door is the baked shut leaf (solid).
+- **Entry / exit doors** (`MissionWorld.ENTRY_ID` "door_entry", `EXIT_ID` "door_exit"): MissionGateDoor with the
+  standard staging bay (20 m usable, 26 m deep, roof, sealed 1.2 m plates) closed at the back by the static inner blast
+  door (the docking side, not built). `entry_door()` / `exit_door()` return `source_bay(id)` + `id`; ordinary door ids
+  for `open_source` / `hold_source` / `shut_source` (closes without sealing) / `close_source` / `source_state`. Never wave
+  sources (`find_gate` and `stand_in_plan` skip gates with a role). The entry door opens at setup time 0 and stays open
+  (`ENTRY_OPEN_DEFAULT`) until Missions orders it; the exit door is shut.
+- Beside the tram tunnel the entry bay sits off centre (`MissionWorld.plan_bay_span`: moved away from the tunnel, 20 m
+  kept; `source_bay().offset`), the two frames meet as one pier between the openings (`door_fit`: reach_lo / reach_hi),
+  the sign pier stands on the free side, and where a leaf's pocket would cross the tram opening both leaves slide to the
+  other side (the far leaf steps back and runs behind; shut, it looks the same).
+- **Crew spawn**: with the mission world set up, `CityStack.spawn_transforms(n)` = `entry_bay_slots(n)`: two columns 10 m
+  apart either side of the bay's centre, rows 10 and 18 m behind the door plane, facing out. Without it (lab, tests, and
+  today the game, whose crew is placed before the mission world exists) the avenue slots as before.
+- **Tram doors** (`TRAM_IDS` "tram_s0" / "tram_s1"): the same MissionGateDoor at the tram door's size (`tram_config`:
+  frame, lintel, leaves, beacons scaled by gh / 9), no bay and no sign. Behind it the world's dark tunnel
+  (`CityWalls._tunnel`, 3.8 x 4.6 m, 40 m to its back plate; `CityDistrict._col_walls`: the wall open over the gate,
+  plates round the tunnel in 10 m pieces, a back plate: nothing leaves the map, `test_map_sealed`). Open by default;
+  `set_tram_door(end, open, at)` schedules it on the shared clock (in `snapshot()`), emits `tram_door_changed` and calls
+  `AmbientLife.set_tram_door(end, open, at)` (the train link). `tram_door(end)` describes it.
+- **Moving doors**: `MissionGateDoor.blocks()` is solid only while the leaves stand shut (shut / warn / sealed): a door
+  that opens or closes never crushes or wedges a unit. `door_state` never jumps: an order landing on a closing door (or
+  so soon after that its warn would start before the leaves are shut) waits for the closing to end.
+- `bay_contains(id, point) -> {inside, doorway, depth}`: exact from the bay's frame (gates, entry / exit doors).
 - The hold zone is the `hold` objective's `params.zone` (a Rect2 in that deck's arc coordinates; default
-  `MissionRules.extraction_zone(sec, 40)`), outlined on the ground. `set_hold_zone(idle | holding | contested | done)`
-  sets its glow (pale / orange / red / green).
-
+  `MissionRules.extraction_zone(sec, 40)`), outlined on the ground (a glowing floor outline, no wall or curtain).
+  `set_hold_zone(idle | holding | contested | done)` sets its glow (pale / orange / red / green). `set_portal(p)` is a
+  deprecated stub (stores `portal_progress`, draws nothing) until Missions drops its call.
 **Signals** (no audio here besides the gates' sirens):
 - `source_event(kind: warn | open | close | seal, id, world_pos)`: once per scheduled moment, from `advance_to`. A moment
   more than 1.5 s old when first seen fires nothing, so there is no stale klaxon after a jump or a restore.
 - `flag_event(id, raised, world_pos)`: on each change.
 - `asset_event(id, damaged | destroyed, world_pos)`: once each.
-- `portal_event(start | open, world_pos)`: once each.
+- `tram_door_changed(end, open, at)`: on each `set_tram_door`.
 
 **Late join.** `snapshot()` returns `{now, doors: {id: [open_at, close_at, prev_close_at, alarm_from]}, sealed: {id: seal_at}, flags: {id:
-[raised, from, t0]}, zones, assets, portal, hold}`, and `restore(d)` applies it. `net_fields()` classifies every var:
+[raised, from, t0]}, zones, assets, hold}` (the entry / exit and tram doors' schedules in `doors`), and `restore(d)` applies it (a door it does not name gets its default). `net_fields()` classifies every var:
 schedules and states are OWNER (the host decides them and Engine carries them), nodes are LOCAL, and the plan and the
 sites are SPAWN.
 
@@ -592,7 +674,7 @@ sites are SPAWN.
   - `advance_to(clock)` every frame;
   - `open_source` for each `mission.wave` order, with the order's `open_at`;
   - `close_source` when a source is closed;
-  - `set_flag`, `set_zone`, `set_asset`, `set_portal`, `set_hold_zone` from `mission.state`;
+  - `set_flag`, `set_zone`, `set_asset`, `set_hold_zone` from `mission.state`; `set_tram_door` when the host changes one;
   - `snapshot` / `restore` for a late joiner;
   - the signals for the HUD.
 - antigravity: spawn gate waves in the staging bay (`source_point(id)` / `source_bay(id)`) up to `open_at` (the leaves
@@ -603,13 +685,14 @@ sites are SPAWN.
 - Missions: pass `flag_site` / `asset_site` to `MissionRules.set_site`.
 
 **Lab and shots.** In the city lab with site "stack":
-- option `mission` (off / doors / flag / asset / portal / all) loops the pieces;
+- option `mission` (off / doors / flag / asset / all) loops the pieces;
 - `mission_phase` pins one look;
 - cameras: `mission_gate`, `mission_bay` (into a gate's staging bay from the street, 6.5 m up), `mission_lift`,
-  `mission_flag` (45 m), `mission_flag_far` (80 m), `mission_asset`, `mission_portal`; phase `opening` shows the leaves
-  moving with the lamps lit.
+  `mission_flag` (45 m), `mission_flag_far` (80 m), `mission_asset`, `entry_door` / `exit_door` / `tram_door` /
+  `tram_door_s1` (the bulkhead doors); phase `opening` shows the leaves moving with the lamps lit; phases `shut` / `open`
+  apply to the entry / exit and tram doors too.
 
-The shots are in `docs/design/city-shots/mission_*.png`.
+The shots are in `docs/design/city-shots/mission_*.png`; the bulkhead doors in `docs/design/city-spine/door_*.png`.
 
 ## 10. Bridges over a ramp, and the ramp's cut (2026-11-23)
 

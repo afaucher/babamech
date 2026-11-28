@@ -106,7 +106,7 @@ Objective groups ignore state and intensity:
 | Flag | force `build`; its group ordered at once (door 80 to 200 m from the flag) | a second group at 50 % progress if the reserve has one; no `rest` while raising | `fade` |
 | Defend | force `build`; first group at once | a group every 45 / 38 / 30 / 30 s for 1 / 2 / 3 / 4 pilots (the asset is the clock; 1.5a); `rest` capped at 15 s | full `rest` |
 | Sweep | nothing | the cap keeps it moving; the sweep is done when garrison and reserve are gone and nothing is alive (patrol allowance does not hold a sweep open) | `rest` |
-| Extraction hold | force `build`; two sources at once | a group every 20 s, no `rest`, no `fade` | mission ends |
+| Extraction hold (30 s, R2.10) | force `build`; two sources at once | a beat of up to 2 groups (two sources) every 12 / 10 / 9 / 8 s for 1 / 2 / 3 / 4 pilots, quick-response sources only; no `rest`, no `fade` | the exit door opens; the beats go on through the walk-out until the win |
 
 ### 1.5a Defend balance (2026-11-24)
 Rule: a SOLO veteran should usually win a defend (bot win rate >= 80 %) without making 3-4 pilot crews easier. Evidence:
@@ -144,12 +144,39 @@ above) and the crew sat at intensity 100 for 200 s. As built:
   more while a deck holds that many in play (dropship troops and arriving wave units count). The alive ceilings stay.
 - Scout calls: none while the crew's deck already has `ENGAGE_TARGET` enemies engaging it, and at most `SCOUT_RELEASES`
   2 (+1 per extra pilot) scout releases per deck.
-- The extraction hold's clock waits while the crew is at `ENGAGE_TARGET`; beyond the patrol allowance it may add only
+- The extraction hold's beats wait while the crew is at `ENGAGE_TARGET` (and while one of the deck's groups is still due); beyond the patrol allowance it may add only
   `HOLD_PATROLS` 3 (+1 per extra pilot) patrols (was unbounded).
 - What the director can ever field on a deck is finite: `deck_ceiling(k, sizes)` = the reserve + 2 x the patrol
   allowance (+ 2 x hold_patrols on the extraction deck). Per crew size, mean deck: reserve 16.6 / 16.6 / 25.9 / 31.7
   units, patrols 6 / 8 / 10 / 12, hold extras 6 / 8 / 10 / 12; the garrison is deck_budget x share (about 5-11) and
   dropships are EnemySquad's own cap (`max_drops_per_deck` 1, one ship a call). Lent bonus groups come out of that reserve.
+
+### 1.5c Extraction hold retune (R2.10, 2026-11-27)
+The hold went 60 s -> 30 s ("waves will try to stop you"). As built (`PacingDirector`):
+- Start: force `build`, the hold's own group plus the next free group (else a patrol, else a hold patrol) from another
+  source (unchanged). Then a BEAT every `HOLD_EVERY_BY_CREW` [12, 10, 9, 8] s (was `HOLD_EVERY` 20 for everyone) of up
+  to `HOLD_BEAT` 2 groups, the second from another source. The beat clock counts from the last hold group that actually
+  went out; it waits while the crew's deck is at `ENGAGE_TARGET` and while any group of the deck is still due (held by
+  the caps), so a held beat never comes out later as a burst. Every group respects the half rule and every cap.
+- Quick-response sources only where the deck has them (`is_quick` from the zone: ramps, gates 80-200 m, shafts within
+  200 m, lifts within 120 m; `_try_release(..., quick_src)`); the hold's groups used to take the nearest source (often a
+  gate on the zone's own wall).
+- Late orders: kept. Order-to-contact is 7-10 s, so a group ordered after ~20 s arrives during the walk-out; the beats go
+  on while the exit is open (rules state `exit` >= 0) until the win, bounded by the same caps, ceiling and allowance. A
+  crew that walks out promptly sees little of them; one that lingers keeps fighting.
+- Measured (solo veteran bot, Strider, bonuses off, DEV travel + fast clear until the hold shows, then full strength and a
+  repaired mech; damage / lowest core component / downs during the hold; "near" = a group's first unit within 80 m):
+
+| Seed | Before: 60 s hold, 1 group / 20 s | After: 30 s hold, beats 12 s solo |
+|---|---|---|
+| 403112 | 59.7 s, 5 groups (all near before done), damage 207, lowest 0.66, 0 downs, engaging 1-9 | 29.9 s, 2 groups (1 near before done; the deck was at its cap, engaging 4-10), damage 47, lowest 0.92; won 35.2 s after the hold started |
+| 1 | 59.7 s, 4 groups (3 near), damage 169, lowest 0.58, 0 downs, engaging 1-10 | 29.9 s, 4 orders (4 near), damage 98, lowest 0.76, 0 downs, engaging 4-6; won at +35.5 s |
+| 3 | 85.3 s (left the zone), 4 groups (4 near), damage 678, lowest 0.06, 0 downs | 29.9 s, 3 groups (2 near), damage 136, lowest 0.72, 0 downs, engaging 4-8; won at +35.2 s |
+
+  The first pass (10 s solo beats, beat clock from the last beat attempt) piled held groups into bursts: seed 1 took
+  102 s, lowest core 0.00, one down, and the bot was downed walking into the door and redeployed 400 m away (now: the
+  hold counts as active for the respawn rule through the walk-out, `DownedCrew.active_objective`). One tuning pass: no
+  backlog, beat clock from the last release, solo 12 s.
 
 ### 1.6 Scout calls
 A scout drone that completes its beacon (>= 2 s visible tell on the drone itself, no HUD marker) reports
@@ -187,7 +214,64 @@ door is passable; they count toward the caps from staging (they exist). Then `En
 row by row (0.8 s apart, 0.25 s within a row) each walks / flies kinematically to its lane inside the door opening
 (inside `door_w` minus its radius), 6 m past the door, then fans out toward the bay's street exit, fliers climbing to
 cruise height only outside, and the AI takes over hunting. MissionFlow holds the door open 15 s from the roll-out
-(nobody is shut in; measured roll-out about 3 s). Lifts, ramps and shafts spawn at `open_at` as before.
+(measured roll-out about 3 s). A staged unit refuses every hit on the host (a client's copy has no `staged` flag).
+
+**Nobody is shut in (playtest R2.4, 2026-11-27; `MissionBays`, host).** Every door a staged group rolled out of is watched
+(4 Hz) until it is shut with nobody inside: (1) while ANY live unit is inside its bay or in the doorway
+(`MissionWorld.bay_contains` when Environment lands it, else the bay frame: |x| <= half_width + 1 m, 0..26 m behind the
+door plane; doorway 1.5 m either side, inside the jambs) the door is held open at least 4 s ahead, up to 30 s past its
+normal close; (2) then every unit still inside is PUSHED out kinematically along the door line to the exit (the door
+held, at most 10 s); (3) what is still inside after that, or inside a door that is closing / shut / sealed anyway, is
+WITHDRAWN (`EnemySquad.withdraw`: no death, no wreck, no kill credit, a `[mission] bay` line and a CombatLog `source`
+note): it leaves the squad, so a sweep and "group beaten" never wait on it (a unit within 3 m of a closing door's plane is
+pushed out instead); wrecks inside a shut bay are cleared; (4) a unit that is out and walks back into an open bay is
+walked out at once, unless it is after a crew mech standing in that bay; (5) a staged group whose door gets sealed, or is
+still not passable 20 s after its open_at, is withdrawn (never left dormant), and nobody rolls out through a sealed door.
+Holds are REPLICATED: `MissionFlow.hold_door` sends a "hold" order (mission.wave, `hold_only`, the door's own open_at, a
+growing hold; NetMission dedups on wave + source + open_at + hold) and every machine calls `hold_source` (before this the
+roll-out hold was the host's alone and a client's door shut about 3 s early). A wave order whose open_at falls within
+WARN + CLOSE after a still-open door's close extends that schedule instead of re-scheduling it (`MissionFlow._no_snap`:
+MissionWorld would snap the leaves shut into "warn" mid-hold), unless the host ordered it at or after that close
+(`order_t` on every director order): a door already closing / shut is never popped back open, it runs a new cycle.
+
+**Lift cars (R2.22, as built 2026-11-27).** Every lift has Environment's car (usable 14 x 16 x 9.6 m, doorway 10 x 9 m;
+`source_bay(lift).ok` on every lift of seeds 1..200) and lift groups stage in it exactly like a gate bay: at the order,
+dormant, in a seeded loose formation from 1.5 m behind the door plane (`depth_from`; the formation's own floor,
+`LIFT_DOOR_MARGIN` 1 m, is below it), rolled out through the doorway once passable (open_at + 1.5 s), under the same
+`MissionBays` hold / push / withdraw rules. The car holds 4 striders or 4 breachers (any seed), 7-9 exo-troopers; the plan's
+lift `load` stays 4 (it is in the plan checksum): 39 of 40 rolled lift groups stage all 4, the rest is the follow-up load
+(BayFormation leaves what does not fit pending: that is the staging-time clamp). Lift groups still roll no tank and no
+flier; a tank would fit (with 2 striders, or a strider and 3 troopers), not enabled. The roll-out path is kinematic from
+the car to 6 m past the door, then the street exit: the nav graph never enters the core, the deck cull and re-homing skip
+units on a path, and after it the unit is on the walk graph outside (tested on all 16 lifts of seeds 1, 4, 7, 22, 403112:
+out in 0.5-2.7 s from passable, none inside at the close, none back in or stuck at the door). A core too small for a car
+(none in the seed range) answers `ok = false` and its groups step out of the opening doors from behind the leaves.
+
+**Crew never shut in (`MissionBays` rule 5, host; R2.4 for pilots).** A door with an interior (a wave gate with a bay, a
+lift with a car; never a sealed door; the entry / exit road doors follow the extraction rules) is never closed on a crew
+mech: while any crew mech (standing, downed or redeploying: `MissionScene.crew_members`) is inside its bay / car or in its
+doorway (`MissionBays.crew_inside(id)`: `bay_contains` inside or doorway, usable for any door id), the door is held open
+`KEEP` s ahead through the replicated hold orders, with NO limit (a pilot is never pushed or withdrawn); a door that is
+closing or shut with a crew mech inside is opened again (`MissionFlow.reopen_door`: a "hold" order with `reopen`, every
+machine calls `open_source` 1 s ahead; a closing door finishes closing first). The director gets those doors as
+`busy_sources`: no release picks one (another source, or the group waits) and a follow-up load from one waits, so a group
+is never staged onto a pilot.
+
+### 1.6c Where enemies come from (playtest R2.24, 2026-11-27: "no unit ever appears in the open with no visible source")
+| Path | Visible source |
+| --- | --- |
+| Garrison (mission start) | pre-play, allowed |
+| Gate group | staged in the bay, rolls out through the opening door |
+| Lift group | staged inside the lift car like a gate bay, rolls out through the opening doors (1.6b "Lift cars"); a lift without a car (none built so far) steps out from just behind the leaves |
+| Ramp group | starts on the ramp itself, 18 m up it from this deck's end (ranks 4.5 m further up, never past the far lip), in its lane, and walks down / up onto this deck (kinematic, then the AI) |
+| Shaft group | starts inside the shaft opening under the upper floor and descends to the landing |
+| Patrol / scout-call / cap group | one of the above (a director release through a source) |
+| Garrison hunt | existing units |
+| Dropship | only through a usable air door (created hidden in its recess, dormant until passable); a deck with no usable air door gets no dropship (the call is dropped; the director's scout release still uses a ground source); a door that never opens: the ship is removed inside its recess. No in-deck appear point any more |
+| Dropship troops | created in the ship's own bay (wherever it hovers), jump-jet down |
+The 25 m / 8 s crew-clearance hold still applies to lift / ramp / shaft groups (for a ramp also at its far-deck start).
+The INBOUND marker sits on the real opening: a gate's or lift's door opening (its door node), a ramp / shaft mouth, or
+an air door's `out` point for a dropship ("Dropship, north air door": `"air"` orders that bring a ship add the alert).
 
 ### 1.7 Co-op scaling
 More enemies, same enemies. One factor `CREW_SCALE = [1.0, 1.0, 1.6, 2.2]` (index = pilots - 1) multiplies the reserve
@@ -217,7 +301,7 @@ start value just changes). Scale only goes down mid-mission (a higher value is a
   releases and hold patrols compare their used counts with the new budgets (remaining = max(0, new - used)).
 - A defend in progress keeps its clock: its next group is due `defend_every` (the new cadence) after its LAST group, with
   the new size cap and theme; the groups already released are untouched.
-- The extraction hold keeps `HOLD_EVERY`; its extra patrol allowance becomes `HOLD_PATROLS + n - 1` minus those already
+- The extraction hold's beat follows `HOLD_EVERY_BY_CREW[n - 1]`; its extra patrol allowance becomes `HOLD_PATROLS + n - 1` minus those already
   added, and the engage ceiling it waits under is the new `ENGAGE_TARGET`. Its two-source start already happened.
 - Relay: max HP = `ASSET_MAX_HP x ASSET_HP_SCALE[n - 1]`, keeping the current HP fraction (`asset_hp` is the fraction,
   the host's; destroyed stays destroyed). The AssetTarget mirror gets the new max.
@@ -373,10 +457,18 @@ Picked B2 (supply-depot.md). The art model `res://scenes/props/supply_depot_kios
 scene is missing. Both sit behind the view interface `set_cores(stocked, capacity)`, `core_taken(index)`,
 `set_destroyed(dead)`, `socket_point(index)` (+ `set_render_layers(mask)` before entering the tree). The whole depot is
 turned so its socket wall (local +Z) faces the side with the longest run of clear ground (`MissionDepots.open_face`,
-probes with the snap rule: plan data only, the same on every machine); the 6 m claim range is measured from the turned
-6 x 4 m footprint. Collision box 6 x 4.35 x 4 m; the
-collision box and the DepotTarget (250 HP, team "": enemies never acquire it, every shot can hit it) belong to
-`SupplyDepot`. The pilot taking a core sees "Taking power core: 60%" as a line of the objective panel.
+probes with the snap rule: plan data only, the same on every machine); the 6 m claim range and placement's walk-round
+ring are measured from the turned footprint `SupplyDepot.footprint_half` (6.6 x 4.7 m since R2.23, was 6 x 4: the box
+round the collision; depots may sit a little differently, no plan checksum involved). The collision and the DepotTarget
+(250 HP, team "": enemies never acquire it, every shot can hit it) belong to `SupplyDepot`.
+**Collision (R2.23, 2026-11-27)**: the old 6 x 4.35 x 4 box trapped mechs: a capsule walking into a vertical box
+corner whose top lies inside its straight side (Strider 2.2-5.8 m above the feet, Bulwark 3.6-4.4) sinks into the
+corner and cannot move any way (reproduced on seeds 7 / 2 / 22 / 1: 17 traps in 3700 approaches; the user's
+screenshot). Now one convex shape (`SupplyDepot.collision_shape`): the kiosk's visible footprint incl. the roof
+overhang (6.6 x 4.5 m, z -2.15 .. +2.35), vertical walls to `WALL_H` 6.2 m along the ring's local up at each corner,
+a flat top with no rim (a mech that lands on it walks off any side; it stands 1.85 m above the visible roof: the trade,
+a steep cap perched mechs higher). 0 traps in 9100 approaches / drops / thrust landings; tests/test_supply_depot.gd G.
+The mast has no collision; the DepotTarget's hit spheres are not physics shapes and shots skip the body. The pilot taking a core sees "Taking power core: 60%" as a line of the objective panel.
 
 ## 3. Threat log and timeline
 
@@ -423,20 +515,35 @@ Replaces the 1.5 s automatic respawn (user decision 2026-11-22). Every number li
   drone" when a standing crewmate can revive (a repair drone with a charge left or one on duty, back mount intact),
   else "<name> is down". For the downed pilot, a centre prompt: "DOWN", "Help is <m> m away" / "No repair drone in the
   crew", the revive bar, "Hold SPACE to respawn" with the hold bar, then "REDEPLOYING <s>".
-- **Revive**: a crewmate's repair drone on duty (circling, inside its life) beams a downed mech within its 15 m radius
+- **Revive**: a crewmate's repair drone on duty (circling, inside its life) beams a downed mech within its 30 m radius (catalog `radius`; 15 m before 2026-11-26)
   (horizontal, from the launcher, the drone's own range rule): `REVIVE_TIME` 4 s of beam stands it up IN PLACE with
   `REVIVE_STRUCTURE` (destroyed components rebuilt at 30 %, every other at least 30 %), heat 0, shutdown cleared,
   ammo unchanged, `REVIVE_INVULN` 2 s of no damage. Not a death. Beam gone: the bar drains over `REVIVE_DECAY` 2 s
-  (a full bar; decay, not reset). Two drones don't stack. A downed mech's own drone dies with it and never revives it.
+  (a full bar; decay, not reset). Two drones don't stack. An ORDINARY drone of the downed mech dies with it.
   **Cost**: the drone's own: the charge that launched it (2 per mission, depots restock). The revive takes no extra
   charge and no drone life (the drone is a scheduled effect with no per-target budget; shortening it would need a new
-  message). The real cost is the reviver staying within 15 m for 4 s.
+  message). The real cost is the reviver staying within 30 m for 4 s.
+- **Self-revive** (R2.9, user decision 2026-11-26: REVERSES "a downed mech's own drone never revives it"): going down,
+  the mech's own rack (owner's machine, bots too) launches ONE repair drone when a repair-drone slot has a charge and
+  an intact back mount (`WeaponRack._self_revive`, record `"self": true` in the one `combat.drone` event). That drone
+  survives its launcher being down and beams it through the normal `revive_tick` for the normal `REVIVE_TIME`: same
+  result as a crewmate's revive, `player_revived(by)` with the mech's OWN id. `CombatWorld.self_reviving(target_id)`
+  (every machine) is true while it is out and has not revived yet. Redeploy stays allowed: holding SPACE still
+  redeploys (the drone dies when its launcher starts redeploying). The downed pilot's help line reads "Your repair drone
+  is reviving you" (revive bar as usual, "Hold SPACE to respawn" stays); `DownedCrew.downed_crew()` marks the wreck
+  `self_revive: true` so crewmates and bots need not detour. A self-revive is a revive (no death), logged
+  `revive by=self`, and never counts as a revive given. Bots wait while it is true (`DownedRules.bot_wait_for`;
+  MissionBot's `BotAid.wait_s` once the AI flies the bot), then the normal waits.
 - **Respawn**: the downed pilot holds the `respawn` action (SPACE; added at runtime by `DownedRules.ensure_input`, the
   project defines no input actions; it only acts while downed, when the thrusters are off anyway) for `RESPAWN_HOLD`
   3 s (releasing resets), then is REDEPLOYING for `RESPAWN_PENALTY` 5 s (still disabled, out of the fight, on no deck
-  for the director, not revivable, no beacon), then stands with `RESPAWN_STRUCTURE`: every component at 50 % of max
-  (destroyed ones rebuilt at 50 %), heat 0, ammo unchanged. A death. Respawn is never a free refill (depots are);
-  revive in place beats it (no death, no travel) when the crew brought a repair drone.
+  for the director, not revivable, no beacon), then stands **fully restored** (R2.12, user-confirmed 2026-11-26; was
+  50 % structure, ammo unchanged): `RESPAWN_STRUCTURE` 1.0, every component at full (destroyed ones rebuilt, their
+  weapons usable again; the slot stays deselected until the pilot picks it, like a refilled EMPTY slot), heat 0,
+  shutdown cleared (`PlayerTarget._finish_redeploy`), and with `RESPAWN_REARM` every limited-ammo weapon and the
+  repair-drone charges refilled (`WeaponRack.refill_ammo`, called by the mech's owner in `DownedCrew._respawned`, the
+  `on_respawn` handler, which has the rack: the local drive's, a bot's `cb.rack`). A death: the price is the 3 s hold,
+  the 5 s penalty and the walk back. Revive in place (30 %, no death, no travel) is the other choice.
 - **Respawn point**: the arrival point (`SectionPlan.arrival(k)`: a ramp foot / lift platform, the enemy spawner's 70 m
   safe bubble) of the deck the crew's LEAD pilot is on (the deepest deck any standing crewmate is on; nobody standing:
   the deck the pilot went down on), offset by crew seat and dropped onto clear floor with headroom. On the entry deck
@@ -453,8 +560,8 @@ Replaces the 1.5 s automatic respawn (user decision 2026-11-22). Every number li
   `wipe` on, the mission is lost only when every pilot is down at the same time and nobody is redeploying (after
   `wipe_grace`): a hard mode, since a solo pilot then loses 1 s after going down.
 - **Bots** (host-owned, cannot press a key): a downed bot waits `BOT_REVIVE_WAIT` 8 s when a standing crewmate can
-  revive it, else `BOT_ALONE_WAIT` 2 s, and keeps waiting while a revive is in progress; then the respawn path (same
-  penalty, same structure). The local mech flown by `--bot` (MissionBot) does the same.
+  revive it, else `BOT_ALONE_WAIT` 2 s, and keeps waiting while a revive is in progress and while its own drone
+  self-revives it; then the respawn path (same penalty, same full result). The local mech flown by `--bot` (MissionBot) does the same.
 
 ### 4.2 Other systems
 
@@ -463,8 +570,12 @@ Replaces the 1.5 s automatic respawn (user decision 2026-11-22). Every number li
   crew facts carry `downed` (true while redeploying too) and `redeploying`.
 - **Depots**: a downed (or redeploying) mech gets no power core (`MissionDepots.apply_core_to`, the claim stand rule).
 - **Objectives**: a downed mech holds no flag / zone and does not count for extraction (MissionRules skips downed).
-- **Combat log**: `down` (cause, source, weapon), then `help reviver=0|1 dist=`; `revive by= down_s=`; `respawn hold=1|0
-  down_s=`. End record: `deaths` (downs that were not revived), `respawns`, `downs`, `revives` (received),
+- **Intensity after a redeploy**: the full structure is a rise, which only moves `PilotIntensity`'s baseline (no
+  intensity from it); the +40 of the down decays as before. Unchanged by R2.12.
+- **Depots and a redeployed mech**: the core effect and the bot need rule (`needs_core`: total structure < 70 %, a
+  component destroyed, or a weapon slot unusable: empty or on a destroyed hardpoint) are unchanged; a redeployed bot simply no longer needs a core.
+- **Combat log**: `down` (cause, source, weapon), then `help reviver=0|1 dist=`; `revive by=<id>|self down_s= tot=`;
+  `respawn hold=1|0 down_s= tot=` (tot=100 after a redeploy since R2.12). End record: `deaths` (downs that were not revived), `respawns`, `downs`, `revives` (received),
   `revives_given` (this pilot's drone was beaming the crewmate when it stood up), `down_s` (total time down).
 
 ### 4.3 Networking
@@ -483,8 +594,8 @@ Replaces the 1.5 s automatic respawn (user decision 2026-11-22). Every number li
 
 ### 4.4 For the bot (Engine session)
 
-`TestDrive.downed` (DownedCrew) answers: `downed_crew()` -> `[{peer, name, pos, revive, bot}]` (revivable downed
-crewmates, positions on this machine), `can_revive(pilot_id)`, `reviver_for(pilot_id)`, `nearest_reviver(pilot_id)` ->
-`{peer, dist}`. A bot with a repair drone revives by standing within 15 m (horizontal) of the wreck with its drone on
+`MissionScene.downed` (DownedCrew) answers: `downed_crew()` -> `[{peer, name, pos, revive, bot, self_revive}]`
+(revivable downed crewmates, positions on this machine; `self_revive`: its own drone is reviving it), `self_reviving(pilot_id)`, `can_revive(pilot_id)`, `reviver_for(pilot_id)`, `nearest_reviver(pilot_id)` ->
+`{peer, dist}`. A bot with a repair drone revives by standing within the drone's 30 m (horizontal) of the wreck with its drone on
 duty for 4 s: launch the drone (`WeaponRack.activate(back slot)`) when a downed crewmate is within reach and no drone
 is out, then hold position near the wreck until `downed_crew()` no longer lists it.

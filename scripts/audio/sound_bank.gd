@@ -100,8 +100,10 @@ const SPECS := {
 	"enemy.alert.search": {"bus": "SFX_World", "db": -7.0, "jitter": 0.04, "priority": 1, "cooldown_ms": 300, "max_voices": 2, "profile": "weapon", "loop": false},
 	"enemy.alert.lost": {"bus": "SFX_World", "db": -8.0, "jitter": 0.04, "priority": 1, "cooldown_ms": 300, "max_voices": 2, "profile": "weapon", "loop": false},
 	"enemy.step": {"bus": "SFX_World", "db": -6.0, "jitter": 0.10, "priority": 0, "cooldown_ms": 80, "max_voices": 5, "profile": "foley", "loop": false},
-	"enemy.overheat": {"bus": "SFX_World", "db": -2.0, "jitter": 0.04, "priority": 2, "cooldown_ms": 150, "max_voices": 3, "profile": "weapon", "loop": false},
-	"enemy.reboot": {"bus": "SFX_World", "db": -4.0, "jitter": 0.04, "priority": 1, "cooldown_ms": 150, "max_voices": 3, "profile": "weapon", "loop": false},
+	# R2.27: an overheated enemy's power-down whine / reboot spin-up, 3D at the unit (CombatAudio._play_unit_heat). Quieter
+	# than gunfire, priority 1 (they never take a weapon voice), a short cooldown so two units shutting down together both sound.
+	"enemy.overheat": {"bus": "SFX_World", "db": -7.0, "jitter": 0.04, "priority": 1, "cooldown_ms": 60, "max_voices": 3, "profile": "weapon", "loop": false},
+	"enemy.reboot": {"bus": "SFX_World", "db": -9.0, "jitter": 0.04, "priority": 1, "cooldown_ms": 60, "max_voices": 3, "profile": "weapon", "loop": false},
 	"enemy.destroyed": {"bus": "SFX_World", "db": 0.0, "jitter": 0.05, "priority": 2, "cooldown_ms": 80, "max_voices": 4, "profile": "explosion", "loop": false},
 
 	# --- UI & Hangar ---
@@ -137,7 +139,7 @@ const PREWARM_PRIORITY := [
 	"combat.hit.tick", "combat.hit.break", "combat.stagger", "combat.wall_slam", "combat.kill",
 	"impact.small", "impact.medium", "impact.energy", "impact.explosive.med", "impact.explosive.large",
 	"enemy.telegraph.beam", "enemy.telegraph.cannon", "enemy.telegraph.mortar", "enemy.telegraph.pulse",
-	"enemy.alert.spotted", "enemy.alert.relay", "enemy.destroyed",
+	"enemy.alert.spotted", "enemy.alert.relay", "enemy.destroyed", "enemy.overheat", "enemy.reboot",
 ]
 
 var _cache: Dictionary = {}         ## cue_id -> AudioStreamWAV
@@ -826,15 +828,26 @@ static func synthesize(cue_id: String) -> AudioStreamWAV:
 			AudioSynth.normalize(b, 0.88)
 			return AudioSynth.to_wav(b, sr)
 		"enemy.overheat":
-			var b := AudioSynth.buf(0.65, sr)
-			AudioSynth.add_fm(b, sr, 0.0, 0.55, 920.0, 140.0, 2.71, 3.8, 0.4, 0.68, 0.005, 0.22)
-			AudioSynth.add_noise(b, sr, 0.05, 0.55, rng, 0.55, 0.02, 0.30, "hp", 2600.0, 1000.0, 1.4)
-			AudioSynth.normalize(b, 0.92)
+			# Power-down: a turbine whine falling 1400 -> 180 Hz with its level fading over ~0.95 s, servo / turbine grit
+			# under it, ending in a soft low thunk (the unit settling). 1.05 s.
+			var b := AudioSynth.buf(1.05, sr)
+			AudioSynth.add_tone(b, sr, 0.0, 0.95, 1400.0, 180.0, "sine", 0.50, 0.010, 0.80)
+			AudioSynth.add_tone(b, sr, 0.0, 0.92, 700.0, 90.0, "tri", 0.24, 0.010, 0.78)
+			AudioSynth.add_fm(b, sr, 0.0, 0.85, 520.0, 70.0, 1.41, 2.2, 0.6, 0.20, 0.010, 0.70)
+			AudioSynth.add_noise(b, sr, 0.0, 0.85, rng, 0.22, 0.010, 0.65, "bp", 2400.0, 450.0, 2.5)
+			AudioSynth.add_tone(b, sr, 0.86, 0.15, 72.0, 38.0, "sub", 0.42, 0.003, 0.12)
+			AudioSynth.normalize(b, 0.88)
 			return AudioSynth.to_wav(b, sr)
 		"enemy.reboot":
-			var b := AudioSynth.buf(0.45, sr)
-			AudioSynth.add_fm(b, sr, 0.0, 0.42, 240.0, 1180.0, 2.41, 1.2, 2.6, 0.62, 0.02, 0.10, true)
-			AudioSynth.normalize(b, 0.90)
+			# Spin-up: a whine rising 220 -> 1250 Hz over ~0.55 s with servo grit, then a short steady hold at 1250 Hz. 0.80 s.
+			var b := AudioSynth.buf(0.80, sr)
+			AudioSynth.add_tone(b, sr, 0.0, 0.58, 220.0, 1250.0, "sine", 0.46, 0.06, 0.04)
+			AudioSynth.add_tone(b, sr, 0.0, 0.58, 110.0, 625.0, "tri", 0.20, 0.06, 0.04)
+			AudioSynth.add_tone(b, sr, 0.54, 0.24, 1250.0, 1250.0, "sine", 0.46, 0.04, 0.14, false)
+			AudioSynth.add_tone(b, sr, 0.54, 0.24, 625.0, 625.0, "tri", 0.20, 0.04, 0.14, false)
+			AudioSynth.add_fm(b, sr, 0.0, 0.58, 160.0, 900.0, 2.0, 1.8, 0.8, 0.18, 0.05, 0.08)
+			AudioSynth.add_noise(b, sr, 0.0, 0.58, rng, 0.14, 0.05, 0.10, "bp", 500.0, 2600.0, 2.0)
+			AudioSynth.normalize(b, 0.86)
 			return AudioSynth.to_wav(b, sr)
 		"enemy.destroyed":
 			var b := AudioSynth.buf(0.85, sr)

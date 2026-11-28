@@ -61,17 +61,29 @@ func setup() -> void:
 ## {id, share, theme, source, for} without triggers, pacing-director.md 1.1): "" must leave every plan identical to no option.
 ## 5:4 and 5:22 re-recorded 2026-11-24: their sections gained a ramp under SectionPlan's hop-only rule (5:4 deck 2 -> 3,
 ## 5:22 deck 0 -> 1); the 3-deck pins' sections are unchanged (was 5:4 "97513cbdd2c08bda", 5:22 "2ec275507b53112e").
-const BEFORE := {"3:1": "7c50148d2ab6a34f", "3:2": "463a332f40cc5f18", "3:7": "0fede49b4238169a",
-	"3:15": "d3294ce386eb45f8", "3:30": "44490ab89480cf53", "5:1": "c829d1fd4826a04f", "5:4": "71800df7750d594f",
-	"5:22": "35d47872a8323015"}
+## All re-recorded 2026-11-27 for SectionPlan's spine / doors re-pin (40 m spine: gate sources on the avenue; ramp slope
+## runs: arrivals / departures at the run ends) together with the hold default then in the tree (30 s, R2.10). Was
+## 3:1 "7c50148d2ab6a34f", 3:2 "463a332f40cc5f18", 3:7 "0fede49b4238169a", 3:15 "d3294ce386eb45f8", 3:30
+## "44490ab89480cf53", 5:1 "c829d1fd4826a04f", 5:4 "71800df7750d594f", 5:22 "35d47872a8323015". Re-taken the same day
+## when the ramp slope ends moved to 6 m past the junction boxes (was 3:1 "8545842dad9403d5", 3:2 "c9e105add12b220f",
+## 3:7 "01b362708bd61424", 3:15 "2fa66c9209349615", 3:30 "5cefbbd8d2822bfd", 5:1 "5d0e19488a571667", 5:4
+## "3d1bce2aa41ff791", 5:22 "e48fe773488c77cc").
+const BEFORE := {"3:1": "23ff7a76fcbe7aeb", "3:2": "214daff93a0f8517", "3:7": "7beae6eae9df2d8e",
+	"3:15": "2c3e0ba49e9aa880", "3:30": "54d6a000ff84c0d9", "5:1": "71d1a916b72189a8", "5:4": "7d8245de80ac1b01",
+	"5:22": "e7293a66431d027e"}
 ## The same plans WITH their supply depots (checksum(); added 2026-11-23, pacing-director.md §2). BEFORE above is now
 ## checksum(false): adding depots left every objective / source / pool byte-identical. Re-recorded 2026-11-24: depot sites
 ## moved into lots off the roads (MissionPlan.depot_site_for). Re-recorded 2026-11-24 (defend
 ## balance: depot n of a deck prefers 60-150 m from its anchor, MissionPlan.depot_anchors). 5:4 / 5:22 re-recorded
-## 2026-11-24 with BEFORE (hop-only ramps; was "ed0f88b8ba815a52" / "6808e3bc45643958").
-const WITH_DEPOTS := {"3:1": "85cac211b31e4330", "3:2": "d804528e94e4deec", "3:7": "18e384f470111f15",
-	"3:15": "2a77ddc859ea2cde", "3:30": "4abb5fa7540b4e21", "5:1": "17baf79f24d01727", "5:4": "4c411395279f2293",
-	"5:22": "24be21cd3d5fac3a"}
+## 2026-11-24 with BEFORE (hop-only ramps; was "ed0f88b8ba815a52" / "6808e3bc45643958"). All re-recorded 2026-11-27 with
+## BEFORE (spine / doors re-pin; was 3:1 "85cac211b31e4330", 3:2 "d804528e94e4deec", 3:7 "18e384f470111f15", 3:15
+## "2a77ddc859ea2cde", 3:30 "4abb5fa7540b4e21", 5:1 "17baf79f24d01727", 5:4 "4c411395279f2293", 5:22 "24be21cd3d5fac3a").
+## Re-taken for the ramp ends 6 m past the boxes (was 3:1 "9222fd7e7c0d06bf", 3:2 "1628b39c6db1259f", 3:7
+## "7e09564c1343789d", 3:15 "52bf5a0c7f5f0491", 3:30 "3d18ae4cec7d95da", 5:1 "4cebdd8945f686c5", 5:4 "bdac0b38d0a0ce1a",
+## 5:22 "fb46f1a239baf68d").
+const WITH_DEPOTS := {"3:1": "c8f5c7e0bffc7388", "3:2": "806764ae8d809b92", "3:7": "b78cc1230c220fb2",
+	"3:15": "a0360a27ad993e8e", "3:30": "392e64519aa144a9", "5:1": "12da091abdf2810b", "5:4": "a260ea419cc666e0",
+	"5:22": "6817889bb19d61ee"}
 
 
 ## Round 2: pools of waves_per_deck (2) + 1 per two decks of depth, at most 4; a defend has 2 waves on a pool of fewer
@@ -224,7 +236,7 @@ func _determinism() -> void:
 	var before := sec.checksum()
 	MissionPlan.make(sec)
 	eq(sec.checksum(), before, "making a mission does not change the section")
-	check(MissionPlan.make(sec, {"hold": 30.0}).checksum() != a.checksum(), "options change the checksum")
+	check(MissionPlan.make(sec, {"hold": 45.0}).checksum() != a.checksum(), "options change the checksum")
 	check(MissionPlan.make(sec, {"bonus_max": 0}).checksum() != a.checksum() or a.objectives.size() == a.deck_count + 1,
 			"bonus_max changes the checksum")
 
@@ -256,7 +268,7 @@ func _check(sec: SectionPlan, mp: MissionPlan, tag: String) -> void:
 	eq(hn, primaries, tag + ": the hold needs every other primary")
 	eq(int(hold["deck"]), int(sec.extraction["deck"]), tag + ": hold on the extraction deck")
 	check(hold["params"]["zone"] is Rect2, tag + ": hold zone")
-	near(float(hold["params"]["hold"]), 60.0, 0.001, tag + ": hold seconds")
+	near(float(hold["params"]["hold"]), 30.0, 0.001, tag + ": hold seconds (R2.10: 30 s)")
 	for k in n:
 		var ext := MissionPlan._extent(sec, k).grow(0.01)
 		var arr := SectionEncounters.arrival(sec, k)

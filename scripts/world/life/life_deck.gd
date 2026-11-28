@@ -60,11 +60,11 @@ var plan: LifePlan
 var crowd: LifeCrowd
 var traffic: LifeTraffic
 var fleet: LifeFleet
-var tram: LifeTram            ## section mode: the deck's tram (null on a district on its own)
+var tram: LifeTram            ## a section's top deck only: its tram (null on every other deck and on a district on its own)
 var figures: LifeFigures
 var cars: LifeCars
 var tram_cars: LifeTramCars
-var barriers: MeshInstance3D  ## section mode: checkpoint and cordon dressing (LifeBarriers)
+var barriers: MeshInstance3D  ## section mode: checkpoint dressing (LifeBarriers)
 var people := -1              ## the `people` param (-1: LifePlan.default_count)
 var pods := -1                ## the `pods` / `carts` params (-1: by area)
 var carts := -1
@@ -317,7 +317,7 @@ func _build_traffic() -> void:
 	_vasked.clear()
 
 
-## Section mode: the tram's cars and the checkpoint / cordon dressing (none on a district of its own).
+## Section mode: the tram's cars and the checkpoint dressing (none on a district of its own).
 func _build_section() -> void:
 	_tram_state = ""
 	if tram_cars != null:
@@ -492,7 +492,7 @@ func _rebase(t: float) -> void:
 	fleet.locks.clear()
 	fleet.rebase_unloads()
 	if tram != null:
-		tram.episodes.clear()
+		tram.rebase(now, t)        # halts dropped; a shut tram door stays shut
 	for vid: int in fleet.wrecks:
 		var e: Dictionary = fleet.wrecks[vid]
 		e["t0"] = t - 10.0
@@ -1014,7 +1014,7 @@ func _tram_step() -> void:
 		return
 	var p := tram.pose(now)
 	var st := str(p["mode"])
-	if st == "running" and (_tram_state == "dwell" or _tram_state == "halted"):
+	if st == "running" and (_tram_state == "dwell" or _tram_state == "halted" or _tram_state == "waiting"):
 		_emit("tram_bell", Vector2(tram.x, float(p["s"])), 3.0, true)
 	_tram_state = st
 	var world := to_world()
@@ -1040,6 +1040,25 @@ func _tram_step() -> void:
 func tram_car_pose(i: int) -> Transform3D:
 	var p := tram.pose(now)
 	return to_world() * _geo.frame(tram.x, LifeTram.car_s(float(p["s"]), i), 0.0)
+
+
+## Host / offline only (a client's call does nothing: it gets the host's "life.door"): tram door `end` ("s0" | "s1")
+## opens or shuts at shared-clock time `at` (AmbientLife.set_tram_door). Recorded on the tram (LifeTram.set_door), sent
+## to the crew as "life.door" {end, open, t} and logged for `sent`. False when this deck has no tram or it changed nothing.
+func set_tram_door(end: String, open: bool, at: float) -> bool:
+	if tram == null:
+		return false
+	var s := Net.session()
+	if s != null and s.is_client():
+		return false
+	if not tram.set_door(end, open, at):
+		return false
+	var ev := {"end": end, "open": open, "t": at}
+	_log("life.door", ev)
+	_send(0, "life.door", ev)
+	_tick = -1
+	_tram_step()
+	return true
 
 
 # --- Audio hooks -------------------------------------------------------------------------------------------
@@ -1342,6 +1361,11 @@ func apply_event(kind: String, data: Dictionary) -> void:
 					int(data.get("src", 0)), true)
 		"life.wreck":
 			_apply_wreck(data)
+		"life.door":
+			if tram != null:
+				tram.set_door(str(data.get("end", "")), bool(data.get("open", true)), float(data.get("t", now)))
+				_tick = -1
+				_tram_step()
 
 
 # --- Weapons ---------------------------------------------------------------------------------------------
@@ -1712,7 +1736,7 @@ func on_event(_from: int, kind: String, data: Dictionary, _stamp: float) -> void
 			if s != null and s.is_host() and vid >= 0 and vid < traffic.count() and dir is Vector2:
 				now = Net.world_time(now)
 				_decide_wreck(vid, dir, int(data.get("src", 0)), clampi(int(data.get("how", 0)), 0, 2), float(data.get("v0", 0.0)))
-		"life.threat", "life.down", "life.wreck":
+		"life.threat", "life.down", "life.wreck", "life.door":
 			if s != null and s.is_client():
 				now = Net.world_time(now)
 				apply_event(kind, data)

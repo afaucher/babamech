@@ -8,26 +8,28 @@ extends RefCounted
 
 const WAYPOINT_H := 3.0           ## m above the floor the extraction waypoint is drawn at
 const MARKER_H := 4.0             ## m above the floor objective markers are drawn at
-const PANEL_STAND_H := 2.5        ## m: within this of a deck's floor the pilot stands on it (the panel's DECK n of m)
+const PANEL_STAND_H := 2.5        ## m: within this of a deck's floor the pilot stands on it (the panel's current deck)
 const SOURCE_H := 4.0             ## m above the floor a wave source's arrow points at
 const ALERT_AFTER := 6.0          ## s past open_at the "Reinforcements, east gate" line stays
 const RING_POINTS := 40           ## points of a projected objective ring
 const ALERTS_MAX := 8             ## orders remembered
 const TITLES := {"won": "MISSION COMPLETE", "lost": "CREW LOST"}
 const LOST_TITLES := {"objective_failed": "MISSION FAILED"}
-const REASONS := {"objectives": "Every primary done, the crew held the extraction portal",
+const ALLY_FOR := 5.0             ## s an ally line stays (MissionRules.ally_due; text only, the alert strip's style)
+const REASONS := {"objectives": "Every primary done, the crew walked out through the exit",
 	"crew_down": "Every pilot is down", "objective_failed": "Objective failed"}
 const MARK_LABEL := {"flag": "FLAG", "defend": "DEFEND", "hold": "EXTRACT"}
 
 var flow: MissionFlow
 var zones: Dictionary = {}        ## objective id -> {crew: bool, enemies: int} (this machine's view; MissionFlow._present)
 var _alerts: Array = []           ## orders heard, [{order, text, deck}]
+var _ally: Array = []             ## the ally's lines said, [{text, t}] (mission clock)
 var _rings: Dictionary = {}       ## defend id -> PackedVector3Array (its ring on the floor)
 var _hud_deck := -1               ## the deck the local pilot last stood on (kept on a ramp / in a shaft; -1 none yet)
 
 
 func net_fields() -> Dictionary:
-	return {"flow": Net.LOCAL, "zones": Net.LOCAL, "_alerts": Net.LOCAL, "_rings": Net.LOCAL,
+	return {"flow": Net.LOCAL, "zones": Net.LOCAL, "_alerts": Net.LOCAL, "_rings": Net.LOCAL, "_ally": Net.LOCAL,
 		"_hud_deck": Net.LOCAL}   # the local pilot's deck for the objective panel, never sent
 
 
@@ -38,24 +40,38 @@ func _init(f: MissionFlow = null) -> void:
 ## A new mission on the flow (MissionFlow.rebuild): forget the orders, rings and zones (the panel's deck stays).
 func reset() -> void:
 	_alerts = []
+	_ally = []
 	_rings = {}
 	zones = {}
 
 
 ## An order opened a wave door: its "Reinforcements, <source>" line.
 func alert(order: Dictionary, text: String, deck: int) -> void:
-	_alerts.append({"order": order, "text": text, "deck": deck})
+	_alerts.append({"order": order, "text": text, "deck": deck, "t": flow.now() if flow != null else 0.0})
 	if _alerts.size() > ALERTS_MAX:
 		_alerts.pop_front()
+
+
+## The ally said `text` at mission clock `t` (MissionFlow._present from MissionRules.ally_due): shown ALLY_FOR s in the
+## alert strip, text only.
+func ally(text: String, t: float) -> void:
+	_ally.append({"text": text, "t": t})
+
+
+## The ally's lines said so far (tests).
+func ally_said() -> Array:
+	return _ally.map(func(a: Dictionary) -> String: return str(a["text"]))
 
 
 ## What MissionHud draws (its contract, MissionHud header): {objective: String, waypoint: {pos: Vector3, deck, label}
 ## or {}, banner: {title, reason, won} or {}}; plan mode adds plan: true, deck, lines, waves [released, total],
 ## markers [{pos, label, role, state, kind}], rings [PackedVector3Array], zone {label, progress, total, contested,
 ## countdown (hold: seconds left), percent (flag: whole percent)} or {}, panel (MissionRules.panel() for this pilot's
-## deck and position, plus extra: [the depot line]; its route_at, while a lead line ("Proceed to deck n", "Return to
-## deck n") shows, is also the waypoint "RAMP DOWN" / "SHAFT DOWN" when there is no extraction waypoint),
-## alerts [{text, pos: Vector3 or null, left: s to the door}].
+## deck and position, plus extra: [the depot line]; its route_at, the way toward the next step (the amber "Proceed to
+## deck n", or a visited deck's unfinished primary), is also the waypoint "RAMP DOWN" / "RAMP UP" / "SHAFT DOWN" when
+## there is no extraction waypoint),
+## alerts [{text, pos: Vector3 or null, left: s to the door, t: when heard, ally: true for the ally's lines (no door, no
+## marker)}], oldest first (MissionHud draws the last).
 func build() -> Dictionary:
 	var out := {"objective": "", "waypoint": {}, "banner": {}}
 	if flow == null:
@@ -68,7 +84,7 @@ func build() -> Dictionary:
 	var mk := rules.marker()
 	if not mk.is_empty() and drive.stack != null:
 		out["waypoint"] = {"pos": drive.stack.from_deck_arc(int(mk["deck"]), float(mk["x"]), float(mk["s"]), WAYPOINT_H),
-			"deck": int(mk["deck"]), "label": "EXTRACT"}
+			"deck": int(mk["deck"]), "label": "EXIT" if rules.exit_open() else "EXTRACT"}
 	if rules.outcome != "":
 		var title := str(TITLES.get(rules.outcome, rules.outcome.to_upper()))
 		if rules.outcome == "lost" and LOST_TITLES.has(rules.reason):
@@ -93,7 +109,7 @@ func _plan_hud(out: Dictionary) -> void:
 		(out["lines"] as Array).insert(mini((out["lines"] as Array).size(), MissionHud.LIST_MAX - 1), core_line)
 	out["panel"] = _panel(here, core_line)
 	var to: Dictionary = (out["panel"] as Dictionary).get("route_at", {})
-	if (out["waypoint"] as Dictionary).is_empty() and not to.is_empty():   # a lead line ("Proceed to deck n"): the way
+	if (out["waypoint"] as Dictionary).is_empty() and not to.is_empty():   # the next step's way
 		out["waypoint"] = {"pos": drive.stack.from_deck_arc(int(to["deck"]), float(to["x"]), float(to["s"]), WAYPOINT_H),
 			"deck": int(to["deck"]), "label": "%s %s" % [str(to["kind"]).to_upper(), "DOWN" if int(to["dir"]) > 0 else "UP"]}
 	var wv: Array = flow.director.state()["waves"]
@@ -124,16 +140,19 @@ func _plan_hud(out: Dictionary) -> void:
 		if int(a["deck"]) != k:
 			text += ", deck %d" % (int(a["deck"]) + 1)
 		elif flow.world != null:
-			var sp := flow.world.source_point(str(o["source"]))
-			if not sp.is_empty():
-				pos = drive.stack.from_deck_arc(int(sp["deck"]), float(sp["x"]), float(sp["s"]), SOURCE_H)
-		alerts.append({"text": text, "pos": pos, "left": maxf(open_at - t, 0.0)})
+			pos = flow.alert_point(o)   # the real opening: door, air door `out`, ramp / shaft mouth (playtest R2.24)
+		alerts.append({"text": text, "pos": pos, "left": maxf(open_at - t, 0.0), "t": float(a.get("t", 0.0))})
+	for a: Dictionary in _ally:
+		if t >= float(a["t"]) and t < float(a["t"]) + ALLY_FOR:
+			alerts.append({"text": str(a["text"]), "pos": null, "left": 0.0, "ally": true, "t": float(a["t"])})
+	alerts.sort_custom(func(x: Dictionary, y: Dictionary) -> bool: return float(x["t"]) < float(y["t"]))   # the newest last
 	out["alerts"] = alerts
 
 
 ## The objective panel (MissionRules.panel) for the local pilot: their deck, held while they are off every floor (on a
 ## ramp, falling down a shaft: more than PANEL_STAND_H from the floor under them) until they stand on the next one, and
-## their (x, s) on it; `extra` the depot line (MissionDepots.progress_line()) under this deck's lines. Local facts only.
+## their (x, s) on it; `extra` the depot line (MissionDepots.progress_line()), drawn at the end of this deck's section
+## (MissionRules.fit). Local facts only.
 func _panel(here: Dictionary, core_line: String) -> Dictionary:
 	var k := int(here["deck"])
 	if _hud_deck < 0 or absf(float(here.get("h", 0.0))) <= PANEL_STAND_H:
@@ -160,9 +179,9 @@ func _zone_hud() -> Dictionary:
 			continue
 		var objs: Dictionary = rules.state().get("objs", {})
 		var tot := float((objs.get(id, [0, 0, 0]) as Array)[2])
-		return {"id": id, "label": "RAISING THE FLAG" if ty == "flag" else "HOLDING THE PORTAL",
+		return {"id": id, "label": "RAISING THE FLAG" if ty == "flag" else "HOLDING THE EXIT",
 			"progress": rules.obj_progress(id), "total": tot, "contested": int(zs.get("enemies", 0)) > 0,
-			"countdown": ty == "hold", "percent": ty == "flag"}
+			"countdown": false, "percent": true}
 
 	return {}
 

@@ -1348,3 +1348,301 @@ Antigravity's finished work was committed in 948ec3e.
   world / asset target calls, MissionDepots `Session.is_bot` + `cl is CombatLog`, MechHud reads `MissionCombat.rack` /
   `MissionFlow.hud_model` (still duck-typed on the drive: tests pass a FakeDrive). `"Rig"` lookups kept (no single owner).
 - 2026-11-26, Claude Mech session subagent (Wasp hover step 1), in flight: approved design docs/design/wasp-hover.md, build order step 1: hover branch in scripts/mech/motion/mech_controller.gd (catalog `move == "hover"`, new `climb_input`, `grounded`, `can_fly()`, `working_fans()`, `altitude()`, `headroom()`), Wasp `movement` block in scripts/mech/mech_catalog.gd (still a draft chassis, not selectable), MechModel hover pose driven from motion (scripts/mech/mech_model.gd), a hover lab subject, new tests/test_hover_*.gd. Not touching bots, enemy, mission, net. Engine / antigravity: hooks per wasp-hover.md section 4 (no hover_ceiling: use headroom()).
+- 2026-11-26, Environment subagent (collision survey R2.25a), started: survey harness + test (new scripts/test_support/stuck_probe.gd, tests/test_collision_survey.gd, docs/design/collision-survey.md), collision-only fixes in scripts/world/city/ (not city_light_rig.gd), scripts/world/life/life_barriers.gd, scripts/mission/world/mission_gate_door.gd / mission_lift_door.gd / mission_flag_mast.gd / mission_relay_asset.gd / mission_props.gd; tests/test_ramp_stuck.gd refactored onto the shared probe. Depots read only (findings go to the survey doc).
+- 2026-11-26, Environment subagent (air door guarantee R2.24), started: every deck gets >= 1 usable air door (playtest backlog R2.24, Environment part). Editing scripts/mission/world/mission_air_doors.gd, mission_world.gd (air-door parts only), possibly city_walls.gd (air recess only) / city_signs.gd keep-outs, tests/test_air_doors.gd, tests/test_map_sealed.gd, docs/design/city-ramps-and-stack.md (air doors). Temporary probe tests/tmp_airguard_probe.gd (deleted when done). air_checksum may move: stack checksum pins will move.
+- 2026-11-26, Environment subagent (cordon barricades removed): **landed (uncommitted), R2.28.** The yellow-banded concrete blocks in front of sealed blast doors are gone: `LifeBarriers` lost its `cordon` branch (`items()` no longer emits `cordon` / `along_s`, `BLOCK` / `BLOCK_PITCH` / `_block` deleted). The file stays: it still builds the checkpoint arms and booths. They were cosmetic (one mesh, no collision, no net field, in no checksum), so no pin moves. The section plan's `cordon` hooks are untouched (Missions decide whether that encounter site stays). Docs: ambient-life.md, mission-section.md.
+- 2026-11-26, Claude Missions subagent (R2.26 / R2.27 enemy overheat look), started: removing the STAGGER / OVERHEAT /
+  DROP tags and heat bar (`scripts/enemy/looks/enemy_status_bar.gd`, the three `_status_bar.refresh` call sites in
+  enemy_base / enemy_drone / enemy_drop_drone) and adding a diegetic overheat look: new `scripts/enemy/looks/enemy_heat_look.gd`
+  + `enemy_glow.gd` (vent / optic glow via instance shader params on the enemy meshes' glow surface), small local edits
+  in the units' `_update_visuals` (strider / tank / turret / trooper / drone / gunship / dropship: shutdown sag / droop /
+  wobble eased instead of snapped). No AI, heat, timing, hit-shape or `_step_ai` change. Tests: new
+  tests/test_enemy_overheat_look.gd, test_enemy_playtest_fixes (status bar part), a net enemy test, test_visual_enemies.
+- 2026-11-26, Weapons session subagent (R2.7 aim range hint, R2.27 enemy overheat audio): **landed (uncommitted).**
+  R2.7: `scripts/ui/hud/world_aim_markers.gd` only (mech_hud.gd untouched): a selected weapon's tracking rings turn
+  `RANGE_ORANGE` (new const, a deeper orange than `AMBER`, which already means "line of sight blocked" with the X; blocked
+  wins) while its `in_range` is false; the aim ring turns `RANGE_ORANGE` when weapons are selected and every one is out of
+  range (shutdown / equipment / deselected don't count). Out of range used to be `DIM`. Accessors: `ring_colors()`,
+  `aim_out_of_range()`, `aim_ring_color()`, static `slot_color_for()` / `aim_ring_color_for()`. New tests/test_aim_range_hint.gd.
+  R2.27 (audio half): `scripts/audio/sound_bank.gd` (`enemy.overheat` power-down whine 1.05 s, `enemy.reboot` spin-up
+  0.80 s, -7 / -9 dB, priority 1, prewarmed), `scripts/audio/combat_audio.gd` (`_play_unit_heat`: one cue per transition per
+  unit id across the Heat-signal and squad-event routes, pitched by `unit_heat_pitch(unit)` from the catalog
+  explosion_radius; PlayerTarget skipped; new LOCAL var `_unit_heat_on`), docs/design/audio.md, tests/test_audio.gd
+  (`_test_enemy_heat_cues`).
+- 2026-11-26, Engine (sub-agent): R2.24 drop-ship sync: **landed (uncommitted).** The dropship is a host-owned enemy
+  (add / stream / tele / gone via EnemySync): ship, troopers and removal reach clients correctly; no ghost ship. ONE
+  desync fixed: `scripts/net/net_mission.gd` `_take_wave` deduped wave orders on (wave, open_at), so an air door's hold
+  extension (same "air" + open_at, longer hold, sent while a dropship is in the doorway) was dropped on clients: their door
+  closed ~2 s before the host's. Now (wave, source, open_at, hold). New `tests/test_net_dropship.gd` (PEERS 2, off /
+  coast, plan mode, director held off). docs/networking.md enemies section. Not changed: drop-ship AI (in-deck fallback
+  is Missions'), EnemySync. net_mission.gd also carries the debrief session's uncommitted edits (separate hunks).
+- 2026-11-26, Engine (sub-agent): R2.14/15a/16: **landed (uncommitted).** (R2.14) `scripts/ui/hangar/mech_diagram.gd`: no red
+  cross over destroyed zones (dark fill + red outline stay; `_bounds` kept, test_mech_diagram reads it); no "heat / cap"
+  line in `paint_frame`; `scripts/ui/hud/mech_hud.gd`: the raw "0 / 130" heat line is gone (HEAT n%, arc, ticks, colour,
+  state line unchanged). (R2.15a) debrief in the hangar: new `scripts/ui/hangar/debrief_stats.gd` (`DebriefStats`: stat
+  registry kills / damage_dealt / damage_taken / shots (hidden) / hits (accuracy) / revives / downs / cores / hp_min,
+  `table(payload)`, leaders with joint ties, `stub(crew)`), `scripts/ui/hangar/debrief_board.gd` (`DebriefBoard`);
+  `scripts/net/net_mission.gd`: `end(reason, debrief := {})` (host: rides mission.end {reason, debrief}; solo: kept),
+  `static last_debrief`, `clean_debrief`, `clear_debrief` (also on launch); `scripts/ui/menu/front_end.gd`: "debrief"
+  screen (board over the bay, Next: loadout in the footer), opens when a debrief waits; `--menu-screen debrief` = stub.
+  **For Missions:** MissionFlow should build the payload at the outcome and pass it to `Session.mission.end(end_reason(),
+  debrief)` on the host AND solo (solo today never calls end: call it, it just keeps the debrief). Shape in the
+  net_mission.gd header (DEBRIEF). (R2.16) `scripts/app/game_settings.gd`: `resolution` ("WxH", "" = default 1600x900
+  window; video section), `resolution_list` / `fit_resolution` / `screen_size`, applied live when windowed and only when
+  changed (boot with "" leaves run.ps1 windows alone); Settings: Display (Windowed / Fullscreen) + Resolution (greyed in
+  fullscreen). Menu type: panel 560 px, base 18 px, notes 15, sections 16, rows 40 px, no text under 15 px. Tests: new
+  `tests/test_debrief.gd`, `tests/test_net_debrief.gd` (PEERS 2, off); `test_settings` (resolution), `test_layout` (board,
+  resolution rows, readable menu; `_reachable` waits a frame after resetting the scroll), `test_visual` (menu_debrief shot).
+- 2026-11-26, Claude "Engine (sub-agent): R2.6" (bots wait for help): **landed (uncommitted).** New
+  `scripts/bots/crew/bot_aid.gd` (`BotAid`, one per MissionBot): `healer(world, pt)` (a crewmate's drone repairing the
+  bot: `repairing()`, `reach_to` <= radius + 12 m), `self_reviving(world, id)` (wraps `CombatWorld.self_reviving`),
+  `wait_s()`. MissionBot: `_drone_leash` (last word on the legs after `_step`, before the hole guard: keeps where the bot
+  would stop, braking distance included, inside the drone's radius - 3 m; outward input dropped, no run / hop near the
+  edge, walks back in past radius - 1 m; `leash_t`); installs `aid.wait_s` as its PlayerTarget.revive_wait on its first
+  physics frame (**overrides DownedCrew's `DownedRules.bot_wait*` callable for AI-flown mechs**: waits while self-reviving,
+  or while a crewmate who `can_revive` is coming: a bot whose `reviving_peer()` is this bot, anyone within radius + 5 m, or
+  anyone 4 m nearer in the last 6 s; any reviver counts for the first 8 s; cap 45 s; nobody able: 2 s; logged as
+  "bot revive" verdicts). Revive choice skips a mate that `self_reviving` (or first seen downed < 1.5 s ago with
+  aid_charges, its drone about to launch), ends an in-progress revive with kind "self"; `revive_self_skips`. Drone
+  launches (revive + `_use_repair`) now go per slot via `can_launch(i)` but only when none of its own drones is
+  `active()` (no stacking a Bulwark's second). New tests `tests/test_net_bot_aid.gd` (leash; downed bot waits 15 s while
+  the reviver comes, revived), `tests/test_net_bot_self_revive.gd` (seed 35: no "go" for a self-reviving mate).
+  Missions: DownedRules' "bots" header line and DownedCrew's BOTS doc describe the fixed wait; MissionBot replaces it once
+  the AI runs (before that the DownedCrew wait applies).
+- 2026-11-26, Claude Missions subagent (objective panel R2.13): **landed (uncommitted).** The panel is now one section per deck, every deck listed ("Deck n:" headers, the viewer's marked; visited decks list their objectives, unvisited ones "Proceed to deck n"; the next step amber with one route hint). Files: `scripts/mission/mission_rules.gd` (`panel()` rewritten: {deck, decks, lines: [{text, role: header | primary | bonus | proceed | route, deck, state, current, lead, dir}], route_at}; new `deck_header()`, static `fit(panel, rows)` (the shrink order), `_deck_lines` replaces `_here_lines`; `_line(o, section)`: the section wording "Clear hostiles, waves 2/3" / "wave 1/3"; removed `_left_counts`, `_count_words`, `_with_way`, `_with_part`, the "DECK X of Y" header; `text()` / `lines()` / `proceed_text` / `route()` unchanged), `scripts/ui/hud/mission_hud.gd` (drawing: headers, marker via `current_mark()`, indents, `PANEL_TOP` replaces the title row, `panel_rows` delegates to `MissionRules.fit`, DEMO_PLAN in the new shape, the "WAVES n / m" title of the structured panel removed: the sweep line carries it), `scripts/mission/mission_hud_model.gd` (comments only), tests `test_mission_rules.gd` (panel part rewritten), `test_layout.gd` (`_long_panel`), `test_visual_objectives.gd`; docs mission-objectives.md §9, playtest-backlog R2.13. Nothing on the wire changed; the bot reads `rules.plan` / `marker()`, not the panel (checked, scripts/bots/ untouched).
+- 2026-11-26, Weapons session subagent (repair drone R2.1/2/9/20/21): **landed (uncommitted).** Files:
+  `scripts/combat/equipment/repair_drone.gd`, `repair_drone_look.gd`, `equipment_look.gd`, `scripts/combat/weapon_rack.gd`,
+  `scripts/combat/player_target.gd`, `scripts/combat/combat_world.gd`, `scripts/mission/sync/combat_net.gd`,
+  `scripts/mech/mech_catalog.gd` (repair_drone entry only: radius 30, note, `self_revive_time` 4.0); tests
+  `test_back_equipment.gd`, `test_net_drone.gd`, `test_visual_weapon_repair_drone.gd`, new `test_net_self_revive.gd`;
+  docs back-equipment.md ("Playtest changes"), weapons.md (drone row), networking.md (combat.drone `s`). (R2.21) no
+  ground ring (`RepairDroneLook.ring_shown()` / `RING_GREEN` gone). (R2.20) reach 30 m. (R2.1) `PlayerTarget.heal`
+  override rebuilds destroyed WEAPON hardpoints through a bank (`REBUILD_AT` 0.25, PRIVATE `_rebuild`; hp stays 0 until
+  then); `RepairDrone.repairable` true for them. (R2.2) one drone per slot: `WeaponRack.drones`, `drone_out_at(i)`,
+  `can_launch(i)` per slot, `drone` = newest; `CombatWorld.drone_at(shooter, hp)`, `drones_of(shooter)`, `drone_of`
+  prefers an active one, `launch_drone` replaces per (shooter, hardpoint); `EquipmentLook.shown_at(shooter, hp)`;
+  CombatNet dup key (origin, hp, t). (R2.9) self-revive: `WeaponRack.own_target()`, `_self_revive()` on the
+  disabled edge (owner machine), record `"self": true`, `RepairDrone.is_self() / self_pending() / self_done /
+  self_revive_time() / kill()`, `SELF_GRACE` 2 s, `CombatWorld.self_reviving(target_id)`, combat.drone `"s": 1`.
+  Stale doc for its owner: `scripts/combat/combat_target.gd` heal() comment "PlayerTarget needs no override".
+- 2026-11-26, Engine (sub-agent): R2.14/15a follow-ups: `tests/test_visual_hud.gd` checks the objective panel top right (the top-centre strip went 2026-11-23); MechHud demo `shoulder_l` (mounted rocket pod) is destroyed (0.0) so the shot shows a destroyed part with no cross. Debrief: the bay's name tags hide under the board (`HangarBay.show_tags`), board near-opaque, outcome / time only on the board; pilot `left: true` keeps a greyed column marked "left"; payload `labels` name extra stat keys; non-scalar stat values never make a row (`clean_debrief` and `DebriefStats`).
+- 2026-11-27, Weapons session subagent (repair drone, follow-up): edited `tests/test_net_weapon_bulwark.gd` (part 4 recalls A's leftover drone before destroying back_l: R2.1 drones now rebuild destroyed weapon hardpoints).
+- 2026-11-27, Claude Missions subagent (R2.26 / R2.27), **landed (uncommitted)**: tags + heat bar gone (`EnemyStatusBar.refresh(hp_ratio, dead)`:
+  HP bar only, once damaged; `EnemyBase.heat_ratio` removed); diegetic overheat in new `scripts/enemy/looks/enemy_glow.gd`
+  (one shared ShaderMaterial on every enemy mesh's lit surface, instance uniforms `vent_heat` / `lights` / `optic_heat`;
+  EnemyMeshes now commits with `EnemyGlow.materials()`) and `enemy_heat_look.gd` (`e.heat_look`: fin glow from heat,
+  dark optics + eased `slump` + steam on shutdown, flicker / rise on reboot, driven by the unit's existing
+  `overheated` / `rebooted` signals, which fire on clients too via EnemySync). Units read `heat_look.slump` on visual
+  pivots only (strider / tank / turret / trooper / drone / gunship / dropship `_update_visuals`; drone and dropship call
+  `_step_heat_look`, all three status-bar call sites now `_refresh_status_bar()`). No wire, AI, heat, timing or hit-shape
+  change. **Apology / heads-up to the wave-staging agent:** for two perf / failure A-B runs I swapped
+  scripts/enemy/units/*.gd and looks/enemy_meshes|status_bar to their pre-R2.27 versions for a few minutes (guarded
+  restore). The second time `enemy_base.gd` was edited during the window (your roll-out / kinematic / staged hunks
+  re-applied, CRLF): I merged by hand: current enemy_base = my R2.27 changes + all your hunks incl. the 2-line
+  `is_rolling_out` comment, LF endings. Please re-check your enemy_base hunks are all there. Not mine, still failing:
+  test_enemy_dropship ("doors off: a dropship is called in", beacon call-in 0 == 1) and test_wave_pursuit (ramp
+  striders do not close within 80 m): both also fail with my changes swapped out. ShaderWarmup (`scripts/mission/`)
+  still warms a Label3D "enemy tag" that no longer exists (harmless; its owner may drop `_tag()` and the test line).
+- 2026-11-27, Claude Missions subagent (enemy sources R2.4 / R2.22 / R2.24), uncommitted: **new** `scripts/mission/mission_bays.gd`
+  (`MissionFlow.bays`, host: nobody shut in a bay: hold while occupied, push out after 30 s, withdraw, no walking back in);
+  `MissionFlow`: replicated `hold_door` ("hold" orders via mission.wave, `hold_only`), `_no_snap` (a re-order never snaps
+  an open door into "warn"), sealed / stuck staged groups withdrawn, lift staging behind `source_bay(id).ok`, air-door
+  arrival alert "Dropship, <side> air door", `alert_point` (INBOUND on the real opening); `EnemySquad`: `withdraw`,
+  `unstage_wave`, `staged_units`, ramp / shaft / lift arrival through the connector (`connector_arrival`), dropship only
+  through a usable air door (no in-deck fallback), re-homing skips staged / rolling-out units; `EnemyDropDrone`: no
+  teleport to an in-deck point (removed in its recess), troops created in its bay; `EnemyBase` (small, local):
+  `is_rolling_out()`, `_step_exit` kinematic (no gravity while a path runs), staged units refuse hits (apply_damage /
+  apply_hit); `BayFormation` `door_margin`; `PacingFacts` (withdrawn = no kill); `CombatLog.note_source`; HUD model alert
+  position. Tests: test_bay_staging (extended), test_enemy_dropship (doors-off = no ship), new test_net_bay_hold.
+  **Heads-up:** scripts/enemy/units/enemy_base.gd was found reset to HEAD around 2026-11-27 (my edits and others' gone,
+  e.g. the overheat-look work); I re-applied only mine. Antigravity / looks agent: check yours are still there.
+- 2026-11-27, Claude Missions subagent (debrief data R2.15 / R2.15a): **landed (uncommitted).** New
+  `scripts/mission/pacing/mission_stats.gd` (`MissionStats`, host / solo only, child of MissionFlow, made by `rebuild`):
+  per-pilot counters (string ids, bots negative) fed from host-side signals (CombatWorld.fired / hit_landed, EnemyBase
+  damaged / destroyed_enemy, host-owned PlayerTarget signals, the client pilots' snapshot stream via Session.mechs.newest,
+  RepairDrone.beamed for client revives, new `MissionDepots.core_granted`). `scripts/mission/mission_flow.gd`: vars `stats`,
+  `debrief`; `_check_outcome` freezes the debrief once; `_tick_end` calls `Session.mission.end(end_reason(), debrief)` on
+  the host AND solo. `scripts/mission/depots/mission_depots.gd`: one signal `core_granted(pilot_id, depot_id)` emitted in
+  `_take_grant` (2 lines). `scripts/mission/pacing/combat_log.gd`: static `note_debrief` (one `[Flow] debrief` line, host).
+  Tests: new `tests/test_mission_stats.gd`, `tests/test_net_stats.gd` (PEERS 3 + a bot). Docs: new
+  docs/design/debrief-stats.md, testing.md "Combat log", playtest-backlog R2.15 / R2.15a. Nothing in scripts/net/,
+  scripts/ui/, scripts/enemy/, scripts/combat/, scripts/bots/ changed.
+- 2026-11-27, Claude Weapons session: round 2 playtest items reviewed (R2.1, R2.2, R2.7, R2.9, R2.20, R2.21, R2.27 audio; R2.12's ammo is `WeaponRack.refill_ammo()`, called by Missions' redeploy path). One edit of my own: the heal() comment in scripts/combat/combat_target.gd. -TestAll: 260 of 284 pass. The 24 failures were mostly script errors from in-flight enemy edits (`heat_look`, `_step_heat_look`, `is_rolling_out`, `EnemyFlier`); rerun alone, all PASS: test_weapon_rack, test_back_equipment, test_supply_depot, test_net_contract, test_net_self_revive, test_net_bot_self_revive, test_net_bulwark_body, test_net_weapon_bulwark, test_net_drone, test_aim_range_hint, test_audio. Not rerun (not mine): test_city_farm_walls, test_city_variety, test_bay_staging, test_collision_survey, test_move_heat, test_objectives_only, test_test_drive, test_enemy_dropship, test_player_ai, test_wave_pursuit, test_net_bye, test_net_chassis, test_net_enemy_3, test_net_snap, test_net_snap_4, test_perf (4.58 ms vs 4 ms). Open for the user: out-of-range uses a second, redder orange because amber already means blocked; two drones out heal at 2 %/s; nobody has heard the new overheat cues or seen the orange rings / the 30 m scan on screen.
+- 2026-11-27, Claude Missions subagent (R2.12 redeploy at full, R2.23 depot collision, R2.9 downed-rules side):
+  **landed (uncommitted).** (1) R2.12: `DownedRules.RESPAWN_STRUCTURE` 1.0 + `RESPAWN_REARM`; a redeploy brings the mech
+  back full (every component, destroyed rebuilt and weapons usable, heat 0, shutdown cleared: `PlayerTarget._finish_redeploy`,
+  only its doc comment edited), and `DownedCrew._respawned` (the owner's on_respawn, local pilot and host bots) calls
+  `WeaponRack.refill_ammo()` (ammo + drone charges). Revive unchanged (30 %). Combat log `respawn ... tot=100`.
+  (2) R2.9 downed side: `DownedRules.bot_wait_for(self_reviving, reviver)` (bots never redeploy during a self-revive),
+  `DownedCrew.self_reviving(id)` / `own_drone_ready(id)`, prompt "Your repair drone is reviving you", `downed_crew()`
+  entries carry `self_revive`; CombatLog `revive by=self` (no death, not a revive given); reach wording 30 m.
+  (3) R2.23: `SupplyDepot.collision_shape`: one convex shape over the kiosk's visible footprint incl. the roof overhang
+  (6.6 x 4.5 m), walls + flat top at `WALL_H` 6.2 m (out of the pin band of every chassis), edges on the ring's up;
+  `footprint_half` now 6.6 x 4.7 (placement ring rule and claim range; depots may sit slightly differently; no checksum).
+  Mechs can land on the invisible top 1.85 m above the visible roof; camera clearance rays see the taller body.
+  Environment: tests/test_collision_survey.gd can drop "depot" from KNOWN. Files: scripts/mission/downed/*,
+  scripts/mission/depots/supply_depot.gd, mission_depots.gd (comment), scripts/mission/pacing/combat_log.gd (revive by=self,
+  header), scripts/combat/player_target.gd (`_finish_redeploy` comment only), tests/test_downed.gd, test_net_downed.gd,
+  test_supply_depot.gd, docs/design/pacing-director.md §2.3 / §4, playtest-backlog R2.12 / R2.23.
+- 2026-11-27, Engine (sub-agent): debrief board: extra rows now follow the payload `labels` order, unlabelled keys A-Z after (`DebriefStats.table`); raw shots / hits never show (Accuracy only), asserted in test_debrief. Rendered a real MissionStats payload (test_net_stats, off): docs/design/playtest-r2/r2_menu_debrief_real.png.
+- 2026-11-26, Environment subagent (air door guarantee R2.24): **landed (uncommitted).** Every deck of every section now has 1-2 air doors, all usable (>= 30 m clear straight approach for the whole 12 x 6 m opening, exact for the ring curve). `MissionAirDoors.spot` = old rule + usable test, then a second pass sliding along the wall; `MissionAirDoors.approach_len(plan, wall, c)`, `APPROACH` 30, `REACH` 80; doors carry `usable` / `clear_len`; `MissionWorld.air_door(deck, i)` gains `usable`, `clear_len`; new `MissionWorld.air_door_approach(deck, i) -> {ok, from, to, clear_len}`. `MissionAirDoors.checksum` now includes clear_len (stack checksum moves; no test pins its hex). Seeds 1-300 x 3 decks: 97 of 1732 doors moved (all only failing because of the floor curve), 68 walls gained a door (seed 261 deck 1 had none). No side-wall doors needed. tests/test_air_doors.gd: guarantee sweep + physics box over clear_len. Doc: city-ramps-and-stack.md air doors "Guarantee".
+- 2026-11-26, Environment subagent (shadow band R2.5): **landed (uncommitted).** Cause: pillar capitals' drop panels (and park column top discs) are in the Block / Columns meshes, which cast shadows while the rest of the ceiling does not; the daylight threw their edges ~30 m off as a diagonal band. Fix: `CityDistrict._add(..., patches)` / `_split_ceiling_patches` moves triangles within 1.45 m of the ceiling into a non-casting child "CeilingPatch" (geo, digest, triangle count unchanged). `city_lab.gd`: command-line shadow probe `--city shadow_off=Name+Prefix*+nosun+dump+patchcast`. Shots: docs/design/city-light/. Note: test_city_variety fails on collision pins (shape count 420 -> 505), from the in-flight rounded-box collision work, not this change.
+- 2026-11-27, Environment subagent (collision survey R2.25a): **landed (uncommitted), collision only (meshes, plans, checksums, digests unchanged).** Survey + findings: docs/design/collision-survey.md. Harness scripts/test_support/stuck_probe.gd (StuckProbe; test_ramp_stuck now uses it), regression tests/test_collision_survey.gd (~100 s; full survey with BABAMECH_SURVEY=1). Fixes: CityGeo.rounded_box / in_pin_band / PIN_LOW / PIN_HIGH (city_geo.gd); city_district.gd rounds pin-band tiers and every column solid, adds sinking-ramp mouth guards (SUNK_DROP), tags every collision shape with meta col_kind; mission_relay_asset.gd (plinth + rounded cabinet), mission_flag_mast.gd (stepped base as drawn). Re-pinned collision count/hash: test_city_variety (OLD_COLLISION, PRE_PLATE_4_0, LIVE_COLLISION_4_0), test_city_farm_walls (GOLDEN_COLLISION, GOLDEN_LIVE, PRE_PLATE); shape-hash helpers in those two + test_city_build_steps accept CylinderShape3D. Open for others: tram car box (life_tram_cars.gd), building gaps 4.0-4.2 m wedging a Strider (layout), jump-only perches (Mech R2.25b). -TestAll 287/287.
+- 2026-11-27, Environment subagent (spine markings, R2.11 / R2.17): **started.** Spine drawing and markings (scripts/world/city/city_streets.gd, road_forms.gd, city_dims.gd ramp_run helper, city_palette.gd if needed), avenue pod lanes (life_traffic.gd `_make_avenue_loop`) and walker spine crossings (life_plan.gd `_spine_crossings`), city_lab.gd cameras, new tests/test_spine_markings.gd, pins in test_city / test_city_variety / life tests, docs. Not touching scripts/world/section/, city_walls.gd, city_district.gd, city_stack.gd, scripts/mission/world/, life_tram*, city_props / city_prop_layout.
+- 2026-11-27, Environment subagent (tram + station, R2.11): **started.** Files: scripts/world/life/life_tram.gd, life_tram_cars.gd, tram parts of life_plan / life_deck / ambient_life / life_lab, scripts/world/city/city_props.gd, city_prop_layout.gd, city_prop_sim.gd, new city_station.gd, city_signs.gd (station name board glyphs only), a `station` camera in city_lab.gd; tests test_tram_portal -> test_tram_door, test_life_section, test_net_life, test_life_traffic, test_city_props, test_collision_survey. Not touching scripts/mission/, scripts/world/section/, city_walls / city_district / city_stack / city_streets / life_traffic.
+- 2026-11-27, Environment subagent (road doors / tram door, R2.11a): **started.** Files: scripts/mission/world/ (mission_world, mission_gate_door, mission_props, mission_sound, mission_lab; mission_portal.gd deleted; not mission_lift_door / air-door placement), scripts/world/city/ city_walls, city_district (wall collision), city_stack (spawn), city_signs, city_lab, a few lines of city_plan.gd boundary() (gate normalisation), tests (map_sealed, mission_world, gate_alarm, city_signs, city_stack, city, tram_portal wall parts), docs (city-spine, city-ramps-and-stack s9, mission-section s3/s8).
+- 2026-11-27, Claude Missions subagent (R2.18 Bulwark balance, MEASUREMENT ONLY): new doc `docs/design/balance-r218-bulwark.md`
+  (summary, tables, ranked proposals); no gameplay code or test changed (a temporary `tests/tmp_r218_probe.gd` was used
+  and deleted). Findings: in this build the Bulwark is hit 1.4-3.7x harder per enemy round than the Strider (most by
+  rooftop turrets / snipers / gunships: twice the top-down hit area, a third wider and slower) and its 2.1x core HP
+  balances it (7 seeds: 1.7x the damage, 10 vs 11 downs, 552 vs 579 s); the R2.18 symptoms (950 s timeout, 600 s sweep)
+  do not reproduce (seed 22 won at 587 s, deterministic x3). Real issues: its 80 HP side guns die in 6 of 7 missions
+  (belly gatling cannot elevate past +15, so no anti-air left); bot faults for Engine (fires the belly gun out of arc,
+  no threat weight for snipers / gunships, chases scout drones for minutes in sweeps); a lone kiting scout drone holds
+  sweeps open (Missions). antigravity: gunship altitude matching never triggers against a Bulwark (aim point 5.0-5.5 m +
+  2.5 < 8.5 m band) and barely against a Strider: no measurable effect. Environment: 5 of 73 defend relays (seeds 22, 56,
+  57, 62, 70, one deck 1 corner) have no 12 m-wide spot within 10 m (seed 22 = the "8 m alley"); both chassis still won it.
+  Heads-up for anyone running bot tests in parallel: `tests/bulwark_bot_case.gd` processes share
+  `user://test_bulwark_bot_settings.cfg`, so a Strider and a Bulwark run started together can load the wrong chassis.
+  Also seen: another session's mid-edit (`mission_world.gd` PORTAL_PLATE parse error) stalled two headless runs around
+  04:12; my headless bot runs (2-3 processes) overlapped another session's test_perf_coop run around 03:58.
+- 2026-11-27, Environment subagent (spine markings, R2.11 / R2.17): **landed (uncommitted).** city-spine.md section 3 drawn, width-agnostic from lane_x: `CityStreets.spine_layout` (data) + `_spine` (draw), lane looks main / tram (deck 0 only, one track, yellow box hatch) / verge / service (ramp mouth on the deck) / promenade; per-roadway zebras, stop lines, arrows (`CityStreets.arrow`, `hatch`, `flat_poly`), door stop lines, lift-door aprons, cross-street combined arrows. Shared numbers in `CityDims` (`avenue_split`, `avenue_lanes`, `avenue_median`, `verge_rect`, `spine_planted`, `has_track`, `ZEBRA_AT/_D`, `ramp_run` / `ramp_part`, switch `RAMP_INSET` = 0). LifeTraffic avenue pods on `avenue_lanes`; LifePlan walkers cross on the zebras (`_spine_zebras` / `_spine_crossings`), rail rule only with track; CityPropSim.floor_rects reads `spine_planted`. Lab cameras spine_top / spine_cross / spine_ramp / spine_door; shots docs/design/city-spine/spine_*.png. New tests/test_spine_markings.gd; test_city_variety DORMANT / LIVE_DRAWN re-pinned. **For the props owner:** city_prop_layout median trees still from 12 m after a box: some stand on the left-turn pockets; place them on `CityDims.avenue_median` / `spine_planted`. Not touched: section/, city_walls, city_district, city_stack, mission/world, life_tram*, city_props / city_prop_layout.
+- 2026-11-27, Environment subagent (tram + station, R2.11): **landed (uncommitted).** Tram on deck 0 only, one way on the rail lane's centre line, s0 door -> station (20 s) -> s1 door, 120 s period (pass 78.8 s), tunnels 40 m (hidden behind the plates); door link `AmbientLife.set_tram_door(end, open, at)` -> `LifeDeck.set_tram_door` (host / offline) -> `LifeTram.set_door`, `life.door` event, LifeTram snapshot v2 (halts {t0, tr} + door events); queries `AmbientLife.tram()`, `tram_door_open(end)`, `tram_door_clear(end)` (MissionWorld: shut a tram door only when clear). Cars collide as `CityGeo.rounded_box` (survey `tram_car` no longer KNOWN). New `scripts/world/city/city_station.gd` (platform 32 x 3.5 x 0.35, 0.8 m wall, name board; 4 lamps + 4 benches appended last to `CityPropLayout.layout`: deck-0 props / stack checksums move, stand-alone unchanged); CitySigns gained letters A H L N O R S T + `word_w` / `word_polys`; CityPropSim.floor_rects has the platform; city_lab camera `station`; life_lab options `tram_s0` / `tram_s1`. Tests: test_tram_portal -> test_tram_door, test_life_section, test_net_life, test_city_props (station), test_collision_survey. -TestAll 277/288: the 11 failures are the door / drawing siblings' in-flight work (PORTAL_PLATE / GATE_RECESS / lim_x parse errors, tram_door gates and signs, crew slots, air doors, tunnel z-fight) except test_perf / test_bot_bulwark_mixed / test_mission_objectives (pass on rerun); my station z-fight fixed.
+- 2026-11-27, Engine (sub-agent): R2.18 bot fixes. **landed (uncommitted).** `scripts/bots/player_bot.gd` reach rules
+  (`static var reach_rules`, test-only A/B switch): fire a pivoting weapon only while its mount bears on the aim point
+  (`WeaponMount.in_aim_range` from the pivot); target penalty for enemies nothing can reach; `THREAT_BONUS` (turret,
+  turret_missile, turret_sniper, gunship) + "shooting me" bonus; turrets seen out to `TURRET_SIGHT` 220 m (others 175); a turret's gun (`eye_world`)
+  counts for sight when its base is behind the parapet; scout drones given up after 25 s without damage beyond 60 m for
+  60 s (`ignoring` / `ignore_enemy`), never the deck's last enemy; mortar never at air units, too close or too steep.
+  `scripts/bots/crew/mission_bot.gd`: the sweep's committed target follows the same give-up (`_drone_given_up`,
+  `_other_live_on`). `scripts/app/boot.gd`: test settings file per OS process id (`Boot.test_settings_file`, pruned after
+  6 h); `tests/bulwark_bot_case.gd`, `tests/test_bot_bulwark_mixed.gd` write into it (no more shared cfg). Remeasured:
+  "After bot fixes" in docs/design/balance-r218-bulwark.md (out-of-arc gatling rounds at gunships 65 % -> 6 %, unseen
+  sniper rounds 58 -> 2, mortar at aircraft 33 -> 0, all 8 missions won; last-drone sweeps still need Missions' proposal 3).
+  Not touched: scripts/enemy/, scripts/combat/, scripts/mission/.
+- 2026-11-27, Environment subagent (road doors / tram door, R2.11a): **landed (uncommitted).** CityWalls.section_gates (via CityPlan.boundary()): spine-end gates -> 14 m road door on the avenue lane (both plan shapes), tram_door on deck 0 rail lane (derived when the plan has none); CityWalls._tunnel + CityDistrict._col_walls tunnel (40 m, sealed). MissionWorld: ENTRY_ID / EXIT_ID doors + bays (entry_door / exit_door, ENTRY_OPEN_DEFAULT), tram doors (tram_door / set_tram_door -> AmbientLife.set_tram_door + signal tram_door_changed), bay_contains, shut_source, bay_slots / exit_bay_slots, no-jump door_state, door_fit / plan_bay_span (off-centre bay, shared pier, one-sided leaves). MissionGateDoor: tram_config, asymmetric bays, blocks() = shut/warn/sealed only (moving leaves never solid, air doors too). MissionPortal deleted; set_portal is a deprecated stub (stores portal_progress) still called from mission_flow.gd:1203. CityStack.spawn_in_bay() / entry_bay_slots(n): spawn_transforms uses the bay once the mission world is set up (test_stack_drive fails on that: Engine's to update). Re-pinned test_city_variety / test_city_farm_walls collision (PRE_PLATE pins gone). Shots docs/design/city-spine/door_*.png. Docs: city-spine (as built), city-ramps-and-stack s9, mission-section s3/s8, networking.
+- 2026-11-27, Environment subagent (lift car interior, R2.22): **started.** Freight lift doors get a real car room (enemies staged inside). Files: scripts/mission/world/mission_lift_door.gd, mission_world.gd (lift parts, source_bay / bay_contains / bay_slots for lifts), mission_props.gd if needed, scripts/world/city/city_buildings.gd (lift door face only), city_district.gd (core collision only, if needed), city_lab.gd (mission_lift camera), tests (mission_world, map_sealed, collision_survey, gate_alarm), docs (city-ramps-and-stack s9, city-spine). Not touching scripts/world/section/, scripts/mission/ outside world/, scripts/enemy/, scripts/bots/.
+- 2026-11-27, Environment subagent (median / verge trees): **landed (uncommitted).** `CityPropLayout._spine_trees`: on a section the spine's trees stand only on `CityDims.spine_planted` (medians, which end at the left-turn pockets, and the tram strip's verges on decks without track: new verge tree line), 2 m in from each end, ~15 m apart, own generator `props_seed() + 3`, added after the roof units and before the station fittings; the old median trees' generator draws are kept (`_skip_tree`) so blocks / lots / alleys / forms lay out as before; no street prop on a lift door's apron (`CityDims.lift_aprons`, moved out of `CityStreets._lift_marks`, which now reads it). Stand-alone layouts unchanged (GOLDEN_LAYOUT f321076ebd6e98f1 holds); section / stack props checksums move. Re-pinned test_city_variety DORMANT / LIVE_DRAWN (furniture + prop triangles). test_spine_markings checks every prop against the paint, track and platform. Shots docs/design/city-spine/spine_top_d0/d1.png retaken. Not touched: city_props.gd, mission/world, walls, district, stack, signs.
+- 2026-11-27, Engine (sub-agent): entry/exit bay. **landed (uncommitted).** MissionScene: crew placement moved into `place_crew()` (build_city still places on the avenue: no mission world yet); `_place_in_bay()` re-places every mech (spawn_xf, puppets, host bots' `CrewBot.spawn`) once `MissionFlow.setup` (or `rebuild`) has the mission world, before the load barrier's report: solo and crew start in the entry bay on every machine; QUIET_SECTION keeps the avenue. Respawn slots (spawn_xf / CrewBot.spawn) are the bay slots. Encounter origin unchanged (avenue entry). MissionBot: `_bay_step` (entry bay: wait until door_entry passable, walk out along the door centre line to 1.5 m in front; after the hold, once R2.10's walk-out is on (hold done + outcome "" + exit bay): route to source_bay(door_exit).exit, wait for passable, walk in to `exit_bay_slots(4)[seat]`); a revive inside the entry bay walks straight; DEV arrival jump uses the avenue formation. test_net_contract SCALE_ALLOW key build_city -> place_crew (same reason). tests/test_stack_drive.gd: bay slot checks (= entry_bay_slots(n), inside, >= 7.2 m, facing out, lone mid front row), walks out once passable, quiet-fixture avenue check. tests/test_bot_obj_flag.gd limit 70 -> 85 (bay start shifts the fight: depot detour, done ~70 s). Green (link off): test_stack_drive, test_net_contract, bot_obj_* x4, bot_nav_* x5, test_bot_depot, test_hangar_egress, test_net_bot_mission / objectives / revive / aid / self_revive, test_bot_bulwark_mission, test_net_mission / _4 / _desync, test_net_leaver, test_net_stack / _3. **For Missions:** test_net_mission_flow / _3 fail on R2.10 (they expect "won" at the hold; now the walk-out), not on the bay.
+- 2026-11-27, Claude Missions subagent (spine / doors plan side, city-spine.md phase b; R2.11 / R2.17): **landed
+  (uncommitted). SectionPlan re-pin: `sec.checksum()` moved for EVERY seed and setting** (and so every MissionPlan, city,
+  stack and life digest built on a section). Files: scripts/world/section/* (plan, encounters, map, lab),
+  tests/test_section_plan.gd, pins in tests/test_mission_plan.gd, docs/design/mission-section.md, playtest-backlog R2.11 /
+  R2.17. The generator stream is unchanged (no roll added or removed; every ramp kept its row count over seeds 1-300 x
+  2 / 3 / 5 decks; hop-only repairs 0 / 15 / 80 as before). **New / changed plan fields, for the city, Engine and Mech:**
+  (1) `SPINE_LANES` ramp_a 10 | avenue 14 | rail 6 | ramp_b 10, `SPINE_W` 40 (lane ids unchanged; every block beside the
+  spine moves 5 m). (2) Lane kind: `SectionPlan.lane_kind(k, lane)` -> avenue | ramp_lane | rail | verge (rail on
+  `TRAM_DECK` 0 only, verge elsewhere); `spine_lanes(k)` -> [{lane, a, b, kind}]; `deck_view(k).road_strips[].kind` is
+  `verge` for the rail lane below deck 0. **Environment: CityPlan builds the spine road's `lanes` itself, so add
+  `"kind": sec.lane_kind(deck, lane)` to each entry (city_plan.gd ~line 245); `CityDims.has_track` already reads `kind`.**
+  (3) Gates: spine ends are one 14 m door centred on the avenue lane: `road_door` with `role` "entry" (deck 0, s0) /
+  "exit" (lowest deck, end of its crossing); any other spine end has `role` "none" and kind `blast_door` (a wave gate) or
+  `collapsed` (40 % roll, as before); `tram_door` (role "", width 3.8, `h` 4.6) on deck 0 in BOTH arc-end walls centred on
+  the rail lane, listed right after that wall's spine door; every other gate `blast_door`, role "". Every gate carries
+  `h` (9, tram 4.6). Constants `ROAD_DOOR_W/H`, `TRAM_DOOR_W/H`, `TRAM_DECK`. Role "extraction" is now "exit". Wave
+  sources stay `kind == "blast_door"` only (MissionPlan unchanged), so road doors and tram doors are never sources.
+  (4) Ramps (R2.17): whole-row span kept (theta0 / theta1, top_line / foot_line), slope run `RAMP_END_INSET` 8 m inside
+  it from the cross line CENTRES (top inset on the upper deck, foot inset on the lower): connector fields **`run_top` /
+  `run_foot` are ANGLES (radians, like theta0)**; `ramp_run(ci, k)` gives Vector2(s_top, s_foot) on deck k;
+  `ramp_run_len(k, n)`. `connector_rect` of a ramp (floor cut, landing, ceiling opening, CitySite holes / keep_clear) is
+  now the run; `bridge_lines`, `_crossing_blocked` (a cross road is blocked only where the viaduct passes over its strip
+  under 6 m: the foot line's cross road is no longer blocked), arrival / departure (ramp ends at run_foot / run_top) read
+  it. `ramp_grade` default 0.19 on the run (was 0.18 on the span). **Environment, urgent: CityPlan._make_ramps still
+  slopes from the cross line centres while CitySite's floor hole now starts 8 m later, so the first 8 m of every ramp
+  top run inside the floor slab (a ~1.4 m lip at the mouth): copy the run onto CityPlan.ramps entries (`run_top` =
+  connector run_top x radius_of(deck), same for run_foot: CityDims.ramp_run / ramp_part prefer them) and do the
+  collision / walk-graph follow-ups (city-spine.md "Ramp ends").** test_wave_pursuit's ramp turnaround (seed 1) fails
+  on exactly that (a strider never climbs back onto deck 0). Note for the user: 8 m from the line centre is 1 m past the
+  14 m junction box, so the zebra (1.8-4.8 m) still lies on the slope; 8 m past the box needs grade 0.20 or a 4th row on
+  every deck-0 ramp. (5) Arrival / departure kind "portal" is now "road_door" (SectionEncounters). (6) `cordon` hooks:
+  kept, one in front of every blast_door (not the crew's doors, collapsed or tram doors): a light guard-post site; no
+  rename. **Pins old -> new:** test_section_plan LEGACY_1_40 5e98a671b4bc534c -> 0a7b12f4192c4bd2, CHECKSUM_1_40
+  a8418dac1af36fdb -> 49e13fc866c10a98, CHECKSUM_DEFAULT_1_40 f72178587ddf045e -> 92fe7074b2a70c8a; GOLDEN_UNCHANGED
+  (checksums from before the hop-only rule) became GOLDEN (new values, still asserted unrepaired), GOLDEN_CHANGED became
+  GOLDEN_REPAIRED (new values): e.g. 3:1 e700861b676804be -> 9ee94a2b5a091704, 3:4 caffe96bbb70e675 -> 6d5a540e289b4ed6,
+  3:9 -> 80c41984642c95a5, 2:1 6102607788dee884 -> 9d0eee582bb922e5 (full table in the test). test_mission_plan BEFORE /
+  WITH_DEPOTS all 8 re-recorded (old values in its comment), together with the 30 s hold default then in the tree.
+  **Other owners' tests that now fail (not edited):** test_city_variety, test_city_farm_walls (moved digests / collision
+  pins: expected); test_city_stack (section 5: stand-alone crew spawn columns 10.5 m apart do not fit the 14 m avenue with
+  the test's 1 m margins: layout, Environment); test_life_section (seed 3 deck 0: 4 walker samples in the 6 m rail lane
+  off a crossing: Environment to check its walker paths against the narrower lane); test_wave_pursuit (the ramp lip
+  above). test_mission_plan's remaining failures are the in-flight hold 30 s change (not this one).
+- 2026-11-27, Claude Missions subagent (R2.10 extraction: hold 30 s, exit door, walk-out win): **landed (uncommitted).**
+  `MissionPlan` hold default 60 -> 30 (params.hold is hashed: every MissionPlan checksum moves; the section-plan agent's
+  re-pin must come after this). `MissionRules`: option `walk_out`, `exit_at` (state key `exit`, -1 before), `exit_site` /
+  `set_exit`, `exit_open()`, `ally_due(said)`; hold done -> exit_at = t + EXIT_LEAD 1 s; "won" once every standing crew
+  entry has `exit` true (>= 1 standing); "Hold the exit: 40%" / "Exit through the door". `MissionFlow`: road door orders on
+  the wave path (`mission.wave {wave:"door", source:"door_exit"|"door_entry", door:"open"|"shut", open_at, hold}`,
+  `_send_door` / `_door_order`, `door_log`), crew facts `exit` (bay_contains inside + depth >= capsule radius), entry door
+  shut at setup (crew), opened at start_at, host shuts it when its bay is empty / reopens on re-entry; `set_portal` call
+  and portal progress removed; ally lines -> `MissionHudModel.ally` (cyan, alert strip). `PacingDirector`:
+  `HOLD_EVERY_BY_CREW` [12, 10, 9, 8] + `HOLD_BEAT` 2 (replaces HOLD_EVERY), quick sources for hold groups, no backlog,
+  beats continue while the exit is open. `DownedCrew.active_objective`: the hold counts through the walk-out (respawn near
+  the exit). `CombatLog.note_door`. `mission_hud.gd`: ally line colour, demo banner text. Tests: test_mission_rules,
+  test_pacing_director, test_mission_phase1, test_mission_objectives, test_mission_flow, test_mission_plan (hold seconds
+  only, no pin touched), test_combat_log, net_mission_flow_case (exit at the same moment everywhere, walk-out rules, entry
+  reopen), net_coop_case (walk-out). Nothing in scripts/net/, scripts/world/, scripts/mission/world/, scripts/bots/,
+  scripts/enemy/, mission_scene.gd. **For Engine:** test_net_coop_e2e(_4) still fail on "peer 1's own mech walked forward
+  (1.7 m)" with my entry-door shut disabled too (the bay start); test_net_dropship fails "late-state step ran mid-exfil"
+  with or without my entry code.
+- 2026-11-27, Environment subagent (lift car interior, R2.22): **landed (uncommitted).** Measured 996 lift cores (section seeds 1..200, every deck, express incl.): all bare, 25.13-25.69 m along the door face x 28 m deep (doors on +-x faces only), ceiling 40. Every lift gets a car in a mission: 16 x 18.5 x 10 m inside, **usable 14 x 16 x 9.6 m** (guaranteed on every lift), doorway now 10 x 9 m (was 8 m: an 8 m mech capsule did not fit). `CityBuildings._pillar` / `_lift_doorway` / `lift_leaves` / `lift_leaf`: front face drawn round the doorway, 1 m reveal, shut doors baked 0.3 m in, call panel on the jamb, windows from 10 m (block mesh digests move; no plan checksum, no district collision). `MissionLiftDoor` rewritten: car room, leaves in the front wall, `LiftBody` walls replacing the district's core box (disabled via `_cut`), `door_shape` solid shut / warn / sealed, `hide_fill` takes the baked doors out of the block mesh (restored by teardown, `_lift_meshes`). Countdown lamps and the green "go" row gone (nothing read them). MissionWorld: `source_bay(lift)` ok with the gate keys (+ kind, bay_depth), `bay_contains` and `bay_slots` for lifts, the lift light inside the car; `source_point(lift)` and timing unchanged. MissionLab `mission_lift` camera looks into the car. Tests: test_mission_world `_lift_car`, test_map_sealed `_lift_car`, test_collision_survey `lift_car_inside` / `lift_car_exit` + kind `lift_car`. Shots docs/design/city-spine/lift_shut.png, lift_open.png. Docs: city-ramps-and-stack §9 "Lift cars", city-spine "As built: lift cars". Stale for others: city_signs.gd `_lifts` comments still mention the door's lamps (text only).
+- 2026-11-27, Environment subagent (ramp run + 40 m re-pin): **started.** CityPlan ramps onto the plan's slope run
+  (run_top / run_foot), ramp collision / walk graph / signs / lab cameras / test_ramp_stuck follow, lane `kind` on the
+  spine road, door fit on the 40 m plan, re-pin city / life tests moved by the SectionPlan change, shots and docs.
+  Files: scripts/world/city/*, scripts/world/life/*, scripts/mission/world/*, my tests, city-spine.md and friends.
+- 2026-11-27, Claude Missions subagent (R2.22 lift staging on the real car + crew never shut in a bay): **started.** Files: scripts/mission/mission_bays.gd, mission_flow.gd (staging / bay hooks only: `source_bay`, `_roll_due`, the order path; not the extraction / road doors), scripts/enemy/squad/* and enemy_base.gd if the car roll-out needs it, tests/test_bay_staging.gd, tests/test_net_bay_hold.gd, docs pacing-director.md 1.6b / 1.6c, playtest-backlog R2.22.
+- 2026-11-27, Claude Missions subagent (addendum to the SectionPlan re-pin above): **ramp slope ends moved again, same
+  fields.** Inset per end = that end's cross road half width + `RAMP_END_PAST_BOX` 6 m from the cross line
+  (`SectionPlan.ramp_end_inset(j)`: 13 m on a 14 m cross road, 12 m on a 12 m perimeter road), so the slope ends 6 m past
+  the junction box: clear of the zebra, at the stop line (R2.17 "clear of the intersection and its crosswalks").
+  `RAMP_END_INSET` is gone; `ramp_run_len(k, top_line, foot_line)` (signature changed). `ramp_grade` default 0.20 on
+  the run (max fitted 0.1956; no ramp changed its row count over seeds 1-300 x 2 / 3 / 5; bridges still one per ramp,
+  no foot cuts, vehicle routes intact, `validate()` empty). `run_top` / `run_foot` / `connector_rect` / arrival /
+  departure carry the new values; `MissionRules.route()` now aims ramp hints at `ramp_run` (one function, with
+  test_mission_rules' expectations). **Every section checksum moved again**: test_section_plan LEGACY_1_40
+  0a7b12f4192c4bd2 -> 3c2186d2b7f9eb3b, CHECKSUM_1_40 49e13fc866c10a98 -> c327c1dbd52f4e92, CHECKSUM_DEFAULT_1_40
+  92fe7074b2a70c8a -> 1416ddcf8a3a8afc, GOLDEN / GOLDEN_REPAIRED re-taken (e.g. 3:1 9ee94a2b5a091704 -> 7fc4d5626a444ecd;
+  2:9 unchanged, it has no ramp); test_mission_plan BEFORE / WITH_DEPOTS re-taken (e.g. 3:1 8545842dad9403d5 ->
+  23ff7a76fcbe7aeb, 9222fd7e7c0d06bf -> c8f5c7e0bffc7388). Engine: bot_route_planner.gd:145's comment still names
+  RAMP_END_INSET (comment only).
+- 2026-11-27, Engine (sub-agent): entry/exit bay follow-up. **landed (uncommitted).** tests/net_coop_case.gd: step c waits for door_entry passable, then walks toward a point 2 m out on the door's centre line (the bay is offset -5.8 m beside the tram tunnel: the outer slot column sits at lx -10.8, outside the 12.8 m door, so a straight walk meets the wall; **Environment:** worth lining the slots up with the door). tests/test_net_dropship.gd: the dropship is called at the avenue entry (entry_transform), not the mech in the bay. Bot ramp ends from `SectionPlan.ramp_run` (scripts/bots/hover_route.gd, scripts/bots/crew/bot_route_planner.gd: mouth MOUTH m before the slope start, exit FOOT_OUT m past its end). test_city_stack's avenue-lane spawn failures come before any setup_mission (stand-alone stack): not the bay placement.
+- 2026-11-27, Claude Missions subagent (R2.22 lift staging on the real car + crew never shut in a bay): **landed (uncommitted).** Lift groups stage in Environment's car with no code change to the staging (verified on all 16 lifts of seeds 1, 4, 7, 22, 403112: staged dormant inside, out 0.5-2.7 s after passable, none inside at the close, none stuck / back in, follow-up loads, INBOUND at the lift door). Car fit: 4 striders / 4 breachers / 7-9 troopers; plan lift `load` stays 4 (checksummed; BayFormation leaves overflow pending: 39/40 rolled lift groups stage all 4). No composition change (a tank would fit with 2 striders). New: `MissionBays` rule 5: a wave gate bay or lift car is never closed on a crew mech (held open, no limit; re-opened if shut on one via `MissionFlow.reopen_door`: mission.wave `hold_only` + `reopen`); **`MissionBays.crew_inside(id)`** (any door id incl. the road doors: bay_contains inside or doorway, standing / downed / redeploying) for the extraction rules; `busy_sources()` -> director facts `busy_sources` (`PacingDirector._busy`: no release picks a busy door, a follow-up from one waits). Fix: `MissionFlow._no_snap` no longer re-extends a door already closing / shut when the order came (director orders now carry `order_t`), which popped a shut door back open. Files: mission_bays.gd, mission_flow.gd (_director_facts, reopen_door, _open hold_only branch, _no_snap, order_t in _evaluate_plan), pacing_director.gd (_busy only), tests test_bay_staging (real lifts, crew rules; synthetic car removed), test_net_bay_hold (c1 parked in the bay keeps it open on both machines), docs pacing-director 1.6b / 1.6c, backlog R2.22. The scout-drone sweep straggler rule was NOT started.
+- 2026-11-27, Environment subagent (ramp run + 40 m re-pin): **landed (uncommitted).** `CityPlan._make_ramps` slopes over
+  the plan's run (connector run_top / run_foot; parts carry `run_top` / `run_foot` in deck s): the ~1.4 m mouth lip is
+  gone, slopes end 6.0 m past every junction box (Missions' final half width + 6 rule). `CityDims.RAMP_INSET` /
+  `ramp_part` removed; every reader of `CityPlan.ramps` s_top / s_foot follows untouched. Spine lanes carry
+  `kind` (lane_kind). Bay slots: `MissionWorld.slot_layout` (Bulwark r 3.6, columns 7.4 m, rows 11.6 / 20.4, far column
+  staggered back to 14.0 / 21.4 and aimed at the opening in the off-centre entry bay); `CityStack.carriage()` = avenue
+  lane centres (4 m) replaces CARRIAGE 5.25. Alley back doors 0.2 m out (z-fight). New tests test_ramp_walk,
+  test_door_fit, test_bay_walkout; re-pinned test_city_variety (section plans / collision / meshes, incl. the lift
+  doorway), test_city_farm_walls; test_spine_markings / test_city_stack(_walk) read the run. Shots retaken in
+  docs/design/city-spine/. **Open:** test_life_section seed 3 deck 0 (walkers on the rail crossing 0.9 m off its centre
+  line by their walking lane; the test allows 0.5) and one apartment-corner z-fight (seed 4 deck 0, x -118 s 112, h 3.5)
+  not fixed. **For others (not edited):** scripts/bots/hover_route.gd:195-198 and scripts/mission/mission_plan.gd:306-315
+  read the whole-row span (line_s / row_theta of top_line / foot_line) instead of `sec.ramp_run(ci, k)`;
+  bot_route_planner.gd:73 comment cites CityStack.CARRIAGE (gone).
+- 2026-11-26, Claude Mech session subagent (Wasp hover step 1): **landed (uncommitted).** MechController hover branch
+  (`hover_mode` from catalog `move == "hover"`; `climb_input`, `grounded()` = landed, `can_fly()`, `working_fans()`,
+  `fans_alive`, `altitude()`, `headroom()`, `set_landed()`), Wasp `movement` block + `MechCatalog.HOVER_KEYS`,
+  `movement(id, drafts)`, `apply_chassis(id, drafts)`, `MechSpawn.make(..., drafts)` (the Wasp stays a draft: no game
+  path passes drafts), new `HoverPose` (scripts/mech/motion/hover_pose.gd, MechRig hands a hover model to it), lab
+  subject `hover` (scripts/mech/motion/hover_lab.gd), mission_scene: Space/Ctrl -> `climb_input` (bipeds ignore it).
+  Also playtest **R2.3** (Bulwark thrust_heat 80 -> 64; test_chassis_movement + chassis-rules.md re-pinned) and
+  **R2.25b** (`_stuck_guard` + one collision-checked `_nudge` path shared with the old `_unstick`, all three chassis).
+  Tests: new test_hover_movement, test_hover_pose, test_mech_unstick, test_visual_hover (shots in
+  docs/design/chassis-concepts/build/wasp_hover_*.png). **For others:** `MechController.ground_distance` (walkers'
+  auto-burn) can overshoot by up to ~30 m on a thin floor from height (Godot cast_motion); the hover code uses a refined
+  `_cast` instead; walker behaviour left as is.
+  (addendum, same agent) Rule 5 tests a crew mech only against doors of its own deck (`bay_contains` on a gate reads a mech on another deck near the same arc-end wall as inside: seen in test_net_bot_aid / test_net_stats as false re-opens of a deck-1/2 gate with the crew on deck 0; **Environment: `bay_contains` has no deck / height-band guard across decks**). TestAll: 11 of 291 failed, none mine (city / life / stack / bay_walkout / zfight pins and entry-bay slots: Environment's in-flight; test_net_bot_aid, test_net_stats [coast]: bot behaviour, no bay events in their logs on rerun; test_perf passes alone).
+  Also: `MissionWorld.bay_contains` / `_car_contains` reject points off the bay's level (floor - 1 m to roof; the opening's
+  top for a bayless door), `doorway` included (test_mission_world: same x / s one deck up / down). test_stack_drive:168
+  (Engine) still asks slot facing > 0.95; aimed entry slots are up to ~28 deg off (0.88): needs > 0.85.
+- 2026-11-27 Engine: test_stack_drive slot-facing check 0.95 -> 0.85 (Environment aims off-centre bay slots through the door, up to ~28 deg); bot_route_planner MEDIAN_HALF comment points at CityStack.carriage().
+- 2026-11-27, Claude Mech session: re-running the 6 failures of my last full run alone (test_life_section, test_stack_drive, test_world_zfight_audit, test_net_bot_aid, test_net_coop_e2e, test_net_stats) to attribute them; editing only my own files (mech_controller.gd, mech_spawn.gd, hover_*) if one is mine. Wasp step 2 NOT started.
+- 2026-11-27 Missions: full run before the pause, 7 of 291 red; alone, test_net_stats / test_net_coop_e2e / test_net_crew pass (load flakes). Still red alone, not mine, not edited: test_stack_drive:176 "a lone mech stands mid bay" (expects door offset -5.8, slot_layout gives 0.0: Engine test vs Environment slots), test_net_bot_aid [off] (both bots wait for the entry door, walk out at 8.7 s when it opens, then bot -2 is wedged 6.5 s at x -54 s -285 deck 0 in the entry bay and never leaves: Engine walk-out vs the new bay slots), plus Environment's open test_life_section and test_world_zfight_audit. Nothing new started.
+- 2026-11-27 Engine: test_stack_drive lone-slot check follows Environment's re-aligned bay slots (on the door centre line within 1 m, not the bay centre).
+- 2026-11-27, Environment subagent (apartment corner z-fight): test_world_zfight_audit's apartment finding (28 pairs / 1.06 m2) was the BACK faces of an apartment's base band (0.12) and first-floor trim band (0.22), both kept because they run past the wall ends, lying in the same wall plane and overlapping past each corner (hidden inside the next face's band, but z-fighting pairs). CityBuildings._slab gains `wrapped` (a slab round all four faces of a tier drops its back face unless it rises above the roof / hangs below the base); _band passes it when given all four faces, the apartment base slab passes it. Only apartment geometry changes (roof bands keep theirs: above the roof). test_city_variety DORMANT / LIVE_DRAWN re-pinned (-16 triangles per apartment); no collision pin or plan checksum moved.
+  (result) None of the 6 is the Mech session's. Alone: test_net_coop_e2e passes (load). test_stack_drive:176 'a lone mech stands mid bay' (slot x 0.0 vs door offset -5.8): Environment's slot_layout re-align vs Engine's test. test_life_section seed 3 deck 0 rail lane + test_world_zfight_audit apartment corner (seed 4 deck 0, x -118 s 112): Environment's two known open items. test_net_bot_aid [off] (leash / revive) and test_net_stats (bot kill row 2 vs 1; a later run timed out) fail the same with MechController's stuck guard disabled (STUCK_TRIES 0, restored): bot behaviour, Engine / Missions. MechSpawn.make only gained an optional drafts flag (default false). Mech session stopped; Wasp step 2 not started.
+- 2026-11-27, Engine (sub-agent): entry bay walk-out after the slot re-align. **landed (uncommitted).** scripts/bots/crew/mission_bot.gd `_bay_out_dir`: from any spot in the entry bay first to a centre-line point in the room just past the wall's throat (WALL_THICK + 3 m behind the door plane), then straight out to source_bay exit; no 1 m progress for 2 s (a crewmate standing in front: the realigned front row, 7.4 m apart, leaves a back-row Strider no gap) -> 2.5 s toward one side of the bay (offset +/- (half_width - capsule - 0.5)), alternating sides; `bay_phase` resets each step, and `_wedge_watch` stands aside while a bay leg runs (it would block street edges and re-plan, which does nothing off the graph). Green: test_net_bot_aid (its LINKS are off only), test_stack_drive, test_net_contract, test_bot_obj_flag, test_net_bot_revive, test_net_coop_e2e off / coast, test_net_bot_mission, test_net_bot_objectives.
+- 2026-11-27 Missions: test_net_stats fixed (test only, tests/test_net_stats.gd): the live bot started in the entry bay back row behind the two parked client mechs and never got out ("entry bay: no progress at x 3.0 depth 13.4 / x -2.0 depth 13.8" alternating for 150 s), so it fired 0 records and the clients timed out. The test now puts the bot on the open deck before its AI goes on; the bot-kill check compares the debrief row with the host count (the live bot can kill too). Run time 120-150 s -> 53 s, passes both links. **Engine:** a bot in the back row cannot walk out past mechs standing still in the front row of the new bay slots; probably the same cause as test_net_bot_aid (bot -1 is held with no AI in the bay, bot -2 wedges). Not edited.
+- 2026-11-27, Engine (sub-agent): test_bot_bulwark_mission seed 2 loss triaged. Bay-start timing, not a bot fault or the ramp_run switch (that run took a shaft, no ramp): with the bay start the first flag ends ~7 s later, the bot routes to deck 1 by a shaft instead of the ramp, reaches the defend later and the relay falls to a tank (880 dmg) while it holds; A/B with bay placement off wins seed 2 (404 s). tests/test_bot_bulwark_mission.gd now plays seed 1 (flag / sweep / defend / hold, won 517.1 s with the bay start), limit 950 unchanged, reason in the header. No other test changed.

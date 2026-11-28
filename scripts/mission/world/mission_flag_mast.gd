@@ -4,7 +4,7 @@ extends Node3D
 ## well as colour: the alien one dark, torn and angular (a ragged swallowtail) with a harsh dark-red emblem block and a
 ## glowing slit; ours a clean rectangle in the crew's safety orange with a bright cream stripe. pose(raised, from, u)
 ## plays the swap: the banner up comes down over the first half, the other goes up over the second. Slim collision: the
-## pole (r 0.6) and the base.
+## pole (r 0.6) and the stepped base as drawn.
 
 const POLE := 16.0
 const TOP := 15.4        ## banner top when raised (under the yard)
@@ -61,7 +61,11 @@ func build(d: CityDistrict, xf: Transform3D) -> void:
 	cs.shape = cyl
 	cs.position = Vector3(0, POLE * 0.5, 0)
 	body.add_child(cs)
-	MissionProps.box_shape(body, I, Vector3(0, 0.6, 0), Vector3(3.6, 1.6, 3.6))
+	# The stepped base as drawn (collision survey R2.25a): three steps, each under 0.6 m (walked up, walked off). The
+	# old single 3.6 x 1.6 m box stood up to 1 m out past the drawn upper steps.
+	MissionProps.box_shape(body, I, Vector3(0, 0.2, 0), Vector3(3.6, 0.8, 3.6))
+	MissionProps.box_shape(body, I, Vector3(0, 0.85, 0), Vector3(2.6, 0.5, 2.6))
+	MissionProps.box_shape(body, I, Vector3(0, 1.35, 0), Vector3(1.6, 0.5, 1.6))
 	pose(false, false, 1.0)
 
 ## raised: ours is (going) up; from: what was up before the last swap; u 0..1 through the swap.

@@ -38,20 +38,37 @@ extends RefCounted
 ##           activation; from the next evaluate on, <= 0 fails it); progress = waves beaten. No defend_waves entry:
 ##           stays active
 ##   hold    progress like a flag (no enemy condition) while a standing mech is in params.zone; done at params.hold
-## Outcome: a failed primary -> "lost" (reason "objective_failed"); every primary (hold included) done -> "won".
+##           (30 s by default: an ally opens the exit door meanwhile). Exactly: each evaluate adds the facts.t delta
+##           since the previous evaluate (at most MAX_STEP 1 s) while at least ONE standing (not downed) crew mech is
+##           inside the zone rect on its deck; enemies in the zone change nothing; with nobody in it the progress
+##           PAUSES (no reset, no decay) and the objective stays active.
+## Outcome: a failed primary -> "lost" (reason "objective_failed"). Every primary (hold included) done -> the EXIT
+## (R2.10, "the crew walks out to win"): `exit_at` (facts.t + EXIT_LEAD, latched) is when the host opens the exit road
+## door (MissionFlow orders it, replicated); then "won" (reason "objectives") on the first evaluate where every STANDING
+## crew entry (not downed: a downed or redeploying pilot is recovered with the crew and never blocks) has `exit` true and
+## at least one standing entry exists. crew entries' optional "exit": bool = inside the exit bay (MissionFlow decides it
+## from MissionWorld.bay_contains: past the door plane by the mech's capsule radius). Option "walk_out" false (no exit
+## door on the deck: MissionFlow sets it, logged), or a plan without a hold (test plans): "won" once every primary is done.
 ## Extra facts (all optional): "waves_left": [per deck] (PacingDirector.waves_left_all()), "zone_enemies": {id: n},
 ##   "assets": {id: hp 0..1}, "defend_waves": {id: {released, total, alive}} (PacingDirector.objective_waves()),
 ##   "waves": [[released, total] per deck] (PacingDirector.state().waves: the sweep's "waves 2 / 3").
 ## state() adds "objs": {id: [state, progress (0.1), total]} and "reached" (the deepest deck a standing crew mech has
 ## been on, latched); "current" is the first primary not done. text() reads "Proceed to deck n" (proceed_text) while the
 ## current objective's deck is deeper than "reached" (a deck's primary done, the crew not on the next deck yet). The flag line shows its
-## capture as a whole percent (flag_percent: 100 % only once done); hold / defend keep seconds / waves.
+## capture as a whole percent (flag_percent: 100 % only once done), the hold too ("Hold the exit: 40%", then "Exit through
+## the door" once the exit is open); defend keeps waves. ally_due(said): the ally's short HUD lines (once each).
 ## set_site(id, x, s): every machine, before the first evaluate, when the world snapped a mast / asset to clear ground.
-## panel(viewer_deck, viewer_pos): the HUD's objective panel (header, this deck's list, "Proceed to deck n", one line per
-## visited deck with something left, route hints), from the replicated state plus the viewer's local deck and position.
+## panel(viewer_deck, viewer_pos): the HUD's objective panel (one section per deck, every deck listed: a visited deck's
+## objectives, an unvisited deck's "Proceed to deck n", the next step marked, one route hint), from the replicated state
+## plus the viewer's local deck and position; fit(panel, rows) shortens it to a height.
 
-const DEFAULTS := {"wipe": false, "wipe_grace": 1.0}
-const ZONE_DEPTH := 40.0         ## m: the extraction zone's depth in from the portal's end wall (extraction_zone)
+const DEFAULTS := {"wipe": false, "wipe_grace": 1.0, "walk_out": true}
+const ZONE_DEPTH := 40.0         ## m: the extraction zone's depth in from the exit door's end wall (extraction_zone)
+const EXIT_LEAD := 1.0           ## s from the hold's completion (facts.t) to the exit door's open_at (clients get the order first)
+const EXIT_LINE := "Exit through the door"
+## The ally's lines (R2.10, approved "keep it small"): text only, once each per mission (ally_due).
+const ALLY_LINES := {"working": "Working on the door", "almost": "Almost there", "open": "Door's open, go!"}
+const ALLY_ALMOST := 0.7         ## hold progress share for "Almost there"
 const DISCOVER := 150.0          ## a bonus is found when a standing mech on its deck comes this close
 const MAX_STEP := 1.0            ## most seconds of zone time one evaluate call can add
 const ROUTE_ROUND := 5.0         ## m: a route line's distance is rounded to this
@@ -74,6 +91,8 @@ var _tot: Dictionary = {}        ## objective id -> total
 var _last_t := -1.0              ## host: facts.t of the previous evaluate (-1 none)
 var _reached := -1               ## the deepest deck a standing crew mech has been on (latched; -1 none yet)
 var section: SectionPlan = null  ## the section plan (panel(): the connectors a route line names)
+var exit_at := -1.0              ## shared-clock open_at of the exit door, set when every primary is done (-1 not yet)
+var exit_site: Dictionary = {}   ## {deck, x, s} of the exit bay (set_exit, every machine; marker() once the exit is open)
 
 
 func net_fields() -> Dictionary:
@@ -85,6 +104,8 @@ func net_fields() -> Dictionary:
 		# The mission's progress: the host writes it (evaluate) and broadcasts state(); clients only apply_state().
 		"outcome": Net.OWNER, "reason": Net.OWNER, "_done": Net.OWNER, "_left": Net.OWNER,
 		"_st": Net.OWNER, "_prog": Net.OWNER, "_tot": Net.OWNER, "_reached": Net.OWNER,
+		"exit_at": Net.OWNER,        # the host latches it (state "exit"); the exit door order carries the same open_at
+		"exit_site": Net.LOCAL,      # from MissionWorld.exit_door(), the same on every machine (set_exit)
 		"_wipe_t": Net.PRIVATE,      # the host's pending-wipe countdown, never sent (not in state())
 		"_last_t": Net.PRIVATE,      # the host's zone-time clock, never sent
 	}
@@ -108,6 +129,7 @@ func _init_common(sec: SectionPlan, overrides: Dictionary) -> void:
 			options[id] = overrides[id]
 	options["wipe"] = bool(options["wipe"])
 	options["wipe_grace"] = float(options["wipe_grace"])
+	options["walk_out"] = bool(options["walk_out"])
 	deck_count = sec.deck_count
 	section = sec
 	_left.resize(sec.deck_count)
@@ -115,7 +137,7 @@ func _init_common(sec: SectionPlan, overrides: Dictionary) -> void:
 
 
 ## The extraction zone on the extraction deck, in that deck's (x, s): across the whole transit spine corridor (its four
-## lanes, centred on the spine line), `depth` metres in from the end wall the extraction portal is in. Clamped to the deck.
+## lanes, centred on the spine line), `depth` metres in from the end wall the exit road door is in. Clamped to the deck.
 static func extraction_zone(sec: SectionPlan, depth: float) -> Rect2:
 	var k := int(sec.extraction["deck"])
 	var w := sec.p("width")
@@ -124,7 +146,7 @@ static func extraction_zone(sec: SectionPlan, depth: float) -> Rect2:
 	var x1 := minf(sec.lane_x(str(SectionPlan.SPINE_LANES[-1][0])).y, w * 0.5)
 	var d := clampf(depth, 0.0, a)
 	var s0 := -a * 0.5
-	if int(sec.extraction["j"]) != 0:      # j == rows: the portal is in the s1 wall
+	if int(sec.extraction["j"]) != 0:      # j == rows: the exit door is in the s1 wall
 		s0 = a * 0.5 - d
 	return Rect2(x0, s0, x1 - x0, d)
 
@@ -183,6 +205,17 @@ func set_site(id: String, x: float, s: float) -> void:
 	if o.is_empty():
 		return
 	o["site"] = {"x": x, "s": s}
+
+
+## Every machine, before the first evaluate: where the exit bay is (MissionWorld.exit_door(): its deck, the bay centre's
+## x, s). marker() points there once the exit is open.
+func set_exit(deck: int, x: float, s: float) -> void:
+	exit_site = {"deck": deck, "x": x, "s": s}
+
+
+## The exit door has been ordered open (every primary done, walk-out on): "Exit through the door".
+func exit_open() -> bool:
+	return exit_at >= 0.0
 
 
 func _evaluate_plan(facts: Dictionary) -> bool:
@@ -277,12 +310,33 @@ func _evaluate_plan(facts: Dictionary) -> bool:
 	if failed:
 		outcome = "lost"
 		reason = "objective_failed"
-	elif all_done:
+	elif all_done and (not bool(options["walk_out"]) or objective("hold").is_empty()):
 		outcome = "won"
 		reason = "objectives"
+	elif all_done:
+		if exit_at < 0.0:
+			exit_at = (float(facts["t"]) if facts.has("t") else 0.0) + EXIT_LEAD
+		if _crew_out(crew):
+			outcome = "won"
+			reason = "objectives"
+		else:
+			_check_wipe(facts, crew)
 	else:
 		_check_wipe(facts, crew)
 	return state() != before
+
+
+## The walk-out: every standing crew entry (not downed; a redeploying pilot is downed too) is in the exit bay (`exit`),
+## and at least one stands.
+func _crew_out(crew: Array) -> bool:
+	var n := 0
+	for c: Variant in crew:
+		if not c is Dictionary or bool((c as Dictionary).get("downed", false)):
+			continue
+		if not bool((c as Dictionary).get("exit", false)):
+			return false
+		n += 1
+	return n > 0
 
 
 func _crew_on(k: int, crew: Array) -> bool:
@@ -365,6 +419,7 @@ func state() -> Dictionary:
 		objs[id] = [_st[id], snappedf(float(_prog[id]), 0.1), snappedf(float(_tot[id]), 0.1)]
 	out["objs"] = objs
 	out["reached"] = _reached
+	out["exit"] = exit_at
 	return out
 
 
@@ -386,6 +441,8 @@ func apply_state(d: Dictionary) -> void:
 			_left[k] = int(src[k]) if k < src.size() and src[k] != null else 0
 	if d.has("reached"):
 		_reached = int(d["reached"])
+	if d.has("exit"):
+		exit_at = float(d["exit"])
 	if d.get("objs", null) is Dictionary:
 		var objs: Dictionary = d["objs"]
 		for o: Dictionary in objectives:
@@ -432,6 +489,8 @@ func text() -> String:
 		return "Mission complete"
 	if outcome == "lost":
 		return "Objective failed" if reason == "objective_failed" else "Crew down"
+	if exit_open():
+		return EXIT_LINE
 	var o := objective(current())
 	if o.is_empty():
 		return ""
@@ -441,8 +500,11 @@ func text() -> String:
 	return _line(o)
 
 
-## Centre of the extraction hold's zone {deck, x, s} while the hold is the current objective and known, else {}.
+## Centre of the extraction hold's zone {deck, x, s} while the hold is the current objective and known; once the exit is
+## open (and the mission on), the exit bay's centre (set_exit); else {}.
 func marker() -> Dictionary:
+	if exit_open():
+		return exit_site.duplicate() if outcome == "" else {}
 	var h := objective(current())
 	if h.is_empty() or h["type"] != "hold" or _st[h["id"]] == "hidden":
 		return {}
@@ -471,12 +533,14 @@ func lines(deck: int) -> Array[String]:
 			if int(o["deck"]) != deck or o["role"] != role or _st[o["id"]] == "hidden":
 				continue
 			var line := ("Bonus: " if role == "bonus" else "") + _line(o)
+			var exiting: bool = o["type"] == "hold" and _exiting()
 			match str(_st[o["id"]]):
 				"done":
-					line += " (done)"
+					if not exiting:
+						line += " (done)"
 				"failed":
 					line += " (failed)"
-			if o["type"] == "hold" and _st[o["id"]] != "done":
+			if o["type"] == "hold" and (_st[o["id"]] != "done" or exiting):
 				out.push_front(line)      # the extraction hold, once it shows, leads the list
 			else:
 				out.append(line)
@@ -506,72 +570,209 @@ static func proceed_text(d: int) -> String:
 	return "Proceed to deck %d" % (d + 1)
 
 
-## For the HUD's one objective panel, from the replicated state plus two LOCAL facts of the viewing pilot (never
-## sent): the deck they stand on (`viewer_deck`) and their (x, s) on it (`viewer_pos`). {} without decks.
-##   {header: "DECK 2 of 3", deck, decks,
-##    lines: [{text, role, state, deck, dir (vs the viewer's deck: 1 below, -1 above, 0 here), part: lead | here | tail}],
-##    route_at: the route of the first lead line (the HUD's waypoint goes there) or {}}
-## Roles: primary / bonus (this deck's objectives: every known one, done / failed too, a bonus to do ends in
-## " (optional)", the extraction hold first once it shows); next ("Proceed to deck 3", or a deck below the viewer that
-## the crew has visited with a primary left: "Deck 3: 1 objective, 2 optional left"); return ("Return to deck 1:
-## objective unfinished": a deck above with its primary not done); deck (a visited deck with only found bonuses left:
-## "Deck 1: 1 optional left"); route (the way off this deck toward the line above it: "ramp down 120 m"; only when one
-## exists). Decks are OPEN up to max(reached, viewer_deck) (`reached`: the crew's latched deepest deck; the viewer's own
-## deck is always open): beyond that nothing is listed but one "Proceed to deck n" for the first unopened deck, and only
-## when no opened deck below the viewer still has a primary left. Finished visited decks give no line. Parts: while this
-## deck's primary is to do, every other line trails this deck's list (tail: down then up, the route under the first line
-## each way); once it is done (or the deck has none) the next / return lines lead, only the deck lines trail. After the
-## mission's outcome: this deck's list only. Nothing here depends on pilot ids.
+## "Deck n:", the header of deck index d's section in the panel.
+static func deck_header(d: int) -> String:
+	return "Deck %d:" % (d + 1)
+
+
+## For the HUD's one objective panel (playtest backlog R2.13: one section per deck, every deck always listed), from the
+## replicated state plus two LOCAL facts of the viewing pilot (never sent): the deck they stand on (`viewer_deck`) and
+## their (x, s) on it (`viewer_pos`). {} without decks.
+##   {deck: the viewer's deck, decks, route_at: route() of the next step or {} (the HUD's waypoint goes there),
+##    lines: [{text, role, deck, state, current, lead, dir}]}
+## In deck order, each deck: a header row (role "header", "Deck 2:", `current` on the viewer's deck), then
+##   - a VISITED deck (d <= max(reached, viewer deck): `reached` is the crew's latched deepest deck, the viewer's own deck
+##     always counts): its known objectives (hidden bonuses not listed), the extraction hold first once it shows, then the
+##     primary, then the bonuses ("... (optional)"); done / failed keep their final value (failed adds "(failed)");
+##   - an UNVISITED deck: one row "Proceed to deck n" (role "proceed").
+## The NEXT STEP (`lead`, drawn amber), only while the viewer's deck has no primary left (done, or none known) and the
+## mission is on: the nearest deck below with a primary left or still unvisited (its proceed row), else the nearest deck
+## above with a primary left (its unfinished primary row: "go back"). The route hint (role "route", "ramp down 120 m",
+## only when a walkable way exists) sits right under that proceed row, or under that visited deck's header. Nothing
+## else leads. Fitting to a height: fit(). Nothing here depends on pilot ids.
 func panel(viewer_deck: int, viewer_pos: Vector2) -> Dictionary:
 	if deck_count <= 0:
 		return {}
 	var k := clampi(viewer_deck, 0, deck_count - 1)
-	var here := _here_lines(k)
-	var lead: Array = []
-	var tail: Array = []
-	if outcome == "":
-		var p := _primary_of(k)
-		var p_done: bool = p.is_empty() or _st[p["id"]] == "done"
-		var open_to := mini(maxi(_reached, k), deck_count - 1)
-		for dir: int in [1, -1]:
-			var big: Array = []      # next / return lines, nearest first
-			var small: Array = []    # deck lines (found bonuses only), nearest first
-			var d := k + dir
-			while d >= 0 and d <= open_to:
-				var n := _left_counts(d)
-				var dp := _primary_of(d)
-				if dir < 0 and not dp.is_empty() and _st[dp["id"]] != "done":
-					big.append(_pline("Return to deck %d: objective unfinished" % (d + 1), "return", d, dir))
-				elif dir > 0 and n.x > 0:
-					big.append(_pline("Deck %d: %s left" % [d + 1, _count_words(n)], "next", d, dir))
-				elif n.y > 0:
-					small.append(_pline("Deck %d: %s left" % [d + 1, _count_words(n)], "deck", d, dir))
-				d += dir
-			if dir > 0 and big.is_empty():
-				var nxt := open_to + 1 if open_to + 1 < deck_count else (open_to if open_to > k else -1)
-				if nxt > k:
-					big.append(_pline(proceed_text(nxt), "next", nxt, dir))
-			var rt := route(k, viewer_pos, dir)
-			var way: Array = []
-			if not rt.is_empty():
-				way = [_pline(str(rt["text"]), "route", k + dir, dir)]
-			if p_done:
-				lead.append_array(_with_way(big, way))
-				tail.append_array(_with_way(small, way if big.is_empty() else []))
-			else:
-				tail.append_array(_with_way(big + small, way))
-	var route_at := {}
-	if not lead.is_empty():
-		route_at = route(k, viewer_pos, int(lead[0]["dir"]))
+	var open_to := mini(maxi(_reached, k), deck_count - 1)
+	var target := _next_deck(k, open_to)
+	var rt := {}
+	if target >= 0:
+		rt = route(k, viewer_pos, 1 if target > k else -1)
 	var out: Array = []
-	for l: Dictionary in lead:
-		out.append(_with_part(l, "lead"))
-	for l: Dictionary in here:
-		out.append(_with_part(l, "here"))
-	for l: Dictionary in tail:
-		out.append(_with_part(l, "tail"))
-	return {"header": "DECK %d of %d" % [k + 1, deck_count], "deck": k, "decks": deck_count, "lines": out,
-		"route_at": route_at}
+	for d in deck_count:
+		var h := _prow(deck_header(d), "header", d)
+		h["current"] = d == k
+		out.append(h)
+		if d > open_to:
+			var p := _prow(proceed_text(d), "proceed", d)
+			p["lead"] = d == target
+			out.append(p)
+			if d == target and not rt.is_empty():
+				out.append(_route_row(rt, d))
+			continue
+		if d == target and not rt.is_empty():
+			out.append(_route_row(rt, d))
+		for l: Dictionary in _deck_lines(d):
+			l["lead"] = bool(l.get("exit", false)) or (d == target and l["role"] == "primary" and _open(str(l["state"])))
+			out.append(l)
+	return {"deck": k, "decks": deck_count, "lines": out, "route_at": rt}
+
+
+## The panel's rows fitted to `limit` rows (MissionHud: PANEL_FRAC of the screen height, less the crew lines), with the
+## depot line(s) `pn.extra` at the end of the viewer's section (role "extra", never cut). Every header always stays.
+## Too long, in this order, each step only as far as needed, other decks farthest from the viewer first: the route
+## hint; other decks' done / failed rows; other decks' optional rows -> one "n optional" row (role "summary"); other
+## decks' remaining rows -> one "1 objective, 2 optional" row (the proceed row is already one); then the viewer's deck's
+## done / failed rows and its optional rows -> "n optional"; then other decks down to their header; then the viewer's
+## rows are cut from the end. A summary keeps `lead` when a row it replaces had it.
+static func fit(pn: Dictionary, limit: int) -> Array:
+	var k := int(pn.get("deck", 0))
+	var secs: Array = []
+	for l: Dictionary in pn.get("lines", []):
+		if str(l["role"]) == "header":
+			secs.append({"head": l, "body": [], "deck": int(l["deck"])})
+		elif not secs.is_empty():
+			(secs[-1]["body"] as Array).append(l)
+	var xs: Array = []
+	for e: Variant in pn.get("extra", []):
+		var x := _prow(str(e), "extra", k)
+		xs.append(x)
+	if secs.is_empty() and xs.is_empty():
+		return []
+	var others: Array = []
+	var mine: Array = []
+	for s: Dictionary in secs:
+		if int(s["deck"]) == k:
+			mine.append(s)
+		else:
+			others.append(s)
+	others.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var da := absi(int(a["deck"]) - k)
+		var db := absi(int(b["deck"]) - k)
+		return da > db if da != db else int(a["deck"]) > int(b["deck"]))
+	var over := func() -> bool:
+		var n := secs.size() + xs.size()
+		for s: Dictionary in secs:
+			n += (s["body"] as Array).size()
+		return n > limit
+	var is_route := func(r: Dictionary) -> bool: return str(r["role"]) == "route"
+	var finished := func(r: Dictionary) -> bool: return str(r["state"]) == "done" or str(r["state"]) == "failed"
+	for s: Dictionary in secs:
+		_drop_rows(s, is_route, over)
+	for s: Dictionary in others:
+		_drop_rows(s, finished, over)
+	for s: Dictionary in others:
+		if over.call():
+			_fold_optional(s)
+	for s: Dictionary in others:
+		if over.call():
+			_fold_all(s)
+	for s: Dictionary in mine:
+		_drop_rows(s, finished, over)
+		if over.call():
+			_fold_optional(s)
+	for s: Dictionary in others:
+		_drop_rows(s, func(_r: Dictionary) -> bool: return true, over)
+	for s: Dictionary in mine:
+		_drop_rows(s, func(_r: Dictionary) -> bool: return true, over)
+	var rows: Array = []
+	for s: Dictionary in secs:
+		rows.append(s["head"])
+		rows.append_array(s["body"])
+		if int(s["deck"]) == k:
+			rows.append_array(xs)
+	if mine.is_empty():
+		rows.append_array(xs)
+	return rows
+
+
+## Removes section `s`'s rows matching `pick`, the last first, while `over` (a Callable -> bool) holds.
+static func _drop_rows(s: Dictionary, pick: Callable, over: Callable) -> void:
+	var body: Array = s["body"]
+	for i in range(body.size() - 1, -1, -1):
+		if not over.call():
+			return
+		if pick.call(body[i]):
+			body.remove_at(i)
+
+
+## Section `s`'s optional rows -> one "n optional" row where the first of them was (only when that saves a row).
+static func _fold_optional(s: Dictionary) -> void:
+	var body: Array = s["body"]
+	var at := -1
+	var n := 0
+	for i in body.size():
+		if str(body[i]["role"]) == "bonus":
+			at = i if at < 0 else at
+			n += 1
+	if n < 2:
+		return
+	var keep: Array = body.filter(func(r: Dictionary) -> bool: return str(r["role"]) != "bonus")
+	var sum := _prow(_count_text(0, n), "summary", int(s["deck"]))
+	sum["count"] = n
+	keep.insert(mini(at, keep.size()), sum)
+	s["body"] = keep
+
+
+## Section `s`'s rows -> one summary row ("1 objective, 2 optional"; lead if any row led). A single row stays as it is.
+static func _fold_all(s: Dictionary) -> void:
+	var body: Array = s["body"]
+	if body.size() < 2:
+		return
+	var np := 0
+	var nb := 0
+	var lead := false
+	for r: Dictionary in body:
+		lead = lead or bool(r.get("lead", false))
+		match str(r["role"]):
+			"primary":
+				np += 1
+			"bonus":
+				nb += 1
+			"summary":
+				nb += int(r.get("count", 0))
+	if np + nb == 0:
+		return
+	var sum := _prow(_count_text(np, nb), "summary", int(s["deck"]))
+	sum["lead"] = lead
+	s["body"] = [sum]
+
+
+## "2 optional", "1 objective", "1 objective, 2 optional", "2 objectives".
+static func _count_text(np: int, nb: int) -> String:
+	var parts: Array[String] = []
+	if np > 0:
+		parts.append("%d %s" % [np, "objective" if np == 1 else "objectives"])
+	if nb > 0:
+		parts.append("%d optional" % nb)
+	return ", ".join(parts)
+
+
+## The deck the next step is on (see panel()), -1 none: the viewer's deck still has a primary to do, or the mission
+## is over, or nothing is left anywhere.
+func _next_deck(k: int, open_to: int) -> int:
+	if outcome != "" or _primary_left(k):
+		return -1
+	for d in range(k + 1, deck_count):
+		if d > open_to or _primary_left(d):
+			return d
+	for d in range(k - 1, -1, -1):
+		if _primary_left(d):
+			return d
+	return -1
+
+
+## Deck d has a known primary (the extraction hold included, once it shows) neither done nor failed.
+func _primary_left(d: int) -> bool:
+	for o: Dictionary in objectives:
+		if int(o["deck"]) == d and o["role"] == "primary" and _open(str(_st[o["id"]])):
+			return true
+	return false
+
+
+static func _open(st: String) -> bool:
+	return st == "known" or st == "active"
 
 
 ## The nearest way off deck k in direction `dir` (1 down, -1 up) from (x, s) `at`, straight-line along the deck:
@@ -592,11 +793,12 @@ func route(k: int, at: Vector2, dir: int) -> Dictionary:
 		var p := Vector2(INF, INF)
 		match str(c["kind"]):
 			"ramp":
+				# Where the slope starts / ends on deck k (SectionPlan.ramp_run: past the junction boxes, R2.17).
 				var lane := (float(c["x0"]) + float(c["x1"])) * 0.5
 				if dir > 0 and int(c["from"]) == k:
-					p = Vector2(lane, section.line_s(k, int(c["top_line"])))
+					p = Vector2(lane, section.ramp_run(ci, k).x)
 				elif dir < 0 and int(c["to"]) == k:
-					p = Vector2(lane, section.line_s(k, int(c["foot_line"])))
+					p = Vector2(lane, section.ramp_run(ci, k).y)
 			"shaft":
 				# Only a shaft whose drop lands on deck k+1 (SectionPlan.shaft_lands): a stacked atrium drops through
 				# k+1's hole to k+2 and skips that deck (the hop-only rule, docs/design/mission-section.md §6).
@@ -621,9 +823,9 @@ func route(k: int, at: Vector2, dir: int) -> Dictionary:
 	return best
 
 
-## This deck's list (see panel()): every known objective, done / failed too, primaries then bonuses, the extraction hold
-## first once it shows.
-func _here_lines(d: int) -> Array:
+## A visited deck's rows (see panel()): every known objective, done / failed too, the extraction hold first once it
+## shows, then the primary, then the bonuses; the section wording (_line(o, true)).
+func _deck_lines(d: int) -> Array:
 	var lead: Array = []
 	var rest: Array = []
 	for role: String in ["primary", "bonus"]:
@@ -633,85 +835,99 @@ func _here_lines(d: int) -> Array:
 			var st: String = _st[o["id"]]
 			if st == "hidden":
 				continue
-			var text := _line(o)
-			match st:
-				"done":
-					text += " (done)"
-				"failed":
-					text += " (failed)"
-				_:
-					if role == "bonus":
-						text += " (optional)"
-			var l := _pline(text, role, d, 0)
+			var text := _line(o, true)
+			if role == "bonus" and st == "failed":
+				text += " (optional, failed)"
+			elif role == "bonus":
+				text += " (optional)"
+			elif st == "failed":
+				text += " (failed)"
+			var l := _prow(text, role, d)
 			l["state"] = st
-			if o["type"] == "hold" and st != "done":
+			if o["type"] == "hold" and _exiting():
+				l["state"] = "active"     # "Exit through the door": the next step, amber wherever the viewer is
+				l["exit"] = true
+				lead.append(l)
+			elif o["type"] == "hold" and st != "done":
 				lead.append(l)      # the extraction hold, once it shows, leads its deck's list
 			else:
 				rest.append(l)
 	return lead + rest
 
 
-## Deck d's objectives still to do, (primaries, found bonuses), known or active (hidden bonuses are not counted).
-func _left_counts(d: int) -> Vector2i:
-	var n := Vector2i.ZERO
-	for o: Dictionary in objectives:
-		var st: String = _st[o["id"]]
-		if int(o["deck"]) != d or not (st == "known" or st == "active"):
-			continue
-		if o["role"] == "primary":
-			n.x += 1
-		else:
-			n.y += 1
-	return n
+static func _prow(text: String, role: String, deck: int) -> Dictionary:
+	return {"text": text, "role": role, "deck": deck, "state": "", "current": false, "lead": false, "dir": 0}
 
 
-## "2 objectives", "1 objective, 2 optional", "1 optional".
-static func _count_words(n: Vector2i) -> String:
-	var parts: Array[String] = []
-	if n.x > 0:
-		parts.append("%d %s" % [n.x, "objective" if n.x == 1 else "objectives"])
-	if n.y > 0:
-		parts.append("%d optional" % n.y)
-	return ", ".join(parts)
+## The route hint row for route() `rt` toward deck `d` (always the next step: lead).
+static func _route_row(rt: Dictionary, d: int) -> Dictionary:
+	var r := _prow(str(rt["text"]), "route", d)
+	r["dir"] = int(rt["dir"])
+	r["lead"] = true
+	return r
 
 
-## `ls` with the route line `way` under its first line ([] when ls is empty).
-static func _with_way(ls: Array, way: Array) -> Array:
-	if ls.is_empty():
-		return []
-	return ls.slice(0, 1) + way + ls.slice(1)
-
-
-static func _pline(text: String, role: String, deck: int, dir: int) -> Dictionary:
-	return {"text": text, "role": role, "state": "", "deck": deck, "dir": dir}
-
-
-static func _with_part(l: Dictionary, part: String) -> Dictionary:
-	var o := l.duplicate()
-	o["part"] = part
-	return o
-
-
-func _line(o: Dictionary) -> String:
+## The objective's line. `section` (the panel, under a "Deck n:" header): the deck is not repeated and counts read
+## "2/3": "Clear hostiles, waves 2/3", "Defend the position: wave 1/3". Otherwise (text(), lines()):
+## "Clear deck 2: 5 hostiles, waves 2 / 3", "Defend the position: wave 1 / 3".
+func _line(o: Dictionary, section: bool = false) -> String:
 	var id: String = o["id"]
 	var prog := float(_prog[id])
 	var tot := float(_tot[id])
+	var sep := "/" if section else " / "
 	match str(o["type"]):
 		"flag":
 			return "Raise the flag: %d%%" % flag_percent(prog, tot, _st[id] == "done")
 		"defend":
 			if tot <= 0.0:
 				return "Defend the position"
-			return "Defend the position: wave %d / %d" % [mini(int(prog) + 1, int(round(tot))), int(round(tot))]
+			return "Defend the position: wave %d%s%d" % [mini(int(prog) + 1, int(round(tot))), sep, int(round(tot))]
 		"hold":
-			return "Hold the extraction portal: %d s" % int(ceil(maxf(tot - prog, 0.0) - 0.001))
+			if _exiting():
+				return EXIT_LINE
+			return "Hold the exit: %d%%" % flag_percent(prog, tot, _st[id] == "done")
 		"sweep":
+			if section:   # the user's wording (R2.13); the hostiles left only while no wave count is known
+				if tot > 0.0:
+					return "Clear hostiles, waves %d/%d" % [int(round(prog)), int(round(tot))]
+				return "Clear hostiles: %d left" % left_on(int(o["deck"]))
 			var n := left_on(int(o["deck"]))
 			var head := "Clear deck %d: %d %s" % [int(o["deck"]) + 1, n, "hostile" if n == 1 else "hostiles"]
 			if tot > 0.0:
 				head += ", waves %d / %d" % [int(round(prog)), int(round(tot))]
 			return head
 	return "Complete the objective"
+
+
+## The exit is open and the mission still on (the walk-out: the hold's row reads EXIT_LINE).
+func _exiting() -> bool:
+	return exit_open() and outcome == ""
+
+
+## The ally's lines due now (R2.10: someone opens the exit door for the crew), each at most once per mission: `said`
+## (the caller's memory, LOCAL, updated here) remembers them. "Working on the door" once the hold goes active (a standing
+## mech entered the zone), "Almost there" at ALLY_ALMOST of the hold, "Door's open, go!" once the exit is open. Lines
+## that fall due in the same call (a late state): only the newest is returned, the older ones are marked said. From the
+## replicated state only, so every machine says the same.
+func ally_due(said: Dictionary) -> Array[String]:
+	var out: Array[String] = []
+	var h := objective("hold")
+	if h.is_empty() or outcome != "":
+		return out
+	var id: String = h["id"]
+	var st := str(_st.get(id, ""))
+	var tot := float(_tot.get(id, 0.0))
+	var share := float(_prog.get(id, 0.0)) / tot if tot > 0.0 else 0.0
+	var due := {"working": st == "active" or st == "done",
+		"almost": st == "done" or (st == "active" and share >= ALLY_ALMOST), "open": exit_open()}
+	var newest := ""
+	for key: String in ["working", "almost", "open"]:
+		if bool(due[key]) and not said.has(key):
+			said[key] = true
+			newest = key       # an older line overtaken in the same step is skipped
+	if newest != "":
+		out.append(str(ALLY_LINES[newest]))
+	return out
 
 
 ## A capture's progress in whole percent: floor(progress / total), 100 only once done (99 at most before).

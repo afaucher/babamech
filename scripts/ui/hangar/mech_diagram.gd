@@ -14,8 +14,8 @@ extends Control
 ##
 ## Geometry: a MechModel (low-poly art, the given pilot head and chassis: `chassis`, the Strider by default) is built off-tree once per view and loadout, every mesh's
 ## vertices are projected into 2D and grouped by component (head, torso, leg_l, leg_r, one per hardpoint id), then cached.
-## Each component is a separate zone tinted by its health (cyan > 2/3, amber > 1/3, red, destroyed = grey with a red
-## cross). Everything stays inside the heat arc and above the panel's state text (`area()`).
+## Each component is a separate zone tinted by its health (cyan > 2/3, amber > 1/3, red, destroyed = dark with a red
+## outline). Everything stays inside the heat arc and above the panel's state text (`area()`).
 ##
 ## Use: add as a full-rect child of the status panel; set `view`, `style`, `mounted` ({hardpoint id: weapon id, "" =
 ## empty}) and `health` ({component id: 0..1}, missing = 1). Cosmetic: no gameplay state (net: LOCAL / presentation).
@@ -596,20 +596,7 @@ static func paint(c: CanvasItem, panel: Vector2, view_: String, style_: String, 
 		var hc := hp_col(float(hp.get("head", 1.0)))
 		for e: Vector2 in lay["eyes"]:
 			c.draw_circle(e, 1.7, hc)
-	# Destroyed components: a red cross over the zone (drawn on top of everything).
-	var zs := {}
-	for it: Dictionary in lay["items"]:
-		var id := str(it["id"])
-		if not zs.has(id):
-			zs[id] = []
-		(zs[id] as Array).append_array(it["polys"])
-	for id: String in zs:
-		if float(hp.get(id, 1.0)) > 0.0 or (not (id in BASE_IDS) and str(loadout.get(id, "")) == ""):
-			continue
-		var bb := _bounds(zs[id])
-		bb = bb.grow(1.0)
-		c.draw_line(bb.position, bb.end, MechHud.RED, 1.8, true)
-		c.draw_line(Vector2(bb.end.x, bb.position.y), Vector2(bb.position.x, bb.end.y), MechHud.RED, 1.8, true)
+	# Destroyed components: no cross over the zone (playtest R2.14: the dark fill and red outline already say destroyed).
 	if schematic:
 		# Joint markers on the legs, slot numbers by the hardpoints.
 		for j: Dictionary in lay["joints"]:
@@ -666,9 +653,9 @@ static func _bounds(polys: Array) -> Rect2:
 
 # --- The status panel frame (for previews and the visual test) -------------------------------------------------------
 
-## The status panel without its diagram, as MechHud._draw_status draws it: glass, heat arc, ticks, HEAT n%, heat / cap
+## The status panel without its diagram, as MechHud._draw_status draws it: glass, heat arc, ticks, HEAT n%
 ## and the state line. Lets the options be judged inside the real frame before the HUD adopts one.
-static func paint_frame(c: CanvasItem, panel: Vector2, heat_f: float, heat_cap: float, state: String) -> void:
+static func paint_frame(c: CanvasItem, panel: Vector2, heat_f: float, _heat_cap: float, state: String) -> void:
 	if _font == null:
 		_font = ThemeDB.fallback_font
 	MechHud.draw_glass(c as Control, Rect2(Vector2.ZERO, panel))
@@ -686,7 +673,5 @@ static func paint_frame(c: CanvasItem, panel: Vector2, heat_f: float, heat_cap: 
 		c.draw_line(centre + dir * (r + 7.0), centre + dir * (r + 11.0 + (3.0 if k % 5 == 0 else 0.0)), Color(MechHud.CYAN, 0.6), 1.2)
 	c.draw_string(_font, Vector2(0, panel.y - 30), "HEAT %d%%" % roundi(heat_f * 100.0), HORIZONTAL_ALIGNMENT_CENTER, panel.x, 16,
 		hc if heat_f >= 0.6 else MechHud.WHITE)
-	c.draw_string(_font, Vector2(0, panel.y - 13), "%d / %d" % [roundi(heat_f * heat_cap), roundi(heat_cap)],
-		HORIZONTAL_ALIGNMENT_CENTER, panel.x, 11, MechHud.DIM)
 	if state != "":
 		c.draw_string(_font, Vector2(0, panel.y - 50), state, HORIZONTAL_ALIGNMENT_CENTER, panel.x, 13, MechHud.CYAN)

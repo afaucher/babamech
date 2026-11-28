@@ -117,3 +117,32 @@ Additions the build needed: a prop pose also carries `spin` (how far shoves have
 get a tree pit), the sign post stands 5.6 m along each block edge. Fallen props rest at the height of what is under
 them (sidewalk, median, garden bed, planter, road). Not done: `scripts/combat/` does not call the three verbs yet, and
 `MechController` has no `owner_peer`, so online every mech found by scanning counts as the host's.
+
+## 9. Station (R2.11, 2026-11-27)
+The top deck's tram stop (`scripts/world/city/city_station.gd`, `CityStation`; spec `city-spine.md` section 5, user pick
+cell 7 of `city-spine/grid_station.png`: "just some basic lights and benches ... arranged with a small wall"). Real
+fittings only: no game indicators.
+- **Where** (`CityStation.of(plan)`, a pure function of the plan; {} on every other deck and on a district on its own):
+  a 32 x 3.5 m platform against the rail lane's east edge, inside the `ramp_b` lane (the promenade side: no ramp there on
+  the top deck), centred in the spine segment nearest the deck's middle that keeps 8 m (`BOX_CLEAR`) from both junction
+  boxes, slid in 2 m steps if a floor cut, ramp or kept-clear ground is in the way. Its centre is the tram's stop. Seeds
+  1-12 all have one (tests/test_city_props.gd). Seed 1: s -61..-29 (stop -45), x -30..-26.5.
+- **What**: the platform 0.35 m high (paved top, kerb sides, a yellow tactile strip 0.15-0.6 m in from the track edge), a
+  low back wall 0.3 m thick along its far edge, 0.8 m over the platform (1.15 m over the street, with a cream coping),
+  the station's name board standing on the wall at the centre (4.4 m wide, top 2.6 m over the platform: the deck signs'
+  dark panel and sky-blue stripe, the name in CitySigns' cream stencil letters on the track face; letters A H L N O R S T
+  added to the face). The name: one of `CityStation.NAMES` from the plan's cosmetic seed through its own generator.
+- **Props**: 4 street lamps against the wall (arms over the platform) and 4 benches facing the track (two flank the
+  board), the ordinary `lamp` / `bench` items: knockable and shoved as any other, host-arbitrated by id. Appended after
+  every other item (roof units included) by `CityPropLayout.layout`, so no other id moves and they are in
+  `CityPropLayout.checksum` (the top deck's props checksum moves; stand-alone layouts are unchanged:
+  `GOLDEN_LAYOUT` f321076ebd6e98f1 still holds). The platform is a raised floor for fallen props
+  (`CityPropSim.floor_rects`).
+- **Collision** (`CityStation.collision`, StaticBody3D "StationBody" in node "Station" under `CityProps`, layer 1): a
+  platform box and a wall box per 4 m floor facet (both below the pin band: a mech steps onto them), a
+  `CityGeo.rounded_box` for the board (its top is in the band); meta `col_kind` "station" (collision survey). Not in the
+  district's "Collision" body, `tri_count`, stats or geometry digest (those pins stay).
+- **Keep-outs**: no other street prop, tree or sign stands on the platform (+0.5 m) or in the tram's swept path
+  (+0.5 m) (tested on seeds 1-12).
+- **Shots**: `docs/design/city-spine/station.png` (the tram at the platform, life lab) and `station_wide.png` (city lab
+  camera `station`).

@@ -6,12 +6,13 @@ extends Node3D
 ## dark, hazards bright), flat palette colour per face on CityPalette.surface_material(), no emission.
 ## Collision: one AnimatableBody3D per car (kinematic, moved to the tram's pose every frame, no physics simulation), on
 ## collision layer 1 like the district's own StaticBody3D, so a mech cannot walk through a tram. The one node-per-agent
-## exception in ambient life. A car wholly beyond an end wall (through a portal) is hidden.
+## exception in ambient life. A car wholly behind a tram tunnel's back plate (LifeTram.car_inside) is hidden. Each car's
+## collision is a rounded box (car_collision, collision survey R2.25a).
 ##
 ## When a car's shape is on (settle(), every _tram_step, after place() for every car; docs/design/ambient-life.md "Tram
 ## collision and crushing"):
 ##   * the position rule (LifeTram.car_solid, passed to place()): solid only while wholly at least END_CLEAR m inside both
-##     end walls, so it can never wedge a mech against an end wall or a portal's back plate, nor push it into the recess;
+##     end walls, so it can never wedge a mech against an end wall nor push it into a tram door;
 ##   * a car switching ON stays off while any character body overlaps it (it passes through, never launches one);
 ##   * pinch: a moving solid car pressing a character body ahead of it that does not make way (advances < MAKE_WAY of the
 ##     car's advance over CRUSH_HOLD s: pinned against a wall, a building, a prop) switches off and passes through it;
@@ -43,7 +44,7 @@ const JUMP := 0.5            ## s: a longer clock step is a jump (advance_to / r
 var bodies: Array[AnimatableBody3D] = []
 var _mms: Array = []                       ## [plain, hazard dark, hazard bright] MultiMesh, LifeTram.CARS instances each
 var _shown := PackedInt32Array()           ## car -> -1 hidden, else the lights state shown
-var _shapes: Array[CollisionShape3D] = []
+var _shapes: Array = []                    ## car -> its collision shapes (car_collision: a rounded box), switched together
 var _want := PackedByteArray()             ## car -> 1 when the position rule makes it solid (place())
 var _prev := PackedVector3Array()          ## car -> its world origin at the last settle()
 var _settled := false                      ## _prev / _last_t hold a previous settle()
@@ -112,18 +113,33 @@ func build(bounds: AABB, render_layer: int) -> void:
 		body.collision_layer = LAYER
 		body.collision_mask = 0
 		body.top_level = true
-		var cs := CollisionShape3D.new()
-		var box := BoxShape3D.new()
-		box.size = Vector3(LifeTram.CAR_W, LifeTram.CAR_H, LifeTram.CAR_L)
-		cs.shape = box
-		cs.position = Vector3(0.0, LifeTram.CAR_H * 0.5 + 0.1, 0.0)
-		cs.disabled = true
-		body.add_child(cs)
+		var shapes := car_collision(body)
+		for cs in shapes:
+			cs.disabled = true
 		add_child(body)
 		bodies.append(body)
-		_shapes.append(cs)
+		_shapes.append(shapes)
 		_rids.append(body.get_rid())
 	_query.exclude = _rids
+
+
+## One car's collision under `body` (the car's floor centre frame, +Z along the track): the 3 x 3.2 x 9 m box 0.1 m over
+## the floor as a CityGeo.rounded_box (two crossing boxes and corner cylinders, flush with the faces). Its top (3.3 m) is
+## in a mech's pin band (collision survey R2.25a): a square corner there pins a capsule walking round it, a rounded one
+## never does. The collision survey copies it (tests/test_collision_survey.gd).
+static func car_collision(body: StaticBody3D) -> Array[CollisionShape3D]:
+	return CityGeo.rounded_box(body, Transform3D.IDENTITY, Vector3(0.0, LifeTram.CAR_H * 0.5 + 0.1, 0.0),
+			Vector3(LifeTram.CAR_W, LifeTram.CAR_H, LifeTram.CAR_L))
+
+
+## Whether car i's collision is on.
+func car_on(i: int) -> bool:
+	return not (_shapes[i][0] as CollisionShape3D).disabled
+
+
+func _set_on(i: int, on: bool) -> void:
+	for cs: CollisionShape3D in _shapes[i]:
+		cs.disabled = not on
 
 
 ## Car i at `local` (deck-local, for the drawing) / `world` (for its body), in lights state `want` (-1: hidden: beyond an
@@ -156,20 +172,19 @@ func settle(now: float) -> void:
 		var adv := xf.origin - _prev[i] if moving_clock else Vector3.ZERO
 		_prev[i] = xf.origin
 		var want := _want[i] == 1
-		var shape := _shapes[i]
 		if space == null:
-			shape.disabled = not want
+			_set_on(i, want)
 			continue
-		var on := not shape.disabled
+		var on := car_on(i)
 		var moving := adv.length() > 1e-4
 		if not on:
 			if want and _touching(i, xf, space).is_empty():
-				shape.disabled = false          # nothing in it: on (never switched on around a body: no launch)
+				_set_on(i, true)          # nothing in it: on (never switched on around a body: no launch)
 			continue
 		if not moving:
 			_drop_presses(i)
 			if not want:
-				shape.disabled = true
+				_set_on(i, false)
 			continue
 		var dir := adv.normalized()
 		var ahead: Array[CharacterBody3D] = []
@@ -178,7 +193,7 @@ func settle(now: float) -> void:
 				ahead.append(b)
 		if not want:
 			# Into the END_CLEAR zone (or beyond a wall) while shoving a body toward the wall: it would be squeezed there.
-			shape.disabled = true
+			_set_on(i, false)
 			for b in ahead:
 				_crush(b, now)
 			_drop_presses(i)
@@ -215,7 +230,7 @@ func settle(now: float) -> void:
 			if int(_press[id][0]) == i and not seen.has(id):
 				_press.erase(id)
 		if off:
-			shape.disabled = true
+			_set_on(i, false)
 	_settled = true
 
 

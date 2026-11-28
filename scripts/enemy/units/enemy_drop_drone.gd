@@ -598,15 +598,10 @@ func _step_door_out(dt: float, space: PhysicsDirectSpaceState3D) -> void:
 			_air_open_at = float(st.get("open_at", 0.0))
 			air_times["passable"] = world.now if world != null else 0.0
 		elif _air_wait >= AIR_WAIT_MAX or str(st.get("state", "")) == "sealed" or st.is_empty():
-			# The door never opened (sealed, gone): the old in-deck appear point.
-			staged = false
-			_air_in = {}
-			var p0 := _exfil_pos
-			if ring != null:
-				var a := ring.world_to_arc(p0)
-				p0 = ring.arc_to_world(a.x, a.y, CRUISE_ALT)
-			global_position = p0
-			_drop_phase = PHASE_APPROACH
+			# The door never opened (sealed, gone): removed quietly inside the recess, never seen (playtest R2.24: no
+			# appearing in the open; it used to jump to an in-deck point at cruise height).
+			print("[enemy] %s withdrawn in its recess: air door %s never opened" % [target_id, str(_air_in.get("id", ""))])
+			_finish_exfil()
 			return
 		else:
 			_align_to_ring()
@@ -771,7 +766,9 @@ func _deploy_carried_squad() -> void:
 		else:
 			land_w = _drop_pos + Vector3(off2.x, 0.0, off2.y)
 		tr.up = up
-		tr.transform = Transform3D(base_b, _drop_pos + up * (8.5 + float(i) * 0.35))
+		# Out of the ship's own bay (playtest R2.24: never in the open with no ship over it), even when the descent stopped
+		# high over something under the hull; the jump-jet descent (deploy_from_air) takes it down from there.
+		tr.transform = Transform3D(base_b, muzzle_world(DROP_WEAPON) - up * (float(i) * 0.35))
 		squad.add_enemy(tr)
 		var stagger := float(i) * 0.11 + drng.randf_range(0.0, 0.06)
 		tr.deploy_from_air(land_w, spawn_deck, stagger)
@@ -797,9 +794,12 @@ func _finish_exfil() -> void:
 
 func _update_visuals(dt: float) -> void:
 	_hover_t += dt
+	_step_heat_look(dt)
 	if _body_pivot != null and is_instance_valid(_body_pivot):
-		_body_pivot.position.y = sin(_hover_t * 2.4) * 0.18
-		_body_pivot.rotation = Vector3(_pitch_anim, 0.0, 0.0)
+		var sh := heat_look.flier_offsets(0.6)   # shut down: a smaller sag and wobble than the drone (pivot only)
+		var calm := 1.0 - clampf(heat_look.slump, 0.0, 1.0)
+		_body_pivot.position.y = sin(_hover_t * 2.4) * 0.18 * calm + sh.x
+		_body_pivot.rotation = Vector3(_pitch_anim - sh.y, 0.0, sh.z)
 	if _bay_mi != null and is_instance_valid(_bay_mi):
 		_bay_mi.position.y = -0.35 * _bay_open
 	if _telegraph_fx != null:
@@ -810,9 +810,7 @@ func _update_visuals(dt: float) -> void:
 			_telegraph_fx.hide_telegraph()
 			_telegraph_fx.tick_only(dt)
 		_update_reveal_fx(dt)
-	if _status_bar != null:
-		var tag := "DROP" if ai_state == STATE_TELEGRAPH else ("OVERHEAT" if heat.shutdown else "")
-		_status_bar.refresh(core_hp_ratio(), heat_ratio, true, ai_state == STATE_TELEGRAPH, tag, _dead, dt, revealed)
+	_refresh_status_bar()
 
 
 func _spawn_death_debris(_cause: String) -> void:

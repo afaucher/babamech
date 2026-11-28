@@ -21,21 +21,31 @@ const OLD_WALLS_1 := "e4ec580da1956459"
 const OLD_PROPS_1 := "7e78d4e1e3db1a61"
 ## Re-captured 2026-11-23 (downtown pass 2: denser zones move the decks that have one; alleys stay off here). Was 1/0
 ## 92a3d4bb372dd86f, 1/2 786ca59d1bee770a, 4/1 2925158a146c945d, 4/2 3c79a9e486258d7e.
-const OLD_SECTION := {"1/0": "b56cf7ca1dc507da", "1/1": "5623a329a48debcb", "1/2": "023feee926d72a33",
-		"4/0": "3cc51e61b1918548", "4/1": "935eb4ebb35a9945", "4/2": "6d43a4e862b20439"}
+## Re-captured 2026-11-27 (40 m spine plan, Missions' SectionPlan: lanes 10 | 14 | 6 | 10, road / tram door gates, ramp slope runs 6 m past the boxes; and CityPlan ramps on the run, Environment). Was 1/0 b56cf7ca1dc507da,
+## 1/1 5623a329a48debcb, 1/2 023feee926d72a33, 4/0 3cc51e61b1918548, 4/1 935eb4ebb35a9945, 4/2 6d43a4e862b20439.
+const OLD_SECTION := {"1/0": "8abe77db841d1230", "1/1": "a21b670ba7926f74", "1/2": "fe149f0089fdd557",
+		"4/0": "e3be11e5ede261f9", "4/1": "e0f0319c3ba4d8a0", "4/2": "f27b04f479f44d8a"}
 ## Recaptured 2026-11-23 (map sealed: a portal's recess gets a back plate, CityDistrict._col_walls): section 4 deck 0 has
 ## a portal, so one shape more; with the plates left out it is exactly the old capture (PRE_PLATE_4_0, asserted in part A).
 ## Was "4/0": [1431, 214513608]; LIVE_COLLISION_4_0 was [1439, 2766744305].
 ## Recaptured 2026-11-26 (ramp-end collision, tests/test_ramp_stuck.gd: parapets as prisms ending square to the deck, end
 ## blocks CityDistrict.END_GUARD tall; same shape count). Was "4/0" [1432, 4221422576], PRE_PLATE_4_0 [1431, 214513608],
 ## LIVE_COLLISION_4_0 [1440, 1007613211].
-const OLD_COLLISION := {"alone/1": [420, 3589553106], "4/0": [1432, 488446493]}
-const PRE_PLATE_4_0 := [1431, 3909610205]
+## Re-pinned 2026-11-27 (collision survey R2.25a): rounded pin-band tiers and columns (CityGeo.rounded_box, 6 shapes for 1) and the
+## sinking ramps' mouth guards (CityDistrict.SUNK_DROP) changed the collision only; plan checksums and meshes are unchanged.
+## Re-pinned 2026-11-27 (bulkhead doors R2.11a): deck 0 lost its portal (and the portal's back plate) and gained two tram
+## doors with their tunnels (CityDistrict._col_walls: plates in 10 m pieces, a back plate each); PRE_PLATE_4_0 (the
+## collision without the portal plate) is gone with the portal. Was "4/0" [1634, 2689079825], PRE_PLATE_4_0
+## [1633, 1580616187], LIVE_COLLISION_4_0 [1642, 1395403234].
+## Re-pinned 2026-11-27 (40 m spine plan, Missions' SectionPlan: lanes 10 | 14 | 6 | 10, road / tram door gates, ramp slope runs 6 m past the boxes; and CityPlan ramps on the run, Environment). Was "4/0" [1671, 3903235972], LIVE_COLLISION_4_0 [1679, 2482041922].
+const OLD_COLLISION := {"alone/1": [545, 475125853], "4/0": [1697, 2561619783]}
 ## The same decks with the section's DEFAULT road forms (live), alleys off: captured 2026-11-23 (forms live).
-const LIVE_SECTION := {"1/0": "05a41d02d7e663dc", "1/1": "f94db9991bff3b73", "1/2": "66e58606d4bbe979",
-		"4/0": "93d0af293cbfd45c", "4/1": "531d6817a20610db", "4/2": "7122f53dca9b5d32"}
+## Re-captured 2026-11-27 (40 m spine plan, as OLD_SECTION). Was 1/0 05a41d02d7e663dc, 1/1 f94db9991bff3b73, 1/2
+## 66e58606d4bbe979, 4/0 93d0af293cbfd45c, 4/1 531d6817a20610db, 4/2 7122f53dca9b5d32.
+const LIVE_SECTION := {"1/0": "86966845b2f60509", "1/1": "bcd23b9295a5c6bf", "1/2": "78a93ae3fb780f93",
+		"4/0": "c17589c160591e12", "4/1": "53529bbf2aa9c91c", "4/2": "d91776b81451fe23"}
 ## Section 4 deck 0, alleys off, forms live: 8 more boxes than OLD_COLLISION["4/0"] (its courts' / bands' raised ground).
-const LIVE_COLLISION_4_0 := [1440, 3940746585]
+const LIVE_COLLISION_4_0 := [1709, 1423731005]
 
 
 ## Section seed s with its road forms explicitly off (every segment a street: the plan before part C).
@@ -103,9 +113,7 @@ func _part_a() -> void:
 	add_child(e)
 	e.build_deck(_sec_off(4), 0, {"alleys": 0.0})
 	eq(_col(e), OLD_COLLISION["4/0"], "A: section 4 deck 0 collision unchanged (forms off)")
-	var pre := _col(e, true)
-	eq([pre[0], pre[1]], PRE_PLATE_4_0, "A: section 4 deck 0 without its portal back plates: the collision before the map was sealed")
-	eq(pre[2], 1, "A: section 4 deck 0: one portal, one back plate")
+	eq(_col(e, true)[2], 2, "A: section 4 deck 0: two tram tunnels, two back plates")
 	e.queue_free()
 	var e2 := CityDistrict.new()
 	e2.with_rig = false
@@ -125,9 +133,9 @@ func _part_a() -> void:
 			check(minf(dh, 1.0 - dh) <= 0.0141 and absf(t.v / c.v - 1.0) <= 0.0701, "A: tint of %s stays close (%s)" % [id, t.to_html(false)])
 
 
-## [shape count, hash]; with `skip_plates`, [count, hash, plates] leaving out the portal back plates (a box
-## PORTAL_PLATE + 0.1 thick across the arc, more than GATE_RECESS - 0.5 m past an end of the extent).
-func _col(d: CityDistrict, skip_plates: bool = false) -> Array:
+## [shape count, hash]; with `plates`, [count, hash, tram tunnel back plates] (a box CityWalls.TUNNEL_PLATE thick across
+## the arc, more than TUNNEL_DEPTH - 1 m past an end of the extent).
+func _col(d: CityDistrict, plates_too: bool = false) -> Array:
 	var h := 0
 	var n := 0
 	var plates := 0
@@ -135,15 +143,14 @@ func _col(d: CityDistrict, skip_plates: bool = false) -> Array:
 	var col := d.get_node("Collision")
 	for c in col.get_children():
 		var cs := c as CollisionShape3D
-		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else (cs.shape as ConvexPolygonShape3D).points
-		if skip_plates and sz is Vector3 and absf((sz as Vector3).z - (CityDistrict.PORTAL_PLATE + 0.1)) < 0.001:
+		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else ((cs.shape as ConvexPolygonShape3D).points if cs.shape is ConvexPolygonShape3D else Vector2((cs.shape as CylinderShape3D).radius, (cs.shape as CylinderShape3D).height))
+		if plates_too and sz is Vector3 and absf((sz as Vector3).z - CityWalls.TUNNEL_PLATE) < 0.001:
 			var s := d.ring.world_to_arc(cs.transform.origin).y
-			if s > e.end.y + CityWalls.GATE_RECESS - 0.5 or s < e.position.y - CityWalls.GATE_RECESS + 0.5:
+			if s > e.end.y + CityWalls.TUNNEL_DEPTH - 1.0 or s < e.position.y - CityWalls.TUNNEL_DEPTH + 1.0:
 				plates += 1
-				continue
 		h = hash([h, cs.transform, sz])
 		n += 1
-	return [n, h, plates] if skip_plates else [n, h]
+	return [n, h, plates] if plates_too else [n, h]
 
 
 # --- Part B: alleys --------------------------------------------------------------------------------------
@@ -352,9 +359,22 @@ func _alley_routes() -> void:
 
 ## Re-captured 2026-11-23 (downtown pass 2: denser zones, new tower looks, alleys beside pillars). Was 1/0 [117826459,
 ## 287867], 4/1 [4137878908, 344416].
-const DORMANT := {"1/0": [798130471, 267705], "4/1": [1892246101, 331864]}     ## digest, triangles after parts A + B
+## Re-captured 2026-11-27 (spine markings, city-spine.md section 3: one track on deck 0 only, verge / promenade / service
+## roads, per-roadway zebras, arrows; taken with the bulkhead-door work in flight in the same tree). Was 1/0 [798130471,
+## 267705], 4/1 [1892246101, 331864]; live 1/0 [1345323907, 271361], 4/1 [2971505345, 331222].
+## Re-captured 2026-11-27 (spine trees on the planted medians / verges only, no street prop on a lift door's apron:
+## CityPropLayout._spine_trees; the furniture and prop triangles follow the layout). Was 1/0 [1784627121, 263134], 4/1
+## [3109733868, 320358]; live 1/0 [1978335612, 266766], 4/1 [2576186812, 319705].
+## Re-captured 2026-11-27, two causes in one tree: the 40 m spine plan (as OLD_SECTION) and the lift cores' 10 x 9 m
+## doorway with the shut doors drawn into the block mesh (lift car subagent, CityBuildings._pillar / _lift_doorway), plus
+## the alley back doors 0.2 m out (z-fight). Was 1/0 [1346079832, 262056], 4/1 [925227450, 321166]; live 1/0
+## [3713520207, 265688], 4/1 [1343367963, 320513].
+## Re-captured 2026-11-27 (apartment corner z-fight): an apartment's base band and first-floor trim band drop their hidden
+## back faces (CityBuildings._slab `wrapped`), 16 triangles per apartment. Was 1/0 [644636675, 262556], 4/1
+## [3139878046, 323936]; live 1/0 [1050051597, 265210], 4/1 [1668692573, 326508].
+const DORMANT := {"1/0": [3346690439, 262508], "4/1": [4115937808, 323744]}     ## digest, triangles after parts A + B
 ## The same decks with the section's default (live) forms: captured 2026-11-23 (forms live; 1/0 has 4 form segments, 4/1 2).
-const LIVE_DRAWN := {"1/0": [1345323907, 271361], "4/1": [2971505345, 331222]}
+const LIVE_DRAWN := {"1/0": [233661903, 265162], "4/1": [3118981663, 326316]}
 
 
 static func _mix(s: int) -> Dictionary:
@@ -723,7 +743,9 @@ func _forms_built(s: int) -> void:
 ## road_graph() is the vehicle graph and did not change when walk_graph() was added (2026-11-23, forms live): hashes of
 ## var_to_bytes(road_graph()) captured with walk_graph added (road_graph's code untouched), "section/deck" (default forms,
 ## live) and "alone/seed".
-const ROAD_PINS := {"1/0": 2808164362, "4/1": 4162149389, "7/2": 4160505198, "alone/1": 43452835, "alone/5": 274673334}
+## Re-captured 2026-11-27 for the sections (40 m spine plan; the ramp cut no longer reaches into its cross road, so that
+## road keeps its edge); the stand-alone pins are unchanged. Was 1/0 2808164362, 4/1 4162149389, 7/2 4160505198.
+const ROAD_PINS := {"1/0": 1392671449, "4/1": 2749850883, "7/2": 1653506716, "alone/1": 43452835, "alone/5": 274673334}
 
 const WALK_FORMS := ["street", "lane", "pedestrian", "none", "alley"]
 

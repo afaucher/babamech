@@ -20,7 +20,7 @@ extends NetTest
 ##   g revive   deferred by the user's decision (2026-11-22): always skipped
 ##   x win      MissionFlow, objectives (PLAN: every deck a sweep, no reserve waves): the crew kills every remaining enemy
 ##              (round robin, real attacker-decided hits), the host's mech stands on every deck (each sweep done), the last
-##              client's mech holds the extraction portal (PLAN.hold s), the host decides won; every machine went through the
+##              clients hold the extraction zone (PLAN.hold s), then walk into the exit bay with the host (R2.10), the host decides won; every machine went through the
 ##              same mission.state sequence and shows MISSION COMPLETE. When it runs, h is the mission end it causes
 ##   f prop     a client asks for a lamp on the entry deck to topple (CityProps.request, the host decides): every machine
 ##              ends with the same props snapshot on EVERY deck (skipped, with what the run saw, while CityProps events
@@ -90,7 +90,13 @@ func run_host() -> void:
 	if not await _judge_step("city", city):
 		return
 	done_steps.append("b city (%s)" % ("stack" if bool(city["stack"]) else "district"))
-	# c. walk
+	# c. walk: the crew starts in the entry bay (city-spine.md §4), whose door opens at the release (shut for the barrier,
+	# MissionFlow._entry_release): walk once it is passable here. The schedule is on the shared clock: every machine's
+	# door is passable by then too.
+	var w: MissionWorld = td.stack.mission if td.stack != null else null
+	if w != null and bool(w.entry_door().get("ok", false)):
+		check(await until(func() -> bool: return bool(w.source_state(MissionWorld.ENTRY_ID)["passable"]), 15.0),
+			"the entry door is passable before the walk")
 	var at := Session.host_time() + LEAD
 	for p in _clients():
 		command(p, "walk", {"at": at})
@@ -333,7 +339,7 @@ func _enemy_diffs(mine: Dictionary, k: String, wreck_id: String) -> PackedString
 
 ## Step x on the host (folds into h): the crew clears the decks with real kills (every live enemy, shared round robin
 ## among the machines, each a lethal hit its attacker decides: CombatWorld.resolve_hit, CombatNet carries a client's to
-## the host), the host's mech stands on every deck for its sweep, the last client's mech holds the extraction zone (owner moves of their own mechs, as
+## the host), the host's mech stands on every deck for its sweep, the clients' mechs hold the extraction zone and then (with the host's) stand in the exit bay (owner moves of their own mechs, as
 ## test_net_mission_flow does: no path-finding walk), and the host's MissionFlow decides won. Every machine records its
 ## mission.state sequence (host: its rules each frame; clients: every mission_state_changed) from the step's start;
 ## they must all be the same and end won, with the MISSION COMPLETE banner. The host's MissionFlow then ends the mission
@@ -389,11 +395,18 @@ func _host_win() -> bool:
 	print("[W9] clear (link %s): %d enemies killed by %d machines, objective: %s" % [link, live.size(), share.size(), rules.text()])
 	td.mech.global_position = td.stack.from_deck_arc(int(td.stack.section.entry["deck"]), 0.0, 0.0, 0.5)   # out of the zone
 	td.mech.velocity = Vector3.ZERO
-	# Hold: the last client's own mech in the zone for the hold.
+	# Hold: every client follows the objective marker (the zone, then the exit bay once the exit is open: R2.10's
+	# walk-out); the host walks into the exit bay once the door is ordered open.
 	var runner := _clients()[_clients().size() - 1]
-	command(runner, "extract")
+	for p in _clients():
+		command(p, "extract")
+	if not check(await until(func() -> bool: return rules.exit_open(), float(PLAN["hold"]) + 15.0),
+			"the hold completes from the clients' mechs (%s)" % str(rules.state())):
+		return false
+	td.mech.global_position = mf.world.exit_bay_slots(peers)[0].origin
+	td.mech.velocity = Vector3.ZERO
 	if not check(await until(func() -> bool: return rules.outcome == "won", float(PLAN["hold"]) + 15.0),
-			"the host decides won from peer %d's mech" % runner):
+			"the host decides won from peer %d's mech (%s)" % [runner, str(mf.crew_facts())]):
 		return false
 	await sleep(0.6)
 	var mine := _flow_report()
@@ -595,6 +608,13 @@ func _walk(at: float) -> Dictionary:
 	await until(func() -> bool: return Session.host_time() >= at, 5.0)
 	var start := m.global_position
 	m.move_input = Vector2(0, 1)
+	# In the entry bay: out through the door (the bay sits off the door's centre beside the tram tunnel, so a straight walk
+	# from the outer column meets the wall): toward a point 2 m out on the door's centre line, without turning.
+	var w: MissionWorld = td.stack.mission if td.stack != null else null
+	if w != null and bool(w.bay_contains(MissionWorld.ENTRY_ID, start)["inside"]):
+		var fr: Transform3D = w.entry_door()["frame"]
+		var dir := m.global_transform.basis.inverse() * (fr * Vector3(0.0, 0.0, 2.0) - start)
+		m.move_input = Vector2(dir.x, -dir.z).normalized()
 	await until(func() -> bool: return Session.host_time() >= at + WALK_T, WALK_T + 2.0)
 	m.move_input = Vector2.ZERO
 	await until(func() -> bool: return Session.host_time() >= at + WALK_T + SETTLE_T, SETTLE_T + 2.0)
@@ -748,13 +768,17 @@ func _flow_report() -> Dictionary:
 		"banner": str((hs.get("banner", {}) as Dictionary).get("title", ""))}
 
 
-## Client: keep its own mech in the extraction hold's zone (the marker's spot on its deck) until the host's won arrives.
+## Client: keep its own mech on the objective marker (the hold's zone, then the exit bay once the exit is open: R2.10)
+## until the host's won arrives.
 func _extract() -> bool:
 	var mk := td.mission.rules.marker()
 	if not check(not mk.is_empty(), "the extraction marker is here"):
 		return false
 	var t0 := wall()
-	while td.mission.rules.outcome == "" and wall() < t0 + float(PLAN["hold"]) + 12.0:
+	while td.mission.rules.outcome == "" and wall() < t0 + float(PLAN["hold"]) + 30.0:   # the hold, then the walk-out (R2.10)
+		var m2 := td.mission.rules.marker()   # the zone, then (the exit open) the exit bay
+		if not m2.is_empty():
+			mk = m2
 		var here := td.stack.to_deck_arc(td.mech.global_position)
 		if int(here["deck"]) != int(mk["deck"]) or Vector2(float(here["x"]), float(here["s"])).distance_to(
 				Vector2(float(mk["x"]), float(mk["s"]))) > 5.0:

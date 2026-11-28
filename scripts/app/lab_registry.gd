@@ -25,6 +25,7 @@ const SUBJECTS := [
 	{"id": "menu_bg", "label": "Menu backdrop (observation hall, hull window, ring)", "path": "res://scripts/ui/menu/menu_backdrop.gd"},
 	{"id": "ring_walk", "label": "Ring walk (S1: controller + IK gait)", "path": "res://scripts/mech/motion/ring_walk_lab.gd"},
 	{"id": "thrusters", "label": "Thrusters (S2: jump, hover, emergency burn, overheat)", "path": "res://scripts/mech/motion/thruster_lab.gd"},
+	{"id": "hover", "label": "Hover flight (Wasp draft: fly, hold height, land, overheat)", "path": "res://scripts/mech/motion/hover_lab.gd"},
 	{"id": "section", "label": "Mission section (decks, zones, pillars, transit)", "path": "res://scripts/world/section/section_lab.gd"},
 	{"id": "city", "label": "City district (pristine urban, seeded)", "path": "res://scripts/world/city/city_lab.gd"},
 	{"id": "life", "label": "Ambient life (civilians: calm, panic, killed)", "path": "res://scripts/world/life/life_lab.gd"},

@@ -8,7 +8,9 @@ extends TestCase
 ##    the zone bar shows, progress rises, the flag is raised in the world (MissionWorld.flag_raised) and its alarm wave is
 ##    ordered: open_source on the world with the order's open_at, the "Reinforcements, ..." line on the HUD. Then each
 ##    defend (its waves ordered and beaten; nothing spawns while antigravity's spawn_wave is missing, the director counts
-##    them beaten after GRACE), then the hold: "won", banner MISSION COMPLETE.
+##    them beaten after GRACE), then the hold (R2.10: "Hold the exit", the zone bar in percent, the exit door shut), the
+##    exit door opening at its end with the ally's lines once each, "Exit through the door" and the EXIT waypoint; standing
+##    in the zone does not win, the exit bay does: "won", banner MISSION COMPLETE.
 
 const SEED := 7
 const PLAN := {"hold": 6.0}
@@ -154,12 +156,35 @@ func _won() -> void:
 	var c: Vector2 = (h["params"]["zone"] as Rect2).get_center()
 	td.mech.global_position = td.stack.from_deck_arc(int(h["deck"]), c.x, c.y, 0.5)
 	td.mech.velocity = Vector3.ZERO
-	if not check(await _until(func() -> bool: return rules.outcome != "", 30.0, true), "the hold ends the mission"):
+	await _seconds(1.0)
+	var zb: Dictionary = mf.hud_model.build().get("zone", {})
+	eq(str(zb.get("label", "")), "HOLDING THE EXIT", "the zone bar: holding the exit")
+	check(bool(zb.get("percent", false)) and not bool(zb.get("countdown", true)), "the zone bar in percent, no seconds")
+	check(str(rules.text()).begins_with("Hold the exit: "), "objective: Hold the exit (%s)" % rules.text())
+	eq(str(mf.world.source_state(MissionWorld.EXIT_ID)["state"]), "shut", "the exit door is shut during the hold")
+	if not check(await _until(func() -> bool: return rules.exit_open(), 30.0, true), "the hold opens the exit"):
+		return
+	eq(rules.outcome, "", "the hold done: the crew still has to walk out")
+	check(await _until(func() -> bool: return bool(mf.world.source_state(MissionWorld.EXIT_ID)["passable"]), 6.0, true),
+		"the exit door opens")
+	var hm := mf.hud_model.build()
+	eq(str(hm["objective"]), "Exit through the door", "objective: Exit through the door")
+	eq(str((hm["waypoint"] as Dictionary).get("label", "")), "EXIT", "the waypoint points at the exit")
+	var al: Array = hm.get("alerts", [])
+	check(al.any(func(a: Dictionary) -> bool: return bool(a.get("ally", false)) and str(a["text"]) == "Door's open, go!"),
+		"the ally's line shows in the alert strip (%s)" % str(al))
+	eq(mf.hud_model.ally_said(), ["Working on the door", "Almost there", "Door's open, go!"], "the ally's lines, once each")
+	await _seconds(1.0)
+	eq(rules.outcome, "", "standing in the zone does not win")
+	var ex := mf.world.exit_door()
+	td.mech.global_position = ex["center"]
+	td.mech.velocity = Vector3.ZERO
+	if not check(await _until(func() -> bool: return rules.outcome != "", 3.0, true), "walking into the exit bay ends the mission"):
 		return
 	eq(rules.outcome, "won", "won (%s)" % str(rules.state()))
 	await _seconds(0.3)
 	eq(str(mf.hud_model.build()["banner"].get("title", "")), "MISSION COMPLETE", "banner MISSION COMPLETE")
-	check(float(mf.world.portal_progress) >= 0.99, "the portal is fully charged")
+	eq(mf.hud_model.ally_said().size(), 3, "no ally line repeated")
 	print("objectives: %d wave orders" % mf.opened.size())
 	var order := {"wave": "d1_w2", "deck": 1, "source": "d1_gate_s0_1", "open_at": 1234.56, "max_units": 8}
 	print("objectives: sizes (var_to_bytes) mission.state %d B, mission.wave order %d B, JSON state %d chars" % [

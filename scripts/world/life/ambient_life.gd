@@ -65,6 +65,7 @@ var _su_events: Array = []    ## life.* events heard while setting up, replayed 
 var debug_people_cap := LifePlan.PEOPLE_CAP   ## the people cap each deck passes to LifePlan (the crowd lab raises it)
 var debug_profile := false    ## true: _process measures itself into debug_us
 var debug_us := 0.0           ## usec the last _process took (debug_profile only)
+var _tram_doors: Array = []   ## every set_tram_door call on this machine [[end, open, at]], replayed after a (re)setup
 
 
 func net_fields() -> Dictionary:
@@ -77,6 +78,8 @@ func net_fields() -> Dictionary:
 		"_su_stack": Net.LOCAL, "_su_k": Net.LOCAL, "_su_unit": Net.LOCAL, "_su_units": Net.LOCAL, "_su_events": Net.LOCAL,
 		# crowd lab only (debug hooks): a local presentation override, never simulated for others nor sent
 		"debug_people_cap": Net.LOCAL, "debug_profile": Net.LOCAL, "debug_us": Net.LOCAL,
+		# the host's tram door calls (MissionWorld); a client's do nothing (it gets "life.door" and the snapshot)
+		"_tram_doors": Net.OWNER,
 	}
 
 
@@ -135,6 +138,7 @@ func setup(d: CityDistrict, people_count: int = -1, pod_count: int = -1, cart_co
 	while not dk.setup_chunk():
 		pass
 	dk.setup_finish()
+	_replay_tram_doors()
 
 
 ## A deck's LifeDeck (child "Deck<k>"), wired to this node: its signals pass on (stack ids for civilian_killed), what it
@@ -163,7 +167,7 @@ func _on_decided(kind: String, data: Dictionary) -> void:
 
 
 ## One LifeDeck for every deck of a built CityStack (child "Deck<k>"), counts per deck as for a district (60 people,
-## 12 pods, 4 carts by deck area, the same caps) and one tram per deck. Every deck's CityProps is bound (props going down
+## 12 pods, 4 carts by deck area, the same caps) and the tram on the top deck. Every deck's CityProps is bound (props going down
 ## are threats on their own deck). Counts < 0: the defaults.
 func setup_stack(s: CityStack, people_count: int = -1, pod_count: int = -1, cart_count: int = -1) -> void:
 	setup_stack_begin(s, people_count, pod_count, cart_count)
@@ -231,6 +235,7 @@ func _setup_stack_chunk() -> void:
 	now = units[0].now if not units.is_empty() else 0.0
 	_route_pushers()
 	_stack_views()
+	_replay_tram_doors()
 	var held := _su_events
 	_su_events = []
 	for e: Array in held:
@@ -671,6 +676,52 @@ func _on_impact(point: Vector3, _radius: float, explosive: bool, _is_energy: boo
 
 func _on_prop_moved(_id: int, _type: String, _kind: int, world_pos: Vector3, _speed: float) -> void:
 	raise_threat(world_pos, 15.0, 1)
+
+
+# --- The tram's doors (docs/design/city-spine.md section 5) -------------------------------------------------------
+
+## THE entry point for the tram doors (MissionWorld): tram door `end` ("s0": the one trains come in through, "s1": the
+## one they leave by) starts to open (open = true; fully open LifeTram.DOOR_OPEN s later) or shuts at shared-clock time
+## `at`. No call: both open. Host-arbitrated: on the host (or offline) it is recorded on the top deck's tram and sent to
+## the crew as "life.door"; a client's call does nothing (it gets the host's event, a joiner the snapshot), so calling
+## it on every machine is harmless. Kept and replayed if the life is set up again (or is still being set up). The train
+## moves toward a tram door only while it is fully open, waits END_CLEAR m short of a shut one, and no train comes in
+## while s0 is shut.
+func set_tram_door(end: String, open: bool, at: float) -> void:
+	if end != "s0" and end != "s1":
+		push_warning("AmbientLife.set_tram_door: unknown door %s" % end)
+		return
+	_tram_doors.append([end, open, at])
+	if _su_stack != null:
+		return                    # applied when the setup finishes (_replay_tram_doors)
+	for u in units:
+		u.set_tram_door(end, open, at)
+
+
+func _replay_tram_doors() -> void:
+	for c: Array in _tram_doors:
+		for u in units:
+			u.set_tram_door(str(c[0]), bool(c[1]), float(c[2]))
+
+
+## The top deck's tram (null: none: no stack or a district on its own).
+func tram() -> LifeTram:
+	for u in units:
+		if u.tram != null:
+			return u.tram
+	return null
+
+
+## Whether tram door `end` is open (or opening) now, by the calls so far (no tram: true).
+func tram_door_open(end: String) -> bool:
+	var tr := tram()
+	return tr == null or tr.door_open(end, now)
+
+
+## Whether no tram car is in door `end`'s doorway now (MissionWorld: shut a tram door only then; no tram: true).
+func tram_door_clear(end: String) -> bool:
+	var tr := tram()
+	return tr == null or tr.door_clear(end, now)
 
 
 # --- Network ---------------------------------------------------------------------------------------------

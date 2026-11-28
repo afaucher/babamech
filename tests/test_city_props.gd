@@ -26,6 +26,7 @@ func setup() -> void:
 	_tree_tint()
 	await _grid_matches_brute_force()
 	await _roof()
+	await _station()
 	finish()
 
 
@@ -609,3 +610,91 @@ func _roof_first(p: CityProps, type: String) -> int:
 		if CityPropSim.is_roof(it) and it["type"] == type:
 			return int(it["id"])
 	return -1
+
+
+## The tram station (CityStation; docs/design/city-spine.md section 5): on every section's top deck (seeds 1-12) and only
+## there, a 32 x 3.5 m platform against the rail lane's east edge in the ramp_b lane, BOX_CLEAR m clear of both junction
+## boxes, from plan data alone (the same twice); its 4 lamps and 4 benches are the layout's last items (no other id
+## moves), standing on the platform at its height; no other prop or sign stands on the platform nor in the tram's swept
+## path (+0.5 m); the platform is a raised floor for fallen props. Built: a "Station" node under the props with a solid
+## platform, wall and board (col_kind "station").
+func _station() -> void:
+	var names := {}
+	for seed_ in range(1, 13):
+		var sec := SectionPlan.make({"seed": seed_})
+		var p0 := CityPlan.for_deck(sec, 0)
+		var st := CityStation.of(p0)
+		var what := "seed %d station" % seed_
+		if not check(not st.is_empty(), "%s: the top deck has one" % what):
+			continue
+		for k in range(1, sec.deck_count):
+			check(CityStation.of(CityPlan.for_deck(sec, k)).is_empty(), "%s: none on deck %d" % [what, k])
+		eq(JSON.stringify(CityStation.of(CityPlan.for_deck(SectionPlan.make({"seed": seed_}), 0))), JSON.stringify(st), "%s: the same from the plan twice" % what)
+		var rail := sec.lane_x("rail")
+		var rb := sec.lane_x("ramp_b")
+		var r: Rect2 = st["rect"]
+		near(r.position.x, rail.y, 1e-6, "%s: against the rail lane's east edge" % what)
+		check(r.end.x <= rb.y + 1e-6, "%s: inside the ramp_b lane" % what)
+		near(r.size.y, CityStation.LEN, 1e-6, "%s: 32 m long" % what)
+		near(r.size.x, CityStation.DEPTH, 1e-6, "%s: 3.5 m deep" % what)
+		var boxed := true
+		for road: Dictionary in p0.roads_s:
+			if r.position.y < float(road["b"]) + CityStation.BOX_CLEAR - 1e-6 and r.end.y > float(road["a"]) - CityStation.BOX_CLEAR + 1e-6:
+				boxed = false
+		check(boxed, "%s: %.0f m clear of every junction box" % [what, CityStation.BOX_CLEAR])
+		names[str(st["name"])] = true
+		var items := CityPropLayout.layout(p0)
+		var tail := items.slice(items.size() - 8)
+		var lamps := 0
+		var benches := 0
+		var on := true
+		for it: Dictionary in tail:
+			lamps += 1 if it["type"] == "lamp" else 0
+			benches += 1 if it["type"] == "bench" else 0
+			on = on and r.has_point(Vector2(it["x"], it["s"])) and absf(float(it["h"]) - CityStation.H) < 1e-6
+		check(lamps == 4 and benches == 4 and on, "%s: 4 lamps and 4 benches on the platform at its height (%d, %d)" % [what, lamps, benches])
+		var ids_ok := true
+		for i in items.size():
+			ids_ok = ids_ok and int(items[i]["id"]) == i
+		check(ids_ok, "%s: layout ids still 0..n-1" % what)
+		var bad := []
+		var tx := float(st["track_x"])
+		for it: Dictionary in items.slice(0, items.size() - 8):
+			var at := Vector2(it["x"], it["s"])
+			if CityPropSim.is_roof(it):
+				continue
+			if r.grow(0.5).has_point(at) or (absf(at.x - tx) < LifeTram.CAR_W * 0.5 + 0.5 and p0.extent.has_point(at)):
+				bad.append([it["type"], at])
+		for sg: Dictionary in CitySigns.layout(p0, RingFrame.new(p0.p("radius"))):
+			var at: Vector2 = sg["at"]
+			if sg["surface"] != "hang" and (r.grow(0.5).has_point(at) or absf(at.x - tx) < LifeTram.CAR_W * 0.5 + 0.5):
+				bad.append(["sign", at])
+		eq(bad, [], "%s: nothing else stands on the platform or in the tram's path" % what)
+		var floors := CityPropSim.floor_rects(p0)
+		check(CityPropSim.floor_at(floors, r.get_center().x, r.get_center().y) >= CityStation.H - 1e-6, "%s: a fallen prop lies on the platform" % what)
+		if seed_ == 1:
+			print("[station] seed 1: %s, s %.1f..%.1f (stop %.1f), x %.2f..%.2f, layout %s" % [st["name"], r.position.y, r.end.y,
+					float(st["stop_s"]), r.position.x, r.end.x, CityPropLayout.checksum(items)])
+	check(names.size() >= 3, "station names vary with the seed (%s)" % str(names.keys()))
+	# Built: the props' Station node, solid.
+	var d := CityDistrict.new()
+	d.with_rig = false
+	add_child(d)
+	d.build_deck(SectionPlan.make({"seed": 1}), 0)
+	var sn := d.props.get_node_or_null("Station")
+	if check(sn != null, "the top deck's props carry the Station node"):
+		var body := sn.get_node("StationBody") as StaticBody3D
+		var shapes := body.get_children()
+		check(shapes.size() > 10 and body.collision_layer == 1, "the station is solid (%d shapes, layer %d)" % [shapes.size(), body.collision_layer])
+		var tagged := true
+		for c in shapes:
+			tagged = tagged and str((c as Node).get_meta("col_kind", "")) == "station"
+		check(tagged, "every station shape carries col_kind station")
+		await frames(2)
+		var st: Dictionary = d.props.station
+		var c := Vector2((float(st["x0"]) + float(st["x1"])) * 0.5 - 1.0, float(st["stop_s"]) + 6.0)
+		var q := PhysicsRayQueryParameters3D.create(d.to_global(d.ring.arc_to_world(c.x, c.y, 3.0)), d.to_global(d.ring.arc_to_world(c.x, c.y, -1.0)))
+		var hit := d.get_world_3d().direct_space_state.intersect_ray(q)
+		check(not hit.is_empty() and absf(d.ring.world_to_arc(d.to_local(hit["position"])).z - CityStation.H) < 0.05, "a ray down onto the platform stops at its top (%s)" % str(hit.get("position", "none")))
+	d.queue_free()
+	await frames(1)

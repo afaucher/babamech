@@ -3,8 +3,9 @@ extends RefCounted
 ## Low-poly MeshKit builders & invader livery for every enemy unit (docs/design/enemies.md §2, §7).
 ## Concept "repainted civic": the habitat's own civil-defence robots repainted in the invaders' slate / brick livery (L1),
 ## municipal details (service lamps, number plates, hatches, hazard bands) still showing under the paint, plus a small
-## "Descent" emblem stencil. Cosmetic only: flat-shaded vertex colours using LowPolyMaterials.materials() ([matte, glow]),
-## cached by part id. Every part is a set of closed primitives (tests/test_geometry_audit.gd: watertight, outward winding).
+## "Descent" emblem stencil. Cosmetic only: flat-shaded vertex colours using EnemyGlow.materials() (LowPolyMaterials'
+## with the lit surface swapped for EnemyGlow's heat-driven shader), cached by part id. Every part is a set of closed
+## primitives (tests/test_geometry_audit.gd: watertight, outward winding).
 ## Detail level: the "B" pass of docs/design/enemy-detail/ (adopted 2026-11-22): plates on the parts' own facets over a
 ## dark slate under-plate (panel line), hooded optics, collars, hub caps, hinges, pistons, cables, slatted vents, lugs,
 ## nothing thinner than ~2.5 cm (helpers _panel / _vent / _piston / _hose / _optic_hood). Includes the gunship_* and
@@ -41,7 +42,7 @@ static func mesh(part: String) -> ArrayMesh:
 	if not rid.is_empty():
 		var rk := MeshKit.new()
 		_trooper(rk, rid[0], rid[1], rid[2])
-		_cache[part] = rk.commit(LowPolyMaterials.materials())
+		_cache[part] = rk.commit(EnemyGlow.materials())
 		return _cache[part]
 	var tid := trooper_id(part)
 	if not tid.is_empty() and part != trooper_part(tid[0], tid[1]):   # "trooper_rifle" / "trooper_at" = variant 0
@@ -82,7 +83,7 @@ static func mesh(part: String) -> ArrayMesh:
 				k.box(Vector3.ONE, ARMOR_DARK)
 			else:
 				_trooper(k, tid[0], tid[1])
-	var m := k.commit(LowPolyMaterials.materials())
+	var m := k.commit(EnemyGlow.materials())
 	_cache[part] = m
 	return m
 

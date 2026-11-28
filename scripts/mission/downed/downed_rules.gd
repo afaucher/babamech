@@ -8,17 +8,26 @@ extends RefCounted
 ##
 ##   downed       a core component destroyed: stays where it fell, no movement, no weapons, takes no damage, enemies
 ##                drop it (PlayerTarget.is_hittable() is false). No automatic respawn.
-##   revive       a standing crewmate's repair drone on duty, within its radius (15 m of the launcher), beams the wreck:
+##   revive       a standing crewmate's repair drone on duty, within its radius (catalog `radius`, 30 m of the launcher since 2026-11-26), beams the wreck:
 ##                REVIVE_TIME s of beam stands it up IN PLACE with REVIVE_STRUCTURE (destroyed components rebuilt at 30 %,
 ##                every other one at least 30 %), heat 0, shutdown cleared, ammo unchanged, REVIVE_INVULN s of
 ##                invulnerability. Not a death. The beam stopping drains the progress over REVIVE_DECAY s (a full bar).
 ##                Cost: the drone's own (one of its charges launched it; the revive takes no extra charge and no life).
+##   self-revive  (R2.9, user decision 2026-11-26: REVERSES the old "a downed mech's own drone never revives it") going
+##                down, the mech's own rack (owner's machine, bots too) launches ONE repair drone when a repair-drone slot
+##                has a charge and an intact back mount; that drone survives its launcher being down and beams it like a
+##                crewmate's (REVIVE_TIME s, same result, logged by=self). CombatWorld.self_reviving(target_id) is true
+##                while it is out and has not revived it yet. Redeploy stays allowed (the drone dies when its launcher
+##                starts redeploying). A self-revive is a revive (no death) and never a revive given to someone else.
 ##   respawn      the downed pilot holds the `respawn` action (SPACE) for RESPAWN_HOLD s (release resets), then is
 ##                REDEPLOYING for RESPAWN_PENALTY s (out of the fight, no deck), then stands at the arrival point of the
-##                deck the crew's lead pilot is on with RESPAWN_STRUCTURE on every component, heat 0, ammo unchanged. A death.
+##                deck the crew's lead pilot is on FULLY restored (R2.12, user 2026-11-26): RESPAWN_STRUCTURE (1.0: every
+##                component at full, destroyed ones rebuilt and their weapons usable), heat 0, shutdown cleared, and with
+##                RESPAWN_REARM every limited-ammo weapon and the repair-drone charges refilled (WeaponRack.refill_ammo,
+##                applied by the owner in DownedCrew's on_respawn). A death.
 ##   bots         a host-owned bot cannot hold a key: it waits BOT_REVIVE_WAIT s when a standing crewmate can revive it
-##                (BOT_ALONE_WAIT s otherwise), then takes the respawn path (same penalty, same structure). It keeps waiting
-##                while a revive is in progress.
+##                (BOT_ALONE_WAIT s otherwise), then takes the respawn path (same penalty, same full result). It keeps
+##                waiting while a revive is in progress and while its own drone is self-reviving it (bot_wait_for).
 
 const REVIVE_TIME := 4.0          ## s of continuous drone beam that stands a downed mech up in place
 const REVIVE_DECAY := 2.0         ## s for a full revive bar to drain once the beam stops (progress decays, not resets)
@@ -26,7 +35,8 @@ const REVIVE_STRUCTURE := 0.3     ## share of max HP: destroyed components rebui
 const REVIVE_INVULN := 2.0        ## s of no damage after a revive (not killed while standing up)
 const RESPAWN_HOLD := 3.0         ## s the downed pilot holds the respawn key
 const RESPAWN_PENALTY := 5.0      ## s redeploying (out of the fight) after the hold
-const RESPAWN_STRUCTURE := 0.5    ## share of max HP every component has after a respawn (destroyed ones rebuilt too)
+const RESPAWN_STRUCTURE := 1.0    ## share of max HP every component has after a respawn: FULL (destroyed ones rebuilt too)
+const RESPAWN_REARM := true       ## a respawn refills every limited-ammo weapon and the repair-drone charges
 const BOT_REVIVE_WAIT := 8.0      ## s a downed bot waits for a revive when a standing crewmate can revive it
 const BOT_ALONE_WAIT := 2.0       ## s a downed bot waits when nobody standing can revive it
 ## Respawn next to an ACTIVE defend / hold on the deck the pilot went down on (coordinator, 2026-11-24, from bot
@@ -63,6 +73,13 @@ static func key_name() -> String:
 ## Seconds a downed bot waits before it takes the respawn path.
 static func bot_wait(reviver_available: bool) -> float:
 	return BOT_REVIVE_WAIT if reviver_available else BOT_ALONE_WAIT
+
+
+## The down_time threshold for a downed bot now (PlayerTarget.revive_wait): while its own drone is self-reviving it,
+## never yet (INF: it waits); otherwise bot_wait. When the self-revive ends without a revive the normal wait applies
+## again (measured from the down, so a bot past it redeploys at once).
+static func bot_wait_for(self_reviving: bool, reviver_available: bool) -> float:
+	return INF if self_reviving else bot_wait(reviver_available)
 
 
 ## Revive progress drained per second once the beam stops.

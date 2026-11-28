@@ -187,6 +187,7 @@ func _build_visuals() -> void:
 	_pivot = Node3D.new()
 	_pivot.name = "TrooperPivot"
 	add_child(_pivot)
+	heat_look.optic_heat = 1.0   # few troopers carry fins (jump-pack vents only): the visor carries the heat ramp too
 	var mi := EnemyMeshes.instance(_mesh_part_id())
 	mi.name = "Body"
 	_pivot.add_child(mi)
@@ -918,13 +919,18 @@ func _update_visuals(dt: float) -> void:
 	var peek_on := _peeking or ai_state in [STATE_TELEGRAPH, STATE_FIRE] or (puppet and _peek_frac > 0.3)
 	var standing := _jump_active or _drop_active or _displacing or _peeking or _peek_frac > 0.3 \
 		or move_speed_ratio > 0.1 or _vis_vel.length() > 0.8 or _stagger_anim.active
+	# Heat shutdown (heat_look): sinks into a crouch and slumps forward over it (the pivot only: world_spheres unchanged).
+	var slump_p := -0.35 * heat_look.slump
+	if heat_look.shut and not (_jump_active or _drop_active):
+		standing = false
+		peek_on = false
 	var near := _want_rig()
 	if near != _rig_on:
 		_set_rig(near)
 	if _rig_on:
 		_pivot.position = Vector3.ZERO
 		_pivot.scale = Vector3.ONE
-		_pivot.rotation = Vector3(0.0, _facing_yaw, 0.0)
+		_pivot.rotation = Vector3(slump_p, _facing_yaw, 0.0)
 		_pose_rig(dt, standing, peek_on)
 		return
 	# Far LOD: the whole-body mesh with the cheap pose (crouch squash, peek lean, walk bob).
@@ -934,7 +940,7 @@ func _update_visuals(dt: float) -> void:
 	var tilt_z := bob * (0.06 if move_speed_ratio > 0.1 else 0.025)
 	var lean_z := -0.75 if peek_on else 0.0
 	_pivot.position = Vector3(0.0, maxf(bob, 0.0) * 0.09 if move_speed_ratio > 0.1 else 0.0, lean_z)
-	_pivot.rotation = Vector3(0.0, _facing_yaw, tilt_z)
+	_pivot.rotation = Vector3(slump_p, _facing_yaw, tilt_z)
 
 
 ## Articulated within rig_lod_dist of the camera (10 % hysteresis); with no camera only when force_rig.

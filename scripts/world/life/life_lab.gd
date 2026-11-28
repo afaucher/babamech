@@ -25,6 +25,8 @@ extends Node3D
 ## "tram" stands close beside that tram's middle car; "checkpoint" frames a heavy checkpoint with a pod stopped at it (the
 ## clock is moved on to such a stop).
 ##   --life site=stack,seed=4,camera=station
+## Options tram_s0 / tram_s1 (open | shut): shut or open a tram door now (AmbientLife.set_tram_door): the train waits 5 m
+## short of a shut s1 door; no train comes in while s0 is shut. Only the top deck has a tram.
 
 const PARAMS := [
 	{"id": "seed", "label": "Seed", "min": 1.0, "max": 200.0},
@@ -43,7 +45,8 @@ const SETTLE_FRAMES := 8
 
 var time_scale := 1.0
 var params := {"seed": 1.0, "people": 0.0, "pods": -1.0, "carts": -1.0, "time_scale": 1.0, "deck": 0.0}
-var options := {"camera": "lab", "demo": "calm", "lighting": "day", "site": "alone"}
+var options := {"camera": "lab", "demo": "calm", "lighting": "day", "site": "alone", "tram_s0": "open", "tram_s1": "open"}
+const DOOR_STATES := ["open", "shut"]
 var district: CityDistrict      ## the district on view (on its own, the section deck, or the stack's deck on view)
 var life: LifeDeck              ## the life on view: root's deck (Deck0 for a district, the deck on view for a stack)
 var root: AmbientLife           ## the scene's AmbientLife (group "ambient_life")
@@ -138,6 +141,7 @@ func rebuild() -> void:
 		root.add_viewer(_eye)
 		root.add_viewer(_cam)
 	root.advance_to(START_T)
+	_apply_doors()
 	_pick_crowd()
 	_start_demo()
 	_apply_view()
@@ -204,6 +208,8 @@ func lab_options() -> Array:
 		{"id": "demo", "label": "Demo", "choices": DEMOS, "value": options["demo"]},
 		{"id": "lighting", "label": "Lighting", "choices": CityLightRig.preset_ids(), "value": options["lighting"]},
 		{"id": "site", "label": "Site", "choices": SITES, "value": options["site"]},
+		{"id": "tram_s0", "label": "Tram door s0 (trains come in)", "choices": DOOR_STATES, "value": options["tram_s0"]},
+		{"id": "tram_s1", "label": "Tram door s1 (trains leave)", "choices": DOOR_STATES, "value": options["tram_s1"]},
 	]
 
 
@@ -216,8 +222,13 @@ func set_lab_option(id: String, value: String) -> void:
 	match id:
 		"lighting": _rig().apply(value)
 		"site": _dirty = SETTLE_FRAMES
+		"tram_s0", "tram_s1":
+			# The tram door shuts / opens now (AmbientLife.set_tram_door, as MissionWorld calls it): watch the train wait
+			# 5 m short of a shut s1 door, or no train come in through a shut s0 door.
+			root.set_tram_door(id.substr(5), value != "shut", life.now)
 		"demo":
 			root.restore(PackedByteArray())
+			_apply_doors()
 			_start_demo()
 			_apply_view()
 		_:
@@ -364,7 +375,14 @@ func _pod_near(at: Vector2) -> int:
 
 # --- Demos -----------------------------------------------------------------------------------------------
 
-## Section: moves the clock on to the tram dwelling at a station (1.5 s into the dwell); the stop (arc).
+## The door options again (after a restore dropped the tram's door events).
+func _apply_doors() -> void:
+	for end: String in ["s0", "s1"]:
+		if options["tram_" + end] == "shut":
+			root.set_tram_door(end, false, life.now)
+
+
+## Section: moves the clock on to the tram dwelling at its station (1.5 s into the dwell); the stop (arc).
 func _station_stop() -> Vector2:
 	var tr := life.tram
 	if tr == null:
@@ -372,13 +390,11 @@ func _station_stop() -> Vector2:
 	var t := life.now
 	for i in 2400:
 		var p := tr.pose(t)
-		if p["mode"] == "dwell":
-			for sp: Dictionary in tr.stops:
-				if sp["kind"] == "station" and absf(float(sp["s"]) - float(p["s"])) < 0.05:
-					root.advance_to(t + 1.5)
-					return Vector2(tr.x, float(p["s"]))
+		if p["mode"] == "dwell" and absf(float(p["s"]) - tr.stop_s) < 0.05:
+			root.advance_to(t + 1.5)
+			return Vector2(tr.x, float(p["s"]))
 		t += 0.5
-	return Vector2(tr.x, float(tr.pose(life.now)["s"]))
+	return Vector2(tr.x, tr.stop_s if not is_nan(tr.stop_s) else float(tr.pose(life.now)["s"]))
 
 
 ## Section: moves the clock on to a pod standing at a heavy checkpoint's stop; that pod's position (arc), _target = it.
@@ -632,8 +648,9 @@ func _apply_view() -> void:
 				var s := _focus.y
 				var back := -1.0 if s > (e.position.y + e.end.y) * 0.5 else 1.0      # stand on the deck's longer side
 				if options["camera"] == "station":
-					eye = Vector3(x - 9.0 * back, s + back * 46.0, 6.0)     # the tram right of the lab's panel
-					target = Vector3(x, s, 2.0)
+					# a mech's eye (9 m) across the track: over the tram's roof onto its platform (CityStation, east of it)
+					eye = Vector3(x - 16.0, s + back * 30.0, 9.0)
+					target = Vector3(x + 4.0, s - back * 2.0, 1.2)
 				else:
 					eye = Vector3(x - 7.0 * back, s + back * 7.0, 2.4)
 					target = Vector3(x, s - back * 6.0, 1.9)

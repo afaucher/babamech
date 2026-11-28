@@ -3,12 +3,74 @@ extends RefCounted
 ## The map's boundary walls (CityPlan.boundary()) as flat-colour meshes: bulkheads, window walls, farm walls, the gates
 ## cut into them and the air-door holes MissionWorld asks for. Static builders, the same on every machine; their
 ## cosmetic generators are seeded per side and part. CityDistrict builds the walls' collision from the same plan data
-## (wall_spans, WALL_THICK, GATE_RECESS). The mission's openings arrive as build()'s `doors` / `air` arguments (from
+## (wall_spans, WALL_THICK, TUNNEL_DEPTH). The mission's openings arrive as build()'s `doors` / `air` arguments (from
 ## MissionWorld's wall rebuild; a district's own build passes none).
 
 const WALL_THICK := 6.0
-const GATE_RECESS := 6.0     ## m from the wall plane to the back of a portal's recess (CityDistrict seals it there)
 const HULL_SILL := 8.0       ## solid base of the hull's window wall
+# The bulkhead doors (docs/design/city-spine.md §4): one road door type everywhere (MissionWorld's bunker-framed door in a
+# mission, a baked shut leaf otherwise) and the tram door, the same door "just a different size", with a dark tunnel
+# behind it. The spine's old 50 m gates (kind portal / blast_door / collapsed) become a road door on the main road
+# (section_gates); the rest of the old span is plain wall.
+const ROAD_DOOR_W := 14.0    ## m: a road door's gate in the wall (12.8 m clear between its jambs: MissionProps.gate_half)
+const ROAD_DOOR_H := 9.0     ## m: its height
+const TRAM_DOOR_W := 3.8     ## m: the tram door's clear width (its gate in the wall is exactly this: no reveal)
+const TRAM_DOOR_H := 4.6     ## m: its clear height
+const TUNNEL_DEPTH := 40.0   ## m from the wall plane to the tram tunnel's back plate (inner face)
+const TUNNEL_PLATE := 1.2    ## m: the tunnel's collision plates (sides, roof, floor, back)
+
+
+## Deck `deck`'s gates in wall `side` of section `sec`, as CityPlan.boundary() gives them: [{a, b, h, kind: blast_door |
+## collapsed | tram_door, role: entry | exit | ""}]. Accepts both plan shapes: the old one (spine-end gates of kind
+## portal / blast_door / collapsed as wide as the spine) and the new one (`road_door` gates with a role, `tram_door`
+## gates). A spine-end gate wider than a road door, or a portal, becomes a road door ROAD_DOOR_W wide centred on the
+## avenue lane (the rest of its span is plain wall); portal / road_door become kind blast_door (the world's road door)
+## and keep their role (extraction -> exit). A tram_door's width is its clear width. When the section has no tram_door
+## gate at all (the old plan), deck 0 gets one in both arc-end walls on the rail lane's centre.
+static func section_gates(sec: SectionPlan, deck: int, side: int) -> Array:
+	var out := []
+	var w: Dictionary = sec.boundary(deck, CityPlan.SIDE_EDGE[side])
+	for g: Dictionary in w["gates"]:
+		var kind := str(g["kind"])
+		var mid := float(g["x"]) if side >= 2 else float(g["s"])
+		var width := float(g["width"])
+		var role := str(g.get("role", ""))
+		role = "exit" if role == "extraction" else (role if role == "entry" or role == "exit" else "")
+		if kind == "tram_door":
+			var th := float(g.get("h", TRAM_DOOR_H))
+			out.append({"a": mid - width * 0.5, "b": mid + width * 0.5, "h": th, "kind": "tram_door", "role": ""})
+			continue
+		var spine: bool = side >= 2 and str(g["axis"]) == "s" and int(g["line"]) == sec.spine_line
+		var h := 9.0
+		if spine:
+			if kind == "portal" or width > ROAD_DOOR_W + 0.01:
+				var av := sec.lane_x("avenue")
+				mid = (av.x + av.y) * 0.5
+				width = ROAD_DOOR_W
+			h = float(g.get("h", ROAD_DOOR_H))
+		out.append({"a": mid - width * 0.5, "b": mid + width * 0.5, "h": h, "kind": "collapsed" if kind == "collapsed" else "blast_door",
+				"role": role})
+	if side >= 2 and deck == 0 and not _has_tram_door(sec):
+		var rl := sec.lane_x("rail")
+		if rl.y - rl.x >= TRAM_DOOR_W + 1.0:
+			var c := (rl.x + rl.y) * 0.5
+			out.append({"a": c - TRAM_DOOR_W * 0.5, "b": c + TRAM_DOOR_W * 0.5, "h": TRAM_DOOR_H, "kind": "tram_door", "role": ""})
+	return out
+
+
+static func _has_tram_door(sec: SectionPlan) -> bool:
+	for b: Dictionary in sec.boundaries:
+		for g: Dictionary in b["gates"]:
+			if str(g["kind"]) == "tram_door":
+				return true
+	return false
+
+
+## Half the clear opening of gate g: a road door's gate keeps 0.6 m of reveal each side (its jambs), a tram door's gate
+## is its clear width.
+static func clear_half(g: Dictionary) -> float:
+	var w := float(g["b"]) - float(g["a"])
+	return w * 0.5 if str(g.get("kind", "")) == "tram_door" else w * 0.5 - 0.6
 
 
 ## The map's edge (CityPlan.boundary()): bulkheads (panels between buttress fins, a gallery band) and window walls (a
@@ -492,22 +554,26 @@ static func _wbox(geo: CityGeo, across: bool, at: float, inward: float, u0: floa
 		geo.box(geo.frame(at + inward * d, (br[i] + br[i + 1]) * 0.5, y), Vector3.ZERO, Vector3(size.x, size.y, br[i + 1] - br[i]), col)
 
 
-## A gate in the wall, in a frame whose local +Z points into the map: a hazard portal round the opening, and behind it
-## the sealed door leaves (blast_door, and collapsed: since the 2026-11-23 playtest a collapsed gate is built as a plain
-## shut blast door, no rubble; its kind in the plan is unchanged), or a dark recess, the way in or out (portal).
+## A gate in the wall, in a frame whose local +Z points into the map: a hazard frame round the opening, and behind it
+## the sealed door leaves (blast_door: a road door, whatever its role; collapsed: since the 2026-11-23 playtest built as
+## a plain shut road door, no rubble), or the tram door's open doorway and its dark tunnel (tram_door: no leaf baked,
+## the tram runs through; in a mission MissionWorld's door stands in it).
 static func _gate(geo: CityGeo, across: bool, at: float, inward: float, g: Dictionary, _look: RandomNumberGenerator) -> void:
 	var ga: float = g["a"]
 	var gb: float = g["b"]
 	var gh: float = g["h"]
 	var mid := (ga + gb) * 0.5
-	var half := (gb - ga) * 0.5 - 0.6
+	var half := clear_half(g)
 	var f: Transform3D
 	if across:
 		f = geo.frame(mid, at, 0.0, 0.0 if inward > 0.0 else PI)
 	else:
 		f = geo.frame(at, mid, 0.0, PI * 0.5 if inward > 0.0 else -PI * 0.5)
 	var kind := str(g["kind"])
-	if kind == "blast_door" or kind == "collapsed":
+	if kind == "tram_door":
+		if across:
+			_tunnel(geo, at, inward, ga, gb, gh)
+	elif kind == "blast_door" or kind == "collapsed":
 		if g.get("leaf", true):      # false: a MissionWorld door node stands here instead
 			geo.box(f, Vector3(0, gh * 0.5, 0.5), Vector3(half * 2.0, gh, 1.0), CityPalette.c("metal_dark"), CityGeo.NO_BACK)
 			geo.box(f, Vector3(0, gh * 0.5, 1.05), Vector3(0.5, gh, 0.12), CityPalette.c("metal"), CityGeo.NO_BACK)
@@ -518,8 +584,6 @@ static func _gate(geo: CityGeo, across: bool, at: float, inward: float, g: Dicti
 		for k in n:
 			var gx := ga + 0.6 + (float(k) + 0.25) * (half * 2.0 / float(n))
 			_wrect(geo, across, at + inward * 1.5, inward, 5.0, gx, gx + 0.5, CityStreets.MARK, CityPalette.c("marking_yellow"), true)
-	else:
-		_recess(geo, f, half + 0.6, gh, GATE_RECESS, CityPalette.c("glass_dark"))
 	if not g.get("frame", true):    # a MissionWorld door draws its own frame
 		return
 	for k: float in [-1.0, 1.0]:
@@ -527,12 +591,19 @@ static func _gate(geo: CityGeo, across: bool, at: float, inward: float, g: Dicti
 	geo.box(f, Vector3(0, gh + 0.8, 0.9), Vector3(half * 2.0 + 3.6, 1.6, 1.8), CityPalette.c("tactile"), CityGeo.NO_BACK)
 
 
-## The inside of a box behind a gate opening (local -Z is out of the map), faces turned inward: back, sides, top, floor.
-static func _recess(geo: CityGeo, f: Transform3D, w: float, gh: float, depth: float, col: Color) -> void:
-	var d := -depth
-	var fl := 0.02
-	geo.quad(f * Vector3(-w, 0, d), f * Vector3(w, 0, d), f * Vector3(w, gh, d), f * Vector3(-w, gh, d), col)
-	geo.quad(f * Vector3(-w, 0, 0), f * Vector3(-w, 0, d), f * Vector3(-w, gh, d), f * Vector3(-w, gh, 0), col)
-	geo.quad(f * Vector3(w, 0, d), f * Vector3(w, 0, 0), f * Vector3(w, gh, 0), f * Vector3(w, gh, d), col)
-	geo.quad(f * Vector3(-w, gh, 0), f * Vector3(-w, gh, d), f * Vector3(w, gh, d), f * Vector3(w, gh, 0), col)
-	geo.quad(f * Vector3(-w, fl, 0), f * Vector3(w, fl, 0), f * Vector3(w, fl, d), f * Vector3(-w, fl, d), col)
+## The tram tunnel behind a tram door in an arc-end wall at s = `at` (the map on the `inward` side), x from ga to gb:
+## the throat through the wall and the tunnel beyond, TUNNEL_DEPTH from the wall plane to the back plate, gh high, faces
+## turned inward and following the deck's facets (arc coordinates: no lip on the curve). Dark (no light inside).
+## Collision: CityDistrict._col_walls (the wall open over the gate, plates round the tunnel).
+static func _tunnel(geo: CityGeo, at: float, inward: float, ga: float, gb: float, gh: float) -> void:
+	var back := at - inward * TUNNEL_DEPTH
+	var s0 := minf(at, back)
+	var s1 := maxf(at, back)
+	var dark := CityPalette.c("glass_dark")
+	geo.tag("wall.tunnel")
+	geo.g_rect(ga, gb, s0, s1, 0.02, CityPalette.c("asphalt_dark"))
+	geo.g_rect(ga, gb, s0, s1, gh, dark, false)
+	geo.g_wall_x(ga, s0, s1, 0.0, gh, 1.0, dark)
+	geo.g_wall_x(gb, s0, s1, 0.0, gh, -1.0, dark)
+	geo.g_wall_s(back, ga, gb, 0.0, gh, inward, dark)
+	geo.tag("wall.gate")

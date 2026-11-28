@@ -186,7 +186,7 @@ var _transit_from := -1            ## deck the transit started on (reverse_trans
 # Continuous read-only telemetry for Audio loops
 var move_speed_ratio := 0.0
 var turret_slew_speed := 0.0
-var heat_ratio := 0.0
+var heat_look: EnemyHeatLook       ## the diegetic overheat (fin glow, dark optics, slump, steam): presentation only
 
 # Internal / cosmetic references
 var _cfg: Dictionary = {}
@@ -224,6 +224,7 @@ func _init() -> void:
 	owner_peer = 0
 	team = "enemy"
 	add_to_group("enemies")
+	heat_look = EnemyHeatLook.new(self)
 
 
 func net_fields() -> Dictionary:
@@ -259,7 +260,7 @@ func net_fields() -> Dictionary:
 		"_perc_last": Net.PRIVATE, "_scan_i": Net.PRIVATE, "_scan_t": Net.PRIVATE, "_vis_off": Net.PRIVATE,
 		"_los_hit_d": Net.PRIVATE, "_seen_pos": Net.PRIVATE, "_transit_deck": Net.PRIVATE, "_transit_entry": Net.PRIVATE,
 		"_transit_exit": Net.PRIVATE, "_transit_ramp": Net.PRIVATE, "_transit_t": Net.PRIVATE,
-		"_transit_from": Net.PRIVATE, "move_speed_ratio": Net.LOCAL, "turret_slew_speed": Net.LOCAL, "heat_ratio": Net.LOCAL,
+		"_transit_from": Net.PRIVATE, "move_speed_ratio": Net.LOCAL, "turret_slew_speed": Net.LOCAL, "heat_look": Net.LOCAL,
 		"_cfg": Net.LOCAL, "_comp_meta": Net.LOCAL, "_comp_nodes": Net.LOCAL, "_flash_timers": Net.LOCAL,
 		"_telegraph_fx": Net.LOCAL, "_status_bar": Net.LOCAL, "_rng": Net.PRIVATE,
 		"_built_visuals": Net.LOCAL, "_was_shutdown": Net.PRIVATE, "_was_staggered": Net.PRIVATE,
@@ -336,6 +337,7 @@ func _ready() -> void:
 	if not _built_visuals:
 		_build_visuals()
 		_built_visuals = true
+	heat_look.steam_scale = clampf(body_radius / 2.0, 0.4, 1.8)
 	_telegraph_fx = EnemyTelegraphFx.new()
 	add_child(_telegraph_fx)
 	_status_bar = EnemyStatusBar.new()
@@ -376,6 +378,12 @@ func roll_out(path: Array[Vector3], wait: float = 0.0) -> void:
 	_exit_wait = maxf(wait, 0.0)
 
 
+## True while a roll-out / push-out / arrival path (roll_out) is being walked: kinematic, the AI waits (MissionBays,
+## deck re-homing).
+func is_rolling_out() -> bool:
+	return not _exit_path.is_empty()
+
+
 ## One step of the roll-out (true while it runs: the AI waits). Kinematic: the path is clear by construction (the bay's
 ## formation lanes through the door opening), so no steering or physics.
 func _step_exit(dt: float) -> bool:
@@ -384,6 +392,8 @@ func _step_exit(dt: float) -> bool:
 	move_speed_ratio = 0.0
 	if _exit_wait > 0.0:
 		_exit_wait -= dt
+		knock.velocity = Vector3.ZERO
+		ground_y = _world_pos().dot(up)
 		return true
 	var pos := _world_pos()
 	var cur := _world_to_arc2(pos)
@@ -410,6 +420,10 @@ func _step_exit(dt: float) -> bool:
 		global_transform = Transform3D(Basis(f.cross(up).normalized(), up, -f), w)
 	else:
 		global_position = w
+	# Truly kinematic: the path carries its own height (a shaft descent, a ramp, a lift car), so no gravity / fall damage
+	# meanwhile (_update_dynamic_ground leaves ground_y alone while a path runs).
+	knock.velocity = Vector3.ZERO
+	ground_y = w.dot(up)
 	move_speed_ratio = 1.0
 	return true
 
@@ -650,8 +664,8 @@ func telegraph_orb_radius(weapon_id: String) -> float:
 # --- Damage, Weak Points, Heat & Destruction ---------------------------------------------------------------
 
 func apply_damage(amount: float, component: String, src: String) -> void:
-	if amount <= 0.0 or hp.is_empty() or _dead:
-		return
+	if amount <= 0.0 or hp.is_empty() or _dead or staged:
+		return   # staged (behind a shut bay / recess door): the host refuses every hit (a client's copy has no flag)
 	var core := core_component()
 	var c := component if (component != "" and hp.has(component)) else core
 	var meta: Dictionary = _comp_meta.get(c, {})
@@ -705,7 +719,7 @@ func apply_heat(amount: float, _src: String) -> void:
 
 
 func apply_hit(h: Hit) -> void:
-	if _dead:
+	if _dead or staged:
 		return
 	if h.impulse.length_squared() > 1e-6:
 		_last_hit_dir = h.impulse.normalized()
@@ -780,6 +794,7 @@ func _kill(cause: String) -> void:
 		_telegraph_fx.hide_reveal_flare()
 	if _status_bar != null:
 		_status_bar.visible = false
+	heat_look.reset()
 	var pos := _world_pos()
 	var exp_r := float(_cfg.get("explosion_radius", 4.0))
 	var col_h := float(_cfg.get("explosion_column", 0.0))
@@ -1163,8 +1178,8 @@ func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
 			_damage_core_directly((impact_v - FALL_DAMAGE_SPEED) * FALL_DAMAGE_PER_MPS, "fall")
 		_last_air_fall = 0.0
 
-	# Track overheat / reboot transitions for signals.
-	heat_ratio = heat.fraction()
+	# Track overheat / reboot transitions for signals (the squad events are CombatAudio's cues; heat_look starts the
+	# shutdown / reboot look on the same signals).
 	if heat.shutdown and not _was_shutdown:
 		_was_shutdown = true
 		_cancel_telegraph("overheat")
@@ -1199,8 +1214,8 @@ func tick(dt: float, space: PhysicsDirectSpaceState3D = null) -> void:
 
 
 func _update_dynamic_ground(pos: Vector3, space: PhysicsDirectSpaceState3D) -> void:
-	if mass_factor() <= 0.0:
-		return
+	if mass_factor() <= 0.0 or not _exit_path.is_empty():
+		return   # a flier, or walking a kinematic path (_step_exit sets ground_y)
 	var urgent := knock.moving() or not _grounded_now
 	# Standing grounded units do not shift vertically; skip redundant downward raycast until moving or knocked.
 	if not urgent and move_speed_ratio <= 0.001:
@@ -2455,6 +2470,7 @@ func _update_reveal_fx(dt: float) -> void:
 
 
 func _update_visuals(dt: float) -> void:
+	_step_heat_look(dt)
 	_step_stagger_anim(dt)
 	if _telegraph_fx != null:
 		if ai_state == STATE_TELEGRAPH and _telegraph_dur > 0.0:
@@ -2468,9 +2484,20 @@ func _update_visuals(dt: float) -> void:
 			_telegraph_fx.hide_telegraph()
 			_telegraph_fx.tick_only(dt)
 		_update_reveal_fx(dt)
+	_refresh_status_bar()
+
+
+## The HP bar over the unit (the only thing over an enemy: no tags, no heat bar, R2.26).
+func _refresh_status_bar() -> void:
 	if _status_bar != null:
-		var tag := "OVERHEAT" if heat.shutdown else ("STAGGER" if knock.staggered() else "")
-		_status_bar.refresh(core_hp_ratio(), heat_ratio, is_alerted(), ai_state == STATE_TELEGRAPH, tag, _dead, dt, revealed)
+		_status_bar.refresh(core_hp_ratio(), _dead)
+
+
+## The overheat look's step (base _update_visuals calls it first; units that don't call super call it themselves), so
+## the units' poses read this frame's heat_look.slump.
+func _step_heat_look(dt: float) -> void:
+	if not _dead:
+		heat_look.step(dt, heat.fraction(), heat.shutdown)
 
 
 ## The stagger animation's step (base _update_visuals calls it; units that don't call super call it themselves): the
@@ -2613,6 +2640,7 @@ func reset_enemy() -> void:
 				mi.visible = true
 				mi.material_overlay = null
 				mi.material_override = null
+	heat_look.reset()
 	_on_reset_visual()
 
 
@@ -2664,7 +2692,6 @@ func puppet_apply(st: Dictionary) -> void:
 	set_puppet_aim(st.get("aim", Vector2.ZERO) as Vector2)
 	heat.value = float(st.get("heat", 0.0)) * heat.cap
 	heat.shutdown = bool(st.get("shutdown", false))
-	heat_ratio = float(st.get("heat", 0.0))
 	knock.stagger_left = 0.2 if bool(st.get("stagger", false)) else 0.0
 	aim_kick = float(st.get("kick", 0.0))
 	move_speed_ratio = float(st.get("move", 0.0))

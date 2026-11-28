@@ -426,3 +426,43 @@ static func convex_shape(body: StaticBody3D, xf: Transform3D, points: PackedVect
 	cs.transform = xf
 	body.add_child(cs)
 	return cs
+
+
+## PIN BAND (collision survey R2.25a, docs/design/collision-survey.md): a mech capsule walking round a box's vertical
+## corner whose top is above its lower hemisphere and below the top of its straight side (the Strider's r 2.2 / h 8:
+## 2.2 to 5.8 m over its feet; the Bulwark's 3.6 to 4.4 m) is pinned there, every move_and_slide blocked (Godot's
+## capsule-box contacts). A rounded corner is never pinned, even at a 0.15 m radius.
+const PIN_LOW := 2.2         ## m: the band's bottom over the floor a mech stands on (the Strider's radius)
+const PIN_HIGH := 5.8        ## m: and its top (the Strider's straight side)
+const ROUND_R := 0.15        ## m: rounded_box's corner radius (it cuts 4 cm off the drawn corner's diagonal)
+
+
+## A box of `size` at `center` in frame xf under `body` with its four vertical edges rounded to radius r (two boxes
+## crossing and a cylinder in each corner): flush with the drawn box's faces, a mech capsule slides round its corners
+## at any height (PIN_LOW .. PIN_HIGH). Returns the shapes added (6).
+static func rounded_box(body: StaticBody3D, xf: Transform3D, center: Vector3, size: Vector3, r: float = ROUND_R) -> Array[CollisionShape3D]:
+	var out: Array[CollisionShape3D] = []
+	r = minf(r, minf(size.x, size.z) * 0.25)
+	for sz: Vector3 in [Vector3(size.x - 2.0 * r, size.y, size.z), Vector3(size.x, size.y, size.z - 2.0 * r)]:
+		var cs := CollisionShape3D.new()
+		var b := BoxShape3D.new()
+		b.size = sz
+		cs.shape = b
+		cs.transform = xf * Transform3D(Basis.IDENTITY, center)
+		body.add_child(cs)
+		out.append(cs)
+	for k: Vector2 in [Vector2(-1, -1), Vector2(1, -1), Vector2(1, 1), Vector2(-1, 1)]:
+		var cs := CollisionShape3D.new()
+		var c := CylinderShape3D.new()
+		c.radius = r
+		c.height = size.y
+		cs.shape = c
+		cs.transform = xf * Transform3D(Basis.IDENTITY, center + Vector3(k.x * (size.x * 0.5 - r), 0.0, k.y * (size.z * 0.5 - r)))
+		body.add_child(cs)
+		out.append(cs)
+	return out
+
+
+## True when a box standing on a floor at `floor_h` with its top at `top` (same frame, m) has corners in the pin band.
+static func in_pin_band(floor_h: float, top: float) -> bool:
+	return top - floor_h > PIN_LOW - 0.1 and top - floor_h < PIN_HIGH + 0.3

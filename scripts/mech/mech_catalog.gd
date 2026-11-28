@@ -74,14 +74,15 @@ const CHASSIS := {
 		## Slow and heavy (test_chassis_movement measures every target): two thirds of the Strider's speeds, a side-step
 		## strafe (no hip twist: the feet step sideways), 61 % of its turn rate, a slower pick-up. Weak, hot thrust (user
 		## playtest 2026-11-25: no hop ceiling, heat limits height): thrust 30 - gravity 22 = 8 m/s^2 of lift, and the pilot's
-		## thrust heats 80 /s against cooling 12, so a cold Bulwark burns ~1.9 s (~15 m up, ~20 m peak) before it shuts
-		## down; a 12 m roof costs ~100 of its 130 heat, a 30 m roof is out of reach (test_chassis_movement). The automatic
+		## thrust heats 64 /s (80 until playtest R2.3, 2026-11-26: 20 % less) against cooling 12, so a cold Bulwark burns
+		## ~2.5 s (~25 m up, ~34 m peak) before it shuts down; a 6 m ledge costs ~62 and a 12 m roof ~82 of its 130 heat, a
+		## 30 m roof is still out of reach climbing a wall (it shuts down at the top; test_chassis_movement). The automatic
 		## landing burn keeps the old 30 /s (auto_burn_heat) so long falls still land under the fall-damage speed
 		## (test_auto_land_bulwark). The capsule: radius 3.6 (7.2 m across: the hull and pods are 9 m wide and 7.5 m
 		## deep, a capsule cannot be wider than tall; the pods overhang it by 0.9 m a side above the hull deck), height 8 as
 		## the Strider's (the same deck clearance).
 		"movement": {"walk_speed": 8.0, "run_speed": 14.0, "strafe_scale": 0.8, "accel": 14.0, "turn_rate": 1.1,
-			"climb_speed": 7.0, "thrust_accel": 30.0, "air_control": 0.25, "thrust_heat": 80.0, "auto_burn_heat": 30.0,
+			"climb_speed": 7.0, "thrust_accel": 30.0, "air_control": 0.25, "thrust_heat": 64.0, "auto_burn_heat": 30.0,
 			"walk_heat": 3.0, "run_heat": 10.0, "reboot_heat": 45.0, "reboot_time": 1.6, "safe_land_speed": 10.0,
 			"hard_land_speed": 18.0, "auto_land_speed": 16.0, "capsule_radius": 3.6, "capsule_height": 8.0},
 	},
@@ -98,7 +99,9 @@ const BOT_CHASSIS_ORDER := ["strider"]
 ## Moving one into CHASSIS (and CHASSIS_ORDER) is the gameplay phase's step.
 ##   wasp: the light hover chassis (docs/design/chassis-rules.md, art phase 1, 2026-11-25). "No heavy weapons": no single
 ##   item over max_item_weight 7 (fits() checks it per hardpoint: the chin turret takes 6 at most, light guns only). The
-##   numbers marked TBD are placeholders until the hover controller is designed (no "movement" block: none is built).
+##   numbers marked TBD are placeholders. Its "movement" block drives MechController's hover branch (build step 1,
+##   docs/design/wasp-hover.md; MechController.apply_chassis(id, true) / MechSpawn.make(..., drafts = true): the hover lab
+##   and its tests only; every game path still gets the Strider for it).
 const WASP_MAX_ITEM_WEIGHT := 7.0
 const DRAFT_CHASSIS := {
 	"wasp": {
@@ -126,6 +129,21 @@ const DRAFT_CHASSIS := {
 				"yaw_in_max": 45.0, "yaw_out_max": 45.0, "pitch_down_max": 8.0, "pitch_up_max": 10.0},
 		],
 		"default_loadout": {"stub_l": "laser", "stub_r": "gatling", "chin": "flamer"},   ## TBD with the gameplay phase
+		## Hover flight (docs/design/wasp-hover.md section 1; every number (tune) in the `hover` lab; tests/test_hover_movement):
+		## cruise 16 / boost 24 m/s forward and sideways alike (strafe_scale 1), accel 22, a half turn in 1.2 s (turn_rate
+		## pi / 1.2), climb / descend 9 m/s (climb_rate) eased at climb_accel 18, a light-hovercraft drift with no input
+		## (hover_drag 0.6 /s x speed + hover_brake 3 m/s^2: from cruise it stops in ~2.4 s over ~15 m), holds at least
+		## hover_height 3 m above the surface under it, looks hover_ahead 1.2 s ahead for a rising roof. Heat: walk_heat at
+		## cruise .. run_heat at boost or a full climb, nothing hovering in place, cooling x landed_cooling 1.5 landed.
+		## reboot_heat 30 (a third of its 90 cap, as the Strider's 35 of 100). Capsule r 2.2 (the Strider's: it fits the same
+		## alleys) x 5 m. Not used by the hover branch (kept so the shared keys stay complete): climb_speed (the walkers'
+		## step-up), thrust_accel, air_control, thrust_heat, auto_burn_heat, auto_land_speed.
+		"movement": {"walk_speed": 16.0, "run_speed": 24.0, "strafe_scale": 1.0, "accel": 22.0, "turn_rate": PI / 1.2,
+			"climb_speed": 10.0, "thrust_accel": 0.0, "air_control": 1.0, "thrust_heat": 0.0, "auto_burn_heat": 0.0,
+			"walk_heat": 2.5, "run_heat": 9.0, "reboot_heat": 30.0, "reboot_time": 1.2, "safe_land_speed": 10.0,
+			"hard_land_speed": 18.0, "auto_land_speed": 16.0, "capsule_radius": 2.2, "capsule_height": 5.0,
+			"climb_rate": 9.0, "climb_accel": 18.0, "hover_drag": 0.6, "hover_brake": 3.0, "hover_height": 3.0,
+			"hover_ahead": 1.2, "landed_cooling": 1.5},
 	},
 }
 ## The keys of a chassis' "movement" block (MechController.apply_chassis applies them; heat_cap / cooling come from the
@@ -133,6 +151,9 @@ const DRAFT_CHASSIS := {
 const MOVEMENT_KEYS := ["walk_speed", "run_speed", "strafe_scale", "accel", "turn_rate", "climb_speed", "thrust_accel",
 	"air_control", "thrust_heat", "auto_burn_heat", "walk_heat", "run_heat", "reboot_heat", "reboot_time", "safe_land_speed",
 	"hard_land_speed", "auto_land_speed"]
+## The extra keys of a hover chassis' "movement" block (MechController.apply_chassis applies them when the entry's "move" is
+## "hover"; MechController's hover branch reads them).
+const HOVER_KEYS := ["climb_rate", "climb_accel", "hover_drag", "hover_brake", "hover_height", "hover_ahead", "landed_cooling"]
 
 ## Combat stats (docs/design/weapons.md §3; first pass, tuned in the `weapon_range` lab). Every weapon has (WEAPON_STATS):
 ##   kind, damage (per hit), rate (shots/s; inside a salvo for salvo weapons), salvo (shots per trigger cycle), reload
@@ -218,10 +239,11 @@ const WEAPONS := {
 	# only: offer EQUIPMENT_ORDER via equipment_for). `equipment`: "active" (the slot key activates it) or "passive".
 	# Never fires on the trigger; no behaviour in WeaponRegistry; no mesh yet (MechParts gives an empty node).
 	"repair_drone": {"name": "Repair Drone", "mounts": ["back"], "weight": 6.0, "passive_heat": 0.0, "active_heat": 15.0,
-		"note": "Key 5 selects, click launches: circles you 60 s, repairs mechs within 15 m, docks. 2 per mission.",   # item_note: the real key
+		"note": "Key 5 selects, click launches: circles you 60 s, repairs mechs within 30 m, docks; revives you if you go down. 2 per mission.",   # item_note: the real key
 		"kind": "equipment", "equipment": "active", "ammo": -1, "muzzle": 0.0,
-		"charges": 2, "life": 60.0, "hover": 6.0, "radius": 15.0, "heal_rate": 0.01, "follow": 0.4, "rise": 0.5,
-		"orbit": 5.0, "orbit_period": 6.0, "dock": 1.5},
+		"charges": 2, "life": 60.0, "hover": 6.0, "radius": 30.0, "heal_rate": 0.01, "follow": 0.4, "rise": 0.5,
+		"orbit": 5.0, "orbit_period": 6.0, "dock": 1.5,
+		"self_revive_time": 4.0},   # s of beam a self-revive takes (DownedRules.REVIVE_TIME today; RepairDrone scales its dt)
 	"radiator": {"name": "Radiator Fins", "mounts": ["back"], "weight": 5.0, "passive_heat": 0.0, "active_heat": 0.0,
 		"note": "Passive: +3 heat/s cooling.",
 		"kind": "equipment", "equipment": "passive", "ammo": -1, "muzzle": 0.0, "cooling_bonus": 3.0},
@@ -258,9 +280,10 @@ static func max_item_weight(id: String) -> float:
 	return float(entry(id).get("max_item_weight", INF))
 
 
-## The chassis' movement block plus its heat_cap / cooling (the Strider's for an unknown id).
-static func movement(id: String) -> Dictionary:
-	var c := chassis(id)
+## The chassis' movement block plus its heat_cap / cooling (the Strider's for an unknown id). `drafts`: a DRAFT_CHASSIS id
+## gives its own block (the hover lab and tests), else the Strider's.
+static func movement(id: String, drafts: bool = false) -> Dictionary:
+	var c := entry(id) if drafts else chassis(id)
 	var out: Dictionary = (c.get("movement", CHASSIS["strider"]["movement"]) as Dictionary).duplicate()
 	out["heat_cap"] = float(c["heat_cap"])
 	out["cooling"] = float(c["cooling"])

@@ -31,7 +31,13 @@ const SEAM := 0.06     ## facet slabs overlap by this much, so a ray down the cr
 ## move_and_slide blocked (section seed 9, deck 1, x -58 s -101; tests/test_ramp_stuck.gd). At 6.5 m the block, an
 ## invisible post above the drawn 1.3 m, also covers the parapet guard's end corners.
 const END_GUARD := 6.5
-const PORTAL_PLATE := 1.0    ## m: the back plate sealing a portal's recess (_col_walls)
+## m: how far below the deck a sinking ramp's ribbon is where its mouth guard ends (_ramp_collision). The parapet guard,
+## 2.5 m over a ribbon that sinks into a floor hole, has its top edge pass 2.2 m over the deck beside it, level with the
+## seam of a Strider's lower hemisphere: that edge pinned a Strider walking along the hole on the deck (section seed 9,
+## deck 0, x -72 s 178; tests/test_collision_survey.gd). The mouth guard, END_GUARD tall like the end blocks, covers the
+## parapet from the mouth until the guard's top is under 1.7 m over the deck (ribbon SUNK_DROP below), so the crossing
+## is inside it and its own end face's corner is low (steppable side of the band).
+const SUNK_DROP := 0.8
 
 var _digest := 0
 
@@ -60,6 +66,7 @@ var _body: StaticBody3D
 var _cgeo: CityGeo
 var _holes: Array[Rect2] = []
 var _shapes := 0
+var _col_kind := ""            ## what the next collision shapes are (meta "col_kind" on each: tests' collision survey)
 var _walled := false
 var _open_edge := false
 var _views: Array[Rect2] = []
@@ -263,13 +270,13 @@ func _c_columns() -> void:
 	var cols := CityGeo.new(ring)
 	for c: Dictionary in plan.columns:
 		CityBuildings.column(cols, _frame_at(c["x"], c["s"]), c, plan.p("ceiling"))
-	_tris += _add(cols, "Columns", _holder)
+	_tris += _add(cols, "Columns", _holder, true, true)
 
 
 func _c_blocks(a: int, b: int) -> void:
 	for i in range(a, b):
 		if not _per_block[i].is_empty():
-			_tris += _add(_per_block[i], "Block%d" % i, _holder)
+			_tris += _add(_per_block[i], "Block%d" % i, _holder, true, true)
 		_per_block[i] = null      # its mesh is committed: let the CityGeo go
 
 
@@ -432,14 +439,72 @@ func set_backdrop_visible(on: bool) -> void:
 		node.visible = on
 
 
-func _add(geo: CityGeo, node_name: String, parent: Node, shadows: bool = true) -> int:
+## `patches`: the mesh's ceiling patches (pillar drop panels, park column tops) are moved to a child that casts no shadow.
+func _add(geo: CityGeo, node_name: String, parent: Node, shadows: bool = true, patches: bool = false) -> int:
 	var mi := geo.instance(node_name)
 	if not shadows:
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	elif patches:
+		_split_ceiling_patches(mi)
 	mi.layers = render_layer      # before it enters the tree (see _c_finish)
 	parent.add_child(mi)
 	_digest = hash([_digest, geo.verts, geo.colors])
 	return geo.tri_count()
+
+
+## Triangles this close under the ceiling (every corner) are a ceiling patch: a pillar capital's drop panel (ceiling - 1.5
+## + CURB_H up) or a park column's top disc. The ceiling casts no shadow; a patch did, so the daylight (58 deg) threw a
+## thin band of its sun-facing edges ~30 m away onto towers, walls and gates with no visible caster (backlog R2.5).
+const CEILING_PATCH := 1.45
+
+
+## Move mi's ceiling patches into a child "CeilingPatch" that is drawn the same but casts no shadow (layers set before it
+## enters the tree). The geo, and so geometry_digest() and the triangle count, are untouched.
+func _split_ceiling_patches(mi: MeshInstance3D) -> void:
+	var mesh := mi.mesh as ArrayMesh
+	if mesh == null or mesh.get_surface_count() == 0 or mi.has_meta("audit_tags"):     # the audit tool's tags index the whole mesh
+		return
+	var arr := mesh.surface_get_arrays(0)
+	var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+	var n: PackedVector3Array = arr[Mesh.ARRAY_NORMAL]
+	var c: PackedColorArray = arr[Mesh.ARRAY_COLOR]
+	var cut := plan.p("ceiling") - CEILING_PATCH
+	var keep := PackedInt32Array()
+	var patch := PackedInt32Array()
+	for i in range(0, v.size() - 2, 3):
+		var up := ring.height(v[i]) >= cut and ring.height(v[i + 1]) >= cut and ring.height(v[i + 2]) >= cut
+		(patch if up else keep).append(i)
+	if patch.is_empty():
+		return
+	var mat := mesh.surface_get_material(0)
+	mi.mesh = _tri_mesh(v, n, c, keep, mat)
+	var pm := MeshInstance3D.new()
+	pm.name = "CeilingPatch"
+	pm.mesh = _tri_mesh(v, n, c, patch, mat)
+	pm.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	pm.layers = render_layer
+	mi.add_child(pm)
+
+
+static func _tri_mesh(v: PackedVector3Array, n: PackedVector3Array, c: PackedColorArray, starts: PackedInt32Array, mat: Material) -> ArrayMesh:
+	var ov := PackedVector3Array()
+	var on := PackedVector3Array()
+	var oc := PackedColorArray()
+	for i in starts:
+		for k in 3:
+			ov.append(v[i + k])
+			on.append(n[i + k])
+			oc.append(c[i + k])
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = ov
+	arrays[Mesh.ARRAY_NORMAL] = on
+	arrays[Mesh.ARRAY_COLOR] = oc
+	var m := ArrayMesh.new()
+	if not ov.is_empty():
+		m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		m.surface_set_material(0, mat)
+	return m
 
 
 # --- Collision -------------------------------------------------------------------------------------------
@@ -459,6 +524,7 @@ func _col_floor() -> void:
 	var count := 0
 	var ceiling := plan.p("ceiling")
 	var holes := _holes
+	_col_kind = "deck"
 	# Deck and ceiling: one slab per facet, the deck left open over the floor holes.
 	var br := CityGeo.breaks(e.position.y, e.end.y)
 	for k in br.size() - 1:
@@ -481,10 +547,12 @@ func _col_floor() -> void:
 				if hole.end.x < sp[1]:
 					cut.append([maxf(sp[0], hole.end.x), sp[1]])
 			spans = cut
+		_col_kind = "ceiling"
 		for sp: Array in spans:
 			if sp[1] - sp[0] > 0.1:
 				_shape(body, geo.frame((sp[0] + sp[1]) * 0.5, mid, ceiling), Vector3(0, 0.5, 0), Vector3(sp[1] - sp[0], 1.0, length + SEAM))
 				count += 1
+		_col_kind = "deck"
 	_shapes += count
 
 
@@ -495,31 +563,47 @@ func _col_walls() -> void:
 	var count := 0
 	var ceiling := plan.p("ceiling")
 	var holes := _holes
-	# Boundary walls: solid floor to ceiling except across a portal (the way in or out), which keeps its lintel and is
-	# closed behind by a plate at the back of its drawn recess (a mech steps into the recess, no further).
+	# Boundary walls: solid floor to ceiling (a road door's gate too: MissionWorld cuts it where its door stands) except
+	# across a tram door (arc-end walls only), which keeps its lintel and opens on its tunnel: plates round the tunnel
+	# (sides, roof, floor) and a back plate TUNNEL_DEPTH behind the wall plane, so nothing leaves the map through it (the
+	# tram cars, AnimatableBody3D, run on through the plate out of sight).
+	_col_kind = "wall"
 	for w: Dictionary in plan.boundary():
 		var side: int = w["side"]
 		var across := side >= 2
 		var out := 1.0 if side % 2 == 0 else -1.0
 		var at: float = w["at"] + out * CityWalls.WALL_THICK * 0.5
 		var thick := CityWalls.WALL_THICK
-		var portals := []
+		var trams := []
 		for g: Dictionary in w["gates"]:
-			if g["kind"] == "portal":
-				portals.append(g)
+			if g["kind"] == "tram_door" and across:
+				trams.append(g)
 		var u0 := e.position.x if across else e.position.y
 		var u1 := e.end.x if across else e.end.y
-		for sp: Array in CityWalls.wall_spans(u0, u1, portals):
+		for sp: Array in CityWalls.wall_spans(u0, u1, trams):
 			count += _wall_box(body, geo, across, at, sp[0], sp[1], -1.0, ceiling + 1.0, thick)
-		for g: Dictionary in portals:
-			count += _wall_box(body, geo, across, at, g["a"], g["b"], g["h"], ceiling + 1.0, thick)
-			# The portal's recess is sealed where it is drawn (CityWalls._recess, GATE_RECESS deep): a back plate there,
-			# PORTAL_PLATE thick, reaching a little into the recess and past its sides and roof so no seam opens. The
-			# recess's sides and roof are the wall slab beside the gate and the lintel (the recess is no deeper than the wall).
-			var back := float(w["at"]) + out * (CityWalls.GATE_RECESS - 0.05 + PORTAL_PLATE * 0.5)
-			count += _wall_box(body, geo, across, back, float(g["a"]) - 1.0, float(g["b"]) + 1.0, -1.0, float(g["h"]) + 1.0, PORTAL_PLATE + 0.1)
+		for g: Dictionary in trams:
+			var ga := float(g["a"])
+			var gb := float(g["b"])
+			var gh := float(g["h"])
+			var pl := CityWalls.TUNNEL_PLATE
+			count += _wall_box(body, geo, across, at, ga, gb, gh, ceiling + 1.0, thick)
+			# The tunnel: from 1 m inside the wall slab to past the back plate, along s (end walls), in facet pieces.
+			var wa := float(w["at"])
+			var s_in := wa + out * (CityWalls.WALL_THICK - 1.0)
+			var s_back := wa + out * CityWalls.TUNNEL_DEPTH
+			var lo := minf(s_in, s_back + out * pl)
+			var hi := maxf(s_in, s_back + out * pl)
+			count += _run_box(body, geo, ga - pl, ga, lo, hi, -1.0, gh + pl)        # sides
+			count += _run_box(body, geo, gb, gb + pl, lo, hi, -1.0, gh + pl)
+			count += _run_box(body, geo, ga - pl, gb + pl, lo, hi, gh, gh + pl)     # roof
+			var f0 := minf(wa, s_back + out * pl)       # the floor: from the wall plane to under the back plate
+			var f1 := maxf(wa, s_back + out * pl)
+			count += _run_box(body, geo, ga - pl, gb + pl, f0, f1, -pl, 0.0)
+			count += _wall_box(body, geo, across, s_back + out * pl * 0.5, ga - pl, gb + pl, -1.0, gh + pl, pl)     # back plate
 	# Sidewalk slabs (open over a floor hole), and the solid curb round each hole.
 	var th := CityPlan.CURB_H + 0.5
+	_col_kind = "sidewalk"
 	for b: Dictionary in plan.blocks:
 		for q in CityGeo.cut(b["rect"], holes):
 			count += _ground_box(body, geo, q, CityPlan.CURB_H - th, CityPlan.CURB_H)
@@ -528,6 +612,7 @@ func _col_walls() -> void:
 		for q in CityGeo.cut(rq["rect"], holes):
 			count += _ground_box(body, geo, q, CityPlan.CURB_H - th, CityPlan.CURB_H)
 	var c := CityDims.HOLE_CURB
+	_col_kind = "hole_curb"
 	for o in holes:
 		var open := plan.ramp_mouth(o)
 		var c0 := 0.0 if open == 3 else c
@@ -555,11 +640,19 @@ func _col_buildings(a: int, b: int) -> void:
 	for i in range(a, b):
 		var xf := building_frame(i)
 		for t: Dictionary in plan.buildings[i]["tiers"]:
+			_col_kind = "tier_ground" if float(t["y0"]) <= 0.0 else "tier_upper"
 			var y0: float = -1.0 if float(t["y0"]) <= 0.0 else float(t["y0"])
 			var y1: float = t["y1"]
-			_shape(body, xf, Vector3((t["off"] as Vector2).x, (y0 + y1) * 0.5, (t["off"] as Vector2).y),
-					Vector3((t["size"] as Vector2).x, y1 - y0, (t["size"] as Vector2).y))
-			count += 1
+			var c := Vector3((t["off"] as Vector2).x, (y0 + y1) * 0.5, (t["off"] as Vector2).y)
+			var sz := Vector3((t["size"] as Vector2).x, y1 - y0, (t["size"] as Vector2).y)
+			# A tier whose top is in the pin band over the ground or roof it stands on (a roof's 2.4 m plant room, an
+			# apartment's 2.8 m stair bulkhead, a one-floor setback; CityGeo.PIN_LOW .. PIN_HIGH) gets rounded vertical
+			# edges: a mech walking round one of its box corners was pinned there (collision survey R2.25a).
+			if CityGeo.in_pin_band(maxf(float(t["y0"]), CityPlan.CURB_H), y1):
+				count += _rounded(body, xf, c, sz)
+			else:
+				_shape(body, xf, c, sz)
+				count += 1
 		# The plan's smaller solids (civic columns and steps, skylights) and the civic gable: the same numbers the
 		# meshes are drawn from (docs/design/city-rooftops.md).
 		for so: Dictionary in plan.buildings[i].get("solids", []):
@@ -567,23 +660,33 @@ func _col_buildings(a: int, b: int) -> void:
 			var sz: Vector2 = so["size"]
 			var y0 := float(so["y0"])
 			var y1 := float(so["y1"])
+			_col_kind = "solid_" + str(so["kind"])
 			if so["kind"] == "skylight":
 				_convex(body, xf, skylight_points(so))
+				count += 1
+			elif so["kind"] == "column":
+				# Columns (a civic portico's, an arcade's) rounded like a pin-band tier: a Bulwark squeezing between an
+				# arcade's columns wedged on a box column's corner (collision survey R2.25a).
+				count += _rounded(body, xf, Vector3(off.x, (y0 + y1) * 0.5, off.y), Vector3(sz.x, y1 - y0, sz.y))
 			else:
 				_shape(body, xf, Vector3(off.x, (y0 + y1) * 0.5, off.y), Vector3(sz.x, y1 - y0, sz.y))
-			count += 1
+				count += 1
 		if plan.buildings[i].has("gable"):
+			_col_kind = "gable"
 			_convex(body, CityBuildings.gable_frame(xf, plan.buildings[i]["gable"]), gable_points(plan.buildings[i]["gable"]))
 			count += 1
 		if plan.buildings[i]["pillar"]:
 			var cs: Vector2 = plan.buildings[i]["core"]["size"]
+			_col_kind = "core"
 			_shape(body, core_frame(i), Vector3(0, ceiling * 0.5, 0), Vector3(cs.x, ceiling + 2.0, cs.y))
 			count += 1
 	if b >= plan.buildings.size():
 		for col: Dictionary in plan.columns:
 			var w := float(col["half"]) * 2.0
 			var cf := _frame_at(col["x"], col["s"])
+			_col_kind = "column"
 			_shape(body, cf, Vector3(0, ceiling * 0.5, 0), Vector3(w, ceiling + 2.0, w))
+			_col_kind = "column_ring"
 			_convex(body, cf, ring_points(col))      # the planted stone ring round its foot
 			count += 2
 	_shapes += count
@@ -650,6 +753,7 @@ func _ramp_collision(body: StaticBody3D, geo: CityGeo, r: Dictionary) -> int:
 		var on_bank := not is_nan(emb) and maxf(ha, hb) <= CityStreets.PIER_MIN + 0.01
 		if on_bank:
 			thick = maxf(ha, hb) + 0.5
+		_col_kind = "ramp_deck"
 		_shape(body, xf, Vector3(0, -thick * 0.5, 0), Vector3(x1 - x0, thick, length))
 		# Parapet ends: square to the deck (as drawn), not square to the slope. A box tilted to the slope ended in a face
 		# leaning PARAPET_GUARD * slope out past the ramp's end (0.4 m at a 9 deg foot), an invisible overhang whose
@@ -662,22 +766,42 @@ func _ramp_collision(body: StaticBody3D, geo: CityGeo, r: Dictionary) -> int:
 			# Taller than drawn (PARAPET_GUARD): a mech would step over the 1 m parapet.
 			var xo := x0 if side < 0.0 else x1
 			var xi := xo - side * CityStreets.PARAPET_W
+			_col_kind = "parapet"
 			_convex(body, Transform3D.IDENTITY, _parapet_points(geo, xo, xi, br[k], br[k + 1], ha, hb, da, db))
 			if not on_bank:      # the edge beam under the soffit
+				_col_kind = "ramp_beam"
 				_shape(body, xf, Vector3(side * ((x1 - x0) - CityStreets.BEAM_W) * 0.5, -CityStreets.RAMP_THICK - CityStreets.BEAM_D * 0.5, 0),
 						Vector3(CityStreets.BEAM_W, CityStreets.BEAM_D, length))
 				count += 1
 		count += 3
 	# The parapets' end blocks, and each pier: plinth, shaft, cross-head (with its haunch) and the cross beam.
 	# An end block's collision is END_GUARD tall (invisible above the drawn END_H), so it also swallows the parapet's end.
+	_col_kind = "ramp_end"
 	for eb in CityStreets.end_blocks(r, span):
 		var bh := END_GUARD + 0.3
 		_shape(body, geo.frame(eb.x, eb.y, eb.z), Vector3(0, END_GUARD - bh * 0.5, 0), Vector3(CityStreets.END_W, bh, CityStreets.END_L))
 		count += 1
+	# A ramp sinking into a floor hole: the mouth guard over each parapet, from the mouth down to SUNK_DROP below the deck.
+	if r["role"] == "top":
+		_col_kind = "parapet"
+		var s_top := float(r["s_top"])
+		var dir := signf(float(r["s_foot"]) - s_top)
+		var s_end := s_top
+		while absf(s_end - s_top) < 40.0 and CityPlan.ramp_height(r, s_end) > -SUNK_DROP:
+			s_end += dir * 0.25
+		var sa := minf(s_top, s_end)
+		var sb := maxf(s_top, s_end)
+		for side: float in [-1.0, 1.0]:
+			var xo := x0 if side < 0.0 else x1
+			var xi := xo - side * CityStreets.PARAPET_W
+			_convex(body, Transform3D.IDENTITY, _parapet_points(geo, xo, xi, sa, sb, CityPlan.ramp_height(r, sa),
+					CityPlan.ramp_height(r, sb), 0.0, 0.0, END_GUARD))
+			count += 1
 	for s in CityStreets.pier_s(r, plan):
 		var hp := CityStreets.pier_heights(r, s)
 		var f := geo.frame(mid, s, 0.0)
 		var pw := CityStreets.PLINTH_W
+		_col_kind = "pier"
 		_shape(body, f, Vector3(0, CityStreets.PLINTH_H * 0.5, 0), Vector3(pw, CityStreets.PLINTH_H, pw))
 		var top := float(hp["cap_bot"])
 		_shape(body, f, Vector3(0, top * 0.5, 0), Vector3(CityStreets.PIER_W, top, CityStreets.PIER_W))
@@ -692,15 +816,16 @@ func _ramp_collision(body: StaticBody3D, geo: CityGeo, r: Dictionary) -> int:
 ## One facet piece of a ramp parapet (x from xo to xi, s from sa to sb, ribbon heights ha / hb there) as a convex prism
 ## PARAPET_GUARD tall over the ribbon, its ends square to the faceted deck like the drawn parapet's, each end pushed out
 ## along the slope by da / db (the SEAM overlap with the next piece; 0 at the ramp's own ends, flush with the drawn end).
+## floor_top: the guard's top is at least this high over this deck's floor (the mouth guard: END_GUARD).
 static func _parapet_points(geo: CityGeo, xo: float, xi: float, sa: float, sb: float, ha: float, hb: float, da: float,
-		db: float) -> PackedVector3Array:
+		db: float, floor_top: float = -INF) -> PackedVector3Array:
 	var out := PackedVector3Array()
 	for xx: float in [xo, xi]:
 		var a := geo.g_point(xx, sa, ha)
 		var b := geo.g_point(xx, sb, hb)
 		var along := (b - a).normalized()
-		var ua := geo.g_point(xx, sa, ha + CityStreets.PARAPET_GUARD) - a
-		var ub := geo.g_point(xx, sb, hb + CityStreets.PARAPET_GUARD) - b
+		var ua := geo.g_point(xx, sa, maxf(ha + CityStreets.PARAPET_GUARD, floor_top)) - a
+		var ub := geo.g_point(xx, sb, maxf(hb + CityStreets.PARAPET_GUARD, floor_top)) - b
 		a -= along * da
 		b += along * db
 		out.append_array([a, a + ua, b, b + ub])
@@ -714,6 +839,19 @@ func _ground_box(body: StaticBody3D, geo: CityGeo, r: Rect2, y0: float, y1: floa
 		_shape(body, geo.frame(r.get_center().x, (br[k] + br[k + 1]) * 0.5, y1), Vector3(0, (y0 - y1) * 0.5, 0),
 				Vector3(r.size.x, y1 - y0, br[k + 1] - br[k] + SEAM))
 	return br.size() - 1
+
+
+## A box x0..x1 across, y0..y1 up (over the faceted floor), running along the arc from s0 to s1 in pieces of at most
+## RUN_PIECE m, each level at its middle (a 10 m chord sits within a few cm of the facets): the tram tunnel's plates.
+const RUN_PIECE := 10.0
+func _run_box(body: StaticBody3D, geo: CityGeo, x0: float, x1: float, s0: float, s1: float, y0: float, y1: float) -> int:
+	var n := maxi(int(ceilf((s1 - s0) / RUN_PIECE - 0.001)), 1)
+	var step := (s1 - s0) / float(n)
+	for i in n:
+		var sa := s0 + step * float(i)
+		var length := geo.g_point(0.0, sa).distance_to(geo.g_point(0.0, sa + step))
+		_shape(body, geo.frame((x0 + x1) * 0.5, sa + step * 0.5, y1), Vector3(0, (y0 - y1) * 0.5, 0), Vector3(x1 - x0, y1 - y0, length + SEAM))
+	return n
 
 
 ## A slab of wall centred on `at` from u0 to u1 along it and y0 to y1 up: one box across the arc, facet boxes along it.
@@ -735,7 +873,18 @@ func _convex(body: StaticBody3D, xf: Transform3D, points: PackedVector3Array) ->
 	shape.points = points
 	cs.shape = shape
 	cs.transform = xf
+	if _col_kind != "":
+		cs.set_meta("col_kind", _col_kind)
 	body.add_child(cs)
+
+
+## A box with rounded vertical edges (CityGeo.rounded_box: flush with the drawn box, no pinning corner); the shapes added.
+func _rounded(body: StaticBody3D, xf: Transform3D, center: Vector3, size: Vector3) -> int:
+	var made := CityGeo.rounded_box(body, xf, center, size)
+	if _col_kind != "":
+		for cs in made:
+			cs.set_meta("col_kind", _col_kind)
+	return made.size()
 
 
 func _shape(body: StaticBody3D, xf: Transform3D, center: Vector3, size: Vector3) -> void:
@@ -744,4 +893,6 @@ func _shape(body: StaticBody3D, xf: Transform3D, center: Vector3, size: Vector3)
 	box.size = size
 	cs.shape = box
 	cs.transform = xf * Transform3D(Basis.IDENTITY, center)
+	if _col_kind != "":
+		cs.set_meta("col_kind", _col_kind)
 	body.add_child(cs)

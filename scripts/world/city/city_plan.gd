@@ -23,11 +23,13 @@ extends RefCounted
 ##   buildings           [{lot, style, band, floors, roof_h, center, size, front, tiers, pillar}]
 ##     tiers             [{off, size, y0, y1, stand}]  boxes in the building's own frame (off/size in x,s), stand = a roof
 ##                       a mech can land on
-##   ramps               [{connector, role, x0, x1, s_top, s_foot, h_top, h_foot}]  section mode: the part of each ramp
-##                       between decks that lies on this deck (docs/design/city-ramps-and-stack.md). role "top": on the
-##                       deck it leaves, h from 0 (flush at its top cross line) down to -(slab + 1); "bottom": on the deck
-##                       it lands on, h from the clear height (out of the ceiling) down to 0 (flush at its foot cross
-##                       line). The height is linear in s between the two ends (ramp_height).
+##   ramps               [{connector, role, x0, x1, s_top, s_foot, h_top, h_foot, run_top, run_foot}]  section mode: the
+##                       part of each ramp between decks that lies on this deck (docs/design/city-ramps-and-stack.md).
+##                       role "top": on the deck it leaves, h from 0 (flush at the run's top, the floor cut's mouth, past
+##                       the top junction box) down to -(slab + 1); "bottom": on the deck it lands on, h from the clear
+##                       height (out of the ceiling) down to 0 (flush at the run's foot, short of the foot junction box).
+##                       The height is linear in s between the two ends (ramp_height). run_top / run_foot: the whole
+##                       ramp's slope run (the plan's connector angles) in this deck's s.
 ##     kind              optional: "plant" (an office's roof plant room), "entablature" (the civic portico's beam box)
 ##   solids              [{kind, off, size, y0, y1}]  smaller solid boxes in the building's frame (docs/design/city-rooftops.md):
 ##                       kind column (civic portico), step (civic front steps), skylight (a walkable roof bump; its
@@ -242,7 +244,7 @@ func generate_deck(sec: SectionPlan, k: int, overrides: Dictionary = {}) -> void
 			var lanes := []
 			for l: Array in SectionPlan.SPINE_LANES:
 				var lx := sec.lane_x(str(l[0]))
-				lanes.append({"lane": str(l[0]), "a": lx.x, "b": lx.y})
+				lanes.append({"lane": str(l[0]), "a": lx.x, "b": lx.y, "kind": sec.lane_kind(deck, str(l[0]))})
 			road["lanes"] = lanes
 		roads_x.append(road)
 	for j in sec.rows + 1:
@@ -327,9 +329,12 @@ func _bridged(o: Rect2) -> Array[Rect2]:
 	return out
 
 
-## Every ramp of the section that touches this deck, in this deck's arc coordinates. A ramp falls linearly by angle from
-## its top cross line (one pitch above the lower floor) to its foot cross line (on it). The top part ends 1 m under the
-## slab, below the ceiling of the deck beneath; the bottom part starts at that ceiling: they share 1 m of height.
+## Every ramp of the section that touches this deck, in this deck's arc coordinates. A ramp falls linearly by angle over
+## the plan's slope run (connector run_top -> run_foot, R2.17: inside its whole-row span, clear of the junction boxes),
+## from one pitch above the lower floor to on it. The top part ends 1 m under the slab, below the ceiling of the deck
+## beneath; the bottom part starts at that ceiling: they share 1 m of height. Every part also carries the whole run in
+## this deck's s (`run_top`, `run_foot`, for CityDims.ramp_run): its s_top / s_foot lie on it, so the ribbon, collision,
+## walk graph and every reader of s_top / s_foot start and end exactly where the plan's floor cut does.
 func _make_ramps() -> void:
 	var pitch := section.p("pitch")
 	var clear := section.clear_height()
@@ -338,16 +343,17 @@ func _make_ramps() -> void:
 		var cn: Dictionary = section.connectors[ci]
 		if cn["kind"] != "ramp" or (int(cn["from"]) != deck and int(cn["to"]) != deck):
 			continue
-		var th0 := section.line_s(int(cn["from"]), int(cn["top_line"])) / section.radius_of(int(cn["from"]))
-		var th1 := section.line_s(int(cn["to"]), int(cn["foot_line"])) / section.radius_of(int(cn["to"]))
+		var th0 := float(cn["run_top"])
+		var th1 := float(cn["run_foot"])
 		var top := int(cn["from"]) == deck
-		# t runs 0..1 from the top line to the foot line; the height above the lower floor is pitch * (1 - t).
+		# t runs 0..1 from the run's top to its foot; the height above the lower floor is pitch * (1 - t).
 		var t0 := 0.0 if top else 1.0 - clear / pitch
 		var t1 := (section.p("slab") + 1.0) / pitch if top else 1.0
 		var lower := pitch if top else 0.0     # how far the lower floor is below this deck's
 		ramps.append({"connector": ci, "role": "top" if top else "bottom", "x0": float(cn["x0"]), "x1": float(cn["x1"]),
 				"s_top": lerpf(th0, th1, t0) * r, "s_foot": lerpf(th0, th1, t1) * r,
-				"h_top": pitch * (1.0 - t0) - lower, "h_foot": pitch * (1.0 - t1) - lower})
+				"h_top": pitch * (1.0 - t0) - lower, "h_foot": pitch * (1.0 - t1) - lower,
+				"run_top": th0 * r, "run_foot": th1 * r})
 
 
 ## Height of ramp part `r` above this deck's floor at s (linear, so it carries on past the part's ends).
@@ -1034,7 +1040,9 @@ func _skylights(i: int) -> void:
 
 
 ## The edge of the map: one entry per side, [{side, kind: bulkhead | window | farm, at, backdrop, gates: [{a, b, h, kind:
-## blast_door | portal | collapsed}]}], gate a..b along the wall (x on an arc-end wall, s on a side wall). In a section
+## blast_door | collapsed | tram_door, role: entry | exit | ""}]}], gate a..b along the wall (x on an arc-end wall, s on a
+## side wall). A section's gates come through CityWalls.section_gates (the spine's road door on the main road, the
+## tram doors: docs/design/city-spine.md §4, either shape of the section plan). In a section
 ## they are the section's walls (always on); on its own the district is open unless `walls` asks for them, and then the
 ## two ends across the arc are bulkheads with a sealed gate wherever a road reaches them and the two sides are the
 ## habitat's hull, a window wall with no backdrop behind it.
@@ -1057,14 +1065,11 @@ func boundary() -> Array:
 			if kind == "window" and backdrop:
 				kind = "farm"
 				backdrop = false
-			for g: Dictionary in w["gates"]:
-				var mid := float(g["x"]) if side >= 2 else float(g["s"])
-				var half := float(g["width"]) * 0.5
-				var spine: bool = g["axis"] == "s" and int(g["line"]) == section.spine_line
-				gates.append({"a": mid - half, "b": mid + half, "h": 14.0 if spine else 9.0, "kind": str(g["kind"])})
+			gates = CityWalls.section_gates(section, deck, side)
 		elif side >= 2:
 			for road: Dictionary in roads_x:
-				gates.append({"a": float(road["a"]), "b": float(road["b"]), "h": 14.0 if road["kind"] == "avenue" else 9.0, "kind": "blast_door"})
+				gates.append({"a": float(road["a"]), "b": float(road["b"]), "h": 14.0 if road["kind"] == "avenue" else 9.0, "kind": "blast_door",
+						"role": ""})
 		out.append({"side": side, "kind": kind, "at": at[side], "backdrop": backdrop, "gates": gates})
 	return out
 

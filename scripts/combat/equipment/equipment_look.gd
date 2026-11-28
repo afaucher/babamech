@@ -6,10 +6,12 @@ extends RefCounted
 ## watched explicitly (`watch`).
 ##
 ## REPAIR DRONE CRADLE: MechModel mounts `Weapon_repair_drone` (mesh `weapon_repair_drone`: cradle + docked drone) under
-## HP_<hardpoint>. This swaps that MeshInstance3D's mesh, from our side (no MechModel API):
-##   a drone of that shooter is alive here (CombatWorld.drone_of: launched, repairing, or flying home) -> the empty
-##   cradle (`weapon_repair_drone_cradle`); otherwise the docked drone (`weapon_repair_drone`), even with no charges left:
-##   it visibly came home (the HUD reports EMPTY from the rack). The same rule on every machine, from the drone effect.
+## HP_<hardpoint>. This swaps that MeshInstance3D's mesh, from our side (no MechModel API), PER HARDPOINT (the Bulwark
+## carries two drone saddles):
+##   a drone of that shooter from THAT hardpoint is alive here (CombatWorld.drone_at: launched, repairing, or flying
+##   home) -> the empty cradle (`weapon_repair_drone_cradle`); otherwise the docked drone (`weapon_repair_drone`), even
+##   with no charges left: it visibly came home (the HUD reports EMPTY from the rack). The same rule on every machine,
+##   from the drone effect.
 ## If MechModel rebuilds the node (loadout / art change), the swap re-applies to the new node on the next step; a missing
 ## node or mesh (placeholder art, a part that isn't in MechMeshes.EQUIPMENT) is skipped harmlessly.
 ##
@@ -30,7 +32,8 @@ const HOT_ALBEDO := Color(0.3, 0.3, 0.3)   ## the fins' albedo tint at a full ga
 
 ## shooter -> {"model": Callable () -> MechModel, "heat": Callable () -> float 0..1}
 var watched: Dictionary = {}
-## shooter -> {"model", "mi", "hp", "id", "shown", "mat", "surf", "frac", "rescan"}: what is mounted and shown now
+## shooter -> {"model", "mounts": [{"mi", "hp", "id", "shown", "mat", "surf", "frac"} per equipment mount], "rescan"}:
+## what is mounted and shown now
 var _slots: Dictionary = {}
 
 
@@ -57,16 +60,33 @@ func step(w: CombatWorld) -> void:
 			_update(w, s)
 
 
-## What `shooter`'s drone mount shows now: "docked", "cradle", or "" (no drone equipment found / mounted).
+## What `shooter`'s (first) drone mount shows now: "docked", "cradle", or "" (no drone equipment found / mounted).
 func shown(shooter: String) -> String:
-	var sl: Variant = _slots.get(shooter)
-	return str((sl as Dictionary).get("shown", "")) if sl is Dictionary and str((sl as Dictionary).get("id", "")) == DRONE else ""
+	for mt: Dictionary in _mounts_of(shooter):
+		if str(mt["id"]) == DRONE:
+			return str(mt["shown"])
+	return ""
 
 
-## The radiator material of `shooter` (null when none is mounted / found). Tests.
+## What `shooter`'s drone mount on `hardpoint` shows now: "docked", "cradle", or "" (none there / not found).
+func shown_at(shooter: String, hardpoint: String) -> String:
+	for mt: Dictionary in _mounts_of(shooter):
+		if str(mt["id"]) == DRONE and str(mt["hp"]) == hardpoint:
+			return str(mt["shown"])
+	return ""
+
+
+## The (first) radiator material of `shooter` (null when none is mounted / found). Tests.
 func glow_material(shooter: String) -> StandardMaterial3D:
+	for mt: Dictionary in _mounts_of(shooter):
+		if mt["mat"] != null:
+			return mt["mat"] as StandardMaterial3D
+	return null
+
+
+func _mounts_of(shooter: String) -> Array:
 	var sl: Variant = _slots.get(shooter)
-	return (sl as Dictionary).get("mat") as StandardMaterial3D if sl is Dictionary else null
+	return (sl as Dictionary)["mounts"] if sl is Dictionary else []
 
 
 ## `shooter`'s MechModel on this machine (watched source, else found under its anchor), or null.
@@ -143,41 +163,43 @@ static func heat_energy(f: float) -> float:
 
 func _slot(shooter: String) -> Dictionary:
 	if not _slots.has(shooter):
-		_slots[shooter] = {"model": null, "mi": null, "hp": "", "id": "", "shown": "", "mat": null, "surf": -1,
-			"frac": -1.0, "rescan": -INF}
+		_slots[shooter] = {"model": null, "mounts": [], "rescan": -INF}
 	return _slots[shooter]
 
 
 func _update(w: CombatWorld, shooter: String) -> void:
 	var sl := _slot(shooter)
-	var mi := _mount(w, shooter, sl)
-	if mi == null:
-		return
-	match str(sl["id"]):
-		DRONE:
-			var want := "cradle" if w.drone_of(shooter) != null else "docked"
-			if want != str(sl["shown"]):
-				_show_drone(mi, sl, want)
-		RADIATOR:
-			_glow(mi, sl, _heat(w, shooter))
+	for mt: Dictionary in _mounts(w, shooter, sl):
+		var mi := mt["mi"] as MeshInstance3D
+		match str(mt["id"]):
+			DRONE:
+				var want := "cradle" if w.drone_at(shooter, str(mt["hp"])) != null else "docked"
+				if want != str(mt["shown"]):
+					_show_drone(mi, mt, sl, want)
+			RADIATOR:
+				_glow(mi, mt, _heat(w, shooter))
 
 
-## The mounted equipment MeshInstance3D (cached; re-found after MechModel rebuilt it, at most every RESCAN s).
-func _mount(w: CombatWorld, shooter: String, sl: Dictionary) -> MeshInstance3D:
-	var mi: Variant = sl["mi"]
-	if mi != null and is_instance_valid(mi) and (mi as Node).is_inside_tree() and sl["model"] != null \
-			and is_instance_valid(sl["model"]):
-		return mi as MeshInstance3D
-	sl["mi"] = null
-	if w.now < float(sl["rescan"]) and mi == null:
-		return null
+## The mounted equipment MeshInstance3Ds, one entry per equipment hardpoint (cached; all re-found after MechModel
+## rebuilt one, at most every RESCAN s).
+func _mounts(w: CombatWorld, shooter: String, sl: Dictionary) -> Array:
+	var mounts: Array = sl["mounts"]
+	var ok := not mounts.is_empty() and sl["model"] != null and is_instance_valid(sl["model"])
+	for mt: Dictionary in mounts:
+		var mi: Variant = mt["mi"]
+		ok = ok and mi != null and is_instance_valid(mi) and (mi as Node).is_inside_tree()
+	if ok:
+		return mounts
+	if w.now < float(sl["rescan"]) and mounts.is_empty():
+		return mounts
 	sl["rescan"] = w.now + RESCAN
-	sl["shown"] = ""
-	sl["surf"] = -1
-	sl["frac"] = -1.0
+	var old := {}                         # hp -> previous entry (a radiator keeps its one material per mount)
+	for mt: Dictionary in mounts:
+		old[str(mt["hp"])] = mt
+	mounts.clear()
 	var m := model_of(w, shooter)
 	if m == null or not m.is_inside_tree():
-		return null
+		return mounts
 	for hp: Variant in m.loadout:
 		var id := str(m.loadout[hp])
 		if id != DRONE and id != RADIATOR:
@@ -188,18 +210,17 @@ func _mount(w: CombatWorld, shooter: String, sl: Dictionary) -> MeshInstance3D:
 			continue
 		for c in wn.get_children():
 			if c is MeshInstance3D and (c as MeshInstance3D).mesh != null:
-				sl["mi"] = c
-				sl["hp"] = str(hp)
-				sl["id"] = id
-				return c as MeshInstance3D
-	sl["id"] = ""
-	return null
+				var prev: Dictionary = old.get(str(hp), {})
+				mounts.append({"mi": c, "hp": str(hp), "id": id, "shown": "", "surf": -1, "frac": -1.0,
+					"mat": prev.get("mat") if str(prev.get("id", "")) == id else null})
+				break
+	return mounts
 
 
-func _show_drone(mi: MeshInstance3D, sl: Dictionary, want: String) -> void:
+func _show_drone(mi: MeshInstance3D, mt: Dictionary, sl: Dictionary, want: String) -> void:
 	var mesh := part_mesh(CRADLE_PART if want == "cradle" else DRONE)
 	if mesh == null:
-		sl["shown"] = want              # a missing part: leave the mount as it is
+		mt["shown"] = want              # a missing part: leave the mount as it is
 		return
 	if mi.mesh != mesh:
 		mi.mesh = mesh
@@ -207,7 +228,7 @@ func _show_drone(mi: MeshInstance3D, sl: Dictionary, want: String) -> void:
 			mi.set_surface_override_material(i, null)
 		var m: Variant = sl["model"]
 		LowPolyMaterials.apply_accent(mi, (m as MechModel).accent if m != null and is_instance_valid(m) else LowPolyPalette.ORANGE)
-	sl["shown"] = want
+	mt["shown"] = want
 
 
 func _heat(w: CombatWorld, shooter: String) -> float:

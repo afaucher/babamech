@@ -207,7 +207,8 @@ func apply_heat(amount: float, src: String) -> void:
 ## fraction), spilling to the next; a destroyed component (hp 0) is never restored, and nothing happens to a target that
 ## is destroyed or not hittable (a downed PlayerTarget: `disabled`; a wreck). Returns the HP actually restored. The
 ## OWNER calls it on its own target only (the drone heals only targets CombatWorld.owns), like every verb.
-## PlayerTarget needs no override: its component HP lives in hp / max_hp and is_hittable() is false while disabled.
+## PlayerTarget overrides it only to rebuild a destroyed WEAPON hardpoint (PlayerTarget.heal, REBUILD_AT); its component
+## HP lives in hp / max_hp and is_hittable() is false while disabled.
 func heal(amount: float, src: String) -> float:
 	if amount <= 0.0 or hp.is_empty() or destroyed() or not is_hittable():
 		return 0.0

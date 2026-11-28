@@ -162,8 +162,8 @@ func _walk(stack: CityStack, ci: int, what: String) -> void:
 	var cn: Dictionary = sec.connectors[ci]
 	var space := stack.get_world_3d().direct_space_state
 	var axis := stack.ring()
-	var th0 := float(sec.row_theta[int(cn["top_line"])])
-	var th1 := float(sec.row_theta[int(cn["foot_line"])])
+	var th0 := float(cn["run_top"])
+	var th1 := float(cn["run_foot"])
 	var r_low := sec.radius_of(int(cn["to"]))
 	var pitch := sec.p("pitch")
 	var x0 := float(cn["x0"])
@@ -391,7 +391,10 @@ func _helpers(stack: CityStack, what: String) -> void:
 			eq(stack.deck_at(xf.origin), k0, "%s is on the entry deck" % tag)
 			var local := d0.ring.world_to_arc(d0.to_local(xf.origin))
 			near(local.z, 0.3, 0.01, "%s is 0.3 m above the floor" % tag)
-			check(local.x - 2.2 > av.x + 1.0 and local.x + 2.2 < av.y - 1.0, "%s: the capsule is on the avenue lane (x %.2f)" % [tag, local.x])
+			check(local.x - 2.2 > av.x + 0.5 and local.x + 2.2 < av.y - 0.5, "%s: the capsule is on the avenue lane, 0.5 m inside its paving (x %.2f)" % [tag, local.x])
+			if n > 1:
+				var lanes := CityDims.avenue_lanes(av)
+				check(absf(local.x - lanes.x) < 0.01 or absf(local.x - lanes.y) < 0.01, "%s stands on a painted lane centre (x %.2f)" % [tag, local.x])
 			check(absf(local.x - (av.x + av.y) * 0.5) - 2.2 > 1.5, "%s: the capsule is clear of the avenue's median (x %.2f)" % [tag, local.x])
 			var ahead := d0.ring.world_to_arc(d0.to_local(xf.origin - xf.basis.z * 5.0)).y - local.y
 			check(ahead * into > 4.0, "%s faces into the map" % tag)
@@ -446,8 +449,53 @@ func _moved_stack() -> void:
 	for xf in stack.spawn_transforms(4):
 		var down := stack.get_world_3d().direct_space_state.intersect_ray(PhysicsRayQueryParameters3D.create(xf.origin + xf.basis.y, xf.origin - xf.basis.y))
 		check(not down.is_empty(), "%s: road under every crew spawn" % what)
+	await _bay_spawns(stack, what)
 	stack.queue_free()
 	await frames(1)
+
+
+## With the mission world set up (R2.11a, docs/design/city-spine.md §4) the crew spawns in the entry bay: every slot
+## inside the bay (MissionWorld.bay_contains), on the entry deck, the bay's floor under it, facing out through the door,
+## the widest capsule (Bulwark) fits with nothing solid in it, slots >= 2 x its radius apart; the entry door stands open
+## by default (ENTRY_OPEN_DEFAULT) so nobody is locked in. Without the mission world: the avenue slots (above).
+func _bay_spawns(stack: CityStack, what: String) -> void:
+	var mw := stack.setup_mission(MissionWorld.stand_in_plan(stack))
+	await frames(2)
+	if not check(stack.spawn_in_bay(), "%s: with the mission world the crew spawns in the entry bay" % what):
+		return
+	var space := stack.get_world_3d().direct_space_state
+	var bay := mw.entry_door()
+	var mv := MechCatalog.movement("bulwark")
+	var br := float(mv["capsule_radius"])
+	var bh := float(mv["capsule_height"])
+	var k0 := int(stack.section.entry["deck"])
+	var facing := bay["facing"] as Vector3
+	for n in range(1, 5):
+		var xfs := stack.spawn_transforms(n)
+		eq(xfs.size(), n, "%s: %d bay slots" % [what, n])
+		for i in n:
+			var xf := xfs[i]
+			var tag := "%s: bay slot %d of %d" % [what, i, n]
+			var bc := mw.bay_contains(MissionWorld.ENTRY_ID, xf.origin + xf.basis.y * 2.0)
+			check(bool(bc["inside"]), "%s is inside the entry bay (%s)" % [tag, str(bc)])
+			check(float(bc["depth"]) > MissionWorld.BAY_ROWS[0] - 0.5 and float(bc["depth"]) < MissionGateDoor.BAY_DEPTH - MissionGateDoor.MARGIN - MissionWorld.SLOT_R + 0.1,
+					"%s: between the front row and the bay's back (MissionWorld.slot_layout, %.1f m behind the door)" % [tag, float(bc["depth"])])
+			eq(stack.deck_at(xf.origin), k0, "%s is on the entry deck" % tag)
+			# Out through the door: straight, or aimed at the opening (slot_layout; test_bay_walkout sweeps the walk-out).
+			check((-xf.basis.z).dot(facing) > 0.85, "%s faces out through the door" % tag)
+			var down := space.intersect_ray(PhysicsRayQueryParameters3D.create(xf.origin + xf.basis.y, xf.origin - xf.basis.y))
+			check(not down.is_empty() and (down["position"] as Vector3).distance_to(xf.origin) < 0.4, "%s: the bay's floor under it" % tag)
+			var q := PhysicsShapeQueryParameters3D.new()
+			var cap := CapsuleShape3D.new()
+			cap.radius = br
+			cap.height = bh
+			q.shape = cap
+			q.transform = Transform3D(xf.basis, xf.origin + xf.basis.y * (bh * 0.5 + 0.05))
+			eq(space.intersect_shape(q, 4).size(), 0, "%s: a Bulwark capsule fits (nothing solid in it)" % tag)
+			for i2 in i:
+				check(xfs[i2].origin.distance_to(xf.origin) >= br * 2.0 - 0.01, "%s: %.1f m from slot %d" % [tag, xfs[i2].origin.distance_to(xf.origin), i2])
+	mw.advance_to(MissionWorld.OPENING + 1.0)
+	check(bool(mw.source_state(MissionWorld.ENTRY_ID)["passable"]) == MissionWorld.ENTRY_OPEN_DEFAULT, "%s: the entry door stands open by default" % what)
 
 
 ## The single-district rig (the test drive today) lights every layer, the pilot head's layer 20 included.

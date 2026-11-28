@@ -4,10 +4,10 @@ extends TestCase
 ## the caps; over 10 minutes of calm, people never stand in a floor cut (ramp holes and mouths, shafts), in the rail lane
 ## (except crossing it on a cross street with the tram's timetable 40 m clear) or outside the walls; vehicles never enter
 ## the rail or ramp lanes or a floor cut and never overlap; a heavy checkpoint's 6 s stop is in the timetable at its stop
-## line. The tram stays on the rail line inside the walls (beyond one only through a portal, for 40 s), dwells 20 s at
-## every station, keeps to its speed and acceleration limits and moves continuously; a threat within 60 m halts it with
-## no jump and it restarts 15 s after the last one and rejoins its timetable; its collision bodies follow it. On a stack:
-## ids are unique across decks, a threat on deck 0 leaves deck 1 calm, sweep / blast / pusher work on an offset rotated
+## line. Only the top deck has a tram (the rail crossing rule only there): on the rail lane's centre line, one way, a train
+## a period, dwelling 20 s at the station, within its speed and acceleration limits, continuous while in sight; a threat
+## within 60 m halts it with no jump, it restarts 15 s after the last one and the timetable resumes; its bodies follow it.
+## On a stack: ids are unique across decks, a threat on deck 0 leaves deck 1 calm, sweep / blast / pusher work on an offset rotated
 ## deck in world space, an agent that leaves and re-enters a viewer's range is exactly where the events put it, and a
 ## snapshot round-trips. setup(district) and the stand-alone checksums are unchanged. No wall-clock timing.
 
@@ -154,15 +154,15 @@ func _plan_checks(seed: int) -> void:
 		check(a.count > 0 and a.count <= LifePlan.PEOPLE_CAP, "seed %d deck %d: people within the cap (%d)" % [seed, k, a.count])
 		check(ta.pods > 0 and ta.pods <= LifeTraffic.PODS_CAP, "seed %d deck %d: pods within the cap (%d)" % [seed, k, ta.pods])
 		check(ta.carts >= 0 and ta.carts <= LifeTraffic.CARTS_CAP, "seed %d deck %d: carts within the cap (%d)" % [seed, k, ta.carts])
-		check(a.tram != null, "seed %d deck %d: a tram" % [seed, k])
-		check(not a.rail_edges.is_empty(), "seed %d deck %d: crossings over the spine (%d)" % [seed, k, a.rail_edges.size()])
+		check((a.tram != null) == (k == 0), "seed %d deck %d: a tram only on the top deck" % [seed, k])
+		check(a.rail_edges.is_empty() != (k == 0), "seed %d deck %d: the rail crossing rule only with a tram (%d)" % [seed, k, a.rail_edges.size()])
 		var avenue := 0
 		for lo: Dictionary in ta.loops:
 			if lo.has("avenue"):
 				avenue += 1
 		print("life section seed %d deck %d: plan %s traffic %s  people %d doors %d  pods %d (avenue loops %d) carts %d  rail crossings %d  tram period %.0f s stops %d" % [
 				seed, k, a.checksum(), ta.checksum(), a.count, a.doors.size(), ta.pods, avenue, ta.carts, a.rail_edges.size(),
-				a.tram.period, a.tram.stops.size()])
+				a.tram.period if a.tram != null else 0.0, a.tram.stops.size() if a.tram != null else 0])
 		if k == seed % sec.deck_count or seed == 1:
 			_people_sample(cp, a, "seed %d deck %d" % [seed, k])
 			_vehicle_sample(cp, ta, "seed %d deck %d" % [seed, k])
@@ -200,8 +200,11 @@ func _people_sample(cp: CityPlan, lp: LifePlan, what: String) -> void:
 				on_rail += 1
 				var ok := false
 				for ei: int in lp.rail_edges:
-					if absf(at.y - float(lp.rail_edges[ei])) < 0.5:
+					# 1.0 m: walkers keep to their own lane of the crossing, up to 0.9 m off its centre line (user, 2026-11-27).
+					if absf(at.y - float(lp.rail_edges[ei])) < 1.0:
 						ok = true
+				if lp.tram == null:
+					continue        # no tram on this deck: no rail rule (the rail lane is a verge, crossed freely)
 				var b := lp.tram.base(tt)
 				if not ok or absf(float(b["s"]) - at.y) - LifeTram.HALF < 40.0:
 					bad_rail += 1
@@ -284,125 +287,112 @@ func _checkpoint_checks(cp: CityPlan, tr: LifeTraffic, what: String) -> void:
 
 # --- The tram ------------------------------------------------------------------------------------------------
 
+## Only the top deck has a tram: on the rail lane's centre line, one way (+s), coming in hidden from the s0 tunnel,
+## dwelling DWELL s at the station's centre, leaving into the s1 tunnel, one train a period (>= pass time + GAP); while
+## visible it moves continuously, never over 14 m/s nor 1.2 m/s^2, never backwards.
 func _tram_checks(seed: int) -> void:
 	var sec := SectionPlan.make({"seed": seed})
 	for k in sec.deck_count:
 		var cp := CityPlan.for_deck(sec, k)
 		var tram := LifeTram.make(cp, 0.37)
 		var what := "seed %d deck %d tram" % [seed, k]
+		if k > 0:
+			check(tram == null, "%s: none (only the top deck has a tram)" % what)
+			continue
+		if not check(tram != null, "%s: the top deck has one" % what):
+			continue
 		var rail := sec.lane_x("rail")
-		near(tram.x, (rail.x + rail.y) * 0.5 - (rail.y - rail.x) * 0.25, 1e-6, "%s: on the rail lane's -x track" % what)
+		near(tram.x, (rail.x + rail.y) * 0.5, 1e-6, "%s: on the rail lane's centre line" % what)
 		check(tram.x - LifeTram.CAR_W * 0.5 > rail.x and tram.x + LifeTram.CAR_W * 0.5 < rail.y, "%s: its cars inside the rail lane" % what)
+		var st := CityStation.of(cp)
+		if check(not st.is_empty(), "%s: the deck has its station" % what):
+			near(tram.stop_s, float(st["stop_s"]), 1e-6, "%s: it stops at the platform's centre" % what)
+		check(tram.period >= tram.pass_time + LifeTram.GAP - 1e-6 and tram.period >= LifeTram.PERIOD, "%s: period %.0f s (pass %.1f s)" % [what, tram.period, tram.pass_time])
 		var dt := 0.1
 		var prev := tram.pose(T0)
-		var pv := float(prev["v"])
 		var jumps := 0
 		var too_fast := 0
 		var too_hard := 0
-		var beyond := 0
-		var away_t := 0.0
-		var away_runs := 0
-		var was_away := false
-		var dwell: Dictionary = {}     # station s -> longest dwell seen there
-		var dwell_at := INF
-		var dwell_t0 := 0.0
+		var backwards := 0
+		var visible_t := 0.0
+		var arrivals := 0
+		var dwell := 0.0
+		var best_dwell := 0.0
 		var t := dt
 		while t <= tram.period * 2.0:
 			var p := tram.pose(T0 + t)
 			var s := float(p["s"])
 			var v := float(p["v"])
-			if absf(s - float(prev["s"])) > LifeTram.V * dt + 1e-3:
-				jumps += 1
-			if absf(v) > LifeTram.V + 1e-3:
+			var vis: bool = p["mode"] != "away"
+			var pvis: bool = prev["mode"] != "away"
+			if vis and pvis:
+				if absf(s - float(prev["s"])) > LifeTram.V * dt + 1e-3:
+					jumps += 1
+				if absf(v - float(prev["v"])) > LifeTram.ACC * dt + 1e-3:
+					too_hard += 1
+				if s < float(prev["s"]) - 1e-6:
+					backwards += 1
+			if vis and not pvis:
+				arrivals += 1
+			if v > LifeTram.V + 1e-3 or v < -1e-9:
 				too_fast += 1
-			if absf(v - pv) > LifeTram.ACC * dt + 1e-3:
-				too_hard += 1
-			if (s - LifeTram.HALF < tram.wall_lo - 1e-3 and not tram.portal_lo) or (s + LifeTram.HALF > tram.wall_hi + 1e-3 and not tram.portal_hi):
-				beyond += 1
-			var away := s < tram.wall_lo or s > tram.wall_hi
-			if away:
-				away_t += dt
-			if was_away and not away:
-				away_runs += 1
-			was_away = away
-			if absf(v) < 1e-9 and p["mode"] == "dwell":
-				if absf(dwell_at - s) > 0.01:
-					dwell_at = s
-					dwell_t0 = t
-				var key := snappedf(s, 0.01)
-				dwell[key] = maxf(float(dwell.get(key, 0.0)), t - dwell_t0 + dt)
+			if vis:
+				visible_t += dt
+			if p["mode"] == "dwell" and absf(s - tram.stop_s) < 0.01:
+				dwell += dt
+				best_dwell = maxf(best_dwell, dwell)
 			else:
-				dwell_at = INF
+				dwell = 0.0
 			prev = p
-			pv = v
 			t += dt
-		eq(jumps, 0, "%s: continuous motion (no step over 14 m/s x dt)" % what)
-		eq(too_fast, 0, "%s: never over 14 m/s" % what)
-		eq(too_hard, 0, "%s: never over 1.2 m/s^2" % what)
-		eq(beyond, 0, "%s: never beyond an end wall except through a portal" % what)
-		if tram.portal_lo or tram.portal_hi:
-			check(away_runs >= 1, "%s: leaves through its portal and comes back (%d)" % [what, away_runs])
-			if away_runs > 0:
-				near(away_t / float(away_runs), LifeTram.AWAY, 0.25, "%s: 40 s beyond the portal each time" % what)
-		for sp: Dictionary in tram.stops:
-			if sp["kind"] != "station":
-				continue
-			var got := float(dwell.get(snappedf(float(sp["s"]), 0.01), 0.0))
-			check(got >= LifeTram.DWELL - 0.15, "%s: dwells 20 s at the station at s %.1f (%.1f s)" % [what, float(sp["s"]), got])
-		var stations := 0
-		for hk: Dictionary in sec.hooks:
-			if hk["kind"] == "station" and int(hk["deck"]) == k:
-				stations += 1
-				var want := clampf(float(hk["s"]), tram.wall_lo + LifeTram.HALF + LifeTram.WALL_CLEAR, tram.wall_hi - LifeTram.HALF - LifeTram.WALL_CLEAR)
-				var stop := false
-				for sp: Dictionary in tram.stops:
-					if sp["kind"] == "station" and absf(float(sp["s"]) - want) < LifeTram.STATION_MERGE:
-						stop = true
-				check(stop, "%s: stops at the station hook at s %.1f" % [what, float(hk["s"])])
-		check(stations > 0, "%s: the deck has a station" % what)
+		eq(jumps, 0, "%s: continuous motion while visible" % what)
+		eq(too_fast, 0, "%s: never over 14 m/s, never backwards (speed)" % what)
+		eq(too_hard, 0, "%s: never over 1.2 m/s^2 on the timetable" % what)
+		eq(backwards, 0, "%s: one way only" % what)
+		check(arrivals >= 2, "%s: a train comes in every period (%d in two)" % [what, arrivals])
+		check(visible_t > 30.0 and visible_t < tram.period * 2.0 - 30.0, "%s: in sight part of the time (%.0f s of %.0f)" % [what, visible_t, tram.period * 2.0])
+		check(best_dwell >= LifeTram.DWELL - 0.15, "%s: dwells 20 s at the station (%.1f s)" % [what, best_dwell])
+		print("life section %s: period %.0f s, pass %.1f s, stop s %.1f, track x %.2f, checksum %s" % [what, tram.period, tram.pass_time, tram.stop_s, tram.x, tram.checksum()])
 
 
 func _tram_halt_checks() -> void:
-	var cp := CityPlan.for_deck(SectionPlan.make({"seed": 2}), 1)
+	var cp := CityPlan.for_deck(SectionPlan.make({"seed": 2}), 0)
 	var tram := LifeTram.make(cp, 0.21)
-	# Find the tram running at cruise speed.
+	# Find the tram in sight at cruise speed.
 	var T := T0
-	while absf(float(tram.pose(T)["v"])) < LifeTram.V - 0.01:
+	while not (tram.state_of(T) == "running" and float(tram.pose(T)["v"]) > LifeTram.V - 0.01):
 		T += 0.5
 	var s0 := float(tram.pose(T)["s"])
 	tram.apply_threat({"x": tram.x + 70.0, "s": s0, "r": 40.0, "st": 2, "t": T})
 	eq(tram.episodes.size(), 0, "tram: a threat 70 m from every car does not halt it")
 	tram.apply_threat({"x": tram.x + 30.0, "s": s0, "r": 40.0, "st": 2, "t": T})
 	eq(tram.episodes.size(), 1, "tram: a threat 30 m away halts it")
-	var e: Dictionary = tram.episodes[0]
 	var dt := 0.02
 	var prev := tram.pose(T - dt)
-	var pv := float(prev["v"])
 	var jumps := 0
 	var hard := 0
 	var t := T
 	var stopped_at := -1.0
-	while t < float(e["dep"]) + 30.0:
+	while t < T + 60.0:
 		var p := tram.pose(t)
-		if absf(float(p["s"]) - float(prev["s"])) > LifeTram.V * dt + 1e-3:
-			jumps += 1
-		if absf(float(p["v"]) - pv) > LifeTram.BRAKE * dt + 1e-3:
-			hard += 1
+		if p["mode"] != "away" and prev["mode"] != "away":
+			if absf(float(p["s"]) - float(prev["s"])) > LifeTram.V * dt + 1e-3:
+				jumps += 1
+			if absf(float(p["v"]) - float(prev["v"])) > LifeTram.BRAKE * dt + 1e-3:
+				hard += 1
 		if stopped_at < 0.0 and absf(float(p["v"])) < 1e-6 and t > T + 1.0:
 			stopped_at = t
 		prev = p
-		pv = float(p["v"])
 		t += dt
-	eq(jumps, 0, "tram halt: no jump through braking, the halt, the restart and rejoining")
+	eq(jumps, 0, "tram halt: no jump through braking, the halt and the restart")
 	eq(hard, 0, "tram halt: never harder than 2.5 m/s^2")
 	near(stopped_at, T + LifeTram.REACT + LifeTram.V / LifeTram.BRAKE, 0.05, "tram halt: brakes from 14 m/s to a stop at 2.5 m/s^2")
 	eq(tram.state_of(T + 8.0), "halted", "tram halt: halted")
 	check(bool(tram.pose(T + 8.0)["hazard"]), "tram halt: hazards on")
 	eq(tram.state_of(T + LifeTram.RESTART - 0.1), "halted", "tram halt: still held just before 15 s")
 	eq(tram.state_of(T + LifeTram.RESTART + 0.5), "running", "tram halt: restarts 15 s after the threat")
-	var after := float(e["dep"]) + 5.0
-	near(float(tram.pose(after)["s"]), float(tram.base(after - float(e["shift"]))["s"]), 1e-6, "tram halt: back on its timetable, shifted by %.1f s" % float(e["shift"]))
-	check(float(e["shift"]) > 0.0, "tram halt: running late after the halt")
+	var later := T + tram.period * 3.0
+	near(float(tram.pose(later)["s"]), float(tram.base(later)["s"]), 1e-6, "tram halt: the timetable resumes with a later train")
 	var tram2 := LifeTram.make(cp, 0.21)
 	tram2.apply_threat({"x": tram2.x, "s": s0, "r": 40.0, "st": 2, "t": T})
 	tram2.apply_threat({"x": tram2.x, "s": float(tram2.pose(T + 10.0)["s"]), "r": 40.0, "st": 2, "t": T + 10.0})
@@ -435,7 +425,7 @@ func _id_checks() -> void:
 	eq(life.units.size(), stack.decks.size(), "stack: one unit per deck")
 	for u in life.units:
 		check(not u.is_in_group("ambient_life"), "stack: a unit is not in the group")
-		check(u.tram != null and u.tram_cars != null, "stack deck %d: a tram" % u.deck)
+		check((u.tram != null and u.tram_cars != null) == (u.deck == 0), "stack deck %d: a tram only on the top deck" % u.deck)
 	check(life.is_in_group("ambient_life"), "stack: the stack node is in the group")
 	var in_group := 0
 	for n in get_tree().get_nodes_in_group("ambient_life"):
@@ -474,7 +464,7 @@ func _deck_isolation() -> void:
 	check(_alarmed(0) > 0, "stack: a threat on deck 0 alarms people on deck 0 (%d)" % _alarmed(0))
 	eq(_alarmed(1), 0, "stack: ... and nobody on deck 1")
 	eq(_alarmed(2), 0, "stack: ... nor deck 2")
-	eq(life.unit(1).tram.episodes.size(), 0, "stack: deck 1's tram is not halted by deck 0's threat")
+	check(life.unit(1).tram == null and life.unit(1).tram_cars == null, "stack: deck 1 has no tram")
 	var d: Dictionary = life.sent[-1][1]
 	eq(int(d.get("deck", -1)), 0, "stack: the threat event names its deck")
 	life.restore(PackedByteArray())
@@ -482,7 +472,7 @@ func _deck_isolation() -> void:
 
 
 func _tram_body_checks() -> void:
-	var u := life.unit(1)
+	var u := life.unit(0)
 	var ok := true
 	var enabled := 0
 	for i in 40:
@@ -650,17 +640,22 @@ func _signature(l: AmbientLife) -> String:
 		var xf := l.vehicle_pose(id)
 		parts.append("v%d:%s:%.3f,%.3f,%.3f" % [id, l.vehicle_state(id), xf.origin.x, xf.origin.y, xf.origin.z])
 	for u in l.units:
-		parts.append("tram%d:%s:%.3f" % [u.deck, u.tram.state_of(u.now), float(u.tram.pose(u.now)["s"])])
+		if u.tram != null:
+			parts.append("tram%d:%s:%.3f" % [u.deck, u.tram.state_of(u.now), float(u.tram.pose(u.now)["s"])])
 	return "|".join(parts)
 
 
-## Threats beside every deck's tram, a kill on deck 1, a wreck on deck 2.
+## A threat beside the tram (deck 0), a kill on deck 1, a wreck on deck 2.
 func _busy() -> void:
 	life.restore(PackedByteArray())
 	life.sent.clear()
-	life.advance_to(T0)
+	life.advance_to(maxf(life.now, T0) + 60.0)      # past the last threat the earlier checks sent (a deck sends at most 4 a second)
 	for k in life.units.size():
 		var u := life.unit(k)
+		if u.tram == null:
+			continue
+		while u.tram.state_of(life.now) == "away" or absf(float(u.tram.pose(life.now)["s"])) > u.tram.wall_hi - 60.0:
+			life.advance_to(life.now + 2.0)      # a train in sight, well inside the deck
 		var c := u.tram_car_pose(1)
 		life.raise_threat(c.origin + c.basis.x * 25.0, 40.0, 2)
 		life.advance_to(life.now + 0.3)
@@ -681,7 +676,7 @@ func _snapshot_checks() -> void:
 	_busy()
 	var halted := 0
 	for u in life.units:
-		halted += u.tram.episodes.size()
+		halted += u.tram.episodes.size() if u.tram != null else 0
 	check(halted > 0, "stack snapshot: the busy scene halted trams (%d)" % halted)
 	var bytes := life.snapshot()
 	var other := _stack_life()

@@ -1,10 +1,11 @@
-﻿extends TestCase
+extends TestCase
 ## MissionWorld (scripts/mission/world/mission_world.gd, docs/design/city-ramps-and-stack.md "Mission world (phase 1)"):
 ## wave doors as scheduled effects on the shared clock (gate and lift: warn / opening / open / closing / shut at the right
 ## times, collision with them, a late call snaps, a repeat open only extends the hold, hold_source extends, sealed is solid
 ## and final, ramp / shaft / unknown ids are harmless), two instances given the same calls in different frame steppings
 ## end in the same snapshot, snapshot / restore round trip, the flag and the relay stand on clear ground inside their
-## radius (deterministic), the relay body is tagged for Weapons, the portal clamps, every signal fires once, and a stack
+## radius (deterministic), the relay body is tagged for Weapons, every signal fires once, the bulkhead doors (entry / exit
+## doors and bays, bay_contains, shut_source, tram doors: _bulkhead_doors), re-orders never jump (_no_jumps), and a stack
 ## without a mission (or after its teardown) is exactly the stack it was.
 
 const SEEDS_TO := 30            ## the seed loop runs seeds 1..SEEDS_TO
@@ -54,8 +55,10 @@ func setup() -> void:
 			if src["id"] == lift:
 				ls = src
 		eq([float(lp["x"]), float(lp["s"])], [float(ls["x"]), float(ls["s"])], "a lift source's point is the plan's point")
+		await _lift_car(stack, mw, lift, gate)
 	if gate != null:
 		_seal_while_open(mw, gate)
+		_no_jumps(mw, gate)
 	_noop_ids(mw)
 	_signals(stack, plan)
 	_twins(stack, plan, gate, lift)
@@ -72,6 +75,7 @@ func setup() -> void:
 	eq(after["walls"], before["walls"], "after teardown every Walls mesh is the baked one again")
 	eq(after["disabled"], before["disabled"], "and no wall shape stays disabled")
 	eq(after["shapes"], before["shapes"], "and the shape counts are the same")
+	eq(after["blocks"], before["blocks"], "and every building block mesh is the district's own again (the lifts' baked doors back)")
 	stack.queue_free()
 	await frames(1)
 	await _stepping()
@@ -118,7 +122,12 @@ func _fingerprint(stack: CityStack) -> Dictionary:
 		for c in col.get_children():
 			if (c as CollisionShape3D).disabled:
 				disabled += 1
-	return {"checksum": stack.checksum(), "walls": walls, "shapes": shapes, "disabled": disabled}
+	var blocks := []
+	for d in stack.decks:
+		for b in d.get_node("Buildings").get_children():
+			if b is MeshInstance3D:
+				blocks.append((b as MeshInstance3D).mesh.get_instance_id())
+	return {"checksum": stack.checksum(), "walls": walls, "shapes": shapes, "disabled": disabled, "blocks": blocks}
 
 
 func _first(plan: Dictionary, kind: String, mw: MissionWorld) -> Variant:
@@ -170,6 +179,120 @@ func _doors_over_time(mw: MissionWorld, id: Variant, kind: String) -> void:
 	eq(_state(mw, id, oa2 + 40.0), "shut", "%s: shut again" % kind)
 
 
+## The lift car (R2.22, docs/design/city-ramps-and-stack.md section 9 "Lift cars"): source_bay is ok with a gate bay's keys
+## (>= 12 x 16 m usable, >= 8.5 m clear, door 10 x 9, the gate frame convention: facing = frame +Z out of the car, exit in
+## front, origin mid-depth behind door_s, the car inside the pillar's core); bay_contains (in the car, in the throat, not
+## beside it, not past its back, the doorway in front); bay_slots (4 inside, both capsules fit each, facing out); the
+## district's core box is off and the baked shut doors are out of the block mesh while the car is there; collision through
+## the physics server: shut / warn / sealed a ray stops in the doorway, opening / open it reaches the car's back wall;
+## passable at open_at + LIFT_OPEN.
+func _lift_car(stack: CityStack, mw: MissionWorld, id: Variant, gate: Variant) -> void:
+	var lift := mw._doors[id] as MissionLiftDoor
+	var d := lift.get_parent() as CityDistrict
+	var b := mw.source_bay(id)
+	if not check(bool(b.get("ok", false)) and lift.has_car, "a lift source has a car: source_bay is ok"):
+		return
+	if gate != null:
+		var gb := mw.source_bay(gate)
+		for key: String in gb:
+			check(b.has(key), "the lift car's bay has the gate bay's key %s" % key)
+	check(float(b["width"]) >= 12.0 - 1e-3, "car usable width >= 12 m (%.2f)" % float(b["width"]))
+	check(float(b["depth"]) >= 16.0 - 1e-3, "car usable depth >= 16 m (%.2f)" % float(b["depth"]))
+	check(float(b["height"]) >= 8.5, "car clear height >= 8.5 m (%.2f)" % float(b["height"]))
+	near(float(b["door_w"]), 10.0, 1e-4, "lift door_w")
+	near(float(b["door_h"]), MissionLiftDoor.H, 1e-4, "lift door_h (9 m)")
+	eq(str(b["kind"]), "lift", "kind lift")
+	var fr := b["frame"] as Transform3D
+	check((b["facing"] as Vector3).dot(fr.basis.z.normalized()) > 0.999, "lift: facing is the frame's +Z (out of the car)")
+	check(((b["exit"] as Vector3) - fr.origin).dot(b["facing"]) > 5.0, "lift: exit is in front of the door")
+	check(((b["center"] as Vector3) - fr.origin).dot(b["facing"]) < -5.0, "lift: the centre is behind the door plane")
+	var o := b["origin"] as Vector2
+	var out := b["out"] as Vector2
+	near(out.length(), 1.0, 1e-4, "lift: out is a unit vector")
+	var along := o.x if absf(out.x) > 0.5 else o.y
+	near(absf(along - float(b["door_s"])), (float(b["depth_from"]) + float(b["depth_to"])) * 0.5, 0.05, "lift: origin lies mid-depth behind door_s")
+	check(float(b["depth_from"]) >= MissionFlow.LIFT_DOOR_MARGIN, "lift: the usable floor starts past Missions' door margin")
+	# The car stays inside the core (plan rect), with SIDE_MIN to spare.
+	var bd: Dictionary = d.plan.buildings[lift.bi]
+	var cs: Vector2 = bd["core"]["size"]
+	var core := Rect2(Vector2(float(bd["core"]["x"]), float(bd["core"]["s"])) - cs * 0.5, cs)
+	for p: Vector2 in [Vector2(-lift.car_half, lift.car_back), Vector2(lift.car_half, lift.car_back), Vector2(-lift.car_half, 0.0), Vector2(lift.car_half, 0.0)]:
+		check(core.grow(0.05).has_point(lift.arc(p.x, p.y)), "lift: the car's corner %s is inside the core" % str(p))
+	# bay_contains.
+	var to_g := d.global_transform * lift.transform
+	check(bool(mw.bay_contains(id, b["center"] as Vector3 + fr.basis.y.normalized())["inside"]), "lift: the car's centre is inside")
+	check(bool(mw.bay_contains(id, to_g * Vector3(0, 2, -0.5))["inside"]), "lift: the throat is inside")
+	var front := mw.bay_contains(id, to_g * Vector3(0, 2, 1.0))
+	check(not bool(front["inside"]) and bool(front["doorway"]), "lift: 1 m in front is the doorway, not inside")
+	check(not bool(mw.bay_contains(id, to_g * Vector3(lift.car_half + 1.0, 2, -8.0))["inside"]), "lift: beside the car is not inside")
+	check(not bool(mw.bay_contains(id, to_g * Vector3(0, 2, -lift.car_back - 1.0))["inside"]), "lift: past the back wall is not inside")
+	check(not bool(mw.bay_contains(id, to_g * Vector3(MissionLiftDoor.W * 0.5 + 0.5, 2, -0.5))["inside"]), "lift: in the front wall is not inside")
+	near(float(mw.bay_contains(id, to_g * Vector3(0, 2, -6.0))["depth"]), 6.0, 0.01, "lift: depth behind the door plane")
+	# The same x / s one deck up or down is not in this car (the car's floor - 1 m to its roof).
+	var ca := stack.to_deck_arc(b["center"] as Vector3 + fr.basis.y.normalized())
+	for dk: int in [-1, 1]:
+		var k2 := int(ca["deck"]) + dk
+		if k2 >= 0 and k2 < stack.decks.size():
+			var other := mw.bay_contains(id, stack.from_deck_arc(k2, float(ca["x"]), float(ca["s"]), float(ca["h"])))
+			check(not bool(other["inside"]) and not bool(other["doorway"]), "lift: the car centre's x / s on deck %d is not in it (%s)" % [k2, str(other)])
+	# The district's core box is off, the baked doors are hidden.
+	var want := d.core_frame(lift.bi) * Vector3(0, d.plan.p("ceiling") * 0.5, 0)
+	var core_off := false
+	for c in d.get_node("Collision").get_children():
+		if str(c.get_meta("col_kind", "")) == "core" and (c as Node3D).transform.origin.distance_to(want) < 0.5:
+			core_off = (c as CollisionShape3D).disabled
+	check(core_off, "lift: the district's solid core box is off while the car is there")
+	var block := int(d.plan.lots[int(bd["lot"])]["block"])
+	var mi := d.get_node("Buildings/Block%d" % block) as MeshInstance3D
+	var v: PackedVector3Array = mi.mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	var on_fill := 0
+	var inv := lift.transform.affine_inverse()
+	for i in range(0, v.size(), 3):
+		if MissionLiftDoor.in_fill(inv * v[i]) and MissionLiftDoor.in_fill(inv * v[i + 1]) and MissionLiftDoor.in_fill(inv * v[i + 2]):
+			on_fill += 1
+	eq(on_fill, 0, "lift: no baked door triangle left in the doorway")
+	# Slots: 4 inside the car, both capsules fit each.
+	var slots := mw.bay_slots(id, 4)
+	eq(slots.size(), 4, "lift: bay_slots gives 4")
+	var space := stack.get_world_3d().direct_space_state
+	for chassis: String in ["strider", "bulwark"]:
+		var m := MechSpawn.make("chicken", chassis)
+		var capsule := (m.get_node("Shape") as CollisionShape3D).shape as CapsuleShape3D
+		m.free()
+		for xf in slots:
+			check(bool(mw.bay_contains(id, xf.origin)["inside"]), "lift: slot inside the car")
+			check(xf.basis.z.normalized().dot(fr.basis.z.normalized()) > 0.99 or xf.basis.z.normalized().dot(fr.basis.z.normalized()) < -0.99, "lift: slot faces along the door's axis")
+			var q := PhysicsShapeQueryParameters3D.new()
+			q.shape = capsule
+			q.transform = xf * Transform3D(Basis.IDENTITY, Vector3(0, capsule.height * 0.5 + 0.05, 0))
+			check(space.intersect_shape(q, 1).is_empty(), "lift: a %s capsule fits slot %s" % [chassis, str((inv * d.to_local(xf.origin)).snapped(Vector3.ONE * 0.1))])
+	# Collision: shut a ray stops in the doorway; open it reaches the car's back wall.
+	var from := to_g * Vector3(0, 3.0, 4.0)
+	var to := to_g * Vector3(0, 3.0, -40.0)
+	var base := 600.0
+	mw.advance_to(base)
+	await frames(2)
+	var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(from, to))
+	check(not hit.is_empty() and from.distance_to(hit["position"]) < 5.1, "lift shut: a ray stops in the doorway (%s)" % str(hit.get("position")))
+	mw.open_source(id, base + 6.0, 10.0)
+	mw.advance_to(base + 3.0)
+	check(not lift.door_shape.disabled, "lift warning: solid")
+	mw.advance_to(base + 6.5)
+	check(lift.door_shape.disabled, "lift opening: not solid while the leaves move")
+	near(float(mw.source_state(id)["passable_at"]), base + 6.0 + MissionWorld.LIFT_OPEN, 1e-6, "lift: passable at open_at + LIFT_OPEN")
+	mw.advance_to(base + 6.0 + MissionWorld.LIFT_OPEN + 0.1)
+	check(bool(mw.source_state(id)["passable"]), "lift: passable once open")
+	await frames(2)
+	hit = space.intersect_ray(PhysicsRayQueryParameters3D.create(from, to))
+	var back := 4.0 + lift.car_back
+	check(not hit.is_empty() and absf(from.distance_to(hit["position"]) - back) < 0.6, "lift open: a ray reaches the car's back wall (%s, %.1f m)" % [
+			str(hit.get("position")), from.distance_to(hit.get("position", from))])
+	mw.advance_to(base + 6.0 + MissionWorld.LIFT_OPEN + 10.0 + MissionWorld.CLOSE + 0.5)
+	check(not lift.door_shape.disabled, "lift shut again: solid")
+	print("[mission] lift car %s: %.1f x %.1f m inside (usable %.1f x %.1f, clear %.2f m), core %.2f x %.2f" % [str(id), lift.car_half * 2.0,
+			lift.car_back - MissionLiftDoor.WALL, float(b["width"]), float(b["depth"]), float(b["height"]), lift.core_half * 2.0, lift.core_depth])
+
+
 ## The gate's collision: shut blocks at the wall plane, open lets a ray into the staging bay (stopped by its back wall),
 ## sealed blocks again; physically, through the physics server. And source_bay / source_point agree with the bay.
 func _collision(stack: CityStack, mw: MissionWorld, id: Variant) -> void:
@@ -193,7 +316,7 @@ func _collision(stack: CityStack, mw: MissionWorld, id: Variant) -> void:
 	mw.advance_to(base + 4.5)
 	check(door.door_shape.disabled == false, "gate warning: solid")
 	mw.advance_to(base + 7.5)
-	check(door.door_shape.disabled == false, "gate opening: still solid until passable")
+	check(door.door_shape.disabled, "gate opening: not solid while the leaves move (R2.11a: a moving door never wedges a unit)")
 	mw.advance_to(base + 6.0 + MissionWorld.OPENING + 0.1)
 	check(door.door_shape.disabled, "gate open: the door shape is off")
 	await frames(2)
@@ -218,7 +341,7 @@ func _collision(stack: CityStack, mw: MissionWorld, id: Variant) -> void:
 
 ## source_bay(id): its keys, values that agree with the door (usable rectangle >= 20 m wide, clear height >= 12 m, facing
 ## into the map, exit in front, origin mid-depth behind door_s), source_point = its centre, the sign panel beside the frame;
-## an unknown id or a lift gives {ok = false}.
+## an unknown id gives {ok = false} (a lift's car: _lift_car).
 func _bay(mw: MissionWorld, id: Variant, sp: Dictionary) -> void:
 	var b := mw.source_bay(id)
 	var door := mw._doors[id] as MissionGateDoor
@@ -244,10 +367,6 @@ func _bay(mw: MissionWorld, id: Variant, sp: Dictionary) -> void:
 	var along := o.x if absf(out.x) > 0.5 else o.y
 	near(absf(along - float(b["door_s"])), (float(b["depth_from"]) + float(b["depth_to"])) * 0.5, 0.05, "origin lies mid-depth behind door_s")
 	eq(mw.source_bay("nope"), {"ok": false}, "an unknown id has no bay")
-	for s: Dictionary in (MissionWorld.field(mw.plan, "sources", []) as Array):
-		if str(s["kind"]) == "lift" and mw._doors.has(s["id"]):
-			eq(bool(mw.source_bay(s["id"]).get("ok", true)), false, "a lift has no bay")
-			break
 	var panel := mw.source_sign_panel(id)
 	if check(bool(panel.get("ok", false)), "a sign panel beside the frame"):
 		eq(panel["size"], MissionGateDoor.PANEL, "panel size")
@@ -362,7 +481,7 @@ func _twins(stack: CityStack, plan: Dictionary, gate: Variant, lift: Variant) ->
 	a.setup(stack, lite)
 	b.setup(stack, lite)
 	var calls := [[5.0, "open", gate, 12.0], [5.0, "open", lift, 8.0], [9.0, "flag", true], [12.0, "asset", 0.4],
-			[14.0, "hold", gate, 30.0], [20.0, "portal", 0.5], [22.0, "zone", "contested"], [26.0, "seal", lift]]
+			[14.0, "hold", gate, 30.0], [20.0, "tram", false], [22.0, "zone", "contested"], [26.0, "seal", lift], [28.0, "tram", true]]
 	for w: MissionWorld in [a, b]:
 		var step := 1.0 / 60.0 if w == a else 1.0 / 7.0
 		var t := 0.0
@@ -407,11 +526,12 @@ func _call(w: MissionWorld, c: Array) -> void:
 				w.close_source(c[2], float(c[0]))
 		"flag": w.set_flag(flag_id, bool(c[2]), float(c[0]))
 		"asset": w.set_asset(asset_id, float(c[2]))
-		"portal": w.set_portal(float(c[2]))
+		"tram": w.set_tram_door("s0", bool(c[2]), float(c[0]))
 		"zone": w.set_zone(flag_id, str(c[2]))
 
 
 func _assets_and_portal(mw: MissionWorld) -> void:
+	_bulkhead_doors(mw)
 	var body := mw.asset_body(asset_id)
 	if check(body != null, "the defend relay has a body"):
 		check(body.is_in_group("mission_asset"), "in group mission_asset")
@@ -425,17 +545,8 @@ func _assets_and_portal(mw: MissionWorld) -> void:
 	mw.set_asset(asset_id, 0.0)
 	mw.set_asset(asset_id, 0.0)
 	eq(told, [[asset_id, "damaged"], [asset_id, "destroyed"]], "asset events once each")
-	var p := []
-	mw.portal_event.connect(func(kind: String, _p: Vector3) -> void: p.append(kind))
-	mw.set_portal(-1.0)
-	near(mw.portal_progress, 0.0, 1e-6, "portal clamps at 0")
-	mw.set_portal(0.3)
-	mw.set_portal(0.6)
-	mw.set_portal(2.0)
-	near(mw.portal_progress, 1.0, 1e-6, "portal clamps at 1")
-	mw.set_portal(1.0)
-	eq(p, ["start", "open"], "portal events once each")
-	check(mw._portal != null, "the extraction portal was found")
+	mw.set_portal(0.5)        # the deprecated stub: does nothing, raises nothing
+	check(not mw.has_signal("portal_event"), "the portal and its signal are gone")
 	var f := []
 	mw.flag_event.connect(func(id: Variant, raised: bool, _p: Vector3) -> void: f.append([id, raised]))
 	mw.set_flag(flag_id, true)
@@ -445,6 +556,175 @@ func _assets_and_portal(mw: MissionWorld) -> void:
 	eq(mw.hold_state, "holding", "hold zone state")
 	mw.set_hold_zone("bogus")
 	eq(mw.hold_state, "holding", "an unknown hold state is ignored")
+
+
+func _st(mw: MissionWorld, id: Variant, t: float) -> String:
+	mw.advance_to(t)
+	return str(mw.source_state(id)["state"])
+
+
+## The bulkhead doors (docs/design/city-spine.md §4, R2.11a): the entry / exit road doors with their bays (standard road
+## door 12.8 x 9 m on the avenue lane, not wave sources, entry open by default, exit shut), bay_contains, shut_source, the
+## tram doors (3.8 x 4.6 m, open by default, set_tram_door scheduled on the clock with its signal, in the snapshot).
+func _bulkhead_doors(mw: MissionWorld) -> void:
+	var sec := mw.stack.section
+	var e := mw.entry_door()
+	var x := mw.exit_door()
+	if not check(bool(e.get("ok", false)), "the entry door and its bay are built"):
+		return
+	check(bool(x.get("ok", false)), "the exit door and its bay are built")
+	eq(e["id"], MissionWorld.ENTRY_ID, "entry_door's id")
+	eq(x["id"], MissionWorld.EXIT_ID, "exit_door's id")
+	eq(int(e["deck"]), int(sec.entry["deck"]), "the entry door is on the entry deck")
+	eq(int(x["deck"]), int(sec.extraction["deck"]), "the exit door is on the extraction deck")
+	var av := sec.lane_x("avenue")
+	for b: Dictionary in [e, x]:
+		near(float(b["door_w"]), CityWalls.ROAD_DOOR_W - 1.2, 1e-3, "%s: a standard road door, 12.8 m clear" % b["id"])
+		near(float(b["door_h"]), CityWalls.ROAD_DOOR_H, 1e-3, "%s: 9 m high" % b["id"])
+		near(float((b["door"] as Vector2).x), (av.x + av.y) * 0.5, 1e-3, "%s: centred on the avenue lane" % b["id"])
+		check(float(b["width"]) >= 20.0 - 1e-3, "%s: the bay is 20 m usable (%.1f)" % [b["id"], float(b["width"])])
+		check(float(b["depth"]) >= 16.0 - 1e-3, "%s: and 16 m deep" % b["id"])
+	for s: Dictionary in (MissionWorld.field(mw.plan, "sources", []) as Array):
+		check(not str(s["id"]) in [MissionWorld.ENTRY_ID, MissionWorld.EXIT_ID, "tram_s0", "tram_s1"], "no plan source is a bulkhead door")
+	# find_gate never hands a wave source the entry door, even standing right in front of it.
+	var ed := mw._doors[MissionWorld.ENTRY_ID] as MissionGateDoor
+	var hit := MissionWorld.find_gate(ed.get_parent() as CityDistrict, ed.arc_mid.x, ed.arc_mid.y, str(e["edge"]))
+	check(hit.is_empty() or str(hit["g"].get("role", "")) == "", "find_gate skips the entry door")
+	# Defaults: the entry door open (ENTRY_OPEN_DEFAULT), the exit door shut, the tram doors open.
+	var t := maxf(mw.now, MissionWorld.OPENING + 1.0) + 1.0
+	eq(_st(mw, MissionWorld.ENTRY_ID, t), "open" if MissionWorld.ENTRY_OPEN_DEFAULT else "shut", "the entry door by default")
+	eq(_st(mw, MissionWorld.EXIT_ID, t), "shut", "the exit door is shut by default")
+	# bay_contains, exact from the frame.
+	var fr := e["frame"] as Transform3D
+	var inside := mw.bay_contains(MissionWorld.ENTRY_ID, (e["center"] as Vector3) + fr.basis.y.normalized() * 2.0)
+	check(bool(inside["inside"]) and not bool(inside["doorway"]), "the bay's centre is inside, not in the doorway (%s)" % str(inside))
+	near(float(inside["depth"]), (MissionGateDoor.USE_FROM + MissionGateDoor.USE_TO) * 0.5, 0.3, "its depth behind the door plane")
+	var street := mw.bay_contains(MissionWorld.ENTRY_ID, (e["exit"] as Vector3) + fr.basis.y.normalized() * 2.0)
+	check(not bool(street["inside"]) and float(street["depth"]) < -5.0, "the street in front is outside, negative depth (%s)" % str(street))
+	var plane := mw.bay_contains(MissionWorld.ENTRY_ID, fr * Vector3(2.0, 2.0, 0.5))
+	check(bool(plane["doorway"]), "at the door plane: the doorway (%s)" % str(plane))
+	var beside := mw.bay_contains(MissionWorld.ENTRY_ID, fr * Vector3(ed.ix1 + 2.5, 2.0, -15.0))
+	check(not bool(beside["inside"]), "beside the bay's wall: outside")
+	var back := mw.bay_contains(MissionWorld.ENTRY_ID, fr * Vector3(ed.icenter, 2.0, -(MissionGateDoor.BAY_DEPTH + 2.0)))
+	check(not bool(back["inside"]), "behind the back wall: outside")
+	eq(mw.bay_contains("nope", Vector3.ZERO), {"inside": false, "doorway": false, "depth": 0.0}, "an unknown id: nothing")
+	# Another deck at the same x / s is neither inside nor in the doorway (the bay's floor - 1 m to its roof).
+	var st := mw.stack
+	for probe: Array in [["the bay's centre", (e["center"] as Vector3) + fr.basis.y.normalized() * 2.0], ["the doorway", fr * Vector3(2.0, 2.0, 0.5)]]:
+		var pa := st.to_deck_arc(probe[1])
+		for dk: int in [-1, 1]:
+			var k2 := int(pa["deck"]) + dk
+			if k2 < 0 or k2 >= st.decks.size():
+				continue
+			var other := mw.bay_contains(MissionWorld.ENTRY_ID, st.from_deck_arc(k2, float(pa["x"]), float(pa["s"]), float(pa["h"])))
+			check(not bool(other["inside"]) and not bool(other["doorway"]), "%s's x / s on deck %d is not in the entry bay (%s)" % [probe[0], k2, str(other)])
+	# exit_bay_slots: inside the exit bay, rows BAY_ROWS (11.6 / 20.4 m), >= 7.2 m apart, facing in (away from the door).
+	var xs := mw.exit_bay_slots(4)
+	eq(xs.size(), 4, "exit_bay_slots(4): four stand points")
+	for i in xs.size():
+		var bc := mw.bay_contains(MissionWorld.EXIT_ID, xs[i].origin + xs[i].basis.y * 2.0)
+		check(bool(bc["inside"]) and float(bc["depth"]) > MissionWorld.BAY_ROWS[0] - 1.0 and float(bc["depth"]) < MissionGateDoor.BAY_DEPTH - MissionGateDoor.MARGIN - MissionWorld.SLOT_R + 0.1, "exit slot %d inside the exit bay (%s)" % [i, str(bc)])
+		check((-xs[i].basis.z).dot(x["facing"] as Vector3) < -0.99, "exit slot %d faces in, away from the door" % i)
+		for j in i:
+			check(xs[i].origin.distance_to(xs[j].origin) >= 7.2 - 0.01, "exit slots %d / %d are 7.2 m apart" % [i, j])
+	eq(mw.bay_slots("nope", 2).size(), 0, "bay_slots of an unknown id: none")
+	# shut_source closes a door without sealing it; open_source opens it again.
+	mw.shut_source(MissionWorld.ENTRY_ID, t + 1.0)
+	eq(_st(mw, MissionWorld.ENTRY_ID, t + 1.5), "closing", "shut_source: closing from `at`")
+	eq(_st(mw, MissionWorld.ENTRY_ID, t + 3.2), "shut", "then shut (not sealed)")
+	check(not ed.door_shape.disabled, "and solid")
+	mw.open_source(MissionWorld.ENTRY_ID, t + 10.0, 1.0e6, t + 3.2)
+	eq(_st(mw, MissionWorld.ENTRY_ID, t + 14.0), "open", "open_source opens it again")
+	# Tram doors (deck 0, both arc-end walls) when the section has a rail lane.
+	var td := mw.tram_door("s0")
+	if not check(bool(td.get("ok", false)), "the s0 tram door is built"):
+		return
+	check(bool(mw.tram_door("s1").get("ok", false)), "the s1 tram door is built")
+	eq(int(td["deck"]), 0, "tram doors are on deck 0")
+	near(float(td["door_w"]), CityWalls.TRAM_DOOR_W, 1e-3, "3.8 m clear")
+	near(float(td["door_h"]), CityWalls.TRAM_DOOR_H, 1e-3, "4.6 m high")
+	var rl := sec.lane_x("rail")
+	near(float((td["door"] as Vector2).x), (rl.x + rl.y) * 0.5, 1e-3, "on the track line (the rail lane's centre)")
+	eq(str(td["state"]), "open", "a tram door is open by default")
+	check(bool(td["open"]), "and ordered open")
+	eq(mw.source_bay("tram_s0"), {"ok": false}, "a tram door has no staging bay")
+	eq(mw.source_sign_panel("tram_s0"), {"ok": false}, "nor a sign panel")
+	var tdoor := mw._doors["tram_s0"] as MissionGateDoor
+	check(tdoor.door_shape.disabled, "an open tram door is not solid")
+	var got := []
+	var cb := func(end: String, open: bool, at: float) -> void: got.append([end, open, at])
+	mw.tram_door_changed.connect(cb)
+	var t0 := mw.now + 1.0
+	mw.set_tram_door("s0", false, t0)
+	eq(_st(mw, "tram_s0", t0 + 0.5), "closing", "set_tram_door(false): the leaves close from `at`")
+	eq(_st(mw, "tram_s0", t0 + MissionWorld.CLOSE + 0.1), "shut", "then it is shut")
+	check(not tdoor.door_shape.disabled and not mw.tram_open("s0"), "solid, ordered shut")
+	mw.set_tram_door("s0", true, t0 + 2.5)
+	eq(_st(mw, "tram_s0", t0 + 3.0), "opening", "set_tram_door(true): opening (siren, lamps)")
+	check(bool(mw.source_state("tram_s0")["alarm"]), "the alarm runs while a tram door opens")
+	eq(_st(mw, "tram_s0", t0 + 2.5 + MissionWorld.OPENING + 0.1), "open", "open again")
+	eq(got, [["s0", false, t0], ["s0", true, t0 + 2.5]], "tram_door_changed fires once per order")
+	check(((mw.snapshot()["doors"] as Dictionary).has("tram_s0")), "the snapshot carries the tram door's schedule")
+	mw.tram_door_changed.disconnect(cb)
+
+
+## Re-orders never make the leaves jump (door_state's no-jump rule, R2.11a): an open order landing while the door closes,
+## or within WARN + CLOSE after its close, finishes the closing first and then runs warn / opening; the leaves' opening
+## fraction changes smoothly; a late order (open_at before the close, received while closing) never pops it open; old
+## 3-entry schedules still restore.
+func _no_jumps(mw: MissionWorld, id: Variant) -> void:
+	var base := 3000.0
+	var clean := mw.snapshot()
+	clean.erase("sealed")
+	clean["doors"] = {}
+	clean["now"] = base
+	mw.restore(clean)
+	for case_i in 3:
+		var b := base + 100.0 * float(case_i)
+		mw.advance_to(b)
+		mw.open_source(id, b + 10.0, 5.0, b)          # opening 10..13, open to 18, closing 18..20
+		var ord: float = [b + 18.5, b + 21.0, b + 18.6][case_i]
+		var oa: float = [b + 19.0, b + 22.0, b + 15.0][case_i]
+		mw.advance_to(ord)
+		mw.open_source(id, oa, 5.0, ord)
+		var last := _open_frac(mw.source_state(id), mw, id)
+		var seen := []
+		var t := ord
+		var jumps := 0
+		while t < b + 40.0:
+			t += 0.05
+			mw.advance_to(t)
+			var st := str(mw.source_state(id)["state"])
+			if seen.is_empty() or seen[-1] != st:
+				seen.append(st)
+			var f := _open_frac(mw.source_state(id), mw, id)
+			if absf(f - last) > 0.15:
+				jumps += 1
+			last = f
+		eq(jumps, 0, "case %d: the leaves never jump (states %s)" % [case_i, str(seen)])
+		check(seen.has("open"), "case %d: and it opens in the end (%s)" % [case_i, str(seen)])
+		if case_i == 0:
+			eq(seen[0], "closing", "an order landing while closing: it finishes closing first")
+			check(float(mw.source_state(id)["open_at"]) >= b + 20.0 - 1e-6, "and opens only once shut (open_at %.2f)" % float(mw.source_state(id)["open_at"]))
+		if case_i == 2:
+			check(seen.find("open") > seen.find("closing") and seen.find("closing") == 0, "a late order never pops a closing door open (%s)" % str(seen))
+	# An old 3-entry schedule (before the gate alarm) still restores and runs.
+	var snap := mw.snapshot()
+	snap["doors"] = {id: [base + 500.0, base + 520.0, -INF]}
+	snap["now"] = base + 501.0
+	mw.restore(snap)
+	eq(str(mw.source_state(id)["state"]), "opening", "a 3-entry schedule restores")
+	snap["doors"] = {}
+	mw.restore(snap)
+
+
+func _open_frac(_st: Dictionary, mw: MissionWorld, id: Variant) -> float:
+	var s := MissionWorld.door_state(str(mw.source_info().get(id, {}).get("kind", "gate")), mw._sched.get(id, []), INF, mw.now)
+	match str(s[0]):
+		"opening": return smoothstep(0.0, 1.0, float(s[1]))
+		"open": return 1.0
+		"closing": return 1.0 - smoothstep(0.0, 1.0, float(s[1]))
+	return 0.0
 
 
 func _flag_sites(stack: CityStack, mw: MissionWorld, plan: Dictionary) -> void:

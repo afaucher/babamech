@@ -53,6 +53,7 @@ func setup() -> void:
 	eq(str(GameSettings.load_settings()["renderer"]), "gl_compatibility", "renderer round-trips")
 	GameSettings.set_value("renderer", "vulkan9")
 	eq(str(GameSettings.load_settings()["renderer"]), "auto", "an unknown renderer falls back to auto")
+	_resolution()
 
 	GameSettings.set_value("head", "toaster")
 	eq(str(GameSettings.load_settings()["head"]), "chicken", "an unknown head falls back to chicken")
@@ -117,6 +118,31 @@ func setup() -> void:
 	await frames(1)
 	eq(str(GameSettings.load_settings()["renderer"]), "gl_compatibility", "the renderer is saved when picked")
 	check(not fe.btn_restart.visible, "no Restart now in a dev run (override.cfg is for exported builds)")
+	# Display mode and resolution (R2.16): picking a size saves it; Fullscreen saves and greys the size out (the display's
+	# own resolution is used); Windowed brings it back.
+	check(fe.display_pick != null and fe.resolution_pick != null, "the settings screen has display and resolution rows")
+	eq(fe.resolution_pick.item_count, fe.resolution_ids.size(), "a saved id per resolution item")
+	eq(str(fe.resolution_ids[0]), "", "item 0 is the default window")
+	var r720 := fe.resolution_ids.find("1280x720")
+	if check(r720 > 0, "1280 x 720 is offered"):
+		fe.resolution_pick.select(r720)
+		fe.resolution_pick.item_selected.emit(r720)
+		await frames(1)
+		eq(str(GameSettings.load_settings()["resolution"]), "1280x720", "the picked resolution is saved")
+	fe.display_pick.select(1)
+	fe.display_pick.item_selected.emit(1)
+	await frames(1)
+	eq(GameSettings.load_settings()["fullscreen"], true, "Fullscreen is saved")
+	check(fe.resolution_pick.disabled, "the resolution greys out in fullscreen")
+	fe.display_pick.select(0)
+	fe.display_pick.item_selected.emit(0)
+	await frames(1)
+	eq(GameSettings.load_settings()["fullscreen"], false, "Windowed is saved")
+	check(not fe.resolution_pick.disabled, "the resolution is back when windowed")
+	fe.resolution_pick.select(0)
+	fe.resolution_pick.item_selected.emit(0)
+	await frames(1)
+	eq(str(GameSettings.load_settings()["resolution"]), "", "the default window is saved as ''")
 	fe.btn_back.pressed.emit()
 	await frames(1)
 	eq(fe.screen, "main", "Back returns to the main menu")
@@ -137,3 +163,30 @@ func setup() -> void:
 	fe.queue_free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(PATH))
 	finish()
+
+
+## The window resolution (R2.16): "" (the default window) by default, persists, broken values fall back to "", and the
+## size applied always fits the screen (too big -> the largest listed size that fits; "" -> the project's 1600x900).
+func _resolution() -> void:
+	eq(str(GameSettings.DEFAULTS["resolution"]), "", "the resolution default is the default window")
+	eq(GameSettings.SECTIONS["resolution"], "video", "the resolution lives in the video section")
+	GameSettings.set_value("resolution", "1280x720")
+	eq(str(GameSettings.load_settings()["resolution"]), "1280x720", "the resolution round-trips")
+	GameSettings.set_value("resolution", "2560X1440")
+	eq(str(GameSettings.load_settings()["resolution"]), "2560x1440", "the resolution is normalised")
+	for bad: Variant in ["huge", "640x480", "1920x", 1080, "x1080", "99999x99999"]:
+		GameSettings.set_value("resolution", bad)
+		eq(str(GameSettings.load_settings()["resolution"]), "", "resolution %s falls back to the default window" % str(bad))
+	var hd := Vector2i(1920, 1080)
+	var list := GameSettings.resolution_list(hd)
+	check(list.has(hd) and list.has(Vector2i(1600, 900)) and list.has(Vector2i(1280, 720)), "a 1080p screen offers 1080p, 900p, 720p")
+	check(not list.has(Vector2i(2560, 1440)) and not list.has(Vector2i(1920, 1200)), "nothing larger than the screen")
+	for i in list.size() - 1:
+		check(list[i].x * list[i].y <= list[i + 1].x * list[i + 1].y, "the list is smallest first")
+	check(GameSettings.resolution_list(Vector2i(1700, 950)).has(Vector2i(1700, 950)), "the screen's own size is offered")
+	eq(GameSettings.fit_resolution("1280x720", hd), Vector2i(1280, 720), "a size that fits is used")
+	eq(GameSettings.fit_resolution("3840x2160", hd), Vector2i(1680, 1050), "too big for this screen: the largest that fits")
+	eq(GameSettings.fit_resolution("", hd), GameSettings.DEFAULT_WINDOW, "the default window is the project size")
+	eq(GameSettings.fit_resolution("", Vector2i(1366, 768)), Vector2i(1280, 720), "the default window shrinks on a small screen")
+	eq(GameSettings.fit_resolution("junk", hd), GameSettings.DEFAULT_WINDOW, "a broken value gives the default window")
+	GameSettings.set_value("resolution", "")

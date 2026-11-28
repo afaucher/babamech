@@ -20,6 +20,9 @@ const AMBER := Color(1.0, 0.68, 0.16)
 const GREEN := Color(0.45, 1.0, 0.58)
 const DIM := Color(0.55, 0.7, 0.78)
 const WHITE := Color(0.95, 0.99, 1.0)
+## Out of effective range (a hint only: the rack still fires). AMBER already means "line of sight blocked" (with the
+## X at the obstacle), so range uses this deeper, redder orange; blocked wins when both apply.
+const RANGE_ORANGE := Color(1.0, 0.44, 0.10)
 
 var rack: WeaponRack
 var camera: Camera3D
@@ -34,6 +37,8 @@ var _aim_root: Node3D
 var _aim_ring: MeshInstance3D
 var _slot_pips: Array = []               ## per slot: Array[MeshInstance3D] of PIPS
 var _slot_x: Array[MeshInstance3D] = []
+var _ring_colors: Array = []             ## per slot, last sync: the tracking rings' Color, or null when not drawn
+var _aim_out := false                    ## last sync: weapons selected and every one out of range
 
 
 func _ready() -> void:
@@ -86,21 +91,30 @@ func sync() -> void:
 	var aim_dist := to_cam.length()
 	var to_cam_dir := to_cam / maxf(aim_dist, 0.001)
 
-	# 1. Surface aim ring (open center so target stays unobstructed; depth-tested).
+	# 1. Surface aim ring (open center so target stays unobstructed; depth-tested). It turns RANGE_ORANGE when weapons
+	# are selected and every one of them is out of range (a hint only), else as before (green while designating).
 	var designating := false
+	var selected := 0
+	var in_range := 0
 	for sd: Dictionary in slots:
 		if bool(sd.get("designating", false)):
 			designating = true
-			break
+		if _aims(sd):
+			selected += 1
+			if bool(sd.get("in_range", true)):
+				in_range += 1
+	_aim_out = selected > 0 and in_range == 0
 	var aim_pos := aim + to_cam_dir * minf(SURFACE_PULL, aim_dist * 0.2)
 	var aim_s := clampf(aim_dist * 0.015 * fov_scale, 0.20, 1.8)
 	_aim_root.visible = true
 	_aim_root.global_position = aim_pos
 	_aim_root.global_basis = _face_basis(to_cam_dir, cam_up) * Basis.from_scale(Vector3.ONE * aim_s)
-	_aim_ring.material_override = _mat(GREEN if designating else CYAN, 0.92)
+	_aim_ring.material_override = _mat(aim_ring_color_for(designating, _aim_out), 0.92)
 
 	# 2. Per-weapon 3D constant-thickness concentric tracking rings along muzzle -> aim (or obstacle when blocked).
 	var space := get_world_3d().direct_space_state
+	_ring_colors.resize(MAX_SLOTS)
+	_ring_colors.fill(null)
 	for i in MAX_SLOTS:
 		var pips: Array = _slot_pips[i]
 		var xm: MeshInstance3D = _slot_x[i]
@@ -108,8 +122,7 @@ func sync() -> void:
 			_hide_slot(pips, xm)
 			continue
 		var s: Dictionary = slots[i]
-		if str(s["weapon"]) == "" or not bool(s["enabled"]) or not bool(s.get("built", true)) or not s.has("muzzle") \
-				or bool(s.get("equipment", false)) or str(s.get("hold", "")).to_upper() == "SHUTDOWN":
+		if not _aims(s):
 			# back-mount equipment: no aim, no pips; heat shutdown: the mounts park, no aim lines
 			_hide_slot(pips, xm)
 			continue
@@ -127,7 +140,8 @@ func sync() -> void:
 		if seg_len < 1.5:
 			_hide_slot(pips, xm)
 			continue
-		var col := AMBER if is_blocked else (CYAN if bool(s.get("in_range", true)) else DIM)
+		var col := slot_color_for(is_blocked, bool(s.get("in_range", true)))
+		_ring_colors[i] = col
 		var lit := ceili(float(s.get("ready", 1.0)) * PIPS - 0.001)
 		for k in PIPS:
 			var t := 0.36 + 0.19 * float(k)   # 0.36, 0.55, 0.74, 0.93 along muzzle -> target
@@ -153,7 +167,49 @@ func sync() -> void:
 			xm.visible = false
 
 
+## Last sync, per slot index: the tracking rings' Color, or null when that slot draws none (tests, tools).
+func ring_colors() -> Array:
+	return _ring_colors.duplicate()
+
+
+## Last sync: weapons are selected and every selected one is out of range (the aim ring is RANGE_ORANGE).
+func aim_out_of_range() -> bool:
+	return _aim_out
+
+
+## Last sync: the aim ring's colour, or null when it is hidden.
+func aim_ring_color() -> Variant:
+	if _aim_root == null or not _aim_root.visible or _aim_ring.material_override == null:
+		return null
+	var c: Color = (_aim_ring.material_override as StandardMaterial3D).albedo_color
+	return Color(c.r, c.g, c.b)
+
+
+## A slot that draws tracking rings (and counts as "selected" for the aim ring): a selected, built weapon with a
+## hardpoint, not equipment, not parked by heat shutdown (destroyed / empty slots come in deselected).
+static func _aims(s: Dictionary) -> bool:
+	return str(s.get("weapon", "")) != "" and bool(s.get("enabled", false)) and bool(s.get("built", true)) \
+		and s.has("muzzle") and not bool(s.get("equipment", false)) and str(s.get("hold", "")).to_upper() != "SHUTDOWN"
+
+
+## Tracking ring colour: AMBER when line of sight is blocked, RANGE_ORANGE out of range, else CYAN.
+static func slot_color_for(is_blocked: bool, in_range: bool) -> Color:
+	if is_blocked:
+		return AMBER
+	return CYAN if in_range else RANGE_ORANGE
+
+
+## Aim ring colour: RANGE_ORANGE when every selected weapon is out of range, else GREEN while designating, else CYAN.
+static func aim_ring_color_for(designating: bool, all_out: bool) -> Color:
+	if all_out:
+		return RANGE_ORANGE
+	return GREEN if designating else CYAN
+
+
 func _hide_all() -> void:
+	_aim_out = false
+	_ring_colors.resize(MAX_SLOTS)
+	_ring_colors.fill(null)
 	if _aim_root != null:
 		_aim_root.visible = false
 	for i in MAX_SLOTS:

@@ -13,12 +13,16 @@ extends RefCounted
 ## stands on the roof; the contact radius in CityPropSim.TYPES is what the sim uses.
 const ROOF_FOOT := {"water_tank": 1.5, "ac": 1.35, "vent": 0.5, "planter": 1.75}
 const ROOF_KIND := {"tank": "water_tank", "ac": "ac", "vent": "vent", "planter": "planter"}     ## plan slot kind -> type
+const SPINE_TREE_PITCH := 15.0  ## a spine median / verge tree about this far from the next (as the avenue median's)
+const SPINE_TREE_INSET := 2.0   ## the first and last tree this far in from the planted strip's ends (crowns off the paint)
+const APRON_CLEAR := 0.5        ## no prop within this of a lift door's keep-clear apron (CityDims.lift_aprons)
 
 
 ## Every prop of the district as plain data, from its own generator so it never depends on what the meshers draw.
 ## Street trees every ~9 m along each block edge with a lamp in every third slot, a bin beside some lamps and a bench
 ## beside some trees; a signal pole and a sign post at the low end of each edge; median, garden, plaza and park trees;
-## plaza and park benches. Nothing stands in a floor hole or on ground kept clear. ids are array indices.
+## plaza and park benches; on a section's spine, trees on its planted medians and verges only (_spine_trees). Nothing
+## stands in a floor hole, on ground kept clear or on a lift door's apron. ids are array indices.
 static func layout(p: CityPlan) -> Array:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = p.props_seed() + 1
@@ -36,7 +40,9 @@ static func layout(p: CityPlan) -> Array:
 			var v1: float = float(p.roads_s[j + 1]["a"]) - 12.0
 			var n := int((v1 - v0) / 15.0)
 			for i in n + 1:
-				if n > 0:
+				if n > 0 and road["kind"] == "spine":
+					_skip_tree(rng)      # a section's spine trees stand on its planted strips (_spine_trees, near the end)
+				elif n > 0:
 					_tree(out, rng, mid, v0 + (v1 - v0) * float(i) / float(n), CityPlan.CURB_H, 0.8, false)
 	for l: Dictionary in p.lots:
 		if l["kind"] == "open":
@@ -50,12 +56,19 @@ static func layout(p: CityPlan) -> Array:
 	for k: int in keys:
 		var axis := "x" if k >= 65536 else "s"
 		_form_items(out, str(p.forms[k]), p.seg_inner(axis, (k % 65536) / 256, k % 256), axis == "s", rng)
+	var aprons := CityDims.lift_aprons(p)
 	var kept: Array = []
 	for it: Dictionary in out:
-		if p.clear_at(Vector2(it["x"], it["s"])):
+		var at := Vector2(it["x"], it["s"])
+		if p.clear_at(at) and not _in_any(aprons, at, APRON_CLEAR):
 			it["id"] = kept.size()
 			kept.append(it)
 	_roof_items(kept, p)      # after the street props, so their ids do not move
+	# A section spine's trees on its planted medians and verges, then the tram station's lamps and benches (CityStation,
+	# a section's top deck only), last: nothing else moves.
+	_spine_trees(kept, p)
+	for q: Array in CityStation.items(CityStation.of(p)):
+		_add(kept, str(q[0]), float(q[1]), float(q[2]), float(q[3]), float(q[4]))
 	return kept
 
 
@@ -138,6 +151,42 @@ static func _tree(out: Array, rng: RandomNumberGenerator, x: float, s: float, h:
 	var yaw := rng.randf() * TAU
 	var sc := scale * rng.randf_range(0.9, 1.1)
 	_add(out, "tree", x, s, h, yaw, sc, rng.randi_range(0, CityStreets.TREE_LEAVES.size() - 1), pit)
+
+
+## The generator draws of one _tree, without the tree: keeps the stream (and so every later prop) where it was.
+static func _skip_tree(rng: RandomNumberGenerator) -> void:
+	rng.randf()
+	rng.randf_range(0.9, 1.1)
+	rng.randi_range(0, CityStreets.TREE_LEAVES.size() - 1)
+
+
+static func _in_any(rects: Array[Rect2], at: Vector2, margin: float) -> bool:
+	for r in rects:
+		if r.grow(margin).has_point(at):
+			return true
+	return false
+
+
+## A tree line down the middle of every planted strip of a section's spine (CityDims.spine_planted: the medians, which
+## end AV_POCKET before each junction where the left-turn pockets begin, and the tram strip's verges on decks without
+## track), SPINE_TREE_INSET in from each end and about SPINE_TREE_PITCH apart, as the avenue median's; from their own
+## generator (props_seed() + 3), so no other prop moves. Nothing off a section.
+static func _spine_trees(out: Array, p: CityPlan) -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = p.props_seed() + 3
+	for r: Rect2 in CityDims.spine_planted(p):
+		var x := r.get_center().x
+		var v0 := r.position.y + SPINE_TREE_INSET
+		var v1 := r.end.y - SPINE_TREE_INSET
+		if v1 < v0:
+			continue
+		var n := int((v1 - v0) / SPINE_TREE_PITCH)
+		for i in n + 1:
+			var s := v0 + (v1 - v0) * float(i) / float(n) if n > 0 else (v0 + v1) * 0.5
+			if p.clear_at(Vector2(x, s)):
+				_tree(out, rng, x, s, CityPlan.CURB_H, 0.8, false)
+			else:
+				_skip_tree(rng)
 
 
 static func _yaw(side: int) -> float:

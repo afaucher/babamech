@@ -78,7 +78,15 @@ static func arg_value(args: PackedStringArray, key: String) -> String:
 ## controls): GameSettings.path goes to a fresh per-test file under user://test_settings/ (removed first, so every run
 ## starts from GameSettings.DEFAULTS: the chassis' default loadout), unless the command line names one with
 ## --settings-file. Tests that need their own file still set GameSettings.path themselves.
-## One file per test name (and net link / role / index) so parallel runs never share one.
+## One file per test name (and net link / role / index) AND per OS process id, so parallel runs never share one, not even
+## two runs of the same test (R2.18: two bot runs started together shared a settings file and one loaded the other's
+## chassis). Files older than TEST_SETTINGS_TTL are pruned so the folder doesn't grow with every process id.
+## Boot.test_settings_file: the file this process got (tests that write their own settings use it).
+const TEST_SETTINGS_DIR := "user://test_settings"
+const TEST_SETTINGS_TTL := 6 * 3600   ## s
+static var test_settings_file := ""
+
+
 func _isolate_test_settings(test_name: String) -> void:
 	var args := OS.get_cmdline_user_args()
 	var file := arg_value(args, "--settings-file")
@@ -86,11 +94,23 @@ func _isolate_test_settings(test_name: String) -> void:
 		var role := arg_value(args, "--net-role")
 		var idx := arg_value(args, "--net-index")
 		var tag := test_name + ("_%s_%s%s" % [arg_value(args, "--net-link"), role, idx] if role != "" else "")
-		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("user://test_settings"))
-		file = "user://test_settings/%s.cfg" % tag
+		tag += "_p%d" % OS.get_process_id()
+		DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(TEST_SETTINGS_DIR))
+		_prune_test_settings()
+		file = "%s/%s.cfg" % [TEST_SETTINGS_DIR, tag]
 		if FileAccess.file_exists(file):
 			DirAccess.remove_absolute(ProjectSettings.globalize_path(file))
 	GameSettings.path = file
+	test_settings_file = file
+
+
+## Deletes per-process test settings files older than TEST_SETTINGS_TTL (finished runs; a live run's file is newer).
+static func _prune_test_settings() -> void:
+	var now := int(Time.get_unix_time_from_system())
+	for f: String in DirAccess.get_files_at(TEST_SETTINGS_DIR):
+		var p := "%s/%s" % [TEST_SETTINGS_DIR, f]
+		if f.ends_with(".cfg") and now - int(FileAccess.get_modified_time(p)) > TEST_SETTINGS_TTL:
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
 
 
 func _run_test(test_name: String) -> void:

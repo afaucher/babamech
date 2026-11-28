@@ -13,8 +13,13 @@ extends Node
 ##                 distance, the revive bar while a drone beams it) and a line in the top-right panel: "<name> is down:
 ##                 revive with a repair drone" when a standing crewmate can revive (has a repair drone with a charge left
 ##                 or one on duty, back mount intact), else "<name> is down".
-##     the pilot   the centre prompt: "DOWN", "Help is <m> m away" / "No repair drone in the crew", the revive bar while a
-##                 drone beams it, and "Hold SPACE to respawn" with the hold bar; then "REDEPLOYING <s>".
+##     the pilot   the centre prompt: "DOWN", "Help is <m> m away" / "No repair drone in the crew" ("Your repair drone is
+##                 reviving you" while its own drone self-revives it, R2.9), the revive bar while a drone beams it, and
+##                 "Hold SPACE to respawn" with the hold bar; then "REDEPLOYING <s>".
+##   REDEPLOY RESULT (PlayerTarget.on_respawn -> _respawned, the OWNER's machine: its own mech, the host's bots): after
+##     PlayerTarget has set every component to DownedRules.RESPAWN_STRUCTURE (full) and vented heat, the pilot's rack is
+##     rearmed (DownedRules.RESPAWN_REARM: WeaponRack.refill_ammo, every limited-ammo weapon and the drone charges) and
+##     the mech placed (_place). R2.12: a redeploy brings the mech back fully healed and rearmed.
 ##   RESPAWN POINT (PlayerTarget.on_respawn -> _place): when the deck the pilot went down on has an ACTIVE defend or
 ##     hold objective, a clear spot 60-90 m from its site (DownedRules.RESPAWN_NEAR_*: out of its zone, clear ground by
 ##     SiteFit.snap, no live enemy within 40 m if a candidate allows it, facing the site). Otherwise the arrival point (SectionEncounters.arrival(sec, k), the enemy spawner's
@@ -25,10 +30,13 @@ extends Node
 ##     whatever chassis respawns (2026-11-26, seed 6: a Strider respawned on deck 1's lift platform and fell to deck 2):
 ##     plan_safe (off lift platforms, floor openings, cuts, ramps; free on the fit mask; connected to the walk graph) and
 ##     spot_problems == "" (the widest capsule clear of static collision, floor under its whole footprint).
-##   BOTS (host): every bot's PlayerTarget gets auto_redeploy (it cannot hold a key) and revive_wait (DownedRules.bot_wait:
-##     8 s when a standing crewmate can revive it, else 2 s). The local mech flown by MissionBot (--bot) gets the same.
-##   QUERIES for the bot (Engine session's MissionBot): downed_crew() -> [{peer, name, pos, revive, bot}] (revivable
-##     downed crewmates, positions on this machine), can_revive(pilot_id), reviver_for(pilot_id), nearest_reviver(id).
+##   BOTS (host): every bot's PlayerTarget gets auto_redeploy (it cannot hold a key) and revive_wait
+##     (DownedRules.bot_wait_for: never while its own drone self-revives it, else 8 s when a standing crewmate can revive
+##     it, else 2 s; MissionBot's BotAid.wait_s replaces it once the AI flies the bot). The local mech flown by MissionBot
+##     (--bot) gets the same.
+##   QUERIES for the bot (Engine session's MissionBot): downed_crew() -> [{peer, name, pos, revive, bot, self_revive}]
+##     (revivable downed crewmates, positions on this machine; self_revive: its own drone is reviving it, no detour
+##     needed), can_revive(pilot_id), reviver_for(pilot_id), nearest_reviver(id), self_reviving(pilot_id).
 ## Cosmetic / local only: every var is LOCAL.
 
 const MARK_H := 9.5               ## m above the wreck's feet where the crewmates' marker sits
@@ -51,6 +59,8 @@ const SPOT_RINGS := [4.0, 8.0, 12.0, 16.0, 20.0, 25.0, 30.0, 36.0, 42.0, 50.0, 6
 const SPOT_BEARINGS := 12
 const ANCHOR_CLEAR := 8.0
 const SEAT_APART := 2.0 * CityPlan.MECH_R_MAX + 1.0   ## m between two seats' arrival spots (two Bulwarks + 1 m)
+const SELF_HELP := "Your repair drone is reviving you"   ## the downed pilot's help line during a self-revive (R2.9)
+const SELF_LAUNCH_S := 0.5        ## s after a down the local pilot's own charged drone counts as launching (own_drone_ready)
 
 var drive: MissionScene
 var beacons: Dictionary = {}      ## pilot id -> Node3D beacon on its wreck (cosmetic)
@@ -85,8 +95,8 @@ func setup(td: MissionScene) -> void:
 	DownedRules.ensure_input()
 	var me := local_id()
 	var pt := td.combat.player_target
-	pt.on_respawn = func() -> void: _place(me, td.mech)
-	pt.revive_wait = func() -> float: return DownedRules.bot_wait(reviver_for(me))
+	pt.on_respawn = func() -> void: _respawned(me, td.mech, td.combat.rack if td.combat != null else null)
+	pt.revive_wait = func() -> float: return DownedRules.bot_wait_for(self_reviving(me), reviver_for(me))
 	for id: int in td.crew_bots:
 		var cb := _bot(id)
 		if cb == null or cb.target == null:
@@ -94,8 +104,10 @@ func setup(td: MissionScene) -> void:
 		var bid := id
 		var bm := cb.mech
 		cb.target.auto_redeploy = true
-		cb.target.on_respawn = func() -> void: _place(bid, bm)
-		cb.target.revive_wait = func() -> float: return DownedRules.bot_wait(reviver_for(bid))
+		cb.target.on_respawn = func() -> void:
+			var live := _bot(bid)
+			_respawned(bid, bm, live.rack if live != null else null)
+		cb.target.revive_wait = func() -> float: return DownedRules.bot_wait_for(self_reviving(bid), reviver_for(bid))
 	if td.hud != null and td.hud.mission_hud != null:
 		td.hud.mission_hud.downed_source = hud_state
 	var cl := td.get_node_or_null("CombatLog") as CombatLog
@@ -178,6 +190,32 @@ func _can_revive(m: Dictionary) -> bool:
 	return d != null and d.active()
 
 
+## `id`'s own repair drone is reviving it now (R2.9: CombatWorld.self_reviving, every machine runs the drone; false while
+## the combat world has no such query).
+func self_reviving(id: int) -> bool:
+	var t := target_of(id)
+	var w: CombatWorld = drive.combat.world if drive != null and drive.combat != null else null
+	if t == null or w == null:
+		return false
+	return w.self_reviving(t.target_id)
+
+
+## The LOCAL pilot's own rack is about to self-revive it: it went down under SELF_LAUNCH_S s ago with a repair drone that
+## has a charge on an intact back mount (WeaponRack._self_revive launches on the down's edge, on the owner's machine:
+## the launch can trail the down by a step). Only the local pilot's rack is known here.
+func own_drone_ready(id: int) -> bool:
+	if id != local_id() or drive == null or drive.combat == null or drive.combat.rack == null:
+		return false
+	var t := target_of(id)
+	if t == null or not t.disabled or t.redeploying or t.down_time > SELF_LAUNCH_S:
+		return false
+	var rk := drive.combat.rack
+	for i in rk.slot_count():
+		if rk.weapons[i] == DownedRules.REVIVER and rk.usable(i + 1):
+			return true
+	return false
+
+
 ## A standing crewmate other than `id` can revive it.
 func reviver_for(id: int) -> bool:
 	return not nearest_reviver(id).is_empty()
@@ -202,13 +240,14 @@ func nearest_reviver(id: int) -> Dictionary:
 	return best
 
 
-## The revivable downed crewmates (downed, not redeploying), positions on this machine: [{peer, name, pos, revive, bot}].
+## The revivable downed crewmates (downed, not redeploying), positions on this machine: [{peer, name, pos, revive, bot,
+## self_revive}] (self_revive: its own drone is reviving it, R2.9: nobody needs to detour to it).
 func downed_crew() -> Array:
 	var out: Array = []
 	for m: Dictionary in members():
 		if bool(m["downed"]) and not bool(m["redeploying"]) and m["mech"] != null and is_instance_valid(m["mech"]):
 			out.append({"peer": m["peer"], "name": m["name"], "pos": (m["mech"] as Node3D).global_position,
-				"revive": m["revive"], "bot": m["bot"]})
+				"revive": m["revive"], "bot": m["bot"], "self_revive": self_reviving(int(m["peer"]))})
 	return out
 
 
@@ -249,6 +288,8 @@ func _prompt(m: Dictionary) -> Dictionary:
 		return {"title": "REDEPLOYING", "left": t.redeploy_left, "hold": 1.0, "hint": "", "help": "", "revive": 0.0}
 	var n := nearest_reviver(int(m["peer"]))
 	var help := "Help is %d m away" % roundi(float(n["dist"])) if not n.is_empty() else "No repair drone in the crew"
+	if self_reviving(int(m["peer"])) or own_drone_ready(int(m["peer"])):
+		help = SELF_HELP   # its own drone revives it (R2.9): never "No repair drone in the crew" then
 	return {"title": "DOWN", "help": help, "revive": float(m["revive"]),
 		"hold": clampf(t.respawn_hold / DownedRules.RESPAWN_HOLD, 0.0, 1.0),
 		"hint": "Hold %s to respawn" % DownedRules.key_name(), "left": 0.0}
@@ -282,7 +323,15 @@ func _physics_process(delta: float) -> void:
 
 # --- Respawn placement ---------------------------------------------------------------------------------------------
 
-## PlayerTarget.on_respawn: put `id`'s mech at its respawn point (redeploy_transform), still, feet re-planted.
+## PlayerTarget.on_respawn (the OWNER's machine; PlayerTarget has already set full structure and vented heat): rearm
+## `id`'s rack (DownedRules.RESPAWN_REARM: WeaponRack.refill_ammo) and place its mech. R2.12.
+func _respawned(id: int, m: MechController, rack: WeaponRack) -> void:
+	if DownedRules.RESPAWN_REARM and rack != null and is_instance_valid(rack):
+		rack.refill_ammo()
+	_place(id, m)
+
+
+## Put `id`'s mech at its respawn point (redeploy_transform), still, feet re-planted.
 func _place(id: int, m: MechController) -> void:
 	if m == null or not is_instance_valid(m):
 		return
@@ -385,14 +434,17 @@ func _clear_node(k: int, p: Vector2) -> Vector2:
 
 
 ## The ACTIVE defend or hold objective on deck k (the replicated mission state: MissionRules.obj_state, applied from the
-## host on a client), {} when none (or no plan mode).
+## host on a client), {} when none (or no plan mode). The hold counts on through the walk-out (done, the exit open, the
+## mission on: R2.10), so a pilot redeploying then lands near the exit, not back at the deck's arrival.
 func active_objective(k: int) -> Dictionary:
 	var mf: MissionFlow = drive.mission
 	if mf == null or mf.rules == null or mf.rules.plan == null:
 		return {}
 	for o: Dictionary in mf.rules.objectives:
-		if int(o.get("deck", -1)) == k and str(o.get("type", "")) in ["defend", "hold"] \
-				and mf.rules.obj_state(str(o["id"])) == "active":
+		if int(o.get("deck", -1)) != k or not str(o.get("type", "")) in ["defend", "hold"]:
+			continue
+		var st := mf.rules.obj_state(str(o["id"]))
+		if st == "active" or (str(o["type"]) == "hold" and st == "done" and mf.rules.exit_open() and mf.rules.outcome == ""):
 			return o
 	return {}
 

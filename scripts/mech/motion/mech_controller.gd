@@ -32,6 +32,23 @@ extends CharacterBody3D
 ##
 ## Networking: the owner's machine runs this; position, velocity and facing (engine properties) will be streamed by the
 ## mech codec in S7. Remote copies will be interpolated puppets, not simulated.
+##
+## HOVER BRANCH (docs/design/wasp-hover.md; the Wasp, MechCatalog entry "move" "hover": `hover_mode`, set by
+## apply_chassis): step() runs _step_hover() instead, the biped path is untouched. No gravity while it flies: move_input
+## moves it at walk_speed (cruise) / run_speed (`running` = boost) the same forward and sideways, accel toward the wanted
+## velocity and, with no move input, a drift that eases to a stop (hover_drag x speed + hover_brake). `climb_input`
+## (-1..1: Space / Ctrl) climbs / descends at climb_rate (eased at climb_accel; the descent slows near the surface, so it
+## settles gently). With no climb input it HOLDS its height above the SURFACE UNDER IT (_surface_alt: the capsule's
+## footprint swept down under the feet, and under where its ground-plane velocity takes it in hover_ahead s, swept from
+## as high as the deck above allows, so a roof ahead lifts it before it gets there and a ledge behind it is only left once
+## the footprint is clear of it), never lower than hover_height and never into the slab above (headroom()). No altitude cap:
+## only collision stops it, so it flies through ceiling openings and shafts. Touching a walkable floor (floor_max_angle)
+## while descending, falling or with a hard impact LANDS it (grounded(): on its legs, zero velocity, it turns but does
+## not move; climb_input > 0 lifts off); a steeper face never lands it, it slides down along it. Shut down or with a
+## dead fan (can_fly() false) it falls under gravity onto its legs (hard_landing as for walkers) and, rebooted, stays
+## landed until climb_input lifts it off. Heat: hovering in place costs nothing, moving walk_heat .. run_heat by speed
+## like a walker, climbing up to run_heat (the larger of the two), cooling x landed_cooling while landed. thrust_input,
+## auto_burn and the step-up are not used. Hooks for every chassis: can_fly(), working_fans(), altitude(), headroom().
 
 var ring: RingFrame                  ## the deck this mech stands on; null = flat world (+Y up)
 var walk_speed := 12.0               ## m/s
@@ -58,6 +75,15 @@ var hard_land_speed := 18.0          ## m/s down: landings at this or more are t
 var auto_land_speed := 16.0          ## m/s down: the automatic burn brakes a fall only to this (a heavy landing, below
                                      ## PlayerTarget.FALL_DAMAGE_SPEED 20 with headroom: tests/test_auto_land.gd)
 var chassis_id := "strider"          ## the MechCatalog chassis whose movement block was applied (apply_chassis)
+## Hover chassis only (apply_chassis, from the movement block's MechCatalog.HOVER_KEYS; a biped never reads them):
+var hover_mode := false              ## the chassis flies (MechCatalog entry "move" "hover"): step() takes the hover branch
+var climb_rate := 9.0                ## m/s up / down at full climb_input
+var climb_accel := 18.0              ## m/s^2 toward the wanted vertical speed (climb, descend, height hold)
+var hover_drag := 0.6                ## 1/s: with no move input the drift slows by this share of its speed per second ...
+var hover_brake := 3.0               ## m/s^2 ... plus this constant brake (it eases to a stop, does not stop dead)
+var hover_height := 3.0              ## m: the lowest height it holds above the surface under it
+var hover_ahead := 1.2               ## s of ground-plane velocity it looks ahead for a rising surface
+var landed_cooling := 1.5            ## cooling multiplier while landed
 
 signal hard_landing(speed: float, severity: float)   ## severity 0..1 above safe_land_speed
 signal overheated
@@ -67,6 +93,8 @@ var move_input := Vector2.ZERO       ## x = strafe right, y = forward; length <=
 var turn_input := 0.0                ## -1 left .. +1 right
 var running := false
 var thrust_input := false
+var climb_input := 0.0               ## hover: -1 descend .. +1 climb (Ctrl / Space); bipeds ignore it (they thrust)
+var fans_alive := 2                  ## hover: working lift fans (2 = all; step 2's fan damage drives it). working_fans()
 
 var heat := 0.0                      ## 0..heat_cap
 var shutdown := false                ## overheated: no control until rebooted
@@ -90,6 +118,13 @@ var _wedge_t := 0.0                  ## s of consecutive wedged steps (see _unst
 var _wedge_nudge := 0.0              ## m nudged free in this wedge episode
 var _burn_throttle := 1.0            ## share of thrust_accel the automatic burn uses this step (heat scales with it)
 var _probe: SphereShape3D            ## the landing probe: the capsule's bottom (radius x PROBE_SHRINK); null = a ray
+var _landed := true                  ## hover: on its legs (grounded()); a hover body starts landed
+var _hold := 0.0                     ## hover: the height (m) it holds above the surface under it
+var _hold_free := true               ## hover: the hold is not set (climbing, falling, no surface in range): take it anew
+var _stuck_t := 0.0                  ## s pushing without moving, not into a plain wall (_stuck_guard)
+var _stuck_tries := 0                ## stuck nudges tried in this push (STUCK_TRIES at most)
+var unstuck_count := 0               ## stuck nudges that moved the body (diagnostics, tests)
+var _stuck_normals: Array[Vector3] = []   ## the faces touched in this slow stretch (_stuck_guard)
 
 const MAX_SPEED := 150.0             ## m/s backstop (a 3-deck free fall is ~80, a long thrust climb less)
 const RECONCILE_SLACK := 0.5         ## m/s of vertical speed the achieved motion may lag before it is cut back
@@ -107,6 +142,28 @@ const AUTO_LAND_OFF := 0.5
 const PROBE_SHRINK := 0.9            ## landing probe radius / capsule radius (a narrower graze slides off, no floor)
 const PROBE_AHEAD_PAD := 0.3         ## s added to the burn time when looking ahead along the ground-plane velocity
 const PROBE_AHEAD_MAX := 3.0         ## s, cap of the look-ahead time
+## Stuck guard (_stuck_guard, R2.25b) and the shared collision-checked nudge (_nudge).
+const STUCK_SPEED := 0.5             ## m/s: moving slower than this while pushing counts as not moving
+const STUCK_TIME := 1.0              ## s of pushing without moving before a nudge (and between nudges)
+const STUCK_TRIES := 4               ## nudges per push before it gives up (until the input is released or it moves)
+const STUCK_WALL_SPREAD := 0.5236    ## rad (30 deg): contacts this close to their mean are one face
+const STUCK_HEAD_ON := 0.85          ## the wish into that face's normal beyond this (within ~32 deg) is a plain wall
+const NUDGE_DIST := 0.6              ## m per stuck nudge
+const NUDGE_MIN_SHARE := 0.5         ## a nudge direction counts when the capsule moves at least this share of it
+## Hover branch.
+const HOVER_FANS := 2               ## lift fans of a hover chassis (can_fly needs them all)
+const HOVER_PROBE := 400.0           ## m: how far down the surface under a hover body is looked for (beyond: hold height)
+const HOVER_LOOK_UP := 40.0          ## m above the feet the look-ahead sweeps from (capped under the deck above)
+const HEADROOM_MAX := 500.0          ## m: headroom() in the open
+const SWEEP_FINE := 0.03             ## m: the probes' refined precision (_sweep)
+const CAST_CHECK := 8.0              ## m: _cast re-sweeps this far before its first estimate
+const HEAD_MARGIN := 0.5            ## m: the hold stays this far under the slab above
+const HOLD_GAIN := 2.0               ## 1/s: wanted vertical speed per metre of height error (small errors)
+const HOLD_BRAKE := 0.5              ## share of climb_accel the height hold plans to brake with (no overshoot)
+const LAND_EASE := 5.0               ## m: descending, the speed eases down below this height ...
+const LAND_SLOW := 0.25              ## ... to this share of climb_rate at the touchdown (about 2 m/s)
+const LANDED_SNAP := 0.5             ## m: floor snap while landed (0 in flight, so a scraped ramp never holds it)
+const LANDED_PRESS := 1.0            ## m/s: the press into the floor that keeps a landed body on it
 
 
 func net_fields() -> Dictionary:
@@ -125,6 +182,14 @@ func net_fields() -> Dictionary:
 		"owner_peer": Net.SPAWN, "puppet": Net.SPAWN,
 		"_climbing": Net.PRIVATE, "_reboot_t": Net.PRIVATE, "_was_grounded": Net.PRIVATE, "_fall_speed": Net.PRIVATE,
 		"_wedge_t": Net.PRIVATE, "_wedge_nudge": Net.PRIVATE, "_burn_throttle": Net.PRIVATE, "_probe": Net.LOCAL,
+		# Hover: tunables fixed at spawn (apply_chassis); climb_input is input like move_input. fans_alive is the owner's
+		# for now (step 2 drives it from the fan components, which the snapshot carries in the leg slots: a puppet will
+		# derive it from them). The landed state reaches puppets as `grounded` (the snapshot's grounded flag).
+		"hover_mode": Net.SPAWN, "climb_rate": Net.SPAWN, "climb_accel": Net.SPAWN, "hover_drag": Net.SPAWN,
+		"hover_brake": Net.SPAWN, "hover_height": Net.SPAWN, "hover_ahead": Net.SPAWN, "landed_cooling": Net.SPAWN,
+		"climb_input": Net.PRIVATE, "fans_alive": Net.PRIVATE,
+		"_landed": Net.PRIVATE, "_hold": Net.PRIVATE, "_hold_free": Net.PRIVATE,
+		"_stuck_t": Net.PRIVATE, "_stuck_tries": Net.PRIVATE, "unstuck_count": Net.PRIVATE, "_stuck_normals": Net.PRIVATE,
 	}
 
 
@@ -140,13 +205,19 @@ func _ready() -> void:
 ## heat_cap / cooling) and size the collision capsule (a CollisionShape3D child holding a CapsuleShape3D, its bottom at the
 ## feet) to the chassis' capsule_radius / capsule_height. Every machine applies it at spawn from the crew entry's chassis
 ## (MechSpawn.make), so puppets carry the same numbers and nothing extra is streamed.
-func apply_chassis(id: String) -> void:
-	chassis_id = id if MechCatalog.CHASSIS.has(id) else "strider"
-	var mv := MechCatalog.movement(chassis_id)
+## `drafts`: a MechCatalog.DRAFT_CHASSIS id is itself (the hover lab and its tests: the Wasp), else the Strider (the game:
+## a draft is not playable). A hover chassis (entry "move" "hover") also takes its HOVER_KEYS and sets hover_mode.
+func apply_chassis(id: String, drafts: bool = false) -> void:
+	chassis_id = id if MechCatalog.CHASSIS.has(id) or (drafts and MechCatalog.DRAFT_CHASSIS.has(id)) else "strider"
+	var mv := MechCatalog.movement(chassis_id, drafts)
 	for k: String in MechCatalog.MOVEMENT_KEYS:
 		set(k, float(mv[k]))
 	heat_cap = float(mv["heat_cap"])
 	cooling = float(mv["cooling"])
+	hover_mode = str(MechCatalog.entry(chassis_id).get("move", "")) == "hover"
+	if hover_mode:
+		for k: String in MechCatalog.HOVER_KEYS:
+			set(k, float(mv[k]))
 	for c in get_children():
 		if c is CollisionShape3D and (c as CollisionShape3D).shape is CapsuleShape3D:
 			var cap := (c as CollisionShape3D).shape as CapsuleShape3D
@@ -175,6 +246,8 @@ func ground_speed() -> float:
 func grounded() -> bool:
 	if puppet:
 		return puppet_grounded
+	if hover_mode:
+		return _landed   # on its legs (a hover body skimming a floor in flight is not grounded)
 	return is_on_floor() or _climbing
 
 
@@ -191,6 +264,9 @@ func _physics_process(delta: float) -> void:
 
 ## One physics step (public so tests can drive it).
 func step(delta: float) -> void:
+	if hover_mode:
+		_step_hover(delta)
+		return
 	var u := up()
 	up_direction = u
 	var live := not shutdown
@@ -244,6 +320,7 @@ func step(delta: float) -> void:
 	_reconcile(u, moved, delta)
 	_climbing = _step_up(u, want, delta)
 	_unstick(u, vs0, moved, delta)
+	_stuck_guard(u, wish if on_ground else Vector3.ZERO, global_position - p0, delta)
 	velocity = velocity.limit_length(MAX_SPEED)
 	_update_heat(delta)
 	_check_landing(u)
@@ -292,8 +369,161 @@ func _unstick(u: Vector3, vs0: float, moved: Vector3, delta: float) -> void:
 		sum += get_slide_collision(i).get_normal()
 	var dir := (sum.normalized() + u).normalized() if sum.length() > 0.5 else u
 	var stepd := minf(WEDGE_NUDGE_SPEED * delta, WEDGE_NUDGE_MAX - _wedge_nudge)
-	global_position += dir * stepd
+	_nudge([dir, u], stepd, 0.0)   # collision-checked (the one nudge path, shared with _stuck_guard)
 	_wedge_nudge += stepd
+
+
+## THE nudge (the airborne wedge guard and the stuck guard both use it): try `dirs` in order and move the body by `dist`
+## along the first one it can actually move along, at least `min_share` of `dist` (0: any progress). Every move is
+## move_and_collide, so the capsule only goes where it fits: it stops at the first contact and never passes through
+## anything (the old wedge nudge set global_position directly). True if it moved.
+func _nudge(dirs: Array, dist: float, min_share: float = NUDGE_MIN_SHARE) -> bool:
+	for d: Vector3 in dirs:
+		if d.length_squared() < 1e-6:
+			continue
+		var motion := d.normalized() * dist
+		var test := move_and_collide(motion, true)
+		var travel := dist if test == null else test.get_travel().length()
+		if travel > 1e-4 and travel >= dist * min_share:
+			move_and_collide(motion)
+			return true
+		if test != null and travel <= 1e-4 and _slides_free(motion):
+			global_position += motion   # already jammed into faces: sliding along them, into nothing new (_slides_free)
+			return true
+	return false
+
+
+## The capsule already overlaps something (spawned or pushed into faces it cannot leave: move_and_collide refuses every
+## motion from there) and `motion` takes it only deeper into nothing: at the destination it overlaps no body it does not
+## overlap now, and no deeper. So a jammed body can slide out along the faces it is caught in (up out of a slot) but
+## never into or through anything else.
+func _slides_free(motion: Vector3) -> bool:
+	var now := _overlap(Vector3.ZERO)
+	if now["ids"].is_empty():
+		return false
+	var then := _overlap(motion)
+	for id: Variant in then["ids"]:
+		if not id in now["ids"]:
+			return false
+	return float(then["depth"]) <= float(now["depth"]) + 0.01
+
+
+## What the capsule overlaps moved by `offset`: {ids: collider instance ids, depth: the deepest contact, m}.
+func _overlap(offset: Vector3) -> Dictionary:
+	var out := {"ids": [], "depth": 0.0}
+	var space := get_world_3d().direct_space_state if is_inside_tree() else null
+	var node: CollisionShape3D = null
+	for c in get_children():
+		if c is CollisionShape3D and (c as CollisionShape3D).shape is CapsuleShape3D:
+			node = c
+			break
+	if space == null or node == null:
+		return out
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = node.shape
+	q.transform = Transform3D(global_basis, global_position + offset) * node.transform
+	q.exclude = [get_rid()]
+	q.collision_mask = collision_mask
+	q.margin = 0.0
+	for hit: Dictionary in space.intersect_shape(q, 16):
+		out["ids"].append(int(hit["collider_id"]))
+	var pts := space.collide_shape(q, 32)
+	for i in range(0, pts.size() - 1, 2):
+		out["depth"] = maxf(float(out["depth"]), pts[i].distance_to(pts[i + 1]))
+	return out
+
+
+## R2.25b (playtest 2026-11-26): pushing without moving for about a second nudges the mech free. Owner only (step()),
+## deterministic (no randomness: the candidates come in a fixed order from the contacts and the input).
+## STUCK: the pilot asks to move (`wish`: the move input in the floor plane, for a hover body also climb_input along up;
+## a walker only while grounded: in the air the wedge guard above has it) AND the body made under STUCK_SPEED this step
+## AND it is not a plain wall: walking (or climbing) head-on into one flat face stops there, it is not stuck. A plain
+## wall is every non-floor face touched during the slow stretch (collected over it: move_and_slide may report one face a
+## step) facing within STUCK_WALL_SPREAD of their mean, and the wish pushing into that mean head-on (dot under
+## -STUCK_HEAD_ON: within ~32 deg; at a shallower angle a free body slides along the face, so not moving there is a snag). Contacts on more than one side (a V, a doorway narrower than the capsule, a
+## corner) or a contact that is not in the wish's way (a snag on a lip or an edge) count. STUCK_TIME of that in a row
+## and one nudge of NUDGE_DIST is tried: away from the summed contact normals (in the floor plane for a walker), then
+## sideways right / left of the wish, then up by the step height (max_step_up, at least NUDGE_DIST) followed by the wish,
+## then straight back; the first that moves the body at least NUDGE_MIN_SHARE of NUDGE_DIST is taken. Then the count
+## starts over (so attempts are STUCK_TIME apart: the cooldown); after STUCK_TRIES attempts in one push it gives up
+## quietly until the input is released or the body moves freely again.
+func _stuck_guard(u: Vector3, wish: Vector3, moved: Vector3, delta: float) -> void:
+	if delta <= 0.0 or shutdown or wish.length() < 0.1:
+		_stuck_t = 0.0
+		_stuck_tries = 0
+		_stuck_normals.clear()
+		return
+	var speed := moved.length() / delta
+	if speed > STUCK_SPEED:
+		_stuck_t = 0.0
+		_stuck_normals.clear()
+		if speed > STUCK_SPEED * 2.0:
+			_stuck_tries = 0
+		return
+	var w := wish.normalized()
+	var floor_cos := cos(floor_max_angle)
+	# The faces touched over the whole slow stretch (move_and_slide often reports one face per step, alternating between
+	# the two sides of a V), merged when within ~8 deg.
+	for i in get_slide_collision_count():
+		var n := get_slide_collision(i).get_normal()
+		if n.dot(u) >= floor_cos:
+			continue   # a floor
+		if not hover_mode:
+			n -= u * n.dot(u)   # a walker pushes along the floor: compare the faces in its plane
+			if n.length_squared() < 1e-6:
+				continue
+		n = n.normalized()
+		var known := false
+		for k in _stuck_normals:
+			known = known or k.dot(n) > 0.99
+		if not known and _stuck_normals.size() < 8:
+			_stuck_normals.append(n)
+	var walls := _stuck_normals
+	if _plain_wall(walls, w):
+		_stuck_t = 0.0
+		return
+	_stuck_t += delta
+	if _stuck_t < STUCK_TIME or _stuck_tries >= STUCK_TRIES:
+		return
+	_stuck_t = 0.0
+	_stuck_tries += 1
+	_stuck_normals = []   # fresh for the next stretch (the candidates below read `walls`, this stretch's faces)
+	var away := Vector3.ZERO
+	for n in walls:
+		away += n
+	var side := w.cross(u)
+	if side.length_squared() < 1e-6:   # a hover body climbing straight up / down: sideways = its own right
+		side = forward().cross(u)
+	var lift := maxf(max_step_up, NUDGE_DIST)
+	var moved_free := _nudge([away, side, -side], NUDGE_DIST)
+	if not moved_free:
+		var test := move_and_collide(u * lift, true)
+		if test == null or test.get_travel().length() >= lift * NUDGE_MIN_SHARE:
+			move_and_collide(u * lift)
+			moved_free = _nudge([w - u * w.dot(u)], NUDGE_DIST)
+			if not moved_free:
+				move_and_collide(-u * lift)   # no way forward up there: back down where it was (collision-checked)
+	if not moved_free:
+		moved_free = _nudge([-w], NUDGE_DIST)
+	if moved_free:
+		unstuck_count += 1
+
+
+## Every contact facing (within STUCK_WALL_SPREAD of) the same way, and `w` pushing into it head-on.
+func _plain_wall(walls: Array[Vector3], w: Vector3) -> bool:
+	if walls.is_empty():
+		return false
+	var mean := Vector3.ZERO
+	for n in walls:
+		mean += n
+	if mean.length_squared() < 1e-6:
+		return false
+	mean = mean.normalized()
+	var spread := cos(STUCK_WALL_SPREAD)
+	for n in walls:
+		if n.dot(mean) < spread:
+			return false
+	return mean.dot(w) < -STUCK_HEAD_ON
 
 
 ## VERB: heat from outside (weapons fire, flamers, a radiator's negative heat): pushes toward shutdown at heat_cap. Shut
@@ -326,7 +556,7 @@ func _update_heat(delta: float) -> void:
 	if thrusting:
 		heat += (auto_burn_heat * _burn_throttle if emergency else thrust_heat) * delta
 	heat += move_heat_rate() * delta
-	heat = maxf(heat - cooling * delta, 0.0)
+	heat = maxf(heat - cooling * (landed_cooling if hover_mode and _landed else 1.0) * delta, 0.0)
 	if heat >= heat_cap and not shutdown:
 		heat = heat_cap
 		_overheat()
@@ -350,6 +580,8 @@ func _reboot() -> void:
 ## move input (a knockback slide or a ride with no input adds nothing). Walk: walk_heat * v / walk_speed; above it lerps
 ## to run_heat at run_speed, clamped there. Owner only (a puppet runs no step()).
 func move_heat_rate() -> float:
+	if hover_mode:
+		return _hover_heat_rate()
 	if puppet or shutdown or thrusting or move_input.length_squared() < 1e-4 or not grounded():
 		return 0.0
 	var v := ground_speed()
@@ -468,3 +700,262 @@ func _step_up(u: Vector3, want: Vector3, delta: float) -> bool:
 	move_and_collide(want * delta)
 	velocity = want
 	return true
+
+
+# --- Hover branch (hover_mode: the Wasp; see the header) ---------------------------------------------------------
+
+## Hover hook: the fans can hold it up (a hover chassis, all its fans working, not shut down). Always false on a biped.
+## (Downed, PlayerTarget.disabled, joins this in step 2: a dead fan downs it, docs/design/wasp-hover.md.)
+func can_fly() -> bool:
+	return hover_mode and not shutdown and working_fans() == HOVER_FANS
+
+
+## Hover hook: working lift fans, 0..2 (0 on a biped).
+func working_fans() -> int:
+	return clampi(fans_alive, 0, HOVER_FANS) if hover_mode else 0
+
+
+## Hook (every chassis): metres from the feet down to the surface straight under it (the capsule's footprint swept down,
+## like ground_distance, but refined: _sweep; about 0 standing or landed); HOVER_PROBE when nothing is in range. A physics
+## query: works on puppets.
+func altitude() -> float:
+	return _drop(global_position, HOVER_PROBE)
+
+
+## Hook (every chassis): metres of free air above the capsule's top, up to the slab of the deck above or the roof of an
+## opening (the capsule's top swept up); HEADROOM_MAX in the open. A physics query: works on puppets.
+func headroom() -> float:
+	var cap := _capsule_shape()
+	var probe := _landing_probe()
+	if cap == null or probe == null or not is_inside_tree():
+		return HEADROOM_MAX
+	var d := _cast(probe, global_position + up() * (cap.height - cap.radius), up(), HEADROOM_MAX)
+	if d >= HEADROOM_MAX:
+		return HEADROOM_MAX
+	return maxf(d - (cap.radius - probe.radius), 0.0)
+
+
+## How far `shape` (unrotated) moves from `from` along `motion` before it touches anything (excluding this body), the
+## motion's full length when nothing is in the way. Refined (a single cast_motion is only good to about 1/256 of its
+## length: ~1.7 m over a 400 m probe): each pass re-casts from the last safe point across the uncertain span, until
+## that span is under SWEEP_FINE.
+func _sweep(shape: Shape3D, from: Vector3, motion: Vector3) -> float:
+	var total := motion.length()
+	var space := get_world_3d().direct_space_state if is_inside_tree() else null
+	if space == null or total < 1e-6:
+		return total
+	var dir := motion / total
+	var sq := PhysicsShapeQueryParameters3D.new()
+	sq.shape = shape
+	sq.exclude = [get_rid()]
+	sq.collision_mask = collision_mask
+	var start := 0.0
+	var span := total
+	for i in 6:
+		sq.transform = Transform3D(Basis.IDENTITY, from + dir * start)
+		sq.motion = dir * span
+		var res := space.cast_motion(sq)
+		if res.is_empty() or float(res[0]) >= 1.0:
+			return total if i == 0 else start + span
+		var safe := float(res[0]) * span
+		var unsafe := float(res[1]) * span
+		start += safe
+		if unsafe - safe < SWEEP_FINE:
+			return start
+		span = unsafe - safe + SWEEP_FINE
+	return start
+
+
+## Metres from `from` down (local gravity) to where the capsule's bottom would touch (ground_distance's probe, refined by
+## _sweep); `max_dist` when nothing is within it. Negative never (0 when already touching).
+func _drop(from: Vector3, max_dist: float) -> float:
+	var probe := _landing_probe()
+	if probe == null:
+		return ground_distance(max_dist, from)
+	var u := up()
+	var d := _cast(probe, from + u * (probe.radius + 0.2), -u, max_dist + 0.2)
+	if d >= max_dist + 0.2 - 1e-4:
+		return max_dist
+	return maxf(d - 0.2, 0.0)
+
+
+## How far sphere `shape` travels from `center` along unit `dir` (at most `length`) before touching anything, robustly: a
+## long cast_motion can overshoot a thin floor by tens of metres (seen on the 1 m test floor from 70 m up), so the
+## result is capped by a ray along the centre line (exact; the sphere meets that surface no later) and then re-swept
+## over the last CAST_CHECK m before it (short casts are accurate), which finds the contact to SWEEP_FINE.
+func _cast(shape: SphereShape3D, center: Vector3, dir: Vector3, length: float) -> float:
+	var x := _sweep(shape, center, dir * length)
+	var space := get_world_3d().direct_space_state if is_inside_tree() else null
+	if space == null:
+		return x
+	var q := PhysicsRayQueryParameters3D.create(center, center + dir * (length + shape.radius))
+	q.exclude = [get_rid()]
+	q.collision_mask = collision_mask
+	var hit := space.intersect_ray(q)
+	if not hit.is_empty():
+		x = minf(x, maxf(((hit["position"] as Vector3) - center).dot(dir) - shape.radius, 0.0))
+	if x >= length - 1e-4:
+		return length
+	var a := maxf(x - CAST_CHECK, 0.0)
+	var span := x - a + 0.3
+	var x2 := _sweep(shape, center + dir * a, dir * span)
+	return a + x2 if x2 < span - 1e-4 else x
+
+
+## Placing a hover body (a lab, a test, later a respawn): on its legs (`on`) or flying, holding its height from the
+## next step. Owner's machine only. No effect on a biped.
+func set_landed(on: bool) -> void:
+	if not hover_mode:
+		return
+	_landed = on
+	_was_grounded = on
+	_hold_free = true
+
+
+func _capsule_shape() -> CapsuleShape3D:
+	for c in get_children():
+		if c is CollisionShape3D and (c as CollisionShape3D).shape is CapsuleShape3D:
+			return (c as CollisionShape3D).shape as CapsuleShape3D
+	return null
+
+
+## One physics step of a hover body (step() calls it when hover_mode).
+func _step_hover(delta: float) -> void:
+	var u := up()
+	up_direction = u
+	var live := not shutdown
+	var fly := can_fly()
+	thrusting = false
+	emergency = false
+	_climbing = false
+	_burn_throttle = 1.0
+	# Heading: upright to the local floor, turned about local up (landed too).
+	var f := forward() - u * forward().dot(u)
+	if f.length_squared() < 1e-8:
+		f = (ring.basis_at(global_position) if ring != null else Basis.IDENTITY) * Vector3.FORWARD
+	f = f.normalized().rotated(u, -(turn_input if live else 0.0) * turn_rate * delta)
+	global_basis = Basis(f.cross(u), u, -f)
+	if _landed and fly and climb_input > 0.0:
+		_landed = false   # lift off
+		_hold_free = true
+	if _landed:
+		# On its legs: pressed onto the floor, no translation. The floor gone from under it: it flies on (or falls).
+		floor_snap_length = LANDED_SNAP
+		velocity = -u * LANDED_PRESS
+		move_and_slide()
+		velocity = Vector3.ZERO
+		if not is_on_floor():
+			var gap := _drop(global_position, LANDED_SNAP)
+			if gap < LANDED_SNAP:
+				move_and_collide(-u * (gap + 0.02))   # set down just above the floor (a placement, a small step): settle on it
+			else:
+				_landed = false   # the floor went away: it flies on (or falls)
+				_hold_free = true
+		_update_heat(delta)
+		_check_landing(u)
+		return
+	floor_snap_length = 0.0
+	var vs := velocity.dot(u)
+	var flat := velocity - u * vs
+	var push := Vector3.ZERO   # what the pilot asks for (the stuck guard)
+	if fly:
+		var mv := move_input if live else Vector2.ZERO
+		var wish := f * mv.y + f.cross(u) * mv.x * strafe_scale
+		if wish.length() > 1.0:
+			wish = wish.normalized()
+		push = wish + u * clampf(climb_input, -1.0, 1.0)
+		var top := run_speed if running else walk_speed
+		if wish.length_squared() > 1e-4:
+			flat = flat.move_toward(wish * top, accel * delta)
+		else:
+			flat = flat.move_toward(Vector3.ZERO, (hover_drag * flat.length() + hover_brake) * delta)
+		vs = move_toward(vs, _wanted_climb(u, flat, vs, wish * top), climb_accel * delta)
+	else:
+		# Fans stopped (shut down, a dead fan): it falls under gravity, its drift easing off.
+		_hold_free = true
+		flat = flat.move_toward(Vector3.ZERO, (hover_drag * flat.length() + hover_brake) * delta)
+		vs -= gravity * delta
+	velocity = flat + u * vs
+	var p0 := global_position
+	var vs0 := vs
+	move_and_slide()
+	var moved := global_position - p0
+	_reconcile(u, moved, delta)
+	_unstick(u, vs0, moved, delta)
+	_stuck_guard(u, push, global_position - p0, delta)
+	velocity = velocity.limit_length(MAX_SPEED)
+	# Touchdown on a walkable floor: descending, falling, or an impact. Skimming a floor in flight does not land it.
+	# Falling and wedged on edges it cannot stand on as a floor, the nudge spent (_unstick holds it at rest): it sits there.
+	if (is_on_floor() and (not fly or climb_input < 0.0 or vs0 < -safe_land_speed)) \
+			or (not fly and _wedge_t >= WEDGE_TIME and _wedge_nudge >= WEDGE_NUDGE_MAX):
+		_landed = true
+		velocity = Vector3.ZERO
+		_wedge_t = 0.0
+		_wedge_nudge = 0.0
+	_update_heat(delta)
+	_check_landing(u)
+
+
+## The vertical speed a flying hover body wants now: the pilot's climb / descend, else the height hold (see the header).
+func _wanted_climb(u: Vector3, flat: Vector3, vs: float, wish: Vector3 = Vector3.ZERO) -> float:
+	var room := headroom()
+	var alt := _surface_alt(u, flat, room, wish)
+	if absf(climb_input) > 0.01:
+		_hold_free = true
+		var want := clampf(climb_input, -1.0, 1.0) * climb_rate
+		if want < 0.0 and alt < INF:
+			want *= clampf(alt / LAND_EASE, LAND_SLOW, 1.0)   # a gentle touchdown
+		return want
+	if alt == INF:
+		_hold_free = true   # nothing under it in range: keep its height; the hold is taken when a surface shows
+		return 0.0
+	if _hold_free:
+		_hold_free = false
+		_hold = alt + vs * absf(vs) / (2.0 * maxf(climb_accel, 0.1))   # where braking now stops it
+	_hold = maxf(_hold, hover_height)
+	_hold = minf(_hold, alt + room - HEAD_MARGIN)   # never hold it into the slab above
+	var e := _hold - alt
+	return signf(e) * minf(climb_rate, minf(absf(e) * HOLD_GAIN, sqrt(2.0 * climb_accel * HOLD_BRAKE * absf(e))))
+
+
+## Metres from the feet down to the highest surface under the capsule's footprint here and along `flat` x hover_ahead
+## (negative: a roof ahead above the feet); INF when none is within HOVER_PROBE. The look-ahead is swept from as high
+## as the deck above allows (HOVER_LOOK_UP at most) and stops at a wall, then probes down from three points along it.
+## `wish` (the wanted ground-plane velocity) stands in for `flat` when it is longer: pressed against a tall wall the body
+## barely moves, but it still looks over the wall it is trying to cross.
+func _surface_alt(u: Vector3, flat: Vector3, room: float, wish: Vector3 = Vector3.ZERO) -> float:
+	var d := _drop(global_position, HOVER_PROBE)
+	var best := d if d < HOVER_PROBE else INF
+	var ahead := (wish if wish.length() > flat.length() else flat) * hover_ahead
+	var probe := _landing_probe()
+	var cap := _capsule_shape()
+	if ahead.length() < 1.0 or probe == null or cap == null or not is_inside_tree():
+		return best
+	var lift := clampf(cap.height + room - probe.radius - 0.3, probe.radius + 0.2, HOVER_LOOK_UP)
+	var reach := ahead.normalized() * _cast(probe, global_position + u * lift, ahead.normalized(), ahead.length())
+	var h0 := lift - probe.radius - 0.2   # _drop starts its sphere that far above `from`
+	for k: float in [1.0 / 3.0, 2.0 / 3.0, 1.0]:
+		var dd := _drop(global_position + reach * k + u * h0, h0 + HOVER_PROBE)
+		if dd < h0 + HOVER_PROBE:
+			best = minf(best, dd - h0)
+	return best
+
+
+## Heat/s of a hover body's flight now (move_heat_rate): nothing landed, shut down or hovering in place; moving like a
+## walker (walk_heat at walk_speed, lerping to run_heat at run_speed, with move input), climbing up to run_heat at
+## climb_rate (with climb input); the larger of the two. Owner only (a puppet runs no step()).
+func _hover_heat_rate() -> float:
+	if puppet or _landed or not can_fly():
+		return 0.0
+	var climb := 0.0
+	var vs := velocity.dot(up())
+	if climb_input > 0.01 and vs > 0.0:
+		climb = run_heat * clampf(vs / maxf(climb_rate, 0.01), 0.0, 1.0)
+	var move := 0.0
+	if move_input.length_squared() >= 1e-4:
+		var v := ground_speed()
+		if v <= walk_speed:
+			move = walk_heat * v / maxf(walk_speed, 0.01)
+		else:
+			move = lerpf(walk_heat, run_heat, clampf((v - walk_speed) / maxf(run_speed - walk_speed, 0.01), 0.0, 1.0))
+	return maxf(move, climb)

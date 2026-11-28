@@ -636,6 +636,12 @@ func _threat_scene() -> void:
 	check(sc.size() == 1 and sc[0]["ev"] == "completed" and sc[0]["drone"] == "drone_7", "scout line")
 	var dp := _recs_in(lines, "depot")
 	check(dp.size() == 1 and dp[0]["ev"] == "grant" and dp[0]["left"] == "2", "depot line")
+	CombatLog.note_door("open", MissionWorld.EXIT_ID, 345.6789)
+	CombatLog.note_door("win", MissionWorld.EXIT_ID, 350.0)
+	var dr := _recs_in(lines, "door")
+	if eq(dr.size(), 2, "door lines (R2.10: the exit order and the walk-out)"):
+		eq([dr[0]["ev"], dr[0]["id"], dr[0]["at"]], ["open", "door_exit", "345.679"], "door: ev, id, at")
+		eq(dr[1]["ev"], "win", "the walk-out")
 	# Lifetimes (regression for "Trying to cast a freed object" under load): an enemy and the bot pilot (its target and
 	# CrewBot) freed mid-mission while still listed in world.targets / bots_fn, an enemy shot from the freed enemy's id and a
 	# pending own shot at it: the log keeps stepping, prints its lines and drops them.

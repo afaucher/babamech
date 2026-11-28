@@ -45,7 +45,7 @@ var benches: Array = []
 var junctions: Array = []
 var people: Array = []
 var riders: Array = []        ## pod passengers (see _build_people)
-## Section mode only (phase 3): the deck's tram (its timetable decides when people may cross the rail lane) and the
+## Section mode only (phase 3; the tram on the top deck only since R2.11, elsewhere tram null and rail_edges empty): the deck's tram (its timetable decides when people may cross the rail lane) and the
 ## crossings over the spine. A spine crossing runs along a cross street's line (not the zebra beside the junction, which
 ## would cross the ramp-lane floor cuts and the rail lane away from a cross street) in three pieces: the ramp_a lane
 ## (junction -1: no signal, no traffic), the avenue (the spine junction's walk signal) and the rail + ramp_b lanes
@@ -144,6 +144,8 @@ func build(p: CityPlan, people_count: int = -1, cap: int = PEOPLE_CAP) -> void:
 			_cuts.append(o.grow(CityDims.HOLE_CURB + 0.4))
 	_build_junctions()
 	_build_graph()
+	if tram == null:
+		rail_edges.clear()       # no tram on this deck (only a section's top deck has one): no rail crossing rule
 	_build_people()
 
 
@@ -353,6 +355,8 @@ func _build_graph() -> void:
 			benches.append({"id": benches.size(), "prop": int(it["id"]), "at": at, "yaw": float(it["yaw"]), "node": node,
 					"slide": (h(7001, benches.size()) - 0.5) * 1.0, "kind": kind})
 			break
+	# Section mode: where the ways over the spine meet the lanes of the blocks beside it (on the drawn zebras).
+	var spine_ways: Array = _spine_zebras(by_cell, side_pts) if plan.section != null else []
 	# The lane round each block, through its doors and benches.
 	for bi in plan.blocks.size():
 		var c: Array = corners[bi]
@@ -365,12 +369,11 @@ func _build_graph() -> void:
 				_add_edge(prev, int(q[1]), WALK)
 				prev = int(q[1])
 			_add_edge(prev, int(ends[side][1]), WALK)
-	# Section mode: the crossings over the spine, along the cross streets (they split the cross-street crossings next to
-	# the spine, below).
+	# Section mode: the crossings over the spine, on its zebras.
 	var spine_line := -1
 	if plan.section != null:
 		spine_line = plan.section.spine_line
-		_spine_crossings(by_cell, corners)
+		_spine_crossings(spine_ways)
 	# Zebra crossings between facing corners of neighbouring blocks.
 	for bi in plan.blocks.size():
 		var b: Dictionary = plan.blocks[bi]
@@ -471,60 +474,61 @@ static func _segment_hits(r: Rect2, a: Vector2, b: Vector2) -> bool:
 	return false
 
 
-## Section mode: for every inner cross line, a way over the spine along that line (at the line, or a quarter of the
-## street's width either side of it when that misses a floor cut or kept-clear ground that the line hits), from the
-## middle of the cross-street crossing beside the spine on one side to the one on the other. Pieces: ramp_a (free),
-## avenue (walk signal), rail + ramp_b (the tram rule). None at a line where all three tries hit something.
-func _spine_crossings(by_cell: Dictionary, corners: Array) -> void:
-	var sec := plan.section
-	var sl := sec.spine_line
+## Section mode: for every inner cross line, a way over the spine on one of the zebras CityStreets draws beside that
+## junction (city-spine.md section 3: the one on the +s side, else the one on the -s side when the +s one would cross a
+## floor cut or kept-clear ground), from the spine-side lane of the block on one side to the block on the other: a node
+## on each of those lanes (into side_pts, before the lanes are joined up). Returns [[m_a, m_b, s, junction]].
+func _spine_zebras(by_cell: Dictionary, side_pts: Array) -> Array:
+	var out := []
+	var sl := plan.section.spine_line
 	if sl <= 0 or sl >= plan.roads_x.size() - 1:
-		return
-	var av := plan.avenue_x()
+		return out
 	var avoid: Array[Rect2] = _cuts.duplicate()
 	for k in plan.site.keep_clear:
 		avoid.append((k as Rect2).grow(0.4))
 	var ns := plan.roads_s.size()
+	var mid_z := CityDims.ZEBRA_AT + CityDims.ZEBRA_D * 0.5
 	for j in range(1, ns - 1):
-		var cells := [Vector2i(sl - 1, j), Vector2i(sl - 1, j - 1), Vector2i(sl, j), Vector2i(sl, j - 1)]
-		var ok := true
-		for cl: Vector2i in cells:
-			ok = ok and by_cell.has(cl)
-		if not ok:
-			continue
-		var a_bi := int(by_cell[cells[0]])
-		var b_bi := int(by_cell[cells[2]])
 		var road: Dictionary = plan.roads_s[j]
-		var w := float(road["b"]) - float(road["a"])
-		var c := (float(road["a"]) + float(road["b"])) * 0.5
-		var xa := lane_rect(plan.blocks[a_bi]["rect"]).end.x
-		var xb := lane_rect(plan.blocks[b_bi]["rect"]).position.x
-		var sc := INF
-		var offs := [0.0, w * 0.25, -w * 0.25]
-		for hk: Dictionary in sec.hooks:      # a heavy checkpoint's barrier stands on the line: cross beside it
-			if hk["kind"] == "checkpoint" and hk.get("size", "") == "heavy" and int(hk["deck"]) == plan.deck \
-					and absf(float(hk["s"]) - c) < w * 0.5:
-				offs = [w * 0.25, -w * 0.25]
-		for off: float in offs:
-			if not _hits(avoid, Vector2(xa, c + off), Vector2(xb, c + off)):
-				sc = c + off
-				break
-		if sc == INF:
-			continue
-		var m_a := _add_node(Vector2(xa, sc))
-		var p1 := _add_node(Vector2(av.x, sc))
-		var p2 := _add_node(Vector2(av.y, sc))
-		var m_b := _add_node(Vector2(xb, sc))
-		var ca: Array = corners[int(by_cell[cells[1]])]
-		var cb: Array = corners[int(by_cell[cells[3]])]
-		_split[Vector2i(mini(int(ca[2]), int(corners[a_bi][1])), maxi(int(ca[2]), int(corners[a_bi][1])))] = m_a
-		_split[Vector2i(mini(int(cb[3]), int(corners[b_bi][0])), maxi(int(cb[3]), int(corners[b_bi][0])))] = m_b
-		_add_edge(m_a, p1, CROSS, -1, 0)
-		_add_edge(p1, p2, CROSS, sl * ns + j, 0)
-		_add_edge(p2, m_b, CROSS, -1, 0)
-		var e := edge_between(p2, m_b)
-		if e >= 0:
-			rail_edges[e] = sc
+		# [the row of the blocks beside the zebra, its s]: the +s zebra first.
+		for side: Array in [[j, float(road["b"]) + mid_z], [j - 1, float(road["a"]) - mid_z]]:
+			var ca := Vector2i(sl - 1, int(side[0]))
+			var cb := Vector2i(sl, int(side[0]))
+			if not by_cell.has(ca) or not by_cell.has(cb):
+				continue
+			var la := lane_rect(plan.blocks[int(by_cell[ca])]["rect"])
+			var lb := lane_rect(plan.blocks[int(by_cell[cb])]["rect"])
+			var sz := float(side[1])
+			if sz < la.position.y or sz > la.end.y or sz < lb.position.y or sz > lb.end.y:
+				continue
+			if _hits(avoid, Vector2(la.end.x, sz), Vector2(lb.position.x, sz)):
+				continue
+			var m_a := _add_node(Vector2(la.end.x, sz))
+			var m_b := _add_node(Vector2(lb.position.x, sz))
+			(side_pts[int(by_cell[ca])][0] as Array).append([_along(la, 0, Vector2(la.end.x, sz)), m_a])
+			(side_pts[int(by_cell[cb])][1] as Array).append([_along(lb, 1, Vector2(lb.position.x, sz)), m_b])
+			out.append([m_a, m_b, sz, j])
+			break
+	return out
+
+
+## The ways over the spine (_spine_zebras) in three pieces: ramp_a (no signal), the main road (the spine junction's walk
+## signal) and the tram strip + ramp_b (the tram rule, rail_edges, only on the deck with track: CityDims.has_track).
+func _spine_crossings(ways: Array) -> void:
+	var av := plan.avenue_x()
+	var ns := plan.roads_s.size()
+	var sl := plan.section.spine_line
+	var track := CityDims.has_track(plan)
+	for wy: Array in ways:
+		var sz := float(wy[2])
+		var p1 := _add_node(Vector2(av.x, sz))
+		var p2 := _add_node(Vector2(av.y, sz))
+		_add_edge(int(wy[0]), p1, CROSS, -1, 0)
+		_add_edge(p1, p2, CROSS, sl * ns + int(wy[3]), 0)
+		_add_edge(p2, int(wy[1]), CROSS, -1, 0)
+		var e := edge_between(p2, int(wy[1]))
+		if e >= 0 and track:
+			rail_edges[e] = sz
 
 
 func _crossing(a: int, b: int, axis: int, free: bool = false) -> void:

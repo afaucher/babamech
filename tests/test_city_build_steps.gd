@@ -254,6 +254,6 @@ func _shapes(d: CityDistrict) -> int:
 	var h := 0
 	for c in (d.get_node("Collision") as Node).get_children():
 		var cs := c as CollisionShape3D
-		var key: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else (cs.shape as ConvexPolygonShape3D).points
+		var key: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else ((cs.shape as ConvexPolygonShape3D).points if cs.shape is ConvexPolygonShape3D else Vector2((cs.shape as CylinderShape3D).radius, (cs.shape as CylinderShape3D).height))
 		h = hash([h, cs.transform, key])
 	return h

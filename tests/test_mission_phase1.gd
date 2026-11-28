@@ -4,7 +4,9 @@ extends TestCase
 ## is teleported onto each primary's site (MissionRules' snapped site / the hold zone) and the crew's fire is replaced by
 ## lethal EnemyBase.apply_damage (garrison: one unit on the mech's deck every GAR_EVERY s; a wave unit KILL_AFTER s after
 ## it appears). Bonuses are left alone (never found) and timings shortened (MissionFlow.test_plan / test_director) to stay fast. Asserts:
-## - the mission is won through every primary (flag, sweep, defend, hold) and the wave spawner really spawned (no stub);
+## - the mission is won through every primary (flag, sweep, defend, hold) and the walk-out (R2.10: the exit door shut
+##   until the hold is done, then open; standing in the zone does not win, the exit bay does), and the wave spawner really
+##   spawned (no stub);
 ## - the flag capture brings its wave: ordered while the flag is rising (step start) and its units really spawn;
 ## - (PacingDirector, pacing-director.md 1.3) every "build" release on a deck comes after the deck's previous build release
 ##   was mostly beaten or BUILD_GAP s after its door; the hard alive ceilings (PacingDirector.DECK_ALIVE_MAX /
@@ -34,6 +36,7 @@ var peak_sec := 0
 var gar_next := 0.0
 var sweep_id := ""
 var sweep_done_t := -1.0   # first _tick that saw the sweep done
+var exit_early := 0        # ticks the exit door was not shut before the hold was done
 
 
 func _init() -> void:
@@ -84,6 +87,8 @@ func _play() -> void:
 			for i in 6:
 				await get_tree().physics_frame
 			_tick()
+			if mf.rules.obj_state("hold") != "done" and str(mf.world.source_state(MissionWorld.EXIT_ID)["state"]) != "shut":
+				exit_early += 1
 		if str(o["type"]) == "sweep" and mf.rules.obj_state(id) == "done":
 			sweep_done = mf.now()
 		if str(o["type"]) == "flag":
@@ -91,6 +96,7 @@ func _play() -> void:
 		if not check(mf.rules.obj_state(id) == "done", "%s (%s) done by t=%.0f (state %s, waves %s, alive %s)" % [id,
 				o["type"], mf.now(), mf.rules.obj_state(id), str(mf.director.state()), str(td.enemies_alive_per_deck())]):
 			return
+	await _walk_out()
 	eq(mf.rules.outcome, "won", "the mission is won")
 	print("phase1: won at t=%.1f, %d orders, peak alive deck %d / section %d" % [mf.now(), orders.size(), peak_deck, peak_sec])
 
@@ -148,6 +154,42 @@ func _play() -> void:
 	check(swept > 0, "deck 2 had waves before its sweep was done (%d)" % swept)
 	td.queue_free()
 	await frames(3)
+
+
+## The exit (R2.10): shut through the whole mission until the hold is done; then the door opens (ordered at exit_at, the
+## door's own opening), standing in the zone does not win, walking into the exit bay does.
+func _walk_out() -> void:
+	eq(exit_early, 0, "the exit door stayed shut until the hold was done")
+	eq(mf.rules.outcome, "", "the hold done: not won yet")
+	if not check(mf.rules.exit_open(), "the hold done: the exit is open"):
+		return
+	var logged: Array = mf.door_log.filter(func(d: Dictionary) -> bool: return d["id"] == MissionWorld.EXIT_ID)
+	if eq(logged.size(), 1, "one exit door order"):
+		near(float(logged[0]["at"]), mf.rules.exit_at, 0.001, "the order's at is the rules' exit_at")
+		eq(str(logged[0]["door"]), "open", "an open order")
+	var t_end := mf.now() + MissionWorld.OPENING + MissionRules.EXIT_LEAD + 1.0
+	while not bool(mf.world.source_state(MissionWorld.EXIT_ID)["passable"]) and mf.now() < t_end:
+		await get_tree().physics_frame
+		_tick()
+	check(bool(mf.world.source_state(MissionWorld.EXIT_ID)["passable"]), "the exit door is open %.1f s after the hold" % (
+		MissionWorld.OPENING + MissionRules.EXIT_LEAD))
+	near(float(mf.world.source_state(MissionWorld.EXIT_ID)["open_at"]), mf.rules.exit_at, 0.001, "it opened at exit_at")
+	var hold := mf.rules.objective("hold")
+	for i in 20:   # 2 s in the zone: no win
+		_place(hold)
+		for j in 6:
+			await get_tree().physics_frame
+	eq(mf.rules.outcome, "", "standing in the zone after the door opened does not win")
+	var slots := mf.world.exit_bay_slots(1)
+	if not check(not slots.is_empty(), "the exit bay has a stand point"):
+		return
+	td.mech.global_position = slots[0].origin
+	td.mech.velocity = Vector3.ZERO
+	t_end = mf.now() + 2.0
+	while mf.rules.outcome == "" and mf.now() < t_end:
+		await get_tree().physics_frame
+	eq(mf.rules.outcome, "won", "walking into the exit bay wins")
+	check(bool(mf.world.source_state(MissionWorld.EXIT_ID)["passable"]), "the exit door is still open at the win")
 
 
 ## The flag's start wave: ordered before the flag was done (during the capture), and its units spawned.

@@ -18,7 +18,35 @@ const STATE_SHUTDOWN := "shutdown"
 const STATE_DISABLED := "disabled"
 
 const SIGHT_RANGE := 175.0
+## m a turret is seen from under the reach rules: at least the farthest turret notice range (EnemyCatalog turret_sniper
+## `notice_range` 215 = its lance range), so no turret opens fire on the bot from beyond what it can see (R2.18: 12 of
+## 142 sniper rounds came from past 175 m). Only turrets: 220 m for every unit pulled the sweep bot toward far enemies
+## (test_bot_obj_sweep seed 4: 194 s -> over its 270 s limit). The prefilter and the staggered casts keep it cheap.
+const TURRET_SIGHT := 220.0
 const MEMORY_DECAY := 18.0
+## REACH RULES (R2.18 bot fixes, docs/design/balance-r218-bulwark.md "after bot fixes"); `reach_rules` false restores the
+## old behaviour for an A/B in the measurement harness only.
+## - A pivoting weapon fires only while its mount can bear on the aim point (WeaponMount.in_aim_range from its pivot:
+##   the Bulwark belly turret's +15 deg, the side guns' +45): no rounds sprayed from a barrel parked at its limit.
+## - Target choice: THREAT_BONUS per enemy type (snipers, salvo turrets, gunships, not only "turret"), SHOOTING_ME_BONUS
+##   for the enemy that hit the bot in the last SHOOTING_ME_S, and UNREACHABLE_PENALTY for an enemy none of its weapons
+##   can reach now (above every mount's arc or the camera's pitch limit; the mortar reaches only ground targets).
+## - Scout drones: one targeted DRONE_GIVE_UP s farther than IGNORE_NEAR m without losing HP is ignored for DRONE_IGNORE s
+##   (unless it comes within IGNORE_NEAR) while there is something else to fight; MissionBot's sweep skips it too
+##   (ignoring()). A given-up drone that is the last enemy left is taken again (a sweep needs it dead).
+## - Mortar: never at air units, never under its min_range + MORTAR_MIN_MARGIN (3D or along the deck) or steeper than
+##   MORTAR_MAX_SLOPE (rise over run: a sniper on a roof right above).
+static var reach_rules := true
+const THREAT_BONUS := {"turret": 12.0, "turret_missile": 24.0, "turret_sniper": 70.0, "gunship": 30.0}
+const SHOOTING_ME_BONUS := 30.0
+const SHOOTING_ME_S := 4.0
+const UNREACHABLE_PENALTY := 60.0
+const DRONE_GIVE_UP := 25.0
+const DRONE_IGNORE := 60.0
+const IGNORE_NEAR := 60.0
+const MORTAR_MIN_MARGIN := 6.0
+const MORTAR_MAX_SLOPE := 0.6
+const AIR_TYPES := ["gunship", "drone", "dropship"]
 const EYE_HEIGHT := 6.5
 const SPHERE_REACH := 30.0         ## m: no enemy hit sphere lies farther than this from the unit's origin (range prefilter)
 const LOS_REFRESH := 1.0 / 12.0    ## s between two sight casts to the same enemy (_los_refreshed)
@@ -77,6 +105,10 @@ var _last_damage_t := -999.0
 var _last_damage_src := ""
 var _pending_dodge_checks: Array[Dictionary] = []   ## [{resolve_t, dmg_at_start}]
 var _total_dmg_seen := 0.0
+var _ignore: Dictionary = {}            ## enemy_id -> _sim_t until which it is not chosen while far (scout drones, reach rules)
+var _chase_id := ""                     ## the drone being chased (give-up clock), its HP and the last time it lost HP or came near
+var _chase_hp := 0.0
+var _chase_t := 0.0
 
 # Public diagnostics (Net.LOCAL)
 var dodges_attempted := 0
@@ -104,6 +136,7 @@ func net_fields() -> Dictionary:
 		"_roof_cd": Net.PRIVATE, "_roof_climb_t": Net.PRIVATE, "_cover_pt": Net.PRIVATE,
 		"_cover_left": Net.PRIVATE, "_cover_cd": Net.PRIVATE, "_last_damage_t": Net.PRIVATE,
 		"_last_damage_src": Net.PRIVATE, "_pending_dodge_checks": Net.PRIVATE, "_total_dmg_seen": Net.PRIVATE,
+		"_ignore": Net.PRIVATE, "_chase_id": Net.PRIVATE, "_chase_hp": Net.PRIVATE, "_chase_t": Net.PRIVATE,
 		"dodges_attempted": Net.LOCAL, "dodges_clean": Net.LOCAL,
 		"last_nav_goal": Net.LOCAL, "last_aim_world": Net.LOCAL, "priority_id": Net.PRIVATE,
 	}
@@ -117,6 +150,18 @@ func current_target() -> Variant:
 ## True when enemy `eid` is remembered and in line of sight now.
 func sees(eid: String) -> bool:
 	return _memory.has(eid) and bool((_memory[eid] as Dictionary).get("has_los", false))
+
+
+## True while enemy `eid` is given up on (reach rules: a scout drone it could not damage); the layer above skips it.
+func ignoring(eid: String) -> bool:
+	return _sim_t < float(_ignore.get(eid, -1.0))
+
+
+## Give up on enemy `eid` for `secs` s (it is still chosen once within IGNORE_NEAR m).
+func ignore_enemy(eid: String, secs: float = DRONE_IGNORE) -> void:
+	_ignore[eid] = _sim_t + secs
+	if _chase_id == eid:
+		_chase_id = ""
 
 
 func configure(profile: String = "average", seed_val: int = 1, id: String = "bot1") -> void:
@@ -182,6 +227,8 @@ func _reset_runtime() -> void:
 	_last_damage_src = ""
 	_pending_dodge_checks.clear()
 	_total_dmg_seen = 0.0
+	_ignore.clear()
+	_chase_id = ""
 	dodges_attempted = 0
 	dodges_clean = 0
 	ai_state = STATE_EXPLORE
@@ -225,6 +272,7 @@ func step(dt: float) -> void:
 	var tb := Time.get_ticks_usec() if pf else 0
 	_update_threats(dt, sp)
 	_current_enemy = _choose_target()
+	_drone_give_up()
 	var tc := Time.get_ticks_usec() if pf else 0
 	_update_tactics(dt, sp)
 	var td := Time.get_ticks_usec() if pf else 0
@@ -290,15 +338,16 @@ func _sense(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 			_los_cache.erase(e.target_id)
 			continue
 		# Cheap range test on the origin first (perf): every hit sphere lies within SPHERE_REACH of it, so a unit this far
-		# out is past SIGHT_RANGE whatever its core sphere is; world_spheres() is only built for the ones that may be in.
+		# out is past its sight range whatever its core sphere is; world_spheres() is only built for the ones that may be in.
 		var od2 := eye.distance_squared_to(e.global_position)
-		if od2 > (SIGHT_RANGE + SPHERE_REACH) * (SIGHT_RANGE + SPHERE_REACH):
+		var sight := TURRET_SIGHT if reach_rules and e.enemy_type.begins_with("turret") else SIGHT_RANGE
+		if od2 > (sight + SPHERE_REACH) * (sight + SPHERE_REACH):
 			if _memory.has(e.target_id):
 				(_memory[e.target_id] as Dictionary)["has_los"] = false
 			continue
 		var fresh := is_instance_valid(_current_enemy) and _current_enemy == e   # the current target is cast every frame (_los_refreshed)
 		# Surely in range and the held sight answer is "blocked": the occluded branch below needs no core position.
-		if not fresh and od2 < (SIGHT_RANGE - SPHERE_REACH) * (SIGHT_RANGE - SPHERE_REACH) and _los_held_blocked(e.target_id):
+		if not fresh and od2 < (sight - SPHERE_REACH) * (sight - SPHERE_REACH) and _los_held_blocked(e.target_id):
 			if _memory.has(e.target_id):
 				var mb: Dictionary = _memory[e.target_id]
 				mb["has_los"] = false
@@ -306,11 +355,14 @@ func _sense(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 			continue
 		var core_p := _enemy_core_pos(e)
 		var dist := eye.distance_to(core_p)
-		if dist > SIGHT_RANGE:
+		if dist > sight:
 			if _memory.has(e.target_id):
 				(_memory[e.target_id] as Dictionary)["has_los"] = false
 			continue
-		var has_los := _los_refreshed(e.target_id, eye, core_p, sp, excl, fresh)
+		# A rooftop turret seen from close below: its base hides behind the parapet while its gun shows (R2.18: about half
+		# the sniper rounds came from one the bot had not noticed, mostly from close under its roof).
+		var alt := e.eye_world() if reach_rules and e.enemy_type.begins_with("turret") else Vector3.INF
+		var has_los := _los_refreshed(e.target_id, eye, core_p, sp, excl, fresh, alt)
 		if has_los:
 			if bot_squad != null:
 				bot_squad.report_sighting(self, e, core_p, _sim_t)
@@ -377,13 +429,16 @@ func _los_held_blocked(eid: String) -> bool:
 ## The sight line to enemy `eid`, re-cast at most every LOS_REFRESH s (perf: 20+ enemies in range per bot made the
 ## per-frame casts the bot's largest cost). Each enemy gets a seeded phase so the casts spread over the frames; between
 ## casts the last answer holds. A first sighting is cast at once, and so is the bot's current target every frame
-## (`fresh`): what it shoots at is always judged on this frame's line.
+## (`fresh`): what it shoots at is always judged on this frame's line. `alt` (INF = none): a second point tried when
+## `to` is blocked (a turret's gun over its parapet); either one seen counts.
 func _los_refreshed(eid: String, from: Vector3, to: Vector3, sp: PhysicsDirectSpaceState3D, excl: Array,
-		fresh: bool = false) -> bool:
+		fresh: bool = false, alt: Vector3 = Vector3.INF) -> bool:
 	var c: Variant = _los_cache.get(eid)
 	if not fresh and c != null and _sim_t < float((c as Array)[0]):
 		return bool((c as Array)[1])
 	var v := _has_los(from, to, sp, excl)
+	if not v and alt != Vector3.INF:
+		v = _has_los(from, alt, sp, excl)
 	var phase := 1.0
 	if c == null:   # first cast: a per-(bot, enemy) phase in [0.25, 1] staggers the next casts of a crowd seen together
 		phase = 0.25 + 0.75 * float(hash(eid + "|" + bot_id) & 0xFFFF) / 65535.0
@@ -546,6 +601,8 @@ func _choose_target() -> EnemyBase:
 	var best: EnemyBase = null
 	var best_score := -INF
 	var pos := mech.global_position
+	var ign: EnemyBase = null   # nearest given-up enemy: chosen only when nothing else is left (a sweep's last drone)
+	var ign_d := INF
 	for eid: String in _memory:
 		var m: Dictionary = _memory[eid]
 		if _sim_t < float(m["ready_at"]):
@@ -554,12 +611,23 @@ func _choose_target() -> EnemyBase:
 		if not is_instance_valid(e) or e.destroyed():
 			continue
 		var dist := pos.distance_to(m["pos"] as Vector3)
+		if reach_rules and dist > IGNORE_NEAR and ignoring(eid):
+			if dist < ign_d:
+				ign_d = dist
+				ign = e
+			continue
 		var score := 120.0 - dist
 		if bool(m["has_los"]):
 			score += 45.0
 		if e.ai_state == EnemyBase.STATE_TELEGRAPH:
 			score += 24.0   # prioritize interrupting/killing an active threat
-		if e.enemy_type == "turret":
+		if reach_rules:
+			score += float(THREAT_BONUS.get(e.enemy_type, 0.0))   # long-reach shooters: snipers, salvo turrets, gunships
+			if _last_damage_src == eid and _sim_t - _last_damage_t < SHOOTING_ME_S:
+				score += SHOOTING_ME_BONUS
+			if not _can_reach(e, m["pos"] as Vector3):
+				score -= UNREACHABLE_PENALTY   # nothing it carries bears on it now: prefer what its guns can hit
+		if not reach_rules and e.enemy_type == "turret":
 			score += 12.0   # turrets have lethal bolters & low gun weak-point HP
 		elif e.enemy_type == "strider" and dist < 45.0:
 			score += 16.0   # close flanker pressure
@@ -572,7 +640,91 @@ func _choose_target() -> EnemyBase:
 		if score > best_score:
 			best_score = score
 			best = e
-	return best
+	return best if best != null else ign
+
+
+## A tank or a turret (cover against it, a veteran pauses to lob the mortar at it); every turret kind under the reach
+## rules (snipers and salvo turrets too), only "turret" without.
+static func _heavy_threat(e: EnemyBase) -> bool:
+	return e.enemy_type == "tank" or (e.enemy_type.begins_with("turret") if reach_rules else e.enemy_type == "turret")
+
+
+## An air unit (gunship, scout drone, drop ship): the mortar never lobs at one.
+static func _is_air(e: EnemyBase) -> bool:
+	return e is EnemyFlier or e.enemy_type in AIR_TYPES
+
+
+## The pivoting mount `m` can bear on world point `p` from its pivot (its range: the weapon's own and the hardpoint's,
+## e.g. the Bulwark belly's +15 deg). True for a weapon that doesn't pivot, or one that never ticked yet (no pivot).
+static func _mount_bears(m: WeaponMount, p: Vector3) -> bool:
+	if m == null or not m.pivoting() or m.aim_dir == Vector3.ZERO:
+		return true
+	var to := p - m.pivot()
+	return to.length_squared() < 1e-6 or m.in_aim_range(Combat.arc_angles(m.body_basis, to))
+
+
+## Some usable weapon reaches enemy `e` at `p` now: a direct-fire mount that bears on it with the camera able to pitch
+## that far (ChaseCamera's +0.55 rad, _slew_aim_toward), or a mortar against a ground unit. True without a rack.
+func _can_reach(e: EnemyBase, p: Vector3) -> bool:
+	if rack == null:
+		return true
+	var up := mech.up()
+	var eye := mech.global_position + up * EYE_HEIGHT
+	var to := p - eye
+	var cam_ok := to.length_squared() < 1e-4 or to.normalized().dot(up) <= sin(0.55) + 0.01
+	for i in rack.slot_count():
+		var m: Variant = rack.mounts[i] if i < rack.mounts.size() else null
+		if m == null or not (m as WeaponMount).built() or (m as WeaponMount).ammo == 0 or not rack.usable(i + 1):
+			continue
+		var wm := m as WeaponMount
+		if str(wm.stats.get("kind", "")) == "arc":
+			if not _is_air(e):
+				return true
+		elif cam_ok and _mount_bears(wm, p):
+			return true
+	return false
+
+
+## The mortar may lob at the current target: a ground unit, past its min_range + MORTAR_MIN_MARGIN both in 3D and along
+## the deck, and not steeper than MORTAR_MAX_SLOPE (rise over run: a sniper on the roof right above).
+func _mortar_ok(st: Dictionary, target_p: Vector3) -> bool:
+	if _is_air(_current_enemy):
+		return false
+	var up := mech.up()
+	var to := target_p - mech.global_position
+	var rise := to.dot(up)
+	var run := (to - up * rise).length()
+	var min_r := float(st.get("min_range", 0.0)) + MORTAR_MIN_MARGIN
+	return run >= min_r and to.length() >= min_r and rise <= run * MORTAR_MAX_SLOPE
+
+
+## Reach rules: a scout drone targeted for DRONE_GIVE_UP s farther than IGNORE_NEAR m without losing HP is given up
+## (ignore_enemy): R2.18 saw one Strider sweep spend 280 s on one drone holding 72-105 m off.
+func _drone_give_up() -> void:
+	if not reach_rules or _current_enemy == null or not is_instance_valid(_current_enemy) or _current_enemy.enemy_type != "drone":
+		_chase_id = ""
+		return
+	var e := _current_enemy
+	var hp := e.total_hp()
+	var near := mech.global_position.distance_to(_enemy_core_pos(e)) <= IGNORE_NEAR
+	if e.target_id != _chase_id or hp < _chase_hp - 0.5 or near:
+		_chase_id = e.target_id
+		_chase_hp = hp
+		_chase_t = _sim_t
+		return
+	if _sim_t - _chase_t >= DRONE_GIVE_UP and _has_other_target(e):
+		FlowLog.say("bot", "%s gives up on drone %s (%.0f s without damage)" % [bot_id, e.target_id, _sim_t - _chase_t])
+		ignore_enemy(e.target_id)
+		_current_enemy = _choose_target()
+
+
+## Something else in memory to fight than `e` (live, not given up): giving up on `e` leaves the bot work to do.
+func _has_other_target(e: EnemyBase) -> bool:
+	for eid: String in _memory:
+		var o: Variant = (_memory[eid] as Dictionary).get("enemy")
+		if o != e and o != null and is_instance_valid(o) and not (o as EnemyBase).destroyed() and not ignoring(eid):
+			return true
+	return false
 
 
 func _update_tactics(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
@@ -633,7 +785,7 @@ func _update_tactics(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 			return
 
 	# Consider taking cover if hot or wounded against a heavy/turret threat.
-	var want_cover := (_overheat_wait or _min_core_hp_frac() < 0.50) and _current_enemy.enemy_type in ["tank", "turret"]
+	var want_cover := (_overheat_wait or _min_core_hp_frac() < 0.50) and _heavy_threat(_current_enemy)
 	if want_cover and _cover_cd <= 0.0 and float(_profile["use_cover_chance"]) > 0.0 and has_los:
 		_cover_cd = 6.0
 		if _rng.randf() < float(_profile["use_cover_chance"]):
@@ -715,8 +867,9 @@ func _update_movement(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 			var lkp: Vector3 = mem.get("pos", _enemy_core_pos(_current_enemy))
 			# If Veteran has a ready mortar and is at safe indirect range, slow/pause briefly to lob over cover.
 			var dist := pos.distance_to(lkp)
-			var mortar_ready := bool(_profile["use_mortar"]) and dist >= 34.0 and dist <= 200.0 and _has_ready_mortar()
-			if mortar_ready and profile_id == "veteran" and _current_enemy.enemy_type in ["tank", "turret"]:
+			var mortar_ready := bool(_profile["use_mortar"]) and dist >= 34.0 and dist <= 200.0 and _has_ready_mortar() \
+					and (not reach_rules or _mortar_ok(MechCatalog.weapon("mortar"), lkp))
+			if mortar_ready and profile_id == "veteran" and _heavy_threat(_current_enemy):
 				wish_w = Vector3.ZERO
 				last_nav_goal = pos
 			else:
@@ -920,8 +1073,15 @@ func _update_aim_and_weapons(dt: float, sp: PhysicsDirectSpaceState3D) -> void:
 			if has_los and _current_enemy.enemy_type == "strider" and profile_id != "rookie":
 				rack.set_enabled(slot_n, false)
 				continue
+			if reach_rules and not _mortar_ok(st, base_target):
+				rack.set_enabled(slot_n, false)
+				continue
 		else:
 			if not has_los or bool(s["blocked"]) or friendly_blocked:
+				rack.set_enabled(slot_n, false)
+				continue
+			# The mount can't bear on the aim point (beyond its arc): its barrel is parked at the limit, don't fire.
+			if reach_rules and slot_n - 1 < rack.mounts.size() and not _mount_bears(rack.mounts[slot_n - 1] as WeaponMount, aim_w):
 				rack.set_enabled(slot_n, false)
 				continue
 			# Don't waste direct-fire shots when the mech is facing far away from the target.

@@ -1,9 +1,11 @@
 extends TestCase
 ## Air doors (docs/design/city-ramps-and-stack.md "Air doors"): high hangar doors for dropships in the end walls, derived
-## by MissionWorld from the stack (MissionAirDoors.spot). Over seeds 1, 4, 7, 403112, every deck: the count (printed as a table), each
+## by MissionWorld from the stack (MissionAirDoors.spot). The guarantee sweep (_sweep: every deck of 120 + 30 sections has
+## one or two usable doors, deterministic, checksummed). Over seeds 1, 4, 7, 403112, every deck: the count (printed as a table), each
 ## door in its end wall with its opening at 21 .. 27 m, 12 m wide, clear of every deck sign on its wall, of every gate's
 ## staging bay and span, and a dropship-sized box flies 40 m straight out of the opening into the deck without touching
-## anything (physics); the air_door dictionary; the door machinery (warn silent, opening with alarm and siren on the active
+## anything (physics), nor does the whole opening's box over its clear_len (usable, air_door_approach); the air_door
+## dictionary; the door machinery (warn silent, opening with alarm and siren on the active
 ## deck, passable after OPENING, closing, sealed, snapshot / restore); source_point = hide, source_bay {ok = false}; the
 ## wrappers; the wall face and a farm wall leave the opening clear (no wall triangle inside the opening); teardown gives
 ## the district back exactly.
@@ -16,6 +18,7 @@ var table: Array[String] = []
 
 func setup() -> void:
 	timeout_sec = 240.0
+	_sweep()
 	for seed_: int in SEEDS:
 		await _seed(seed_)
 	print("[air] placement (seed, deck, wall, kind, x, avenue centre, offset):")
@@ -41,9 +44,7 @@ func _seed(seed_: int) -> void:
 		var d := stack.decks[k]
 		var n := mw.air_door_count(k)
 		total += n
-		check(n <= 2, "seed %d deck %d: at most two air doors (%d)" % [seed_, k, n])
-		if n == 0:
-			table.append("seed %d deck %d: none" % [seed_, k])
+		check(n >= 1 and n <= 2, "seed %d deck %d: one or two air doors (%d)" % [seed_, k, n])
 		var signs := CitySigns.layout(d.plan, d.ring)
 		var planned := MissionAirDoors.doors(d.plan)
 		eq(planned.size(), n, "seed %d deck %d: MissionAirDoors.doors(plan) gives the doors built" % [seed_, k])
@@ -88,9 +89,23 @@ func _seed(seed_: int) -> void:
 			box.size = HULL
 			q.shape = box
 			q.transform = Transform3D(fr.basis, fr * Vector3(0, 0, 3.0))
-			q.motion = fr.basis.z.normalized() * (MissionAirDoors.CORRIDOR - 3.0)
+			var hull_len := minf(MissionAirDoors.CORRIDOR, float(a.get("clear_len", 0.0)) - 0.5)     # 40 m, or the usable 30+ m of a door the first pass did not place
+			q.motion = fr.basis.z.normalized() * (hull_len - 3.0)
 			var r := space.cast_motion(q)
-			check(r[0] >= 1.0, "%s: the flight corridor is clear for %.0f m (stopped at %.0f %%)" % [id, MissionAirDoors.CORRIDOR, float(r[0]) * 100.0])
+			check(r[0] >= 1.0, "%s: the flight corridor is clear for %.0f m (stopped at %.0f %%)" % [id, hull_len, float(r[0]) * 100.0])
+			# Usable (R2.24): the whole opening (12 x 6 m, less 0.2 m round) flies straight clear_len m in (physics).
+			check(bool(a["usable"]) and float(a["clear_len"]) >= MissionAirDoors.APPROACH, "%s: usable, %.1f m clear approach" % [id, float(a["clear_len"])])
+			if i < planned.size():
+				near(float(a["clear_len"]), float(planned[i]["clear_len"]), 1e-6, "%s: clear_len is the plan's" % id)
+			var ap := mw.air_door_approach(k, i)
+			check(bool(ap.get("ok", false)) and (ap["from"] as Vector3).is_equal_approx(a["center"]) \
+					and absf((ap["to"] as Vector3).distance_to(ap["from"]) - float(a["clear_len"])) < 1e-3, "%s: air_door_approach from the opening, clear_len along facing" % id)
+			var big := BoxShape3D.new()
+			big.size = Vector3(MissionAirDoors.W - 0.4, MissionAirDoors.HEAD - MissionAirDoors.SILL - 0.4, 1.0)
+			q.shape = big
+			q.motion = fr.basis.z.normalized() * (float(a["clear_len"]) - 3.5)     # its front face (0.5 m ahead) to clear_len
+			var rb := space.cast_motion(q)
+			check(rb[0] >= 1.0, "%s: the opening's box flies %.0f m in (stopped at %.0f %%)" % [id, float(a["clear_len"]), float(rb[0]) * 100.0])
 			eq(mw.source_bay(id), {"ok": false}, "%s: no staging bay" % id)
 			var sp := mw.source_point(id)
 			check(Vector2(float(sp["x"]), float(sp["s"])).distance_to(Vector2(x, float(w["at"]) + (1.0 if side == 2 else -1.0) * MissionWorld.AIR_HIDE)) < 0.05,
@@ -108,6 +123,56 @@ func _seed(seed_: int) -> void:
 	eq(after, before, "seed %d: teardown gives every Walls mesh and shape back" % seed_)
 	stack.queue_free()
 	await frames(2)
+
+
+## The guarantee (R2.24, plan data only): over SWEEP section seeds (3 decks, and SWEEP / 4 of 2 decks), every deck has one
+## or two air doors, one per end wall, every one usable (clear_len >= APPROACH, the same as approach_len); the same doors
+## and checksum from a plan made again (determinism); a checksum that sees a moved door. Before R2.24, seed 261 deck 1 had
+## none and about 1 door in 19 was not usable (seed 1 deck 1: both).
+const SWEEP := 120
+const SWEEP_DECKS := [3, 2]
+
+
+func _sweep() -> void:
+	var dist := {}
+	for nd: int in SWEEP_DECKS:
+		for seed_ in range(1, (SWEEP if nd == 3 else SWEEP / 4) + 1):
+			var sec := SectionPlan.make({"seed": float(seed_), "decks": float(nd)})
+			for k in sec.deck_count:
+				var plan := CityPlan.for_deck(sec, k)
+				var ds := MissionAirDoors.doors(plan)
+				var what := "decks %d seed %d deck %d" % [nd, seed_, k]
+				dist[ds.size()] = int(dist.get(ds.size(), 0)) + 1
+				if not check(ds.size() >= 1 and ds.size() <= 2, "%s: one or two air doors (%d)" % [what, ds.size()]):
+					continue
+				var sides := {}
+				for ad: Dictionary in ds:
+					check(not sides.has(ad["side"]), "%s: one door per wall" % what)
+					sides[ad["side"]] = true
+					check(bool(ad["usable"]) and float(ad["clear_len"]) >= MissionAirDoors.APPROACH,
+							"%s %s: usable (%.1f m clear)" % [what, CityPlan.SIDE_EDGE[int(ad["side"])], float(ad["clear_len"])])
+					near(float(ad["clear_len"]), MissionAirDoors.approach_len(plan, ad["wall"], float(ad["c"])), 1e-9, "%s: clear_len is approach_len" % what)
+				if seed_ % 10 == 0:
+					var again := CityPlan.for_deck(SectionPlan.make({"seed": float(seed_), "decks": float(nd)}), k)
+					var ds2 := MissionAirDoors.doors(again)
+					eq(ds2.size(), ds.size(), "%s: the same doors from the plan made again" % what)
+					for i in mini(ds.size(), ds2.size()):
+						check(float(ds2[i]["c"]) == float(ds[i]["c"]) and float(ds2[i]["clear_len"]) == float(ds[i]["clear_len"]), "%s door %d: deterministic" % [what, i])
+					eq(MissionAirDoors.checksum(again), MissionAirDoors.checksum(plan), "%s: the same air checksum" % what)
+	print("[air] guarantee sweep (decks with n doors: n -> count): %s" % str(dist))
+	# The checksum sees a door that moved: a tower planted in seed 1 deck 0's first door's approach slides it along the wall.
+	var plan := CityPlan.for_deck(SectionPlan.make({"seed": 1.0}), 0)
+	var sum := MissionAirDoors.checksum(plan)
+	var ad: Dictionary = MissionAirDoors.doors(plan)[0]
+	var w: Dictionary = ad["wall"]
+	var inward := -1.0 if int(w["side"]) % 2 == 0 else 1.0
+	plan.buildings.append({"center": Vector2(float(ad["c"]), float(w["at"]) + inward * 12.0), "size": Vector2(6.0, 6.0), "pillar": false,
+			"tiers": [{"off": Vector2.ZERO, "size": Vector2(6.0, 6.0), "y0": 0.0, "y1": 30.0, "stand": false}], "solids": []})
+	var moved: Dictionary = MissionAirDoors.doors(plan)[0]
+	check(float(moved["c"]) != float(ad["c"]) and bool(moved["usable"]), "a tower in the approach slides the door along its wall (%.1f -> %.1f)" % [float(ad["c"]), float(moved["c"])])
+	check(MissionAirDoors.checksum(plan) != sum, "and the air checksum sees it")
+	plan.buildings.pop_back()
+	eq(MissionAirDoors.checksum(plan), sum, "and is back without it")
 
 
 ## The looks fit the gameplay keep-outs (2026-11-25: air doors are placed from plan data alone, MissionAirDoors.spot):
@@ -201,7 +266,7 @@ func _machinery(stack: CityStack, mw: MissionWorld, seed_: int) -> void:
 	eq(str(mw.source_state(id)["state"]), "opening", "opening from open_at")
 	check(mw.alarm(id) and door.siren_on and door.lamps_lit(), "the alarm and siren run while it opens")
 	check(not mw.air_door_passable(k, 0), "not passable while opening")
-	check(not door.door_shape.disabled, "solid while opening")
+	check(door.door_shape.disabled, "not solid while the leaves move (R2.11a: MissionGateDoor.blocks)")
 	var snap := mw.snapshot()
 	mw.advance_to(base + 9.1)
 	check(mw.air_door_passable(k, 0) and door.door_shape.disabled, "passable (and open) at open_at + OPENING")

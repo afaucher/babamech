@@ -13,6 +13,8 @@ extends Node3D
 ##   world.stats(weapon_id)                       the weapon's catalog entry + the lab's `overrides`
 ##   world.launch_drone(record) -> RepairDrone    start a repair drone (back-equipment.md; a scheduled effect that
 ##                                                follows anchor_of(record.shooter): set_anchor(shooter, () -> Node3D))
+##   world.drone_of(shooter) / drones_of(shooter) / drone_at(shooter, hardpoint)   live repair drones (one per hardpoint)
+##   world.self_reviving(target_id) -> bool       a self-revive drone of that mech is out and has not revived it yet
 ##
 ## The clock is the shared session clock in a crew mission (set_clock(CombatNet.session_clock): now = Session.host_time,
 ## so fire records' `t` mean the same moment on every machine); offline (lab, tests, solo) it counts advance's deltas.
@@ -335,8 +337,10 @@ func anchor_of(shooter: String) -> Callable:
 
 
 ## Start a repair drone (back-equipment.md) from its launch record {shooter, peer, hardpoint, weapon, t}: a scheduled
-## effect, fast-forwarded when t is in the past. One drone per shooter: a newer launch replaces a live one. Null when the
-## record is already past the drone's life. Emits drone_launched (CombatNet sends the local launcher's).
+## effect, fast-forwarded when t is in the past. One drone per (shooter, hardpoint): a newer launch from the same back
+## mount replaces a live one; the Bulwark's two drone saddles fly one each. `"self": true` marks a self-revive drone
+## (WeaponRack._self_revive; RepairDrone "SELF-REVIVE"). Null when the record is already past the drone's life. Emits
+## drone_launched (CombatNet sends the local launcher's).
 func launch_drone(record: Dictionary) -> RepairDrone:
 	var st := stats(str(record.get("weapon", "repair_drone")))
 	if st.is_empty():
@@ -344,7 +348,7 @@ func launch_drone(record: Dictionary) -> RepairDrone:
 	var t := float(record.get("t", now))
 	if now - t >= float(st.get("life", 60.0)):
 		return null
-	var old := drone_of(str(record.get("shooter", "")))
+	var old := drone_at(str(record.get("shooter", "")), str(record.get("hardpoint", "back")))
 	if old != null:
 		remove_effect(old)
 	var d := RepairDrone.new()
@@ -356,12 +360,41 @@ func launch_drone(record: Dictionary) -> RepairDrone:
 	return d
 
 
-## `shooter`'s live repair drone here, or null.
+## `shooter`'s live repair drone here (one on duty preferred over one flying home), or null.
 func drone_of(shooter: String) -> RepairDrone:
+	var any: RepairDrone = null
+	for d: RepairDrone in drones_of(shooter):
+		if d.active():
+			return d
+		if any == null:
+			any = d
+	return any
+
+
+## Every live repair drone of `shooter` here (launched, not yet docked or dead), in launch order.
+func drones_of(shooter: String) -> Array:
+	var out: Array = []
 	for e in effects:
 		if e is RepairDrone and is_instance_valid(e) and not e.finished() and (e as RepairDrone).shooter() == shooter:
-			return e as RepairDrone
+			out.append(e)
+	return out
+
+
+## `shooter`'s live repair drone from back mount `hardpoint` here, or null.
+func drone_at(shooter: String, hardpoint: String) -> RepairDrone:
+	for d: RepairDrone in drones_of(shooter):
+		if str(d.record.get("hardpoint", "back")) == hardpoint:
+			return d
 	return null
+
+
+## A self-revive drone of mech `target_id` is out here and has not revived it yet (RepairDrone.self_pending): the same
+## answer on every machine (the launch record carries the flag; each machine watches the launcher's PlayerTarget).
+func self_reviving(target_id: String) -> bool:
+	for d: RepairDrone in drones_of(target_id):
+		if d.self_pending():
+			return true
+	return false
 
 
 ## A hidden, top-level MeshInstance3D showing `m` (shadows off, as CombatMeshes.instance), from the pool, or null when

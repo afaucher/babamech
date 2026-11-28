@@ -82,8 +82,9 @@ func _stack_signature(t: float) -> String:
 		for v in u.vehicle_count():
 			var q := u.fleet.pose(v, t)
 			out.append("%d.v%s@%d,%d" % [u.deck, q["state"], int(round(float(q["x"]) * 100.0)), int(round(float(q["s"]) * 100.0))])
-		var tp := u.tram.pose(t)
-		out.append("%d.tram%s@%d" % [u.deck, tp["mode"], int(round(float(tp["s"]) * 100.0))])
+		if u.tram != null:        # the top deck only
+			var tp := u.tram.pose(t)
+			out.append("%d.tram%s@%d" % [u.deck, tp["mode"], int(round(float(tp["s"]) * 100.0))])
 	return ",".join(out)
 
 
@@ -184,6 +185,8 @@ func run_host() -> void:
 	if check(wv >= 0, "stack: a vehicle on deck 0"):
 		var vx := u0.vehicle_pose(wv)
 		check(life.blast(vx.origin + vx.basis.y * 0.8, 2.0, -1) >= 1, "stack: the host wrecks a vehicle on deck 0")
+	life.set_tram_door("s1", false, life.now)      # MissionWorld's call: the joiner gets it in the snapshot
+	eq(life.unit(0).tram.door_events.size(), 1, "stack: the host shut the s1 tram door")
 	command(client, "make_life", {})
 	if not check(await wait_reports("life_ready", 1), "the client made its stack life"):
 		return
@@ -193,6 +196,7 @@ func run_host() -> void:
 		eq(str(reported(client, "stack_tally")), str(life.tally()), "stack late join: the dead on deck 2 and the wreck on deck 0 arrive")
 	if not check(await until(func() -> bool: return _deck_outdoor(1) >= 0, 30.0), "stack: someone outdoors on deck 1"):
 		return
+	life.set_tram_door("s1", true, life.now)       # after the join: reaches the client as life.door (before the threat)
 	var w1 := _deck_outdoor(1)
 	var p1 := life.unit(1).crowd.pose(w1, life.now)
 	var spot := Vector2(p1["x"], p1["s"])

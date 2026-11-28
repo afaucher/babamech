@@ -47,17 +47,13 @@ var active_deck := 0
 var quality := GraphicsQuality.HIGH  ## local presentation (CityQuality): set_quality; never touches plans, props or collision
 var _quality_touched := false    ## a level below HIGH was applied since the last HIGH (HIGH then restores every flag)
 
-var mission: MissionWorld        ## the mission's doors, flag, asset and portal (setup_mission); null until fully set up
+var mission: MissionWorld        ## the mission's doors, bays, flag, asset and hold zone (setup_mission); null until fully set up
 var _mission_wip: MissionWorld   ## a stepped mission setup in progress (setup_mission_begin), null otherwise
 var _follow: Node3D
 var _follow_in := 0.0
 var _rings: Array[RingFrame] = []   ## deck_ring(k), made in build()
 
-const CREW_GAP := 5.5            ## m at least between two mechs at the spawn (side by side they are 2 * CARRIAGE apart)
-## m from the avenue lane's centre line to the middle of each carriageway: the lane is 18 m with a 3 m planted median down
-## its centre (CityStreets._median, from 9 m past each junction edge: everywhere ENTRY_INSET lands), so a mech stands
-## on the road between the median (1.5 m) and the lane's edge (9 m), its 2.2 m capsule clear of both.
-const CARRIAGE := 5.25
+const CREW_GAP := 5.5            ## m at least between two mechs at the spawn (side by side they are 2 * carriage() apart)
 const SLIDE_STEP := 2.0          ## m the whole spawn formation moves further in when a slot is blocked
 const SLIDE_MAX := 30.0          ## m at most past ENTRY_INSET
 const SPAWN_R := 2.2             ## m the mech's capsule radius
@@ -307,13 +303,23 @@ func ring() -> RingFrame:
 	return deck_ring(decks.size() - 1)
 
 
+## m from the avenue lane's centre line to the middle of each carriageway: the main road's painted lane centres
+## (CityDims.avenue_lanes, the lanes the pods drive): 4 m on the 14 m road (1 | 4 | 4 | 4 | 1), so two mechs side by side
+## stand 8 m apart (two Bulwarks, r 3.6, keep 0.8 m between capsules), a Strider's 2.2 m capsule 0.3 m clear of the 3 m
+## median and 0.8 m inside the road's paving (a Bulwark's reaches 0.6 m past it onto the next lane's paving).
+## Only the stand-alone fallback: in a mission the crew stands in the entry bay (entry_bay_slots).
+func carriage() -> float:
+	var ln := CityDims.avenue_lanes(section.lane_x("avenue"))
+	return (ln.y - ln.x) * 0.5
+
+
 ## Where the first mech stands: ENTRY_INSET m into the map from the section's entry road (entry_gate_transform), on the
-## avenue lane's left-hand carriageway (CARRIAGE left of the median, so the chase camera's right shoulder offset puts it
+## avenue lane's left-hand carriageway (carriage() left of the median, so the chase camera's right shoulder offset puts it
 ## over the avenue's middle), facing into the map, 0.3 m above the floor. Far enough in that the chase camera behind it
 ## is inside the end wall too (on the entry line itself the camera sat outside the wall, looking in through the gate's
 ## recess).
 func entry_transform() -> Transform3D:
-	return _avenue_transform(ENTRY_INSET + _entry_slide, -CARRIAGE)
+	return _avenue_transform(ENTRY_INSET + _entry_slide, -carriage())
 
 
 ## How far past ENTRY_INSET the spawn formation must start so that all four slots (two rows, one column per
@@ -339,7 +345,7 @@ func entry_slide() -> float:
 			if (next_line - s) * into < SectionPlan.ARTERIAL_W * 0.5 + SPAWN_R + 1.0:
 				ok = false
 			for side: float in [-1.0, 1.0]:
-				if ok and not _slot_clear(d, Vector2(mid + side * CARRIAGE, s), cuts, k):
+				if ok and not _slot_clear(d, Vector2(mid + side * carriage(), s), cuts, k):
 					ok = false
 		if ok:
 			return slide
@@ -442,22 +448,46 @@ func fell_out(world_pos: Vector3, below: float = FALL_OUT) -> bool:
 	return height_above_bottom(world_pos) < -below
 
 
-## Where n mechs (1..4) start, in seat order, the same on every machine: the first at entry_transform() when alone;
-## otherwise two columns, one on each carriageway of the avenue lane (CARRIAGE either side of its median), and rows
-## CREW_ROW apart going into the map from the first spawn row (ENTRY_INSET + entry_slide() in from the entry road), a lone mech in the
-## last row on the left-hand carriageway like the first. All face into the map, 0.3 m above the road.
+## Where n mechs (1..4) start, in seat order, the same on every machine.
+## In the ENTRY BAY (docs/design/city-spine.md §4) when the mission world has set it up (mission != null and
+## mission.entry_door() ok): entry_bay_slots(n), facing out through the entry door (MissionWorld.ENTRY_OPEN_DEFAULT opens
+## it at setup until Missions orders it).
+## Otherwise (no mission world yet: the lab, tests, the stand-alone stack, and today the game, whose crew is placed before
+## the mission world sets up) on the avenue as before: the first at entry_transform() when alone; else two columns, one on
+## each carriageway of the avenue lane (on its painted lane centres, carriage() either side of its median), and rows CREW_ROW apart going into the map
+## from the first spawn row (ENTRY_INSET + entry_slide() in from the entry road), a lone mech in the last row on the
+## left-hand carriageway like the first. All face into the map, 0.3 m above the road.
 func spawn_transforms(n: int) -> Array[Transform3D]:
 	var out: Array[Transform3D] = []
 	n = clampi(n, 1, 4)
+	if spawn_in_bay():
+		return entry_bay_slots(n)
 	if n == 1:
 		out.append(entry_transform())
 		return out
 	for i in n:
 		var row := i / 2
 		var in_row := mini(n - row * 2, 2)
-		var right := -CARRIAGE if in_row == 1 or i % 2 == 0 else CARRIAGE
+		var right := -carriage() if in_row == 1 or i % 2 == 0 else carriage()
 		out.append(_avenue_transform(ENTRY_INSET + _entry_slide + CREW_ROW * float(row), right))
 	return out
+
+
+## Whether spawn_transforms puts the crew in the entry bay: the mission world is set up and has an entry door.
+func spawn_in_bay() -> bool:
+	return mission != null and is_instance_valid(mission) and bool(mission.entry_door().get("ok", false))
+
+
+## The entry bay's n (1..4) crew slots, in seat order, facing out through the door into the map: MissionWorld.bay_slots
+## (ENTRY_ID, n, true) (MissionWorld.slot_layout: two columns BAY_COLUMNS 7.4 m apart as near the door's centre line as
+## the bay allows, rows BAY_ROWS 11.6 / 20.4 m behind the door plane, staggered back when the bay sits off the door, each
+## fitting a Bulwark capsule and aimed so its straight walk passes the opening), 0.3 m above the floor. [] without an
+## entry bay.
+func entry_bay_slots(n: int) -> Array[Transform3D]:
+	if not spawn_in_bay():
+		var none: Array[Transform3D] = []
+		return none
+	return mission.bay_slots(MissionWorld.ENTRY_ID, n, true)
 
 
 ## The deck the daylight lights and shadows (local presentation).
@@ -503,8 +533,8 @@ func set_quality(q: int) -> void:
 
 # --- Mission world (docs/design/city-ramps-and-stack.md "Mission world (phase 1)") ----------------------------------
 
-## Put the mission's pieces in the built stack (wave doors, flag masts, defend relays, the extraction portal and its hold
-## zone) from `plan` (a MissionPlan, or a Dictionary with its fields): a MissionWorld, also kept as `mission`. A second
+## Put the mission's pieces in the built stack (wave doors, the entry / exit doors and bays, the tram doors, flag masts,
+## defend relays, the extraction hold zone) from `plan` (a MissionPlan, or a Dictionary with its fields): a MissionWorld, also kept as `mission`. A second
 ## call replaces the first; a new build() frees it. Without it the stack looks and collides exactly as before.
 func setup_mission(plan: Variant) -> MissionWorld:
 	setup_mission_begin(plan)

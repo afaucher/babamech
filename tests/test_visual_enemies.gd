@@ -1,7 +1,8 @@
 extends TestCase
 const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "Fixtures"): no director, no objectives
 ## VISUAL: enemy silhouettes, scale vs. 8 m player mech, palette contrast in sunlit city, active telegraphs,
-## and Test Drive rooftop overview looking down onto occupied streets/parks (50-120 m visibility check).
+## and Test Drive rooftop overview looking down onto occupied streets/parks (50-120 m visibility check), and the
+## diegetic overheat look (R2.27) of every type cool / hot / shut down from the play camera's 40-120 m.
 ## Runs only under `.\test_runner.ps1 -Visual`.
 
 const VISUAL := true
@@ -108,6 +109,8 @@ func setup() -> void:
 
 	lab.queue_free()
 	cam.queue_free()
+	await frames(2)
+	await _overheat_shots()
 	sun.queue_free()
 	env.queue_free()
 	await frames(4)
@@ -138,3 +141,68 @@ func setup() -> void:
 	td.queue_free()
 	await frames(2)
 	finish()
+
+
+## Every enemy type cool, hot (90 % heat) and shut down, seen as from the play camera (behind an 8 m mech, 10 m up) at
+## 45 m (front three-quarter: optics; rear three-quarter: fins) and 110 m: enemies_overheat_<state>_<view>.png.
+func _overheat_shots() -> void:
+	var w := CombatWorld.new()
+	w.mission_seed = 5
+	add_child(w)
+	var ground := MeshInstance3D.new()
+	var pm := PlaneMesh.new()
+	pm.size = Vector2(400.0, 400.0)
+	ground.mesh = pm
+	var gmat := StandardMaterial3D.new()
+	gmat.albedo_color = Color(0.46, 0.45, 0.43)
+	ground.material_override = gmat
+	add_child(ground)
+	var types := ["turret", "turret_sniper", "turret_missile", "strider", "strider_breacher", "tank", "trooper_rifle",
+		"trooper_at", "drone", "gunship", "dropship"]
+	var units: Array[EnemyBase] = []
+	for i in types.size():
+		var t: String = types[i]
+		var e := EnemySpawner.make_enemy(t)
+		e.configure(t, "vis_" + t, w, null, null, 3)
+		e.ai_mode = "idle"
+		var air := t in ["drone", "gunship", "dropship"]
+		e.position = Vector3(-36.0 + 8.0 * float(i % 8), 12.0 if air else 0.0, 0.0 if not air else 8.0)
+		if air:
+			e.position = Vector3(-14.0 + 14.0 * float(i - 8), 12.0, 10.0)
+		add_child(e)
+		w.register(e)
+		units.append(e)
+	var cam := Camera3D.new()
+	cam.fov = 60.0
+	add_child(cam)
+	cam.current = true
+	var views := {
+		"front45": [Vector3(-18.0, 10.0, -42.0), Vector3(-6.0, 3.0, 4.0)],
+		"rear45": [Vector3(18.0, 10.0, 42.0), Vector3(-6.0, 3.0, 2.0)],
+		"front110": [Vector3(-30.0, 12.0, -106.0), Vector3(-6.0, 3.0, 4.0)],
+	}
+	for state: String in ["cool", "hot", "shut"]:
+		for e in units:
+			e.heat.reset()
+			if state == "hot":
+				e.heat.value = e.heat.cap * 0.9
+			elif state == "shut":
+				e.heat.add(e.heat.cap)
+		for _i in 60:   # 1 s: the glow written, the slump settled, steam rising
+			for e in units:
+				if state == "hot":
+					e.heat.value = e.heat.cap * 0.9
+				e.tick(1.0 / 60.0, null)
+			await get_tree().process_frame
+		for v: String in views:
+			var pv: Array = views[v]
+			cam.look_at_from_position(pv[0] as Vector3, pv[1] as Vector3, Vector3.UP)
+			await frames(3)
+			var img := await sc.grab("enemies_overheat_%s_%s" % [state, v])
+			sc.not_blank(img, Rect2(0.05, 0.1, 0.9, 0.8), "overheat look %s from %s" % [state, v])
+	for e in units:
+		e.queue_free()
+	cam.queue_free()
+	ground.queue_free()
+	w.queue_free()
+	await frames(2)

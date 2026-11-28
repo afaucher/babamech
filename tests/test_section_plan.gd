@@ -4,6 +4,8 @@ extends TestCase
 ## pillar it isn't housed in; the planner holds up across seeds and at the ends of every setting. Ramp bridges too low to
 ## walk under are gone from the road graph; road segment forms keep their always-street rules and the repair guarantees
 ## (vehicle network, a vehicle side on every cell, no stubs) even at extreme mixes, and move nothing rolled before them.
+## Since 2026-11-27 (city-spine.md, phase b): the 40 m spine, road_door / tram_door gates on the avenue / rail lanes, and
+## ramp slope runs ending RAMP_END_PAST_BOX past the junction boxes (clear of the zebras), graded on the run.
 
 const SETTINGS := [
 	{}, {"decks": 2.0}, {"decks": 5.0}, {"arc": 300.0}, {"arc": 900.0}, {"width": 160.0}, {"width": 450.0},
@@ -54,11 +56,12 @@ func _hop_only() -> void:
 			var plan := SectionPlan.make({"seed": float(seed_), "decks": float(decks)})
 			var tag := "hop-only seed %d x%d" % [seed_, decks]
 			var key := "%d:%d" % [decks, seed_]
-			if GOLDEN_UNCHANGED.has(key):
-				eq(plan.checksum(), GOLDEN_UNCHANGED[key], tag + ": a plan that met the rule is byte-identical")
-				eq(plan.walk_repairs.size(), 0, tag + ": nothing repaired")
-			if GOLDEN_CHANGED.has(key):
-				check(plan.checksum() != GOLDEN_CHANGED[key] and not plan.walk_repairs.is_empty(), tag + ": repaired")
+			if GOLDEN.has(key):
+				eq(plan.checksum(), GOLDEN[key], tag + ": checksum as pinned")
+				eq(plan.walk_repairs.size(), 0, tag + ": met the rule unrepaired")
+			if GOLDEN_REPAIRED.has(key):
+				eq(plan.checksum(), GOLDEN_REPAIRED[key], tag + ": checksum as pinned (repaired)")
+				check(not plan.walk_repairs.is_empty(), tag + ": repaired")
 			if not plan.walk_repairs.is_empty():
 				repaired[decks] += 1
 			eq(plan.validate().size(), 0, tag + ": validate() " + str(plan.validate()))
@@ -144,35 +147,43 @@ func _hop_path(plan: SectionPlan, tag: String) -> void:
 		check(float(found["dist"][plan.cell_id(k, 0, 0)]) < INF, "%s: hop-only, deck %d reached" % [tag, k])
 
 
-## Legacy digest of seeds 1..40, recorded before ramp bridges and segment forms existed (2026-11-23): everything rolled
-## before them (grid, zones, regions, pillars, connectors, roads, mech route, hooks, walls and gates, ends) is unchanged.
-## Re-recorded 2026-11-24 for the hop-only rule (_ensure_walkable_down): seeds 9, 12, 19 and 36 (3 decks) had no ramp
-## and a stacked atrium as the only drop from deck 0 to 1, so each gained a ramp 0 -> 1 (was "3ac644959496e0cf"); the
-## other 36 seeds are byte-identical (GOLDEN_UNCHANGED below holds their checksums from before the rule).
-const LEGACY_1_40 := "5e98a671b4bc534c"
-## checksum() of seeds 1..40, concatenated and sha256'd, recorded before ramp bridges and segment forms: with the forms
-## off (fractions 0, the defaults until 2026-11-23) and the bridge rule on, the whole plan hashes exactly as before.
-## Re-recorded 2026-11-24 for the hop-only rule, same four seeds (was "af844bf36222946e").
-const CHECKSUM_1_40 := "a8418dac1af36fdb"
-## The same digest at the DEFAULTS since the forms went live (2026-11-23: f_lane 0.20, f_pedestrian 0.15, f_none 0.08).
-## Re-recorded 2026-11-24 for the hop-only rule, same four seeds (was "730d587c09108457").
-const CHECKSUM_DEFAULT_1_40 := "f72178587ddf045e"
-## checksum() at the defaults recorded BEFORE the hop-only rule existed, for seeds that already met it: they must never
-## move. Key "decks:seed". Seeds the project pins elsewhere (mission, city, bot and net tests) included.
-const GOLDEN_UNCHANGED := {
-	"3:1": "e700861b676804be", "3:2": "ef9e0d7a8a993b42", "3:3": "370b9dec18720682", "3:4": "caffe96bbb70e675",
-	"3:5": "cd47a331c85a5b7e", "3:6": "4a380ce7f69cfeb2", "3:7": "cf28c7ae7beeb2b2", "3:10": "23ac05ac695dc885",
-	"3:16": "d13de6fdb2d2d149", "3:17": "fc9261af3c0fdf7e", "3:21": "d15aaa0164c287ee", "3:22": "7ceacce00fe79bc0",
-	"3:26": "e95e24276d9b9cf7", "3:30": "349679d2ec3a3938", "3:32": "265b697c89ee42d6", "3:100": "9846a008fac9eec7",
-	"3:200": "8ad2283997dffc41", "3:300": "29e290dc68a1cd74", "3:403112": "318ac97042a655c0",
-	"3:747612": "01462e097f133ddb", "3:297535": "ffc9c65b84f5cb07", "3:295676": "b2121ac7aeb88ee0",
-	"5:1": "149059f2d843a8cd", "5:2": "ce98374a8be8d6f7", "5:3": "3b204fd4bce2681e", "5:5": "d361cabd3411b04d",
-	"5:6": "4823ccf917c00225", "5:7": "804beb15df7416b5", "5:9": "0364f89b3f798af0", "5:10": "6bb213fe0568007a",
-	"5:16": "d9fd5735267c344b", "2:1": "6102607788dee884", "2:9": "a837a7611873cb14", "2:50": "ef3787f6d0774b3c",
+## Legacy digest of seeds 1..40 (_legacy_digest: everything rolled before ramp bridges and segment forms: grid, zones,
+## regions, pillars, connectors, roads, mech route, hooks, walls and gates, ends). History: recorded 2026-11-23; re-recorded
+## 2026-11-24 for the hop-only rule (seeds 9, 12, 19, 36 gained a ramp 0 -> 1; was "3ac644959496e0cf"); re-recorded
+## 2026-11-27 for the spine / doors re-pin (40 m spine, road_door / tram_door gates, ramp slope runs; was
+## "5e98a671b4bc534c"). The generator stream is unchanged by that re-pin (no roll added or removed; every ramp kept its
+## rows), so what moved is geometry and gate data, not what was rolled. Again 2026-11-27 when the ramp slope ends moved to
+## 6 m past the junction boxes (grade 0.20; was "0a7b12f4192c4bd2").
+const LEGACY_1_40 := "3c2186d2b7f9eb3b"
+## checksum() of seeds 1..40, concatenated and sha256'd, with the forms off (fractions 0) and the bridge rule on.
+## Re-recorded 2026-11-24 for the hop-only rule (was "af844bf36222946e"), 2026-11-27 for the spine / doors re-pin (was
+## "a8418dac1af36fdb"); again for the ramp ends 6 m past the boxes (was "49e13fc866c10a98").
+const CHECKSUM_1_40 := "c327c1dbd52f4e92"
+## The same digest at the DEFAULTS (forms live since 2026-11-23: f_lane 0.20, f_pedestrian 0.15, f_none 0.08).
+## Re-recorded 2026-11-24 for the hop-only rule (was "730d587c09108457"), 2026-11-27 for the spine / doors re-pin (was
+## "f72178587ddf045e"); again for the ramp ends 6 m past the boxes (was "92fe7074b2a70c8a").
+const CHECKSUM_DEFAULT_1_40 := "1416ddcf8a3a8afc"
+## checksum() at the defaults of seeds that meet the hop-only rule unrepaired, key "decks:seed", including the seeds the
+## project pins elsewhere (mission, city, bot and net tests). Until 2026-11-27 this was GOLDEN_UNCHANGED: the checksums
+## from before the hop-only rule, which those plans had to keep. The spine / doors re-pin (2026-11-27) moved every
+## checksum, so it now holds the new values: it pins the plan, and the hop-only loop asserts each still needs no repair.
+## Old -> new for the re-pin: docs/coordination/antigravity.md, 2026-11-27 "SectionPlan re-pin" (values re-taken once more
+## the same day for the ramp ends 6 m past the junction boxes).
+const GOLDEN := {
+	"3:1": "7fc4d5626a444ecd", "3:2": "a56e0065d8e97668", "3:3": "86e903e1d4653ac8", "3:4": "02e84b48232030ce",
+	"3:5": "cb42fca721d3508f", "3:6": "0381209a5c90d29e", "3:7": "ea3fd8ad6f4ad00d", "3:10": "2323e73ae606d395",
+	"3:16": "a82a0c25716fa1e6", "3:17": "a59a3accec66fac4", "3:21": "a97fc3eab30aa9ac", "3:22": "8ca0837b65b1432e",
+	"3:26": "666e195acf0575e0", "3:30": "5c40c863ffb6743f", "3:32": "390a72da957859a3", "3:100": "bf7df3c322e487fe",
+	"3:200": "139c91cc63b7335a", "3:300": "56f0fd4a0f3b851f", "3:403112": "06fbeaa817ca6072",
+	"3:747612": "1e938e0624286746", "3:297535": "3629dfaa48062a17", "3:295676": "9876dc3d055f3dc8",
+	"5:1": "1000f1f3b8c6614e", "5:2": "24cf54d9fd7cfb3c", "5:3": "461cfbe7bbebdbe4", "5:5": "a40f5d3e276b43df",
+	"5:6": "c9bf1eed22d29a1a", "5:7": "4fb55848bc3fec5a", "5:9": "36ceb6546d1c5ec6", "5:10": "d41b371d621ab9d6",
+	"5:16": "6ef40e8da3ca9111", "2:1": "e70831caa09f48d5", "2:9": "96660edefdeab3f7", "2:50": "19d78556345c650a",
 }
-## Plans the rule changed (checksum before it): seed 9 is the case that found it (deck 1 reachable only by a glide).
-const GOLDEN_CHANGED := {"3:9": "0f07fdb6ead9f69c", "5:4": "e582e75aa48518a9", "5:22": "101ecacd184833a1",
-		"5:32": "ac65a0a8c37a9f42"}
+## Plans the hop-only rule repairs (seed 9 is the case that found it: deck 1 reachable only by a glide), pinned at their
+## 2026-11-27 checksums (before: GOLDEN_CHANGED, their checksums from before the rule, asserted to differ).
+const GOLDEN_REPAIRED := {"3:9": "392b0131500b7137", "5:4": "8602c3dfcd25e0cd", "5:22": "8f3ee1843c0567ae",
+		"5:32": "fcbee4012b8263f5"}
 const ZERO_FORMS := {"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0}
 ## The mix the DEFAULTS roll (forms live since 2026-11-23).
 const FORM_MIX := {"f_lane": 0.20, "f_pedestrian": 0.15, "f_none": 0.08}
@@ -220,7 +231,7 @@ func _forms_sweep() -> void:
 			for sg: Dictionary in dp.segments(k):
 				formed = formed or sg["form"] != "street"
 		check(formed, "seed %d: forms live by default" % seed_)
-	eq(sums.sha256_text().substr(0, 16), CHECKSUM_1_40, "seeds 1..40: forms-off checksums as before forms and bridges")
+	eq(sums.sha256_text().substr(0, 16), CHECKSUM_1_40, "seeds 1..40: forms-off checksums as pinned")
 	eq(def_sums.sha256_text().substr(0, 16), CHECKSUM_DEFAULT_1_40, "seeds 1..40: default checksums (forms live)")
 	# Old data unmoved, and at default grade one bridge goes per ramp; mix of the minor segments (intended mix).
 	var all := ""
@@ -251,7 +262,7 @@ func _forms_sweep() -> void:
 		flat_o["seed"] = float(seed_)
 		var flat := SectionPlan.make(flat_o)
 		_same_geometry(plan, flat, "seed %d" % seed_)
-	eq(all.sha256_text().substr(0, 16), LEGACY_1_40, "seeds 1..40: everything rolled before forms is unchanged")
+	eq(all.sha256_text().substr(0, 16), LEGACY_1_40, "seeds 1..40: everything rolled before forms as pinned")
 	print("[section] forms over 40 seeds: %d segments, %d minor (%.0f%%): street %.3f lane %.3f pedestrian %.3f none %.3f; repaired %.2f / plan, stubs %.2f / plan" % [
 			total, minor, 100.0 * minor / total, float(mix["street"]) / minor, float(mix["lane"]) / minor,
 			float(mix["pedestrian"]) / minor, float(mix["none"]) / minor, repaired / 40.0, stubs / 40.0])
@@ -540,8 +551,31 @@ func _check_plan(plan: SectionPlan, tag: String) -> void:
 			"ramp":
 				var lane := plan.lane_x(cn["lane"])
 				near(float(cn["x0"]), lane.x, 0.001, tag + ": ramp in its spine lane")
-				var length := (float(cn["theta1"]) - float(cn["theta0"])) * plan.radius_of(int(cn["from"]))
-				check(plan.p("pitch") / length <= plan.p("ramp_grade") + 0.0001, tag + ": ramp no steeper than the grade (%.3f)" % (plan.p("pitch") / length))
+				# The slope run (R2.17): it ends RAMP_END_PAST_BOX past the junction box at both ends (top on the upper deck,
+				# foot on the lower), clear of every box and its zebra; the grade limit applies to the run.
+				var kf := int(cn["from"])
+				var kt := int(cn["to"])
+				var down := signf(float(plan.row_theta[int(cn["foot_line"])]) - float(plan.row_theta[int(cn["top_line"])]))
+				var in_top := plan.line_width("x", int(cn["top_line"])) * 0.5 + SectionPlan.RAMP_END_PAST_BOX
+				var in_foot := plan.line_width("x", int(cn["foot_line"])) * 0.5 + SectionPlan.RAMP_END_PAST_BOX
+				near((float(cn["run_top"]) - float(plan.row_theta[int(cn["top_line"])])) * plan.radius_of(kf), down * in_top,
+						1e-3, tag + ": ramp %d slope starts RAMP_END_PAST_BOX past its top junction box" % ci)
+				near((float(plan.row_theta[int(cn["foot_line"])]) - float(cn["run_foot"])) * plan.radius_of(kt), down * in_foot,
+						1e-3, tag + ": ramp %d slope ends RAMP_END_PAST_BOX short of its foot junction box" % ci)
+				near(minf(float(cn["theta0"]), float(cn["theta1"])), minf(float(plan.row_theta[int(cn["top_line"])]), float(plan.row_theta[int(cn["foot_line"])])),
+						1e-9, tag + ": ramp %d keeps its whole-row span" % ci)
+				var length := absf(float(cn["run_top"]) - float(cn["run_foot"])) * plan.radius_of(kf)
+				near(length, plan.ramp_run_len(kf, int(cn["top_line"]), int(cn["foot_line"])), 1e-3, tag + ": ramp %d run length" % ci)
+				check(plan.p("pitch") / length <= plan.p("ramp_grade") + 0.0001, tag + ": ramp no steeper than the grade on its run (%.3f)" % (plan.p("pitch") / length))
+				for k in [kf, kt]:
+					var run := plan.ramp_run(ci, k)
+					var s_end := run.x if k == kf else run.y
+					for j in plan.rows + 1:
+						var hw := plan.line_width("x", j) * 0.5
+						check(absf(s_end - plan.line_s(k, j)) > hw + 4.8 + 0.5, "%s: ramp %d slope end clear of junction box %d and its zebra on deck %d" % [tag, ci, j, k])
+					var cr := plan.connector_rect(ci, k)
+					near(cr.position.y, minf(run.x, run.y), 1e-3, tag + ": ramp %d footprint is its run on deck %d" % [ci, k])
+					near(cr.end.y, maxf(run.x, run.y), 1e-3, tag + ": ramp %d footprint is its run on deck %d (end)" % [ci, k])
 				eq(plan.zone(cn["from"], cn["col"], cn["row"]), "transit", tag + ": ramp head is a transit cell")
 				eq(plan.zone(cn["to"], cn["col"], cn["foot_row"]), "transit", tag + ": ramp foot is a transit cell")
 	# Two ramps never share a lane on one deck.
@@ -570,9 +604,12 @@ func _check_plan(plan: SectionPlan, tag: String) -> void:
 			for row: Array in plan.decks[k]["zones"]:
 				parks += row.count("park")
 			check(parks >= 1, tag + ": deck %d has a park" % k)
-	# --- Boundaries: four walls a deck; the crew's portals are gates in bulkheads on the spine; gates sit on road lines.
+	# --- Boundaries: four walls a deck; the crew's road doors are gates in bulkheads on the spine's avenue; tram doors on
+	# the tram deck only, both arc ends, on the rail lane; gates sit on road lines.
 	eq(plan.boundaries.size(), n * 4, tag + ": four walls on every deck")
 	var portals := {}
+	var av := plan.lane_x("avenue")
+	var rl := plan.lane_x("rail")
 	for k in n:
 		for edge in SectionPlan.EDGES:
 			var b := plan.boundary(k, edge)
@@ -583,20 +620,56 @@ func _check_plan(plan: SectionPlan, tag: String) -> void:
 			var wall := plan.boundary_rect(k, edge)
 			var inside := Rect2(-plan.p("width") * 0.5, -plan.arc_of(k) * 0.5, plan.p("width"), plan.arc_of(k))
 			check(not wall.grow(-0.01).intersects(inside), tag + ": wall %s outside the section's ground" % edge)
+			var trams := 0
+			var spine_doors := 0
 			for g: Dictionary in b["gates"]:
-				check(g["kind"] in ["portal", "blast_door", "collapsed"], tag + ": gate kind")
+				check(g["kind"] in ["road_door", "blast_door", "collapsed", "tram_door"], tag + ": gate kind")
 				eq(str(g["axis"]), "s" if edge.begins_with("s") else "x", tag + ": a gate is where a road meets the wall")
 				check(int(g["line"]) >= 1 and int(g["line"]) < (plan.cols if g["axis"] == "s" else plan.rows), tag + ": gate on a road line")
 				check(wall.grow(0.01).has_point(Vector2(float(g["x"]), float(g["s"]))), tag + ": gate in wall %s" % edge)
-				if g["kind"] == "portal":
-					portals[g["role"]] = [k, edge]
-					eq(str(b["kind"]), "bulkhead", tag + ": a portal is a gate in a bulkhead")
-					eq(int(g["line"]), plan.spine_line, tag + ": a portal is on the spine")
+				check(float(g["width"]) <= SectionPlan.ROAD_DOOR_W + 0.01, tag + ": no gate wider than a road door")
+				var on_spine: bool = g["axis"] == "s" and int(g["line"]) == plan.spine_line
+				if g["kind"] == "tram_door":
+					trams += 1
+					eq(k, SectionPlan.TRAM_DECK, tag + ": tram doors on the tram deck only")
+					check(on_spine, tag + ": a tram door is on the spine")
+					near(float(g["x"]), (rl.x + rl.y) * 0.5, 1e-3, tag + ": a tram door is centred on the rail lane")
+					near(float(g["width"]), SectionPlan.TRAM_DOOR_W, 1e-3, tag + ": tram door width")
+					near(float(g["h"]), SectionPlan.TRAM_DOOR_H, 1e-3, tag + ": tram door height")
+					eq(str(g["role"]), "", tag + ": a tram door has no role")
+					continue
+				near(float(g["h"]), SectionPlan.ROAD_DOOR_H, 1e-3, tag + ": a road door is 9 m high")
+				if on_spine:
+					spine_doors += 1
+					near(float(g["x"]), (av.x + av.y) * 0.5, 1e-3, tag + ": the spine's door is centred on the avenue lane")
+					near(float(g["width"]), SectionPlan.ROAD_DOOR_W, 1e-3, tag + ": the spine's door is a road door")
+					if g["kind"] == "road_door":
+						check(g["role"] in ["entry", "exit"], tag + ": a road_door is the crew's entry or exit")
+						check(not portals.has(g["role"]), tag + ": one door per role")
+						portals[g["role"]] = [k, edge]
+						eq(str(b["kind"]), "bulkhead", tag + ": the crew's door is a gate in a bulkhead")
+					else:
+						eq(str(g["role"]), "none", tag + ": any other spine end has role none")
+						check(g["kind"] in ["blast_door", "collapsed"], tag + ": any other spine end is a wave gate or collapsed")
 				else:
-					eq(str(g["role"]), "", tag + ": only portals have a role")
-	eq(portals.size(), 2, tag + ": one entry portal and one extraction portal")
-	eq(portals.get("entry"), [0, "s0"], tag + ": the entry portal is in the top deck's wall")
-	eq(portals.get("extraction"), [n - 1, "s1" if int(plan.extraction["j"]) > 0 else "s0"], tag + ": the extraction portal")
+					eq(str(g["kind"]), "blast_door", tag + ": an off-spine gate is a road door (blast_door)")
+					eq(str(g["role"]), "", tag + ": an off-spine gate has no role")
+			eq(spine_doors, 1 if edge.begins_with("s") else 0, tag + ": one spine door in each arc end (deck %d %s)" % [k, edge])
+			eq(trams, 1 if (k == SectionPlan.TRAM_DECK and edge.begins_with("s")) else 0, tag + ": tram doors (deck %d %s)" % [k, edge])
+	eq(portals.size(), 2, tag + ": one entry road door and one exit road door")
+	eq(portals.get("entry"), [0, "s0"], tag + ": the entry road door is in the top deck's s0 wall")
+	eq(portals.get("exit"), [n - 1, "s1" if int(plan.extraction["j"]) > 0 else "s0"], tag + ": the exit road door")
+	# Cordons: one in front of every wave gate (blast_door), none at the crew's doors, collapsed or tram doors.
+	var wave_gates := 0
+	var cordons := 0
+	for b: Dictionary in plan.boundaries:
+		for g: Dictionary in b["gates"]:
+			if g["kind"] == "blast_door":
+				wave_gates += 1
+	for h: Dictionary in plan.hooks:
+		if h["kind"] == "cordon":
+			cordons += 1
+	eq(cordons, wave_gates, tag + ": a cordon at every blast door, nowhere else")
 	var checkpoints := 0
 	for h: Dictionary in plan.hooks:
 		check(int(h["deck"]) >= 0 and int(h["deck"]) < n, tag + ": hook deck")
@@ -630,9 +703,10 @@ func _check_bridges(plan: SectionPlan, tag: String) -> void:
 		var top := int(c["top_line"])
 		var foot := int(c["foot_line"])
 		var i := plan.spine_line - 1 if c["lane"] == "ramp_a" else plan.spine_line
-		var run := absf(plan.line_s(k, foot) - plan.line_s(k, top))
+		var rr := plan.ramp_run(ci, k)       # the fitted slope run on the upper deck (R2.17)
+		var run := absf(rr.y - rr.x)
 		for j in range(mini(top, foot) + 1, maxi(top, foot)):
-			var d := absf(plan.line_s(k, j) - plan.line_s(k, top)) - plan.line_width("x", j) * 0.5
+			var d := maxf(absf(plan.line_s(k, j) - rr.x) - plan.line_width("x", j) * 0.5, 0.0)
 			var clear := plan.p("pitch") * d / run - plan.p("slab")
 			eq(lines.has(j), clear < SectionPlan.BRIDGE_CLEARANCE, "%s: ramp %d line %d bridged iff clear (%.2f m)" % [tag, ci, j, clear])
 			var a := plan.node_id(k, i, j)
@@ -824,21 +898,26 @@ func _check_encounters(plan: SectionPlan, tag: String) -> void:
 		check(extent.has_point(ap), t + ": arrival inside the deck " + str(ap))
 		check(extent.has_point(dp), t + ": departure inside the deck " + str(dp))
 		if k == 0:
-			eq(str(a["kind"]), "portal", t + ": the crew arrives through the entry portal")
+			eq(str(a["kind"]), "road_door", t + ": the crew arrives through the entry road door")
 			check(ap.distance_to(Vector2(avenue, plan.line_s(0, int(plan.entry["j"])))) < 0.01, t + ": arrival is the entry node on the avenue")
+			check(absf(ap.y + plan.arc_of(0) * 0.5) < 10.0, t + ": arrival just inside the entry road door")
 		else:
 			_check_end(plan, k, a, k - 1, t + ": arrival")
 		if k == n - 1:
-			eq(str(d["kind"]), "portal", t + ": the crew leaves through the extraction portal")
+			eq(str(d["kind"]), "road_door", t + ": the crew leaves through the exit road door")
 			eq(int(d["connector"]), -1, t + ": the extraction is no connector")
 			check(dp.distance_to(Vector2(avenue, plan.line_s(k, int(plan.extraction["j"])))) < 0.01, t + ": departure is the extraction node on the avenue")
+			check(absf(absf(dp.y) - plan.arc_of(k) * 0.5) < 10.0, t + ": departure just inside the exit road door")
 		else:
 			_check_end(plan, k, d, k, t + ": departure")
-		# 100 m apart, except where a ramp lands right beside the next ramp down (same cross line, neighbouring lanes:
-		# the generator allows it, e.g. cell 140 seed 11 deck 1, 40 m).
+		# 100 m apart, except where a ramp lands right beside the next ramp down (same cross line, the two ramp lanes: the
+		# generator allows it, e.g. cell 140 seed 11 deck 1: 30 m on the 40 m spine, 40 m on the old 50 m one).
 		var ad := ap.distance_to(dp)
 		var side_by_side: bool = a["kind"] == "ramp" and d["kind"] == "ramp" and absf(ap.y - dp.y) < 0.01
-		check(ad >= 100.0 or (side_by_side and ad >= 39.9), t + ": arrival and departure apart (%.1f m)" % ad)
+		var ra := plan.lane_x("ramp_a")
+		var rb := plan.lane_x("ramp_b")
+		var lanes_apart := (rb.x + rb.y) * 0.5 - (ra.x + ra.y) * 0.5
+		check(ad >= 100.0 or (side_by_side and ad >= lanes_apart - 0.1), t + ": arrival and departure apart (%.1f m)" % ad)
 		# --- Sites.
 		var sites := SectionEncounters.sites(plan, k)
 		check(not sites.is_empty(), t + ": encounter sites")
@@ -1018,6 +1097,8 @@ func _check_view(plan: SectionPlan, k: int, v: Dictionary, tag: String) -> void:
 	if lanes.size() == SectionPlan.SPINE_LANES.size():
 		for n in lanes.size():
 			eq(str(lanes[n]["lane"]), str(SectionPlan.SPINE_LANES[n][0]), tag + ": spine lanes in order")
+			eq(str(lanes[n]["kind"]), plan.lane_kind(k, str(lanes[n]["lane"])), tag + ": spine lane kind")
+			eq(str(lanes[n]["kind"]), str(plan.spine_lanes(k)[n]["kind"]), tag + ": spine_lanes kind")
 			if n > 0:
 				near((lanes[n]["rect"] as Rect2).position.x, (lanes[n - 1]["rect"] as Rect2).end.x, 1e-3, tag + ": spine lanes adjacent")
 		near((lanes[-1]["rect"] as Rect2).end.x - (lanes[0]["rect"] as Rect2).position.x, SectionPlan.SPINE_W, 1e-3, tag + ": spine lanes span the spine")

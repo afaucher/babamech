@@ -282,13 +282,18 @@ its net field and lab param removed). The Bulwark's pilot thrust heats **80 /s**
 cooling 12 and a 130 cap, with thrust 30 vs gravity 22 (8 m/s^2 of lift). Measured (`tests/test_chassis_movement.gd`,
 flat floor, from cold):
 
-| | Strider | Bulwark before | Bulwark now |
-| --- | --- | --- | --- |
-| pilot thrust heat /s (net of cooling) | 24 (15) | 30 (18), throttled at 6 m | 80 (68) |
-| continuous burn, cold to shutdown | 6.7 s | (hovers at 6 m) | 1.9 s |
-| height at shutdown / peak of one burn | 267 / 412 m | 6 / 6.8 m | 15 / 20 m |
-| highest jump that still lands safely (auto burn) | ~314 m | 6.8 m | ~19 m (1.85 s burn) |
-| 6 m ledge / 12 m roof / 30 m roof (heat at the top) | yes / yes / yes (21) | yes / no / no | yes (85) / yes (112) / no |
+| | Strider | Bulwark before | Bulwark 2026-11-25 | Bulwark now (R2.3) |
+| --- | --- | --- | --- | --- |
+| pilot thrust heat /s (net of cooling) | 24 (15) | 30 (18), throttled at 6 m | 80 (68) | 64 (52) |
+| continuous burn, cold to shutdown | 6.7 s | (hovers at 6 m) | 1.9 s | 2.5 s |
+| height at shutdown / peak of one burn | 267 / 412 m | 6 / 6.8 m | 15 / 20 m | 25.5 / 34.5 m |
+| highest jump that still lands safely (auto burn) | ~314 m | 6.8 m | ~19 m (1.85 s burn) | not re-measured |
+| 6 m ledge / 12 m roof / 30 m roof (heat at the top) | yes / yes / yes (21) | yes / no / no | yes (85) / yes (112) / no | yes (62) / yes (82) / no (shuts down at the top) |
+
+**R2.3 (playtest, 2026-11-26):** "a bit too much: dial it back 20 %": `thrust_heat` 80 -> 64 (the automatic landing
+burn stays 30, bots keep `bot_hop_height` 6). A straight burn now peaks above 30 m, but a 30 m roof is still out of reach
+climbing its wall from cold (the walk and the push over the edge cost the rest: it shuts down at the top). The paragraph
+below describes the 80 /s numbers.
 
 The pilot can hop a ledge, push onto a 12 m roof at the cost of most of the heat bar, and nothing much higher: a full
 burn shuts the mech down ~15 m up and it falls uncushioned from ~20 m (~30 m/s, leg damage). The **automatic landing

@@ -79,7 +79,13 @@ func build(d: CityDistrict, xf: Transform3D) -> void:
 	add_child(wreck)
 	body = MissionProps.body_like(d, "AssetBody")
 	add_child(body)
-	MissionProps.box_shape(body, I, Vector3(0, 2.5, 0), Vector3(4.2, 5.4, 4.2))
+	# Collision flush with the drawn sides (collision survey R2.25a, docs/design/collision-survey.md): the plinth (4.2 m,
+	# its top 1.0 m: stepped onto), and the cabinet at its cap's 3.2 m up to the cap's 4.25 m, its vertical edges rounded
+	# (CityGeo.rounded_box). The old single 4.2 x 5.4 m box stood 0.5-0.7 m out past the drawn cabinet above the plinth,
+	# and its corners' 5.2 m top was in the pin band (CityGeo.PIN_LOW .. PIN_HIGH): a Strider walking round one was
+	# pinned, no move in any direction.
+	MissionProps.box_shape(body, I, Vector3(0, 0.4, 0), Vector3(4.2, 1.2, 4.2))
+	CityGeo.rounded_box(body, I, Vector3(0, (1.0 + 4.25) * 0.5, 0), Vector3(3.2, 4.25 - 1.0, 3.2))
 
 ## Sparks and smoke while damaged (CPUParticles3D, made on first need; none at GraphicsQuality.LOW).
 func _fx(on: bool, layer: int) -> void:

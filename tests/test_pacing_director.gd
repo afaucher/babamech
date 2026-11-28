@@ -51,7 +51,7 @@ func _plan() -> MissionPlan:
 	p.objectives = [_obj("d0_p", "flag", 0, "primary", 0.0, 200.0, {"hold": 20.0}),
 		_obj("d0_b0", "defend", 0, "bonus", 60.0, 200.0, {"waves": 2, "asset_hp": 1.0}),
 		_obj("d1_p", "sweep", 1, "primary", 0.0, 300.0, {}),
-		_obj("hold", "hold", 1, "primary", 0.0, 150.0, {"hold": 60.0, "zone": Rect2(-20, 130, 40, 40)})]
+		_obj("hold", "hold", 1, "primary", 0.0, 150.0, {"hold": 30.0, "zone": Rect2(-20, 130, 40, 40)})]
 	p.pools = [
 		{"deck": 0, "garrison": 0.5, "reserve": [_g("d0_w0", 0.1, "light"), _g("d0_w1", 0.15, "light"),
 			_g("d0_w2", 0.2, "mixed"), _g("d0_w3", 0.15, "mixed", "d0_p"), _g("d0_w4", 0.2, "heavy", "d0_b0"),
@@ -91,6 +91,8 @@ class Sim:
 	var kills: Array = []
 	var orders: Array = []
 	var events: Array = []
+	var exit_at := -1.0      ## the rules' "exit" (R2.10 walk-out), sent in facts.objectives
+	var outcome := ""
 
 	func _init(plan: MissionPlan, opts: Dictionary = {}, crew: int = 1) -> void:
 		d = PacingDirector.make(plan, opts, crew)
@@ -111,7 +113,7 @@ class Sim:
 		for id: String in objs:
 			st[id] = objs[id]
 		var f := {"alive": alive.duplicate(), "engaging": engaging.duplicate(), "crew": crew, "pilots": pf,
-			"objectives": {"objs": st}, "wave_size": sizes, "wave_alive": wave_alive, "wave_pending": pending, "kills": kills}
+			"objectives": {"objs": st, "exit": exit_at, "outcome": outcome}, "wave_size": sizes, "wave_alive": wave_alive, "wave_pending": pending, "kills": kills}
 		if active != null:
 			f["active"] = active
 		return f
@@ -333,13 +335,21 @@ func _hold() -> void:
 	s.pilots[1] = {"deck": 1, "x": 0.0, "s": 150.0}
 	s.engaging = [0, 0]   # build held off by its gap (no group of it beaten): the hold's own clock only
 	s.step()
-	s.objs["hold"] = ["active", 0.0, 60.0]
+	s.objs["hold"] = ["active", 0.0, 30.0]
 	var o: Array = s.step().filter(func(x: Dictionary) -> bool: return x["reason"] == "objective")
 	if check(o.size() == 2, "the hold orders two groups at once (%s)" % str(o)):
 		check(str(o[0]["source"]) != str(o[1]["source"]), "from two sources (%s, %s)" % [o[0]["source"], o[1]["source"]])
+	# A beat every HOLD_EVERY_BY_CREW[0] (12 s solo): up to HOLD_BEAT groups at once, from two sources.
+	var every := float(PacingDirector.HOLD_EVERY_BY_CREW[0])
+	near(float(s.d.options["hold_every"]), every, 0.001, "solo: the hold's beat every HOLD_EVERY_BY_CREW[0] s")
 	var n := s.orders.size()
-	s.until(func(x: Sim) -> bool: return x.orders.size() > n, PacingDirector.HOLD_EVERY + 1.0)
-	near(s.t - (s.orders[n - 1]["t"] as float), PacingDirector.HOLD_EVERY, 0.5, "then a group every HOLD_EVERY s")
+	var t0 := float(s.orders[n - 1]["t"])
+	s.until(func(x: Sim) -> bool: return x.orders.size() > n, every + 1.0)
+	near(s.t - t0, every, 0.5, "the second beat HOLD_EVERY after the start")
+	var beat: Array = s.step().filter(func(x: Dictionary) -> bool: return x["reason"] == "objective")
+	beat = s.orders.slice(n)
+	if eq(beat.size(), PacingDirector.HOLD_BEAT, "a beat orders HOLD_BEAT groups (%s)" % str(beat)):
+		check(str(beat[0]["source"]) != str(beat[1]["source"]), "a beat's two groups from two sources")
 	s.step(int(30.0 / DT))
 	check(s.d.pace_state(1) in ["build", "peak"], "no rest and no fade during the hold (%s)" % s.d.pace_state(1))
 	# Bounded: the hold clock waits while the crew is at ENGAGE_TARGET, and its extra patrols stop at hold_patrols().
@@ -353,6 +363,71 @@ func _hold() -> void:
 	eq(pats.size(), s.d.patrol_allowance() + s.d.hold_patrols(), "the hold adds at most hold_patrols() beyond the allowance (%d)" % pats.size())
 	eq(s.d.deck_ceiling(1, s.sizes), 4 * 3 + 2 * (s.d.patrol_allowance() + s.d.hold_patrols()),
 		"deck_ceiling: reserve + patrols + hold extras, finite")
+	_hold_beats()
+
+
+## R2.10's retune: the beat interval by crew scale, quick-response sources only, the caps / engage ceiling / no backlog,
+## and the beats going on through the walk-out (exit open) until the win.
+func _hold_beats() -> void:
+	for n in 4:
+		var c := Sim.new(_plan(), {}, n + 1)
+		near(float(c.d.options["hold_every"]), float(PacingDirector.HOLD_EVERY_BY_CREW[n]), 0.001,
+			"%d pilot(s): a hold beat every %.0f s" % [n + 1, float(PacingDirector.HOLD_EVERY_BY_CREW[n])])
+	var r := Sim.new(_plan(), {}, 3)
+	r.d.rescale(1)
+	near(float(r.d.options["hold_every"]), float(PacingDirector.HOLD_EVERY_BY_CREW[0]), 0.001, "rescale: the beat follows")
+	# Quick sources: a gate 20 m from the zone (not quick: < QUICK_GATE_MIN) is the nearest, yet never used while the
+	# deck has quick ones (gate_a 150 m, gate_b 184 m from the hold's site).
+	var p := _plan()
+	p.sources.append(_src("d1_gate_near", 1, "gate", 10.0, 135.0))
+	var q := Sim.new(p, {"rest_last": 1000.0, "arrival_rest": 1000.0, "quiet_cap": 1000.0, "build_gap": 1000.0})
+	q.pilots[1] = {"deck": 1, "x": 0.0, "s": 150.0}
+	q.step()
+	q.objs["hold"] = ["active", 0.0, 30.0]
+	q.step(int(60.0 / DT))
+	var used: Array = q.orders.filter(func(x: Dictionary) -> bool: return x["reason"] == "objective").map(
+		func(x: Dictionary) -> String: return str(x["source"]))
+	check(not used.is_empty() and not used.has("d1_gate_near"), "hold groups only from quick sources (%s)" % str(used))
+	for id: String in used:
+		check(q.d.is_quick(id, q.d._source_pos(id).distance_to(Vector2(0.0, 150.0))), "%s is quick for the hold" % id)
+	# Caps: no room on the deck (deck_cap in play): nothing; the room back: one beat's groups, not a backlog burst.
+	var b := Sim.new(_plan(), {"rest_last": 1000.0, "arrival_rest": 1000.0, "quiet_cap": 1000.0, "build_gap": 1000.0})
+	b.pilots[1] = {"deck": 1, "x": 0.0, "s": 150.0}
+	b.step()
+	var cap := int(b.d.options["deck_cap"])
+	b.active = [0, cap]
+	b.objs["hold"] = ["active", 0.0, 30.0]
+	b.step(int(45.0 / DT))
+	eq(b.orders.size(), 0, "the deck at its cap: no hold group")
+	b.active = [0, 0]
+	var got: Array = b.step(2).filter(func(x: Dictionary) -> bool: return x["reason"] == "objective")
+	check(got.size() <= PacingDirector.HOLD_BEAT, "room back: the start pair only, no backlog of the beats held meanwhile (%s)" % str(got))
+	# The walk-out: hold done + exit open -> the beats go on; the win -> they stop.
+	var w := Sim.new(_plan(), {"rest_last": 1000.0, "arrival_rest": 1000.0, "quiet_cap": 1000.0, "build_gap": 1000.0})
+	w.pilots[1] = {"deck": 1, "x": 0.0, "s": 150.0}
+	w.step()
+	w.objs["hold"] = ["active", 0.0, 30.0]
+	w.step(int(12.0 / DT))
+	w.objs["hold"] = ["done", 30.0, 30.0]
+	w.exit_at = w.t + 1.0
+	var k0 := w.orders.size()
+	w.step(int(25.0 / DT))
+	check(w.orders.size() > k0, "the exit open: the hold's beats go on while the crew walks out (%d more)" % (w.orders.size() - k0))
+	check(w.d.pace_state(1) in ["build", "peak"], "no rest during the walk-out (%s)" % w.d.pace_state(1))
+	w.outcome = "won"
+	var k1 := w.orders.size()
+	w.step(int(30.0 / DT))
+	eq(w.orders.size(), k1, "won: no more hold groups")
+	# Done without an exit (walk_out off: the hold's completion wins): no beat after it.
+	var x := Sim.new(_plan(), {"rest_last": 1000.0, "arrival_rest": 1000.0, "quiet_cap": 1000.0, "build_gap": 1000.0})
+	x.pilots[1] = {"deck": 1, "x": 0.0, "s": 150.0}
+	x.step()
+	x.objs["hold"] = ["active", 0.0, 30.0]
+	x.step(2)
+	x.objs["hold"] = ["done", 30.0, 30.0]
+	var k2 := x.orders.size()
+	x.step(int(30.0 / DT))
+	eq(x.orders.size(), k2, "the hold done, no exit open: no hold beat")
 
 
 # --- Scouts ------------------------------------------------------------------------------------------------------

@@ -37,6 +37,7 @@ var _slot_batch_on := false
 var _reveal_ping_t := 0.0
 var _local_hits: Dictionary = {}         ## target_id -> Time.get_ticks_msec() of local_shooter's last hit on it
 var _pending_marks: Array = []           ## [target_id, cue, db, pitch]: squad hit-confirms, played in step() if local
+var _unit_heat_on: Dictionary = {}       ## target_id -> last heat cue played (true overheat, false reboot): one per transition
 
 
 func net_fields() -> Dictionary:
@@ -46,7 +47,7 @@ func net_fields() -> Dictionary:
 		"_whistled_shells": Net.LOCAL, "_enemy_fired_recent": Net.LOCAL, "_was_trigger": Net.LOCAL,
 		"_scan_t": Net.LOCAL, "_slot_batch_t": Net.LOCAL, "_slot_batch_count": Net.LOCAL,
 		"_slot_batch_last": Net.LOCAL, "_slot_batch_on": Net.LOCAL, "_reveal_ping_t": Net.LOCAL,
-		"_local_hits": Net.LOCAL, "_pending_marks": Net.LOCAL,
+		"_local_hits": Net.LOCAL, "_pending_marks": Net.LOCAL, "_unit_heat_on": Net.LOCAL,
 	}
 
 
@@ -450,16 +451,38 @@ func _on_target_slammed(speed: float, _dmg: float, t: CombatTarget) -> void:
 		a.play_3d("combat.wall_slam", t.global_position, db)
 
 
+## A target's own Heat gauge (host / owner side; also lab dummies). An EnemyBase also reports the same transition
+## through its squad (_on_enemy_event, which a client's puppet gets from EnemySync): _play_unit_heat plays it once.
+## A player's mech is MechAudio's (its own power-down), never here.
 func _on_target_overheated(t: CombatTarget) -> void:
-	var a := AudioDirector.of(self)
-	if a != null and is_instance_valid(t):
-		a.play_3d("enemy.overheat", t.global_position)
+	if is_instance_valid(t) and not (t is PlayerTarget):
+		_play_unit_heat(true, t.target_id, t.global_position, t)
 
 
 func _on_target_rebooted(t: CombatTarget) -> void:
+	if is_instance_valid(t) and not (t is PlayerTarget):
+		_play_unit_heat(false, t.target_id, t.global_position, t)
+
+
+## R2.27: the unit's power-down whine (`on`) or reboot spin-up, 3D at `pos` on the world bus, once per transition of
+## unit `id` (both routes above fire on the host), pitched by the unit's size (bigger = lower).
+func _play_unit_heat(on: bool, id: String, pos: Vector3, unit: Node) -> void:
+	if id != "":
+		if _unit_heat_on.has(id) and bool(_unit_heat_on[id]) == on:
+			return
+		_unit_heat_on[id] = on
 	var a := AudioDirector.of(self)
-	if a != null and is_instance_valid(t):
-		a.play_3d("enemy.reboot", t.global_position)
+	if a == null:
+		return
+	a.play_3d("enemy.overheat" if on else "enemy.reboot", pos, 0.0, unit_heat_pitch(unit), "weapon", AudioDirector.BUS_SFX_WORLD)
+
+
+## Pitch of a unit's heat cues by its size: the catalog explosion_radius (1.6 trooper .. 6.5 tank) as the size, 4 m = 1.0.
+static func unit_heat_pitch(unit: Node) -> float:
+	var r := 4.0
+	if unit is EnemyBase:
+		r = float((unit as EnemyBase).unit_cfg().get("explosion_radius", 4.0))
+	return clampf(pow(4.0 / maxf(r, 0.5), 0.3), 0.85, 1.2)
 
 
 # --- Street Props ---------------------------------------------------------------------------------------
@@ -529,10 +552,11 @@ func _on_enemy_event(kind: String, _enemy: Node, payload: Dictionary) -> void:
 			a.play_3d("combat.hit.break", pos)
 			_queue_hit_mark(id, "combat.hit.break", -3.0, 1.05)
 		"overheated":
-			a.play_3d("enemy.overheat", pos)
+			_play_unit_heat(true, id, pos, _enemy)
 		"rebooted":
-			a.play_3d("enemy.reboot", pos)
+			_play_unit_heat(false, id, pos, _enemy)
 		"destroyed":
+			_unit_heat_on.erase(id)
 			var rad := float(payload.get("radius", 3.5))
 			a.play_3d("enemy.destroyed", pos)
 			if rad >= 4.5:

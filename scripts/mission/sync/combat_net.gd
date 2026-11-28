@@ -52,15 +52,18 @@ extends Node
 ##
 ## REPAIR DRONE (docs/design/back-equipment.md): a scheduled effect. When this machine's own rack launches one
 ## (CombatWorld.drone_launched with this machine's peer / shooter) it sends ONE reliable event
-##   "combat.drone" {"t": launch time on the shared clock, "hp": hardpoint}
-## relayed by the host like "combat.fire" (shooter / peer from the sender, duplicates dropped by (origin, t)). Each
+##   "combat.drone" {"t": launch time on the shared clock, "hp": hardpoint(, "s": 1 for a self-revive drone)}
+## relayed by the host like "combat.fire" (shooter / peer from the sender, duplicates dropped by (origin, hardpoint, t):
+## the Bulwark's two drone slots can launch in one step). "s" (optional, 2026-11-26 self-revive) must be 1 (int, float
+## or true) to count; anything else is ignored and the drone is an ordinary one; it sets the record's "self": true on
+## every machine (RepairDrone SELF-REVIVE). Each
 ## receiver calls CombatWorld.launch_drone, so the drone flies from the launcher's PUPPET (an anchor this registers for
 ## every puppet) on the shared clock; a launch older than the drone's life is dropped, a late one fast-forwards. Nothing
 ## else crosses: each machine heals only its own mech (RepairDrone), so no heal message exists.
 ##
 ## HOST BOTS (docs/design/hangar-bots.md): a bot's rack runs on the host (shooter "player<bot id>", bot id < 0, peer 1).
 ## add_bot(id) makes this node send its records as "combat.fire" {"r": [...], "b": id} and its drone launches as
-## "combat.drone" {t, hp, b} from the host. A receiver accepts "b" only from the host and only for a bot in
+## "combat.drone" {t, hp, b(, s)} from the host. A receiver accepts "b" only from the host and only for a bot in
 ## Session.bots, and rebuilds shooter "player<b>" with peer 1 (the machine), so CombatWorld.decides works as for any
 ## host shot: a bot's hit on a mech is decided by its victim, on a host-owned target by the host.
 ##
@@ -264,17 +267,28 @@ func _on_drone_launched(rec: Dictionary, _d: RepairDrone) -> void:
 	if int(rec.get("peer", 0)) != local_peer or (sh != local_shooter and not _bots.has(sh)) or not _online():
 		return
 	var who := local_peer if sh == local_shooter else int(_bots[sh])
-	_mark_seen(_drone_key(who, float(rec.get("t", 0.0))))
+	var hp := str(rec.get("hardpoint", "back"))
+	_mark_seen(_drone_key(who, hp, float(rec.get("t", 0.0))))
 	flush(true)
-	var d := {"t": float(rec.get("t", world.now)), "hp": str(rec.get("hardpoint", "back"))}
+	var d := {"t": float(rec.get("t", world.now)), "hp": hp}
 	if who != local_peer:
 		d["b"] = who
+	if bool(rec.get("self", false)):
+		d["s"] = 1
 	Net.session().send_event(0, DRONE, d)
 	stats["drones_sent"] = int(stats["drones_sent"]) + 1
 
 
-static func _drone_key(peer: int, t: float) -> String:
-	return "drone|%d|%.4f" % [peer, t]
+static func _drone_key(peer: int, hp: String, t: float) -> String:
+	return "drone|%d|%s|%.4f" % [peer, hp, t]
+
+
+## The optional self-revive flag of a "combat.drone" event: true only for "s" == 1 (int / float) or true.
+static func _drone_self(data: Dictionary) -> bool:
+	var s: Variant = data.get("s")
+	if s is bool:
+		return s
+	return (s is int or s is float) and is_equal_approx(float(s), 1.0)
 
 
 ## CombatWorld.fire_gate: on a client in a crew mission, enemy records are the host's (EnemySync relays them). Refuse a
@@ -607,7 +621,8 @@ func _remote_drone(origin: int, data: Dictionary) -> void:
 		stats["refused"] = int(stats["refused"]) + 1
 		return
 	var t := float(tv)
-	var key := _drone_key(origin, t)
+	var hp := str(data.get("hp", "back")).left(24)
+	var key := _drone_key(origin, hp, t)
 	if _seen.has(key):
 		stats["drones_dup"] = int(stats["drones_dup"]) + 1
 		return
@@ -617,8 +632,10 @@ func _remote_drone(origin: int, data: Dictionary) -> void:
 		return
 	if not _anchored.has(origin):
 		_register_anchor(origin)
-	var rec := {"shooter": "player%d" % origin, "peer": maxi(origin, 1), "hardpoint": str(data.get("hp", "back")).left(24),
+	var rec := {"shooter": "player%d" % origin, "peer": maxi(origin, 1), "hardpoint": hp,
 		"weapon": "repair_drone", "t": t}
+	if _drone_self(data):
+		rec["self"] = true
 	var d := world.launch_drone(rec)
 	stats["drones_recv"] = int(stats["drones_recv"]) + 1
 	remote_drone.emit(rec, d)

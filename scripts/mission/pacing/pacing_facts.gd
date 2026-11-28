@@ -116,7 +116,7 @@ func collect(pilots: Array, stack: Node, live: Array, decks: int) -> Dictionary:
 		var e: Variant = _alive[iid]
 		_alive.erase(iid)
 		_eng_e.erase(iid)
-		if e != null and is_instance_valid(e) and stack != null:
+		if e != null and is_instance_valid(e) and stack != null and not (e as Object).has_meta("withdrawn"):   # withdrawn: no kill
 			var a: Dictionary = stack.to_deck_arc((e as Node3D).global_position)
 			_kills.append({"deck": int(a["deck"]), "x": float(a["x"]), "s": float(a["s"])})
 	var pf := {}

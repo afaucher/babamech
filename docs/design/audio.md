@@ -85,7 +85,16 @@ automatic scene-group discovery (`"enemy_squad"`, `"player_target"`, `"city_prop
      - `"weapon_fired"`: `{id, weapon, pos, aim_point}`
      - `"component_damaged"`: `{id, component, hp_ratio, weak_point, pos}`
      - `"component_destroyed"`: `{id, component, pos}`
-     - `"overheated"` / `"rebooted"`: `{id, pos}`
+     - `"overheated"` / `"rebooted"`: `{id, pos}`. The unit itself is heard (R2.27; no UI beep, nothing 2D):
+       `enemy.overheat` is a power-down whine, 1.05 s: a sine falling 1400 -> 180 Hz (plus a triangle an octave down)
+       whose level fades over ~0.95 s, turbine FM and band-passed servo grit under it, ending in a soft 72 -> 38 Hz thunk.
+       `enemy.reboot` is a spin-up, 0.80 s: 220 -> 1250 Hz over 0.58 s with servo grit, then a short steady 1250 Hz hold.
+       Both are 3D at the unit on `SFX_World` with the `weapon` profile (as `enemy.fire.accent`: 160 m), cue level
+       -7 / -9 dB (clearly under gunfire), priority 1 (never takes a weapon voice; one-shots never touch the loop
+       pool), cooldown 60 ms, prewarmed. Pitch follows the unit's size: `(4 / explosion_radius)^0.3`, clamped
+       0.85..1.2 (a tank is lower than a trooper). On the host a unit reports the transition twice (its `Heat` signal
+       and this squad event); on a client only the event arrives (EnemySync replays the host's `heat` event).
+       `CombatAudio._play_unit_heat` plays one cue per transition per unit id.
      - `"destroyed"`: `{id, cause, pos, radius}`
      - `"footstep"`: `{id, pos}`
 3. **`PlayerTarget`** (group `"player_target"`):

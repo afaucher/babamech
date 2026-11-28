@@ -71,6 +71,8 @@ var _bxf: Array = []            ## building index -> its flat frame (Transform3D
 var _bxf_inv: Array = []        ## and its inverse
 var _tints: Dictionary = {}     ## id -> its instance tint (tree / planter: CityProps.tree_tint), what its MultiMesh carries
 var _rest_xs: Dictionary = {}   ## id -> [event, motion end, rest base Vector2(x, s)] of a moved deck prop (_settled_out_of_reach)
+var station: Dictionary = {}    ## CityStation.of(plan): the tram station on a section's top deck ({} elsewhere); its
+                                ## platform, wall and name board are the child "Station", its lamps and benches are items
 
 
 func net_fields() -> Dictionary:
@@ -89,6 +91,7 @@ func net_fields() -> Dictionary:
 		"_pushers": Net.PRIVATE, "_found": Net.PRIVATE, "_scan_in": Net.PRIVATE, "_last_pos": Net.PRIVATE,
 		"_asked": Net.PRIVATE,
 		"_rest_xs": Net.LOCAL,       # perf cache derived from _ev (_settled_out_of_reach)
+		"station": Net.SPAWN,        # from the plan, the same on every machine (its lamps / benches are in the layout checksum)
 	}
 
 
@@ -211,6 +214,12 @@ func setup(p: CityPlan, r: RingFrame) -> void:
 		_proto_tris.append(geo.tri_count())
 	for it: Dictionary in items:
 		_draw(int(it["id"]))
+	# The tram station's platform, low wall and name board (static, solid; not in tri_count: CityDistrict's stats and
+	# digest stay what they were). Render layers: CityDistrict sets them on every mesh under the props before add_child.
+	station = CityStation.of(p)
+	var sn := CityStation.build_node(station, r)
+	if sn != null:
+		add_child(sn)
 	_online_clock = Net.online()
 	now = Net.world_time(now)
 

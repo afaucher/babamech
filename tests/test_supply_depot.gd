@@ -11,6 +11,13 @@ extends TestCase
 ##    cooldown the second one; the depot is then
 ##    empty: no new claim, a forced one is denied "empty"; a claim from out of range is refused "range".
 ## D. A destroyed depot (its HP to 0 on the owner) loses its cores, shows its wreck, stops being hittable, denies claims.
+## G. Never trapped (R2.23): the collision is one convex shape over the kiosk's visible footprint (roof slab), walls
+##    and a flat top above every chassis' straight side (out of the pin band), no physics hit shapes; on a flat floor
+##    the real capsule of the Strider, Bulwark and Wasp walks / runs into it from 16 directions, strafes along every
+##    side, is dropped on its top at 9 points (bipeds), thrust-lands at it from 16 directions and is knocked against
+##    it: every time it leaves the footprint + 3 m within 3 s of plain walk input,
+##    never below the floor, never through the wedge nudge. On the seed 7 decks (curved) every depot, Strider and
+##    Bulwark from 16 directions: never pinned where they rest.
 
 const SEED := 7
 const PLAN := {"hold": 6.0, "linger": 600.0}
@@ -25,6 +32,7 @@ func _init() -> void:
 func setup() -> void:
 	await _effect()
 	await _view()
+	await _collision_flat()
 	MissionFlow.test_plan = PLAN
 	await _drive()
 	await _keep_out()
@@ -313,6 +321,7 @@ func _drive() -> void:
 			id + ": the socket wall faces its chosen open side (face %d)" % int(st["face"]))
 		check(not world.spares("enemy", n.target, "enemy_x") and not world.spares("player", n.target, "player1"),
 			id + ": no shot spares it (stray enemy fire, crew fire)")
+	await _collision_ring(dp)
 	var list := mf.plan.deck_depots(0)
 	if not check(not list.is_empty(), "deck 1 has a depot"):
 		return
@@ -525,3 +534,264 @@ func _until(f: Callable, s: float) -> bool:
 func _seconds(s: float) -> void:
 	for i in ceili(s * Engine.physics_ticks_per_second):
 		await get_tree().physics_frame
+
+
+# --- G. Never trapped on or beside a depot (R2.23, 2026-11-26) ------------------------------------------------------
+# The user's Strider wedged at a corner of the old 6 x 4.35 x 4 box and could not move any way. Cause (reproduced on
+# the seed 7 / 2 decks): on a curved deck the box, square to the deck at its centre, leans its end faces ~0.4 deg out
+# past local vertical; a capsule walking into that overhanging corner sank into it and every move_and_slide was blocked
+# (8 of 8 directions: 0 m). Also the visible roof overhung the box by 0.15-0.35 m. Now: SupplyDepot.collision_shape.
+
+const G_DT := 1.0 / 60.0
+const G_LEAVE := 3.0           ## s of plain walk input to get FOOTPRINT + G_CLEAR m away
+const G_CLEAR := 3.0           ## m past the visible footprint (+ the capsule's radius)
+var _g: MechController
+var _gd: SupplyDepot
+var _g_fail := 0
+var _g_judged := 0
+
+
+## The real capsule of each chassis on a flat floor, the real depot body (no ring: edges straight up). Every case must
+## leave the visible footprint + G_CLEAR m within G_LEAVE s under plain walk input, never below the floor, never inside
+## the depot, and never through the controller's wedge nudge (the safety net is not relied on).
+func _collision_flat() -> void:
+	var holder := Node3D.new()
+	add_child(holder)
+	var fl := StaticBody3D.new()
+	var cs := CollisionShape3D.new()
+	var bx := BoxShape3D.new()
+	bx.size = Vector3(200, 1, 200)
+	cs.shape = bx
+	cs.position = Vector3(0, -0.5, 0)
+	fl.add_child(cs)
+	holder.add_child(fl)
+	_gd = SupplyDepot.new()
+	var dist := CityDistrict.new()
+	_gd.build(dist, Transform3D.IDENTITY, "g", 0, 2, 0)
+	dist.free()
+	holder.add_child(_gd)
+	await frames(2)
+	# The collision matches the visible kiosk: the roof's footprint, the roof's height.
+	var sh := (_gd.body.get_child(0) as CollisionShape3D).shape as ConvexPolygonShape3D
+	var lo := Vector3.INF
+	var hi := -Vector3.INF
+	for p: Vector3 in sh.points:
+		lo = lo.min(p)
+		hi = hi.max(p)
+	# Out of the pin band: the walls rise past every chassis' straight side (capsule height - radius above the feet).
+	for ch: String in ["strider", "bulwark", "wasp"]:
+		var mv := MechCatalog.movement(ch, true)
+		var band := float(mv["capsule_height"]) - float(mv["capsule_radius"])
+		check(SupplyDepot.WALL_H > band + 0.3, "G: walls (%.1f m) above the %s's straight side (%.1f m)" % [SupplyDepot.WALL_H, ch, band])
+	near(hi.y, SupplyDepot.WALL_H, 0.01, "G: a flat top at the walls' height (no rim, no cap)")
+	near(lo.y, 0.0, 0.01, "G: from the floor")
+	near(hi.x - lo.x, DepotMeshes.W + 0.6, 0.01, "G: collision as wide as the roof slab (6.6 m)")
+	near(lo.z, -DepotMeshes.D * 0.5 - 0.15, 0.01, "G: back face at the roof's back edge")
+	near(hi.z, DepotMeshes.D * 0.5 + 0.35, 0.01, "G: front face at the roof's front lip")
+	eq(_gd.body.get_child_count(), 1, "G: one collision shape (no mast collider, no hit shape on the body)")
+	check(_gd.target.find_children("*", "CollisionObject3D").is_empty(),
+		"G: the DepotTarget's hit spheres are no physics bodies (nothing on the movement layer)")
+	for ch: String in ["strider", "bulwark", "wasp"]:
+		var m := MechSpawn.make("chicken", ch, {}, 0, "", ch == "wasp")
+		holder.add_child(m)
+		await frames(1)
+		m.set_physics_process(false)
+		_g = m
+		_g_cases(ch)
+		m.queue_free()
+		await frames(1)
+	print("[Test] G flat: %d failing cases" % _g_fail)
+	holder.queue_free()
+	await frames(2)
+
+
+func _g_cases(ch: String) -> void:
+	var r := _g_r()
+	var biped := not _g.hover_mode
+	for i in 16:
+		var a := TAU * i / 16.0
+		var dir := Vector3(cos(a), 0, sin(a))
+		for run_: bool in ([false, true] if biped else [false]):
+			_g_place(dir * (r + 9.0), -dir)
+			_g_fly()
+			_g.running = run_
+			_g_drive(Vector2(0, 1), 120)
+			_g.running = false
+			_g_leave("%s walks into it from %d/16%s" % [ch, i, " running" if run_ else ""])
+	for sd in 4:
+		var n := [Vector3(0, 0, 1), Vector3(1, 0, 0), Vector3(0, 0, -1), Vector3(-1, 0, 0)][sd] as Vector3
+		var half := 2.35 if sd % 2 == 0 else 3.3
+		var along := n.cross(Vector3.UP)
+		_g_place(n * (half + r + 0.05) - along * 6.0, -n)
+		_g_fly()
+		_g_drive(Vector2(0.4, 1.0), 30)
+		_g_drive(Vector2(1.0, 0.3), 150)
+		_g_leave("%s strafes along side %d" % [ch, sd])
+	if not biped:
+		return
+	for xi: float in [-2.6, 0.0, 2.6]:
+		for zi: float in [-1.6, 0.0, 1.8]:
+			_g_place(Vector3(xi, 14.0, zi), Vector3(1, 0, 0))
+			_g_drive(Vector2.ZERO, 150)
+			near(_g_local().y, SupplyDepot.WALL_H, 0.3, "G: %s dropped on it at (%.1f, %.1f) stands on the top" % [ch, xi, zi])
+			_g_leave("%s dropped on it at (%.1f, %.1f)" % [ch, xi, zi])
+	for i in 16:
+		var a := TAU * i / 16.0
+		var dir := Vector3(cos(a), 0, sin(a))
+		_g_place(dir * (r + 12.0), -dir)
+		_g.thrust_input = true
+		_g_drive(Vector2(0, 1), 70)
+		_g.thrust_input = false
+		_g_drive(Vector2(0, 1), 40)
+		_g_drive(Vector2.ZERO, 120)
+		_g_leave("%s thrust-lands toward it from %d/16" % [ch, i])
+	for i in 8:
+		var a := TAU * i / 8.0
+		var dir := Vector3(cos(a), 0, sin(a))
+		_g_place(dir * (r + 5.0), -dir)
+		_g.velocity = -dir * 25.0 + Vector3.UP * 4.0
+		_g_drive(Vector2.ZERO, 90)
+		_g_leave("%s knocked against it from %d/8" % [ch, i])
+
+
+func _g_r() -> float:
+	return ((_g.get_node("Shape") as CollisionShape3D).shape as CapsuleShape3D).radius
+
+
+func _g_local() -> Vector3:
+	return _gd.global_transform.affine_inverse() * _g.global_position
+
+
+func _g_place(p: Vector3, fwd: Vector3) -> void:
+	var w := _gd.global_transform * p
+	var u := _g.ring.up_at(w) if _g.ring != null else Vector3.UP
+	var f := _gd.global_basis * fwd
+	f = (f - u * f.dot(u)).normalized()
+	_g.global_transform = Transform3D(Basis(f.cross(u), u, -f), w)
+	_g.velocity = Vector3.ZERO
+	_g.move_input = Vector2.ZERO
+	_g.thrust_input = false
+	_g.running = false
+	_g.heat = 0.0
+	_g.shutdown = false
+	_g._wedge_t = 0.0
+	_g._wedge_nudge = 0.0
+	_g._climbing = false
+
+
+## A hover chassis lifts off first (it does not walk landed).
+func _g_fly() -> void:
+	if not _g.hover_mode:
+		return
+	_g.climb_input = 1.0
+	_g_drive(Vector2.ZERO, 20)
+	_g.climb_input = 0.0
+
+
+func _g_face(dv: Vector3) -> void:
+	var u := _g.up()
+	var f := _gd.global_basis * dv
+	f = (f - u * f.dot(u)).normalized()
+	_g.global_basis = Basis(f.cross(u), u, -f)
+
+
+func _g_drive(mv: Vector2, steps: int) -> void:
+	_g.move_input = mv
+	for i in steps:
+		_g.step(G_DT)
+	_g.move_input = Vector2.ZERO
+
+
+## Distance (m) from depot-local point lp to the visible footprint (the roof slab), across the floor.
+static func _g_foot(lp: Vector3) -> float:
+	var dx := maxf(absf(lp.x) - SupplyDepot.FOOT_X, 0.0)
+	var dz := maxf(maxf(SupplyDepot.FOOT_Z0 - lp.z, lp.z - SupplyDepot.FOOT_Z1), 0.0)
+	return sqrt(dx * dx + dz * dz)
+
+
+## From where the mech rests: plain walk input straight away from the depot's centre.
+func _g_leave(tag: String) -> void:
+	var start := _g_local()
+	var away := Vector3(start.x, 0, start.z)
+	away = away.normalized() if away.length() > 0.3 else Vector3(1, 0, 0)
+	_g_face(away)
+	_g.move_input = Vector2(0, 1)
+	var nudge := 0.0
+	var low := false
+	var t := 0
+	var goal := _g_r() + G_CLEAR
+	while t < roundi(G_LEAVE / G_DT) and _g_foot(_g_local()) < goal:
+		_g.step(G_DT)
+		nudge = maxf(nudge, _g._wedge_nudge)
+		low = low or _g_local().y < -0.3
+		t += 1
+	_g.move_input = Vector2.ZERO
+	var end := _g_local()
+	var ok := _g_foot(end) >= goal and nudge <= 0.0 and not low
+	if not ok:
+		_g_fail += 1
+	check(ok, "G: %s: rests at (%.2f, %.2f, %.2f), walking away reaches (%.2f, %.2f, %.2f) in %.2f s (needs %.1f m past the footprint; nudge %.2f, below floor %s)" % [
+		tag, start.x, start.y, start.z, end.x, end.y, end.z, t * G_DT, goal, nudge, low])
+
+
+## On the real seed 7 decks (curved: the depot's edges follow the ring's up): every depot, Strider and Bulwark walking
+## into it from 16 directions (walk and run): from where it rests it must not be pinned: free (>= 1 m in 1.5 s) in at
+## least 4 of 8 directions and straight away from the depot, with no wedge nudge (judged where it rests touching the
+## depot; a rest against other scenery is not the depot's). (The full escape distance is the flat
+## case's: real sites have props and kerbs round them.)
+func _collision_ring(dp: MissionDepots) -> void:
+	_kill_all()
+	for id: String in dp.nodes:
+		_gd = dp.nodes[id]
+		for ch: String in ["strider", "bulwark"]:
+			var m := MechSpawn.make("chicken", ch, {}, 0, "", false)
+			td.add_child(m)
+			await frames(1)
+			m.set_physics_process(false)
+			m.ring = td.stack.deck_ring(_gd.deck)
+			_g = m
+			var r := _g_r()
+			for i in 16:
+				var a := TAU * i / 16.0
+				var dir := Vector3(cos(a), 0, sin(a))
+				for run_: bool in [false, true]:
+					_g_place(dir * (r + 9.0), -dir)
+					_g.running = run_
+					_g_drive(Vector2(0, 1), 120)
+					_g.running = false
+					_g_free("%s %s walks into it from %d/16%s" % [id, ch, i, " running" if run_ else ""])
+			m.queue_free()
+			await frames(1)
+	print("[Test] G ring: %d rests against a depot judged" % _g_judged)
+	check(_g_judged >= 100, "G ring: enough rests against the depots (%d)" % _g_judged)
+
+
+func _g_free(tag: String) -> void:
+	var startw := _g.global_transform
+	var start := _g_local()
+	if _g_foot(start) > _g_r() + 0.5:
+		return   # it rests against something else (a prop, a kerb, a tree): not the depot's matter
+	_g_judged += 1
+	var away := Vector3(start.x, 0, start.z).normalized()
+	var free := 0
+	var away_ok := false
+	var nudge := 0.0
+	var moves := PackedStringArray()
+	for k in 9:
+		_g.global_transform = startw
+		_g.velocity = Vector3.ZERO
+		_g._wedge_t = 0.0
+		_g._wedge_nudge = 0.0
+		var dv := away if k == 8 else Vector3(cos(TAU * k / 8.0), 0, sin(TAU * k / 8.0))
+		_g_face(dv)
+		_g_drive(Vector2(0, 1), 90)
+		nudge = maxf(nudge, _g._wedge_nudge)
+		var d := _g_local() - start
+		var hm := Vector2(d.x, d.z).length()
+		moves.append("%.1f" % hm)
+		if k == 8:
+			away_ok = hm >= 1.0
+		elif hm >= 1.0:
+			free += 1
+	check(free >= 4 and away_ok and nudge <= 0.0, "G ring: %s: rests at (%.2f, %.2f, %.2f) and is pinned (moves %s, away last; nudge %.2f)" % [
+		tag, start.x, start.y, start.z, ",".join(moves), nudge])

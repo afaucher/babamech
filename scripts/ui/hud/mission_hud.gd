@@ -8,19 +8,20 @@ extends Control
 ##   centre       the end banner, "MISSION COMPLETE" + the reason, for the hold before the mission ends (`banner`)
 ## PLAN MODE (the state has plan: true: every mission, the one mode; docs/design/mission-objectives.md phase 1), also:
 ##   top right    the same panel, structured (`panel`, MissionRules.panel() via MissionFlow, docs/design/
-##                mission-objectives.md §9 "Objective panel"): "DECK 2 OF 3" + "WAVES 2 / 3", this deck's lines, the depot
-##                line, "PROCEED TO DECK 3" (amber and first once this deck's primary is done, else dim and last), one
-##                line per visited deck with something left ("DECK 1: 1 OPTIONAL LEFT", "RETURN TO DECK 1: OBJECTIVE
-##                UNFINISHED"), a route hint under the first line each way ("RAMP DOWN 120 M"); fitted to PANEL_FRAC of
-##                the screen height (panel_rows). Without a panel: the flat MissionRules.lines(deck); no lines: the
-##                objective text
+##                mission-objectives.md §9 "Objective panel", playtest backlog R2.13): one section per deck, every deck
+##                listed, "DECK 1:" headers (the viewer's deck bright with a marker before it, the others dim), a
+##                visited deck's objectives indented under it, an unvisited deck's "PROCEED TO DECK 3"; the next step
+##                amber with its route hint ("RAMP DOWN 120 M"); the depot line at the end of the viewer's section;
+##                fitted to PANEL_FRAC of the screen height (MissionRules.fit). Without a panel: the flat
+##                MissionRules.lines(deck); no lines: the objective text
 ##   anywhere     objective markers (flag / defend; a found bonus reads "FLAG" / "DEFEND" like a primary) like the waypoint, and a
 ##                ring projected on the floor round each defend site (the world draws the flag rings and the hold zone)
 ##   top centre   "Reinforcements, east gate" with the seconds to the door (`alert_panel`),
 ##                and (SOURCE_ARROW, on: user decision 2026-11-23, with the door's own telegraph)
 ##                an INBOUND arrow (edge-stuck) at the source on your deck; then the zone progress bar while anyone
-##                of the crew stands in an active flag / hold zone ("RAISING THE FLAG 60 %", "HOLDING THE PORTAL
-##                42 S", red "CONTESTED") (`zone_panel`)
+##                of the crew stands in an active flag / hold zone ("RAISING THE FLAG 60 %", "HOLDING THE EXIT
+##                40 %", red "CONTESTED") (`zone_panel`); the ally's lines ("WORKING ON THE DOOR", R2.10) in the same
+##                strip, cyan, text only (alerts with `ally`)
 ## DOWNED / REVIVE / RESPAWN (DownedCrew.hud_state via `downed_source`; docs/design/pacing-director.md "Downed, revive,
 ## respawn"), player-side only (no enemy indicators):
 ##   top right    a crewmate down adds a red line to the SAME objective panel ("Pickle is down: revive with a repair
@@ -41,15 +42,17 @@ const EDGE_PAD := 48.0            ## an off-screen waypoint sticks this far insi
 ## The plain demo: one primary line in the flat plan list (no panel); demo_plan adds the structured panel and the rest.
 const DEMO_STATE := {"objective": "Raise the flag: 60%", "plan": true, "deck": 0, "lines": ["Raise the flag: 60%"],
 	"banner": {}}
-const DEMO_WAYPOINT_AT := Vector2(0.76, 0.2)    ## viewport fraction where the demo draws its waypoint
-const DEMO_BANNER := {"title": "MISSION COMPLETE", "reason": "Every primary done, the crew held the extraction portal", "won": true}
+const DEMO_WAYPOINT_AT := Vector2(0.66, 0.3)    ## viewport fraction where the demo draws its waypoint (clear of the panel)
+const DEMO_BANNER := {"title": "MISSION COMPLETE", "reason": "Every primary done, the crew walked out through the exit", "won": true}
 const LIST_W := 340.0
 const LIST_HEAD := 30.0           ## px of the list's header (deck, waves)
 const LIST_LINE := 20.0           ## px per objective line (the flat list: no panel)
 const LIST_MAX := 7               ## most lines shown (the flat list)
-const ROW := 19.0                 ## px per row of the structured panel (lines, route hints)
+const ROW := 19.0                 ## px per row of the structured panel (headers, lines, route hints)
 const PANEL_FRAC := 0.4           ## the panel never grows past this fraction of the screen height
-const ROUTE_INDENT := 14.0        ## px a route hint is indented under its line
+const PANEL_TOP := 6.0            ## px above the structured panel's first row (it has no title row)
+const INDENT := 16.0              ## px a deck's lines are indented under its header
+const ROUTE_INDENT := 14.0        ## px a route hint is indented further under its line
 const PAD := 8.0                  ## px under the last row
 const ALERT_SIZE := Vector2(420, 28)
 const ALERT_TOP := 118.0          ## the reinforcement line's top (82..110 is kept free)
@@ -58,18 +61,27 @@ const ALERT_TOP := 118.0          ## the reinforcement line's top (82..110 is ke
 const SOURCE_ARROW := true
 const ZONE_SIZE := Vector2(380, 40)
 const ZONE_TOP := 154.0
-const DEMO_PLAN := {"objective": "Raise the flag: 60%", "plan": true, "deck": 0,
-	"lines": ["Raise the flag: 60%", "Bonus: Defend the position: wave 1 / 2", "Bonus: Raise the flag: 100% (done)"],
-	"waves": [1, 3], "zone": {"label": "RAISING THE FLAG", "progress": 12.0, "total": 20.0, "contested": false,
+const DEMO_PLAN := {"objective": "Proceed to deck 2", "plan": true, "deck": 0,
+	"lines": ["Proceed to deck 2", "Clear deck 1: 0 hostiles, waves 3 / 3 (done)", "Bonus: Raise the flag: 60%",
+		"Bonus: Defend the position: wave 1 / 2"],
+	"waves": [3, 3], "zone": {"label": "RAISING THE FLAG", "progress": 12.0, "total": 20.0, "contested": false,
 		"countdown": false, "percent": true},
-	# The panel (MissionRules.panel() shape): deck 1 of 3, its flag and two bonuses, then the way on to deck 2.
-	"panel": {"header": "DECK 1 of 3", "deck": 0, "decks": 3, "route_at": {}, "extra": [], "lines": [
-		{"text": "Raise the flag: 60%", "role": "primary", "state": "active", "deck": 0, "dir": 0, "part": "here"},
-		{"text": "Defend the position: wave 1 / 2 (optional)", "role": "bonus", "state": "known", "deck": 0, "dir": 0,
-			"part": "here"},
-		{"text": "Raise the flag: 100% (done)", "role": "bonus", "state": "done", "deck": 0, "dir": 0, "part": "here"},
-		{"text": "Proceed to deck 2", "role": "next", "state": "", "deck": 1, "dir": 1, "part": "tail"},
-		{"text": "ramp down 120 m", "role": "route", "state": "", "deck": 1, "dir": 1, "part": "tail"}]}}
+	# The panel (MissionRules.panel() shape): on deck 1 of 3 with its sweep done and two bonuses found; deck 2 is the
+	# next step (amber, with the way down), deck 3 unvisited.
+	"panel": {"deck": 0, "decks": 3, "route_at": {}, "extra": [], "lines": [
+		{"text": "Deck 1:", "role": "header", "deck": 0, "state": "", "current": true, "lead": false, "dir": 0},
+		{"text": "Clear hostiles, waves 3/3", "role": "primary", "deck": 0, "state": "done", "current": false,
+			"lead": false, "dir": 0},
+		{"text": "Raise the flag: 60% (optional)", "role": "bonus", "deck": 0, "state": "active", "current": false,
+			"lead": false, "dir": 0},
+		{"text": "Defend the position: wave 1/2 (optional)", "role": "bonus", "deck": 0, "state": "known",
+			"current": false, "lead": false, "dir": 0},
+		{"text": "Deck 2:", "role": "header", "deck": 1, "state": "", "current": false, "lead": false, "dir": 0},
+		{"text": "Proceed to deck 2", "role": "proceed", "deck": 1, "state": "", "current": false, "lead": true, "dir": 0},
+		{"text": "ramp down 120 m", "role": "route", "deck": 1, "state": "", "current": false, "lead": true, "dir": 1},
+		{"text": "Deck 3:", "role": "header", "deck": 2, "state": "", "current": false, "lead": false, "dir": 0},
+		{"text": "Proceed to deck 3", "role": "proceed", "deck": 2, "state": "", "current": false, "lead": false,
+			"dir": 0}]}}
 const DEMO_MARK_AT := Vector2(0.3, 0.42)            ## viewport fraction of the demo's objective marker
 const DEMO_RING := Rect2(0.42, 0.62, 0.16, 0.08)    ## viewport fraction of the demo's projected ring (an ellipse)
 const DEMO_ALERT_DIR := Vector2(-1, 0.25)           ## the demo's reinforcement arrow sticks to the left edge
@@ -98,6 +110,7 @@ var alert_panel: Control
 var zone_panel: Control
 var _font: Font
 var _state: Dictionary = {}
+var _mark := ">"                  ## the viewer's deck header marker: U+25B6 when the HUD font has it (current_mark, _ready)
 
 
 func _init() -> void:
@@ -107,6 +120,7 @@ func _init() -> void:
 
 func _ready() -> void:
 	_font = ThemeDB.fallback_font
+	_mark = current_mark(_font)
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	markers = MechHud.canvas("Markers", _draw_markers)
 	add_child(markers)
@@ -141,48 +155,25 @@ func _ready() -> void:
 	_refresh()
 
 
-## The most structured-panel rows that fit a screen `height` px tall within PANEL_FRAC (header and padding included).
+## The most structured-panel rows that fit a screen `height` px tall within PANEL_FRAC (padding included).
 static func max_rows(height: float) -> int:
-	return maxi(int(floor((height * PANEL_FRAC - LIST_HEAD - PAD) / ROW)), 3)
+	return maxi(int(floor((height * PANEL_FRAC - PANEL_TOP - PAD) / ROW)), 3)
 
 
-## The panel's rows, fitted to `limit` rows: [{kind: line | route | extra, text, role, state, part}]: the lead lines
-## (MissionRules.panel part "lead": "Proceed to deck 3" / "Return to deck 1" once this deck's primary is done, with their
-## route hints), this deck's lines, the depot line (`extra`), then the trailing lines. Too long: the trailing route hints
-## drop (the last first), then the trailing "Deck n: ... left" lines, then this deck's done / failed lines; anything still
-## past the limit is cut off at the end.
+## The viewer's deck header marker: the solid right triangle (U+25B6) when `font` draws it, else ">". Decided once, in
+## _ready.
+static func current_mark(font: Font) -> String:
+	return String.chr(0x25B6) if font != null and font.has_char(0x25B6) else ">"
+
+
+## The panel's rows fitted to `limit` rows (MissionRules.fit: every header kept, the depot line at the end of the
+## viewer's section, never cut).
 static func panel_rows(pn: Dictionary, limit: int) -> Array:
-	var ls: Array = pn.get("lines", [])
-	if ls.is_empty() and (pn.get("extra", []) as Array).is_empty():
-		return []
-	var rows: Array = []
-	for part: String in ["lead", "here"]:
-		for l: Dictionary in ls:
-			if str(l.get("part", "here")) == part:
-				rows.append(_row("route" if l["role"] == "route" else "line", str(l["text"]), str(l["role"]),
-					str(l.get("state", "")), part))
-	for e: Variant in pn.get("extra", []):
-		rows.append(_row("extra", str(e), "extra", "", "here"))
-	for l: Dictionary in ls:
-		if str(l.get("part", "")) == "tail":
-			rows.append(_row("route" if l["role"] == "route" else "line", str(l["text"]), str(l["role"]),
-				str(l.get("state", "")), "tail"))
-	var drops: Array[Callable] = [
-		func(r: Dictionary) -> bool: return r["part"] == "tail" and r["kind"] == "route",
-		func(r: Dictionary) -> bool: return r["part"] == "tail" and r["role"] == "deck",
-		func(r: Dictionary) -> bool: return r["part"] == "here" and (r["state"] == "done" or r["state"] == "failed"),
-	]
-	for drop: Callable in drops:
-		for i in range(rows.size() - 1, -1, -1):
-			if rows.size() <= limit:
-				break
-			if drop.call(rows[i]):
-				rows.remove_at(i)
-	return rows.slice(0, maxi(limit, 0))
+	return MissionRules.fit(pn, limit)
 
 
-static func _row(kind: String, text: String, role: String, st: String, part: String) -> Dictionary:
-	return {"kind": kind, "text": text, "role": role, "state": st, "part": part}
+static func _row(text: String, role: String) -> Dictionary:
+	return {"text": text, "role": role, "deck": -1, "state": "", "current": false, "lead": false, "dir": 0}
 
 
 ## The structured panel now (plan mode, MissionFlow's `panel`), {} when there is none (the flat list is drawn then).
@@ -225,7 +216,7 @@ func _refresh() -> void:
 	list_panel.visible = not lines.is_empty()
 	list_panel.offset_top = list_top(get_viewport_rect().size.x)
 	if not panel().is_empty():
-		list_panel.offset_bottom = list_panel.offset_top + LIST_HEAD + ROW * float(maxi(lines.size(), 1)) + PAD
+		list_panel.offset_bottom = list_panel.offset_top + PANEL_TOP + ROW * float(maxi(lines.size(), 1)) + PAD
 	else:
 		list_panel.offset_bottom = list_panel.offset_top + LIST_HEAD + LIST_LINE * float(clampi(lines.size(), 1, LIST_MAX)) + 6.0
 	alert_panel.visible = planned and not (_state.get("alerts", []) as Array).is_empty()
@@ -352,7 +343,7 @@ func shown_lines() -> Array:
 
 
 ## The structured panel's rows as drawn now (panel_rows fitted to this screen, room kept for the crew lines, which come
-## last as rows of role "crew"), [] without a panel.
+## last, after every deck section, as rows of role "crew"), [] without a panel.
 func shown_rows() -> Array:
 	var pn := panel()
 	if pn.is_empty():
@@ -360,9 +351,9 @@ func shown_rows() -> Array:
 	var crew := crew_lines()
 	var rows := panel_rows(pn, max_rows(get_viewport_rect().size.y) - crew.size())
 	if rows.is_empty() and str(_state.get("objective", "")) != "":
-		rows = [_row("line", str(_state.get("objective", "")), "primary", "", "here")]
+		rows = [_row(str(_state.get("objective", "")), "primary")]
 	for l: Variant in crew:
-		rows.append(_row("extra", str(l), "crew", "", "here"))
+		rows.append(_row(str(l), "crew"))
 	return rows
 
 
@@ -571,39 +562,51 @@ func _label(c: Control, at: Vector2, r: float, text: String, col: Color) -> void
 	c.draw_string(_font, Vector2(x, ty), text, HORIZONTAL_ALIGNMENT_CENTER, tw, 13, col)
 
 
-## One row of the panel at baseline y, styled by role / state / part: the primary white, a bonus dimmer cyan with
-## "(optional)", done green, failed red, "Return to deck n" amber, "Proceed to deck n" (and a visited deck below with a
-## primary left) amber when it leads and dim while it trails, a visited deck's "... optional left" dim; a route hint
-## small and indented, amber under a lead line, dim otherwise.
-func _draw_row(c: Control, r: Dictionary, y: float) -> void:
+## One row of the panel at baseline y. A header: "DECK 2:", the viewer's deck bright with the marker before it, the
+## others dim. A deck's lines indented: the primary white, a bonus dimmer cyan, done green, failed red, the next step
+## (`lead`: the proceed row, or a primary the crew must go back to) amber, a proceed row that is not the next step dim, a
+## summary dim; lines of other decks than the viewer's (`here`) a little dimmer (amber stays). A route hint small,
+## indented under its line, amber. The depot line indented, white; the crew lines red, flush left.
+func _draw_row(c: Control, r: Dictionary, y: float, here: int) -> void:
 	var w := c.size.x - 24.0
 	var role := str(r["role"])
-	var st := str(r["state"])
-	var lead := str(r.get("part", "")) == "lead"
+	var st := str(r.get("state", ""))
+	var lead := bool(r.get("lead", false))
 	var col := MechHud.WHITE
 	var fs := 12
 	var x := 12.0
+	var t := str(r["text"]).to_upper()
 	match role:
+		"header":
+			if bool(r.get("current", false)):
+				c.draw_string(_font, Vector2(x, y), _mark, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, MechHud.AMBER)
+				x += _font.get_string_size(_mark + " ", HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+				fs = 13
+			else:
+				col = MechHud.DIM
 		"route":
-			col = MechHud.AMBER if lead else MechHud.DIM
+			col = MechHud.AMBER
 			fs = 11
-			x += ROUTE_INDENT
+			x += INDENT + ROUTE_INDENT
 		"crew":
 			col = MechHud.RED
-		"return":
-			col = MechHud.AMBER
-		"next":
+		"extra":
+			x += INDENT
+		"proceed", "summary":
 			col = MechHud.AMBER if lead else MechHud.DIM
-		"deck":
-			col = MechHud.DIM
+			x += INDENT
 		_:
+			x += INDENT
 			if st == "done":
 				col = MechHud.GREEN if role != "bonus" else Color(MechHud.GREEN, 0.7)
 			elif st == "failed":
 				col = MechHud.RED
+			elif lead:
+				col = MechHud.AMBER
 			elif role == "bonus":
 				col = Color(MechHud.CYAN, 0.72)
-	var t := str(r["text"]).to_upper()
+	if role != "header" and role != "crew" and role != "extra" and not lead and int(r.get("deck", here)) != here:
+		col = Color(col, col.a * 0.8)
 	var room := w - (x - 12.0)
 	while fs > 9 and _font.get_string_size(t, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x > room:
 		fs -= 1   # a long line shrinks a little rather than run past the panel
@@ -616,15 +619,10 @@ func _draw_list(c: Control) -> void:
 		var rect := Rect2(Vector2.ZERO, c.size)
 		MechHud.draw_glass(c, rect)
 		c.draw_rect(Rect2(Vector2(rect.size.x - 4, 0), Vector2(4, rect.size.y)), MechHud.AMBER, true)
-		c.draw_string(_font, Vector2(12, 20), str(pn.get("header", "")).to_upper(), HORIZONTAL_ALIGNMENT_LEFT, 200, 12,
-			MechHud.WHITE)
-		var wvs: Array = _state.get("waves", [])
-		if wvs.size() > 1 and int(wvs[1]) > 0:
-			c.draw_string(_font, Vector2(rect.size.x - 132, 20), "WAVES %d / %d" % [int(wvs[0]), int(wvs[1])],
-				HORIZONTAL_ALIGNMENT_RIGHT, 116, 11, MechHud.AMBER)
-		var ry := LIST_HEAD + 10.0
+		var here := int(pn.get("deck", 0))
+		var ry := PANEL_TOP + 14.0
 		for r: Dictionary in shown_rows():
-			_draw_row(c, r, ry)
+			_draw_row(c, r, ry, here)
 			ry += ROW
 		return
 	var lines := shown_lines()
@@ -663,12 +661,13 @@ func _draw_alert(c: Control) -> void:
 	var a: Dictionary = al[-1]
 	var r := Rect2(Vector2.ZERO, c.size)
 	MechHud.draw_glass(c, r)
-	c.draw_rect(Rect2(Vector2(0, 0), Vector2(4, r.size.y)), MechHud.RED, true)
+	var col := MechHud.CYAN if bool(a.get("ally", false)) else MechHud.RED   # the ally's line: a friend, not a threat
+	c.draw_rect(Rect2(Vector2(0, 0), Vector2(4, r.size.y)), col, true)
 	var left := float(a.get("left", 0.0))
 	var t := str(a.get("text", "")).to_upper()
 	if left > 0.0:
 		t += "  %ds" % ceili(left)
-	c.draw_string(_font, Vector2(14, r.size.y * 0.5 + 5), t, HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 24, 14, MechHud.RED)
+	c.draw_string(_font, Vector2(14, r.size.y * 0.5 + 5), t, HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 24, 14, col)
 
 
 func _draw_zone(c: Control) -> void:

@@ -141,6 +141,10 @@ func run_host() -> void:
 	check("back_r" in (vd.get("drones", []) as Array), "B's copy of the drone names back_r (%s)" % str(vd.get("drones", [])))
 	# 4. B shoots A's back_l saddle.
 	td.rig.model.configure(td.rig.model.head_id, "bulwark", BULWARK_LO)
+	# Recall A's drone: since 2026-11-26 (R2.1) a drone rebuilds a destroyed weapon hardpoint, which would undo the
+	# destroyed back_l this part checks.
+	for dr: RepairDrone in td.combat.world.drones_of(net.local_shooter):
+		td.combat.world.remove_effect(dr)
 	await sleep(0.4)
 	var pt := td.combat.player_target
 	check(pt.hp.has("back_l"), "A's own mech has a back_l component")

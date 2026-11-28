@@ -1,5 +1,8 @@
 # Mission section: macro layout
 
+> **2026-11-27: spine / doors re-pin (city-spine.md phase b):** 40 m spine, rail lane `verge` below deck 0, gate kinds
+> `road_door` / `tram_door`, ramp slope runs ending 6 m past the junction boxes (`run_top` / `run_foot`), grade 0.20 on the run; every checksum moved.
+>
 > **Status: resumed 2026-11-21 (late), still a proposal.** The city generator is building whole decks from this plan
 > (`docs/design/city-section-mode.md`); the names it reads are frozen (see §11). Added since the pause:
 > `SectionPlan.deck_view(k)`; a lift's footprint is its 22 m platform on every deck. The defaults below are
@@ -19,7 +22,9 @@ Tests: `tests/test_section_plan.gd`.
 
 A mission attacks one **arc segment of the ring**, not the whole ring (user decision, 2026-11-21). The segment is walled
 on all four sides on every deck (§8): two walls across the spin direction (the ends of the arc) and two across the axis
-(the sides). The only ways through are the transit portals the crew enters and leaves by. Inside are **several decks**,
+(the sides). Beyond the end walls lie the docking and cargo areas between habitat sections; the roads pass into them
+through sealable blast doors, which are normally open and are all shut in an emergency such as a boarding. The crew's
+ship has docked; the mechs come in through one road door and leave through another (§3, §8). Inside are **several decks**,
 loaded as one scene. The ring radius is a free parameter: it is chosen for the curve and the scale, since the map never
 has to close the circle.
 
@@ -57,9 +62,18 @@ above. In the cross-section it reads as a zigzag.
        deck 2 ─────────────────────────────► OUT
 ```
 
-- **Entry**: the transit spine's portal through the bulkhead at one end of the **top deck** (the crew arrives along the
-  rail line; the motor pool with the first rescue vehicles is in the station there).
-- **Extraction**: the spine's portal at the far end of the **lowest deck's** crossing.
+- **Fiction** (user, 2026-11-25; docs/design/city-spine.md §1): the crew's ship has docked with the station, perhaps by
+  force. Between habitat sections are docking and cargo areas behind sealable blast doors (not built), so each section
+  can be locked down. The doors are normally open and traffic flows through; in an emergency, like a boarding, every
+  road door is shut for the whole mission. The mechs come in through one road door and leave through another. The tram
+  runs round the ring on a single track on the top deck, stops at a small station there and passes each end wall
+  through its own low door, which can stay open in a lockdown. The station is a real place: doors, station and signs
+  are civic fittings with no mission state on them, and the doors the occupiers send waves through are ordinary blast
+  doors like every other.
+- **Entry**: the **entry road door** on the spine's main road in the bulkhead at one end of the **top deck**. The crew
+  waits in the docking bay behind it and walks out when it opens (the release).
+- **Extraction**: the **exit road door** on the main road at the far end of the **lowest deck's** crossing; the crew
+  leaves into the bay behind it once it opens. Both look exactly like every other road door.
 - **The way down** from each deck is at the far end of its crossing, so the whole deck lies between arriving and
   leaving. There is exactly one guaranteed, vehicle-capable way down per deck (§6), and the occupiers hold it (§9).
 - **Optional branches**: the district columns away from the spine; the "backwater" behind each arrival (under the ramp, or
@@ -105,31 +119,32 @@ Zone rules, in order:
 
 ## 6. Transit
 
-**The spine** is one 50 m corridor running the whole arc of every deck, at the same x on all of them:
+**The spine** is one 40 m corridor running the whole arc of every deck, at the same x on all of them (`SPINE_LANES`,
+`SPINE_W`; 50 m until 2026-11-27, city-spine.md §2):
 
 | Lane | Width | |
 |---|---|---|
-| Ramp lane A | 10 m | Ramps of even deck changes dive out of / land in this lane |
-| Avenue | 18 m | The road spine: vehicles, traffic |
-| Rail | 12 m | Two tracks, through the bulkhead portals at both ends; stations at transit cells |
-| Ramp lane B | 10 m | Ramps of odd deck changes |
+| Ramp lane A | 10 m | Ramps of even deck changes dive out of / land in this lane. Drawn as a two-way service road on a deck where a ramp part lies in it, else a paved promenade (`city-spine.md` "As built: spine markings") |
+| Avenue | 14 m | The main road: one lane each way (1 m edges, 4 m lanes, a 4 m centre strip: planted median, left-turn pockets for the last 28 m before each junction). Its end-wall doors are the ordinary 14 m road door |
+| Rail | 6 m | One tram track on its centre line on the tram deck (deck 0): lane kind `rail`; on every other deck the strip is a planted verge: lane kind `verge` (`lane_kind(k, lane)`) |
+| Ramp lane B | 10 m | Ramps of odd deck changes; service road or promenade as lane A |
 
 Alternating lanes means a ramp arriving from above and the ramp leaving for below never fight for the same ground, however
 their lengths overlap.
 
-**Roads** form a full grid on every deck (spine 50 m, arterials 14 m, perimeter 12 m), so every district touches a road and
+**Roads** form a full grid on every deck (spine 40 m, arterials 14 m, perimeter 12 m), so every district touches a road and
 vehicles can reach any cell. Paths and minor streets inside a region are the city generator's.
 
 **Traffic rule.** Every road line is **two-way, right-hand traffic**; the plan has no one-way lines and carries no
-direction data. Ramps are two-way within their 10 m lane. The rail runs wall to wall on every deck; only the entry and
-extraction portals are open, so a tram shuttles within its deck. Ambient traffic (`docs/design/ambient-life.md`) builds
-its lanes from `road_graph(false)`, `node_pos` and the spine lanes (`lane_x`).
+direction data. Ramps are two-way within their 10 m lane. The tram runs only on the top deck: one track, one way, in
+through the tram door in one end wall and out through the one in the other (city-spine.md §5). Ambient traffic
+(`docs/design/ambient-life.md`) builds its lanes from `road_graph(false)`, `node_pos` and the spine lanes (`lane_x`).
 
 **Between decks:**
 
 | | Who | Shape | Rules |
 |---|---|---|---|
-| **Ramp** | Everyone, both ways | A straight descent in a spine ramp lane, from the far end of the deck back toward the middle, landing on the deck below already heading the new way | Length = pitch / grade, rounded up to whole rows so the foot meets a cross street (default 18 % → 3 rows, ~270 m). On the upper deck it is a long **cut** (a look-down ledge, bridged by the cross streets); on the lower deck a viaduct coming down from the ceiling, which blocks the cross street at its foot |
+| **Ramp** | Everyone, both ways | A straight descent in a spine ramp lane, from the far end of the deck back toward the middle, landing on the deck below already heading the new way | Spans whole rows (cross line to cross line) but its **slope run** starts and ends `RAMP_END_PAST_BOX` (6 m) past the junction box at both ends: inset = that cross road's half width + 6 m from the cross line (13 m on a 14 m cross road, 12 m on a perimeter road; `ramp_end_inset(j)`), so it ends clear of the junction and its zebra (1.8-4.8 m past the box), at the stop line (R2.17): flat service road there. The run is in the plan (`run_top` / `run_foot`). The row count is the fewest whose fitted run meets the grade (default 20 % → 3 rows: ~270 m span, ~244 m run on deck 0, 0.197). On the upper deck it is a long **cut** from `run_top` (a look-down ledge, bridged by the cross streets); on the lower deck a viaduct coming down from the ceiling to `run_foot`, which blocks a cross street only where it passes under it lower than 6 m |
 | **Freight lift** | Everyone, both ways | A 22 m platform inside a **lift pillar** in the cell beside the spine | The pillar is a lift tower on the decks it serves; the lobby faces the spine |
 | **Shaft** | Mechs, down only | An opening up to 40 m square in the middle of an open-air cell | Mid-crossing; lands in a park; shafts may stack into an atrium through several decks, but never as the only walkable way to the deck it passes (hop-only rule below) |
 | **Express lift** | Everyone, **locked** | One lift pillar mid-section stopping on every deck | A branch: sealed by the occupiers, a light checkpoint on every deck. Opening it is an objective hook (a fast way back up for a loaded convoy) |
@@ -190,16 +205,23 @@ the ends of the arc, `x0` and `x1` the sides.
 | **Window** | A pressure wall with tall windows between its ribs | The **backdrop**: the rest of the ring in low detail, still curving upward, so the habitat reads as continuing (`backdrop = true`) |
 
 The ends of the arc are windows more often than the sides (65 % against 25 %): looking along the spin direction is where
-the curve shows. A wall the crew passes through is always a bulkhead, so the portal is a gate in a solid wall.
+the curve shows. A wall the crew passes through is always a bulkhead, so the entry and exit doors are gates in a solid
+wall.
 
-**Gates** are where a road meets a wall:
+**Gates** are where a road meets a wall. The bulkheads are the section's lockdown doors (fiction: §3, city-spine.md §1):
+every road door is shut for the whole mission, and they all look the same (the bunker-framed sliding door; siren and
+lamps only while it opens; nothing marks its role).
 
-| Gate | Where | |
+| Gate (`kind`, `role`) | Where | |
 |---|---|---|
-| **Portal** | The spine, in the entry wall (top deck) and the extraction wall (lowest deck) | Open: rail tunnel and avenue through the bulkhead. The only two ways in or out |
-| **Blast door** | Every other spine and arterial end; about a third of the cross streets at the side walls | Sealed by the occupiers (quarantine barrier, alien hardware grafted onto the frame). A `cordon` hook stands in front of each |
-| **Collapsed** | Some spine ends | A transit tunnel brought down: rubble and a dead rail line instead of a door |
+| **Road door** (`blast_door`, role `""`; 14 m gate, 12.8 x 9 m clear, `h` 9) | Every road that meets an end wall; about a third of the cross streets at the side walls; a spine end that is neither entry nor exit (role `"none"`, on the avenue lane) | Shut (lockdown). Waves come through some of them from the far side (a staging bay behind). A `cordon` hook stands in front of each |
+| **Entry / exit road door** (`road_door`, role `entry` / `exit`; 14 m, `h` 9) | The spine's main road (centred on the avenue lane): entry in the top deck's s0 wall, exit in the lowest deck's wall at the end of its crossing | The same door. A docking bay behind (20 m wide, 26 m deep, the inner blast door at its back). The crew spawns in the entry bay and walks out when it opens; the exit opens when the hold is done. Never a wave source |
+| **Tram door** (`tram_door`, role `""`; 3.8 m, `h` 4.6) | Top deck only, both end walls, centred on the rail lane | The same door, smaller (too narrow for a mech). Open: the train runs through it into a 40 m dark tunnel. The train runs only while its door is open. Never a wave source |
+| **Collapsed** (`collapsed`, role `"none"`) | Some spine ends (rolled 40 % where the spine end is neither entry nor exit) | Built as a shut road door that never opens |
 | (none) | The remaining cross streets | The street ends in a T at the perimeter road |
+
+On the spine only the main road meets a door; the rest of the spine's 40 m is plain wall (the service roads stop short of
+it). The 48.8 m spine-wide gates are gone (2026-11-27).
 
 **How the city transitions into a wall:**
 - A **perimeter road** (12 m) runs along the inside of every wall: the last ring of circulation for vehicles and patrols,
@@ -210,7 +232,8 @@ the curve shows. A wall the crew passes through is always a bulkhead, so the por
 - **Against a window wall** the perimeter road is a promenade: low sill, windows, the backdrop beyond.
 - **Ways down sit next to the end walls**: the critical ramp mouth or lift is in the last row before the wall (§3), so
   the chokepoint fight has the wall at its back and the route never dead-ends.
-- **The spine** runs wall to wall on every deck; its rail line disappears into a portal, a sealed door or a collapse.
+- **The spine** runs wall to wall on every deck; its main road ends at a road door; on the top deck the tram runs on
+  through its own door and tunnel.
 - **The backdrop** is the city generator's or the scene's: a low-detail continuation of the deck and ceiling beyond
   window walls, and nothing beyond bulkheads.
 
@@ -225,7 +248,7 @@ The planner marks positions; the gameplay pass decides what stands there.
 | `patrol` | A loop on the roads around every park | Patrols with long sightlines across open ground; the park is where they see you |
 | `holding` | The built-up cell farthest from the route, one per deck | Where civilians are held: the optional branch worth the detour |
 | `station` | Every transit region | Vehicles (motor pool at the entry), rail, resupply |
-| `cordon` | In front of every sealed blast door | A small guard post; reinforcements could arrive through the door later |
+| `cordon` | In front of every sealed blast door | A small guard post; reinforcements could arrive through the door later. Its barrier-block dressing (`LifeBarriers`) was removed 2026-11-26 by user decision; the hook and its encounter site remain |
 
 Squad spawns, relays and spotters (§7 of the game design) come later and should key off the same graph: relays on the
 spine, spotters on park edges and shaft rims.
@@ -253,12 +276,13 @@ middle of the section, in metres on that deck. Shared things carry an **angle** 
 | `cell_rect(k, c, r)` | The buildable ground of a cell (roads excluded) |
 | `roads`, `col_x`, `row_theta`, `line_width()`, `lane_x()` | The road lines and the spine's lanes |
 | `pillars` | `{id, col, row, x, theta, lift, stops}`; `pillar_point(k, id)`, `pillar_style(k, id)`, `pillar_radius(k, id)` |
-| `connectors` | `{kind, role, from, to, stops, vehicles, two_way, locked, x0, x1, theta0, theta1, col, row, pillar, top, bottom, …}`; `connector_rect(ci, k)`, `is_hole(ci, k)` |
+| `connectors` | `{kind, role, from, to, stops, vehicles, two_way, locked, x0, x1, theta0, theta1, col, row, pillar, top, bottom, …}`; a ramp's theta0 / theta1 are its whole-row span, and it also carries `run_top` / `run_foot`: the ANGLES (radians, like theta0) where its slope starts (`ramp_end_inset` past the top cross line, measured on the upper deck) and ends (as far short of the foot cross line, on the lower deck); `ramp_run(ci, k)` gives them as s on deck k. `connector_rect(ci, k)` (the floor cut / landing) of a ramp is its run, `is_hole(ci, k)` |
 | `entry`, `extraction`, `route` | Road crossings and cells; `route.vehicle`, `route.mech` |
 | `road_graph()`, `mech_graph()`, `walk()` | The graphs behind the route, for AI and vehicle routing |
-| `boundaries` | Four per deck: `{deck, edge: s0/s1/x0/x1, kind: bulkhead/window, backdrop, gates: [{kind: portal/blast_door/collapsed, role, axis, line, x, s, width}]}`; `boundary(k, edge)`, `boundary_rect(k, edge)` |
+| `boundaries` | Four per deck: `{deck, edge: s0/s1/x0/x1, kind: bulkhead/window, backdrop, gates: [{kind: road_door/blast_door/collapsed/tram_door, role: entry/exit/none/"", axis, line, x, s, width, h}]}` (§8); `boundary(k, edge)`, `boundary_rect(k, edge)` |
 | `hooks` | §9, §10 |
-| `deck_view(k)` | One deck in one Dictionary, in that deck's `(x, s)`: `extent`, `blocks` (cell rect, zone, region, pillar), `pillars`, `road_strips` (the spine split into its four lanes), `connectors` (part: hole / landing / stop), `ceiling_openings` (the holes of the deck above), `keep_clear`, `walls`. Read-only; the strips and blocks tile the deck exactly. A ramp hole crosses the cross-street strips: cut it out of each, or bridge it |
+| `deck_view(k)` | One deck in one Dictionary, in that deck's `(x, s)`: `extent`, `blocks` (cell rect, zone, region, pillar), `pillars`, `road_strips` (the spine split into its four lanes; a strip's `kind` is perimeter / arterial / cross / avenue / rail / verge / ramp_lane: the rail lane is `rail` on deck 0, `verge` elsewhere), `connectors` (part: hole / landing / stop), `ceiling_openings` (the holes of the deck above), `keep_clear`, `walls`. Read-only; the strips and blocks tile the deck exactly. A ramp hole crosses the cross-street strips: cut it out of each, or bridge it |
+| `spine_lanes(k)`, `lane_kind(k, lane)` | The spine's lanes on deck k, west to east: `[{lane, a, b, kind}]` with `kind` avenue / rail / verge / ramp_lane |
 
 **What the city generator should take from it:** build inside `cell_rect` / region rects only; put a pillar tower exactly
 at each `pillar_point` with at least `pillar_radius`, styled by `pillar_style`; leave `keep_clear` and connector
@@ -277,7 +301,7 @@ Answered by the user (2026-11-22):
 1. **Section size: to be settled by playtest.** Target mission length is **30 minutes or less, probably nearer 15**. The
    single demo district currently clears in about 2 minutes. The 3 decks x 540 m x 270 m default stays provisional
    until a multi-deck section can be played.
-2. **Mission end: "finish the mission"**, not yet defined. The top-in, bottom-out route with an extraction portal stays as
+2. **Mission end: "finish the mission"**, not yet defined. The top-in, bottom-out route (in by the entry road door, out by the exit road door) stays as
    the provisional shape; out-and-back is not adopted. What finishing means is an objectives question (game design §8).
 3. **Pillar density: fine as seen in the demo city** (one per ~90 m cell).
 4. **Ramps: straight only for now.** Spiral ramps are a later consideration.
@@ -297,7 +321,7 @@ mission means (item 2).
 > exists a disabled mech still respawns on its own, and the mission cannot be lost. The loss text below describes what
 > switches on with revive.
 
-The smallest mission that uses the section: **clear every deck, then reach the extraction portal.** It stands in for
+The smallest mission that uses the section: **clear every deck, then reach the exit road door.** It stands in for
 "finish the mission" (§13 item 2) until real objectives are designed (game design §8).
 
 **Objectives**, in order, derived from the plan on every machine (nothing is sent):
@@ -305,7 +329,7 @@ The smallest mission that uses the section: **clear every deck, then reach the e
 | id | Done when | |
 |---|---|---|
 | `clear_k` (one per deck) | No enemy that spawned on deck k is alive | Latches: stays done |
-| `extract` | Every `clear_k` is done and a standing crew mech is inside the extraction zone | The zone is the spine's width, 40 m deep, at the extraction portal on the lowest deck. Optional (`extract: false` makes the win "all enemies down") |
+| `extract` | Every `clear_k` is done and a standing crew mech is inside the extraction zone | The zone is the spine's width, 40 m deep, in front of the exit road door on the lowest deck. Optional (`extract: false` makes the win "all enemies down") |
 
 **Won**: every objective done. **Lost**: every crew mech still in the mission is downed at the same time (solo: downed is
 lost at once). A downed mech stays down until a teammate revives it: no respawn, no bleed-out. The outcome latches; a win
@@ -392,7 +416,7 @@ around the spawn.
 | **Arrival bubble** (70 m around the arrival point) | Nothing. The crew gets its bearings; on lower decks this is the ramp foot or the lift lobby, so nobody is shot while still on the ramp |
 | **First contact** (about 110 m in, on the avenue) | One light group: a scout pair, a drone. Teaches the deck's enemy mix before it matters |
 | **The crossing** | Groups at the plan's landmarks, light to medium: stations, patrol loops in parks, holding areas, cordons at sealed gates, the landing under a shaft, the locked express lift's stop |
-| **Departure** (the ramp head or lift down; on the lowest deck, the extraction portal) | The deck's heavy group: the checkpoint holding the way down. The climax of the deck |
+| **Departure** (the ramp head or lift down; on the lowest deck, the exit road door) | The deck's heavy group: the checkpoint holding the way down. The climax of the deck |
 
 Rules of thumb for the spawner:
 

@@ -63,7 +63,8 @@ extends RefCounted
 ## primary_types(): each deck's primary type in deck order (not the hold). find_seed(type, opts): the first seed with an
 ## unforced primary of that type (for bots and tests).
 
-const DEFAULTS := {"types": ["sweep", "flag", "defend"], "bonus_max": 2, "hold": 60.0, "waves_per_deck": 2,
+## hold 30 s (R2.10, user 2026-11-27: "once you are in the zone it takes 30 s to get the doors open"; was 60).
+const DEFAULTS := {"types": ["sweep", "flag", "defend"], "bonus_max": 2, "hold": 30.0, "waves_per_deck": 2,
 		"primary": ""}
 const PRIMARY_TYPES: Array[String] = ["sweep", "flag", "defend"]
 const RADIUS := {"flag": 14.0, "defend": 30.0, "sweep": 0.0, "hold": 0.0}

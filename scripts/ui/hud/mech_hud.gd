@@ -310,7 +310,8 @@ func components() -> Dictionary:
 	if component_source.is_valid():
 		src = component_source.call()
 	elif demo:
-		src = {"leg_l": 0.45, "shoulder_l": 0.25, "shoulder_r": 0.0, "side_r": 0.8} if demo_chassis != "bulwark" \
+		# shoulder_l (the mounted rocket pod) destroyed: the demo shows a destroyed part (dark, red outline, no cross: R2.14).
+		src = {"leg_l": 0.45, "shoulder_l": 0.0, "shoulder_r": 0.0, "side_r": 0.8} if demo_chassis != "bulwark" \
 			else {"leg_l": 0.45, "back_l": 0.25, "side_r": 0.8, "torso": 0.6}
 	elif mech != null and "components" in mech:
 		src = mech.get("components")
@@ -426,7 +427,6 @@ func _draw_status(c: Control) -> void:
 		var dir := Vector2(cos(ang), sin(ang))
 		c.draw_line(centre + dir * (r + 7.0), centre + dir * (r + 11.0 + (3.0 if k % 5 == 0 else 0.0)), Color(CYAN, 0.6), 1.2)
 	_text(c, Vector2(0, sz.y - 30), sz.x, "HEAT %d%%" % roundi(f * 100.0), 16, hc if f >= 0.6 or shut else WHITE)
-	_text(c, Vector2(0, sz.y - 13), sz.x, "%d / %d" % [roundi(float(h["heat"])), roundi(float(h["cap"]))], 11, DIM)
 	var st := mech_state()
 	if st != "":
 		var sc := RED if st == "SHUTDOWN" else (AMBER if st in ["REBOOTING", "EMERGENCY BURN"] else CYAN)

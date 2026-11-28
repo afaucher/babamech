@@ -1,11 +1,15 @@
 extends TestCase
 ## The map is sealed: a mech cannot leave a deck through its boundary walls (playtest, section seed 403112: "you can fall
 ## out of the open portal off the edge of the map"). On the real stack of a few sections, with a MissionWorld wave door in
-## most blast-door gates, the real mech capsule (MechSpawn) is swept with physics queries:
-## - through every boundary-wall gate of every kind (portal, blast door with no mission door, mission door open / shut /
-##   sealed, collapsed), straight out and at lateral offsets and angles, at walking height and at a hop under the lintel:
-##   it gets no further than the gate's recess (CityWalls.GATE_RECESS behind the wall plane; an open mission door: its
-##   staging bay, MissionGateDoor.BAY_DEPTH; a solid gate: not past the wall plane) and there is floor under where it stops;
+## most road-door gates (plus the entry / exit doors and the tram doors MissionWorld builds itself), the real mech capsule
+## (MechSpawn) is swept with physics queries:
+## - through every boundary-wall gate of every kind (road door with no mission door, mission door open / shut / sealed,
+##   collapsed, the entry / exit doors, the tram doors), straight out and at lateral offsets and angles, at walking height
+##   and at a hop under the lintel: it gets no further than RECESS behind the wall plane (an open mission door: its
+##   staging bay, MissionGateDoor.BAY_DEPTH) and there is floor under where it stops;
+## - a tram door (open, R2.11a): neither mech capsule (Strider 2.2 m, Bulwark 3.6 m) gets through its 3.8 m opening, and a
+##   drone-sized sphere (FLIER_R) flown into the tunnel straight, at angles, sideways and up is stopped by the tunnel's
+##   walls, roof and back plate (CityWalls.TUNNEL_DEPTH);
 ## - inside every open staging bay: pushed at the sides, the back and the roof (at walking height, at roof height and
 ##   straight up, at angles) it stays in the bay; floor under every stop and everywhere on a 2 m grid (no step: within
 ##   5 cm of the deck's faceted floor); from the usable floor in line with the door it rolls straight out to the street;
@@ -20,6 +24,8 @@ const PUSH := 30.0              ## m pushed outward
 const PERIM_STEP := 10.0
 const WALK_H := 0.5             ## capsule foot above the floor
 const ANGLES := [0.0, 25.0, -25.0, 45.0, -45.0]
+const RECESS := 6.0             ## m a capsule may step past the wall plane in front of a solid gate (the throat up to the leaves)
+const FLIER_R := 1.4            ## m: a small flier / drone's sphere (the tram tunnel test)
 const LATERAL := [0.0, -1.0, -0.5, 0.5, 1.0]
 
 var cap: CapsuleShape3D
@@ -41,7 +47,7 @@ func setup() -> void:
 	print("[sealed] mech capsule r %.2f h %.2f" % [cap.radius, cap.height])
 	for seed_ in SEEDS:
 		await _section(seed_)
-	for k in ["portal", "blast_door", "door_open", "door_shut", "door_sealed", "collapsed", "bay_inside", "air_open", "air_shut"]:
+	for k in ["lift_car", "blast_door", "door_open", "door_shut", "door_sealed", "collapsed", "bay_inside", "air_open", "air_shut", "tram_door", "tram_tunnel"]:
 		check(kinds_seen.has(k), "the sweep met a gate of kind %s" % k)
 	print("[sealed] gate kinds swept: %s; perimeter samples that started inside something: %d" % [str(kinds_seen), blocked_at_start])
 	finish()
@@ -60,8 +66,8 @@ func _section(seed_: int) -> void:
 		var first := true
 		for w: Dictionary in stack.decks[k].plan.boundary():
 			for g: Dictionary in w["gates"]:
-				if str(g["kind"]) != "blast_door":
-					continue
+				if str(g["kind"]) != "blast_door" or str(g.get("role", "")) != "":
+					continue          # the entry / exit doors are MissionWorld's own (no wave source)
 				if first:
 					first = false
 					continue
@@ -71,6 +77,15 @@ func _section(seed_: int) -> void:
 				sources.append({"id": id, "deck": k, "kind": "gate", "edge": CityPlan.SIDE_EDGE[int(w["side"])],
 						"x": mid if int(w["side"]) >= 2 else at, "s": at if int(w["side"]) >= 2 else mid})
 				role[id] = "open"
+	# A lift source at the first freight lift of every deck (its car, R2.22), open.
+	for k in stack.decks.size():
+		var lp := stack.decks[k].plan
+		for b: Dictionary in lp.buildings:
+			if b["pillar"] and str(b["core"]["kind"]) == "lift":
+				var lid := "lift_d%d" % k
+				sources.append({"id": lid, "deck": k, "kind": "lift", "x": float(b["core"]["x"]), "s": float(b["core"]["s"]), "connector": -1})
+				role[lid] = "open"
+				break
 	var mw := stack.setup_mission({"sources": sources, "objectives": [], "pools": []})
 	var ids: Array = mw._doors.keys()
 	if ids.size() >= 3:
@@ -99,6 +114,8 @@ func _section(seed_: int) -> void:
 	var doors := {}
 	for id: Variant in ids:
 		var door := mw._doors[id] as MissionGateDoor
+		if door == null:
+			continue          # a lift car: _lift_car below
 		var st := str(mw.source_state(id)["state"])
 		eq(door.door_shape.disabled, st == "open", "seed %d %s: the door shape is off only when open (%s)" % [seed_, id, st])
 		doors[door] = st
@@ -115,10 +132,14 @@ func _section(seed_: int) -> void:
 					_bay_inside(seed_, d, _door_of(d, w, g, mw))
 				if ds != "":
 					_bunker(seed_, d, _door_of(d, w, g, mw))
+				if str(g["kind"]) == "tram_door":
+					_tram_tunnel(seed_, d, w, g, ds)
 			perim += _perimeter(seed_, d, w, mw)
 	for id: Variant in ids:
 		if str(mw._sources[id].get("kind", "")) == "air":
 			_air_door(seed_, mw, str(id), str(mw.source_state(id)["state"]))
+		elif mw._doors[id] is MissionLiftDoor:
+			_lift_car(seed_, mw, str(id), str(mw.source_state(id)["state"]))
 	print("[sealed] seed %d: %d decks, %d gates, %d perimeter samples, %d doors, %d ms" % [seed_, stack.decks.size(), gates, perim,
 			ids.size(), Time.get_ticks_msec() - t0])
 	stack.queue_free()
@@ -173,10 +194,11 @@ func _gate(seed_: int, d: CityDistrict, w: Dictionary, g: Dictionary, door: Stri
 	if kind == "blast_door" and door != "":
 		tag = "door_" + door
 	kinds_seen[tag] = int(kinds_seen.get(tag, 0)) + 1
-	var open := kind == "portal" or door == "open"
-	var limit := (CityWalls.GATE_RECESS if open else 0.0) + MARGIN
+	var tram := kind == "tram_door"
+	var open := door == "open" and not tram      # a mech never fits an open tram door
+	var limit := MARGIN
 	if door == "open":
-		limit = MissionGateDoor.BAY_DEPTH + MARGIN
+		limit = (CityWalls.TUNNEL_DEPTH if tram else MissionGateDoor.BAY_DEPTH) + MARGIN
 	var a := float(g["a"])
 	var b := float(g["b"])
 	var gh := float(g["h"])
@@ -225,7 +247,7 @@ func _perimeter(seed_: int, d: CityDistrict, w: Dictionary, mw: MissionWorld) ->
 		var limit := MARGIN
 		for g: Dictionary in w["gates"]:
 			if u > float(g["a"]) - cap.radius and u < float(g["b"]) + cap.radius:
-				limit = maxf(limit, (MissionGateDoor.BAY_DEPTH if _door_state(d, w, g, mw) == "open" else CityWalls.GATE_RECESS) + MARGIN)
+				limit = maxf(limit, (MissionGateDoor.BAY_DEPTH if _door_state(d, w, g, mw) == "open" else RECESS) + MARGIN)
 		for h: float in [WALK_H, 6.0]:
 			var start := _wall_point(w, u, -(cap.radius + 1.0))
 			var p := _push(d, start, h, _out(w), PUSH)
@@ -246,13 +268,15 @@ func _perimeter(seed_: int, d: CityDistrict, w: Dictionary, mw: MissionWorld) ->
 ## at the sides, the back, at roof height and straight up, it stays inside; floor under every stop and on a 2 m grid; from
 ## the usable floor in line with the opening it rolls straight out past the wall plane to the street.
 func _bay_inside(seed_: int, d: CityDistrict, door: MissionGateDoor) -> void:
-	if door == null:
+	if door == null or door.bayless:
 		return
 	kinds_seen["bay_inside"] = int(kinds_seen.get("bay_inside", 0)) + 1
 	var label := "seed %d deck %d bay @%s" % [seed_, d.plan.deck, str(door.arc_mid.snapped(Vector2.ONE))]
 	var mid := (MissionGateDoor.USE_FROM + MissionGateDoor.USE_TO) * 0.5
 	var hi := door.clear_height() - cap_h - 0.4      # a hop: the capsule's top just under the light bars
-	var lim_x := door.ihalf + MARGIN
+	var c := door.icenter                            # the bay's centre (off mid-door beside a tram tunnel)
+	var lim_lo := door.ix0 - MARGIN
+	var lim_hi := door.ix1 + MARGIN
 	var lim_z := MissionGateDoor.BAY_DEPTH + MARGIN
 	var worst_x := 0.0
 	var worst_z := 0.0
@@ -261,24 +285,24 @@ func _bay_inside(seed_: int, d: CityDistrict, door: MissionGateDoor) -> void:
 			for k: float in [-1.0, 1.0]:
 				for ang: float in [0.0, 30.0, -30.0, 60.0]:
 					var dir := Vector2(k, 0).rotated(deg_to_rad(ang))
-					var p := _push_local(d, door, Vector2(0.0, depth), h, dir, 40.0)
-					worst_x = maxf(worst_x, absf(p.x))
-					if (absf(p.x) > lim_x and p.y > -0.5) or p.y > lim_z:      # back on the street (p.y < 0) is fine
-						_fail("%s: pushed out at (0, %.0f) h %.1f dir %s it reached (%.1f, %.1f)" % [label, depth, h, str(dir), p.x, p.y])
+					var p := _push_local(d, door, Vector2(c, depth), h, dir, 40.0)
+					worst_x = maxf(worst_x, absf(p.x - c))
+					if ((p.x < lim_lo or p.x > lim_hi) and p.y > -0.5) or p.y > lim_z:      # back on the street (p.y < 0) is fine
+						_fail("%s: pushed out at (%.1f, %.0f) h %.1f dir %s it reached (%.1f, %.1f)" % [label, c, depth, h, str(dir), p.x, p.y])
 					elif not _floor_under_local(d, door, p):
 						_fail("%s: no floor under the stop (%.1f, %.1f)" % [label, p.x, p.y])
-		for lx: float in [0.0, -(door.ihalf - 3.0), door.ihalf - 3.0]:
+		for lx: float in [c, door.ix0 + 3.0, door.ix1 - 3.0]:
 			for ang: float in [0.0, 30.0, -30.0]:
 				var p := _push_local(d, door, Vector2(lx, mid), h, Vector2(0, 1).rotated(deg_to_rad(ang)), 40.0)
 				worst_z = maxf(worst_z, p.y)
-				if p.y > lim_z or (absf(p.x) > lim_x and p.y > -0.5):
+				if p.y > lim_z or ((p.x < lim_lo or p.x > lim_hi) and p.y > -0.5):
 					_fail("%s: pushed back from (%.0f, %.0f) h %.1f angle %.0f it reached (%.1f, %.1f)" % [label, lx, mid, h, ang, p.x, p.y])
 				elif not _floor_under_local(d, door, p):
 					_fail("%s: no floor under the stop (%.1f, %.1f)" % [label, p.x, p.y])
 		check(worst_z > MissionGateDoor.BAY_DEPTH - cap.radius - 1.5, "%s: the capsule reaches the bay's back (%.1f m)" % [label, worst_z])
 	# Straight up from the floor: the roof stops it.
 	var geo := CityGeo.new(d.ring)
-	for at: Vector2 in [Vector2(0, mid), Vector2(door.ihalf - 3.0, MissionGateDoor.USE_TO - 1.0)]:
+	for at: Vector2 in [Vector2(c, mid), Vector2(door.ix1 - 3.0, MissionGateDoor.USE_TO - 1.0)]:
 		var f := _local_frame(d, door, at, WALK_H)
 		var q := PhysicsShapeQueryParameters3D.new()
 		q.shape = cap
@@ -289,8 +313,8 @@ func _bay_inside(seed_: int, d: CityDistrict, door: MissionGateDoor) -> void:
 		check(r[0] < 1.0 and rise < MissionGateDoor.BAY_H + MissionGateDoor.PLATE, "%s: straight up the capsule stops at the roof (top %.1f m)" % [label, rise])
 	# Floor on a 2 m grid, flush with the deck's faceted floor.
 	var bad := 0
-	var lx := -door.ihalf + 0.5
-	while lx < door.ihalf:
+	var lx := door.ix0 + 0.5
+	while lx < door.ix1:
 		var dz := 0.5
 		while dz < MissionGateDoor.BAY_DEPTH:
 			if dz >= CityWalls.WALL_THICK or absf(lx) < door.w_out - 0.3:
@@ -306,12 +330,14 @@ func _bay_inside(seed_: int, d: CityDistrict, door: MissionGateDoor) -> void:
 		lx += 2.0
 	# Roll out: from the usable floor in line with the opening straight to the street (6 m in front of the door).
 	var lane := minf(door.ihalf - MissionGateDoor.MARGIN, door.half - cap.radius - 0.3)     # between the bunker's jambs
-	for lx2: float in [-lane, 0.0, lane]:
+	var l0 := maxf(-lane, door.ix0 + cap.radius + 0.3)        # and inside the bay's walls
+	var l1 := minf(lane, door.ix1 - cap.radius - 0.3)
+	for lx2: float in [l0, (l0 + l1) * 0.5, l1]:
 		for depth: float in [MissionGateDoor.USE_FROM, mid, MissionGateDoor.USE_TO]:
 			var p := _push_local(d, door, Vector2(lx2, depth), WALK_H, Vector2(0, -1), depth + 6.0)
 			if p.y > -5.9:
 				_fail("%s: rolling out from (%.1f, %.0f) the capsule stopped at (%.1f, %.1f)" % [label, lx2, depth, p.x, p.y])
-	print("[sealed] %s: inside, furthest side %.1f (limit %.1f), back %.1f (limit %.1f), roll-out lane +-%.1f" % [label, worst_x, lim_x,
+	print("[sealed] %s: inside, furthest side %.1f (limit %.1f), back %.1f (limit %.1f), roll-out lane +-%.1f" % [label, worst_x, door.ihalf + MARGIN,
 			worst_z, lim_z, lane])
 
 
@@ -321,17 +347,86 @@ func _bunker(seed_: int, d: CityDistrict, door: MissionGateDoor) -> void:
 	if door == null:
 		return
 	var label := "seed %d deck %d bunker @%s" % [seed_, d.plan.deck, str(door.arc_mid.snapped(Vector2.ONE))]
-	var far := door.half + MissionGateDoor.JAMB + MissionGateDoor.BUTT + 14.0
+	var far := door.half + door.jamb + door.butt + 14.0
 	for k: float in [-1.0, 1.0]:
 		var p := _push_local(d, door, Vector2(k * far, -(cap.radius + 0.3)), WALK_H, Vector2(-k, 0), far)
-		check(absf(p.x) > door.half + MissionGateDoor.JAMB - 0.1, "%s: walking along the wall from %s the frame stops the capsule (at %.1f)" % [label, "+X" if k > 0 else "-X", p.x])
+		check(absf(p.x) > door.half + door.side_jamb(k) - 0.1, "%s: walking along the wall from %s the frame stops the capsule (at %.1f)" % [label, "+X" if k > 0 else "-X", p.x])
 	var top := door.gh + 0.6
-	var f := _local_frame(d, door, Vector2(0, -(cap.radius + MissionGateDoor.FRAME_OUT + 1.0)), top)
+	var f := _local_frame(d, door, Vector2(0, -(cap.radius + door.frame_out + 1.0)), top)
 	var q := PhysicsShapeQueryParameters3D.new()
 	q.shape = cap
 	q.transform = f * Transform3D(Basis.IDENTITY, Vector3(0, cap_h * 0.5, 0))
 	q.motion = -f.basis.z * 6.0
 	check(space.cast_motion(q)[0] < 1.0, "%s: the lintel is solid" % label)
+
+
+## A tram door (R2.11a): neither mech capsule gets through its opening (open or shut: 3.8 m clear, a Strider is 4.4 m
+## across); open, a FLIER_R sphere flown in along the tunnel (straight and at angles, at mid-height and just under the
+## roof) stops at the back plate (no further than TUNNEL_DEPTH), and from the tunnel's middle pushed sideways and up it
+## stays inside (walls, roof).
+func _tram_tunnel(seed_: int, d: CityDistrict, w: Dictionary, g: Dictionary, state: String) -> void:
+	kinds_seen["tram_tunnel"] = int(kinds_seen.get("tram_tunnel", 0)) + 1
+	var mid := (float(g["a"]) + float(g["b"])) * 0.5
+	var gh := float(g["h"])
+	var half := (float(g["b"]) - float(g["a"])) * 0.5
+	var o := _out(w)
+	var label := "seed %d deck %d tram door side %d (%s)" % [seed_, d.plan.deck, int(w["side"]), state]
+	for chassis: String in ["strider", "bulwark"]:
+		var mv := MechCatalog.movement(chassis)
+		var c := CapsuleShape3D.new()
+		c.radius = float(mv["capsule_radius"])
+		c.height = float(mv["capsule_height"])
+		for f: float in [0.0, -0.5, 0.5]:
+			var p := _sweep(d, c, c.height * 0.5, _wall_point(w, mid + f, -(c.radius + 2.5)), WALK_H, o, PUSH)
+			check(_beyond(w, p) < 0.5, "%s: a %s capsule does not get through (stopped %.1f m past the wall plane)" % [label, chassis, _beyond(w, p)])
+	if state != "open":
+		return
+	var ball := SphereShape3D.new()
+	ball.radius = FLIER_R
+	var deepest := -INF
+	for h: float in [gh * 0.5, gh - FLIER_R - 0.2]:
+		for ang: float in [0.0, 10.0, -10.0]:
+			var p := _sweep(d, ball, 0.0, _wall_point(w, mid, -3.0), h, o.rotated(deg_to_rad(ang)), CityWalls.TUNNEL_DEPTH + 30.0)
+			var bey := _beyond(w, p)
+			deepest = maxf(deepest, bey)
+			if bey > CityWalls.TUNNEL_DEPTH + MARGIN:
+				_fail("%s: a %.1f m sphere flown in at h %.1f angle %.0f got %.1f m past the wall plane (back plate %.1f)" % [label, FLIER_R, h, ang, bey, CityWalls.TUNNEL_DEPTH])
+	check(deepest > CityWalls.TUNNEL_DEPTH - FLIER_R - 2.5, "%s: the sphere reaches the back plate (%.1f m)" % [label, deepest])
+	var inner := _wall_point(w, mid, CityWalls.TUNNEL_DEPTH * 0.5)
+	for k: float in [-1.0, 1.0]:
+		var dir := Vector2(k, 0.0) if int(w["side"]) >= 2 else Vector2(0.0, k)
+		var p := _sweep(d, ball, 0.0, inner, gh * 0.5, dir, 20.0)
+		var off := absf((p.x if int(w["side"]) >= 2 else p.y) - mid)
+		check(off < half - FLIER_R + MARGIN, "%s: pushed sideways in the tunnel it stays inside (%.1f m off the track)" % [label, off])
+	var geo := CityGeo.new(d.ring)
+	var fr := d.global_transform * geo.frame(inner.x, inner.y, gh * 0.5)
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = ball
+	q.transform = fr
+	q.motion = fr.basis.y * 20.0
+	var r := space.cast_motion(q)
+	check(r[0] < 1.0 and gh * 0.5 + 20.0 * r[0] < gh - FLIER_R + MARGIN, "%s: straight up the roof stops it" % label)
+	print("[sealed] %s: deepest %.1f m (back plate %.1f)" % [label, deepest, CityWalls.TUNNEL_DEPTH])
+
+
+## _push with any shape (its centre `lift` m above the foot `h` above the floor).
+func _sweep(d: CityDistrict, shape: Shape3D, lift: float, from: Vector2, h: float, dir: Vector2, dist: float) -> Vector2:
+	var geo := CityGeo.new(d.ring)
+	var p := from
+	var gone := 0.0
+	var q := PhysicsShapeQueryParameters3D.new()
+	q.shape = shape
+	while gone < dist - 0.001:
+		var step := minf(STEP, dist - gone)
+		var f := d.global_transform * geo.frame(p.x, p.y, h)
+		q.transform = f * Transform3D(Basis.IDENTITY, Vector3(0, lift, 0))
+		q.motion = f.basis * Vector3(dir.x, 0, dir.y) * step
+		var r := space.cast_motion(q)
+		p += dir * step * r[0]
+		gone += step
+		if r[0] < 1.0:
+			break
+	return p
 
 
 ## An air door (high on an end wall; its frame's origin at the opening's sill, mid-opening, +Z into the deck). Shut: a
@@ -363,6 +458,65 @@ func _air_door(seed_: int, mw: MissionWorld, id: String, state: String) -> void:
 	check(cp.z > -1.0 - cap.radius, "%s: the mech capsule does not fit in (stopped at z %.1f)" % [label, cp.z])
 	print("[sealed] %s: inside |x| <= %.1f (limit %.1f), y <= %.1f (limit %.1f), back %.1f (limit %.1f)" % [label, worst.x, door.ihalf,
 			worst.y, door.room_h, worst.z, -MissionAirDoors.DEPTH])
+
+
+## An open lift car (R2.22; MissionLiftDoor frame: origin on the door plane at floor mid-door, +Z out of the car): both mech
+## capsules (Strider r 2.2, Bulwark r 3.6) and a FLIER_R sphere walk / fly in from 8 m in front and reach the car's back;
+## from inside the car (its middle, near each corner), pushed at the sides, the back, up and at angles, and toward the
+## front wall beside the doorway, they stay in the car: the only way out is the doorway.
+func _lift_car(seed_: int, mw: MissionWorld, id: String, state: String) -> void:
+	var lift := mw._doors[id] as MissionLiftDoor
+	if not check(lift.has_car and state == "open", "seed %d %s: an open lift car (%s)" % [seed_, id, state]):
+		return
+	kinds_seen["lift_car"] = int(kinds_seen.get("lift_car", 0)) + 1
+	var fr := lift.global_transform
+	var label := "seed %d %s" % [seed_, id]
+	var shapes := []        # [shape, centre height over the floor]
+	for chassis: String in ["strider", "bulwark"]:
+		var m := MechSpawn.make("chicken", chassis)
+		var src := (m.get_node("Shape") as CollisionShape3D).shape as CapsuleShape3D
+		var c := CapsuleShape3D.new()
+		c.radius = src.radius
+		c.height = src.height
+		m.free()
+		shapes.append([c, WALK_H + c.height * 0.5, chassis])
+	var ball := SphereShape3D.new()
+	ball.radius = FLIER_R
+	shapes.append([ball, 4.0, "sphere"])
+	shapes.append([ball, MissionLiftDoor.CAR_H - FLIER_R - 0.3, "sphere high"])
+	var ch := lift.car_half
+	var back := lift.car_back
+	for sh: Array in shapes:
+		var shape := sh[0] as Shape3D
+		var r := (shape as CapsuleShape3D).radius if shape is CapsuleShape3D else (shape as SphereShape3D).radius
+		var y := float(sh[1])
+		var name_ := str(sh[2])
+		# In through the doorway to the back wall (whatever fits under its head).
+		if y + (r if shape is SphereShape3D else (shape as CapsuleShape3D).height * 0.5) <= MissionLiftDoor.H:
+			var p := _cast_local(fr, shape, Vector3(0, y, 8.0), Vector3(0, 0, -1), 40.0)
+			check(p.z < -back + r + 0.6 and p.z > -back - MARGIN, "%s: a %s goes in through the doorway to the car's back (z %.1f, back %.1f)" % [label, name_, p.z, back])
+		# Inside: never out except through the doorway.
+		var starts: Array[Vector3] = [Vector3(0, y, -back * 0.5), Vector3(ch - r - 0.3, y, -back + r + 0.3), Vector3(-ch + r + 0.3, y, -back + r + 0.3),
+				Vector3(ch - r - 0.3, y, -MissionLiftDoor.WALL - r - 0.3), Vector3(-ch + r + 0.3, y, -MissionLiftDoor.WALL - r - 0.3)]
+		for st: Vector3 in starts:
+			for dir: Vector3 in [Vector3(1, 0, 0), Vector3(-1, 0, 0), Vector3(0, 0, -1), Vector3(0, 1, 0), Vector3(1, 0, -1).normalized(),
+					Vector3(-1, 0, -1).normalized(), Vector3(1, 1, -1).normalized(), Vector3(-1, 1, 1).normalized(), Vector3(1, 0, 1).normalized()]:
+				var q := _cast_local(fr, shape, st, dir, 40.0)
+				var out_x := absf(q.x) > ch + MARGIN
+				var out_back := q.z < -back - MARGIN
+				var out_up := q.y > MissionLiftDoor.CAR_H + MARGIN
+				# Past the door plane only through the doorway (within its width, under its head).
+				var out_front := q.z > 0.0 and (absf(q.x) > MissionLiftDoor.W * 0.5 + MARGIN or q.y > MissionLiftDoor.H + MARGIN)
+				if out_x or out_back or out_up or out_front:
+					_fail("%s: a %s pushed %s from %s got out of the car to %s" % [label, name_, str(dir), str(st), str(q)])
+		# Beside the doorway the front wall stops it.
+		for k: float in [-1.0, 1.0]:
+			var x := k * (MissionLiftDoor.W * 0.5 + r + 0.3)
+			if absf(x) > ch - r - 0.1:
+				continue
+			var q := _cast_local(fr, shape, Vector3(x, y, -back * 0.5), Vector3(0, 0, 1), 40.0)
+			check(q.z < -MissionLiftDoor.WALL - r + MARGIN, "%s: a %s beside the doorway stops at the front wall (z %.1f)" % [label, name_, q.z])
+	print("[sealed] %s: car %.1f x %.1f m, sealed but for its doorway" % [label, ch * 2.0, back])
 
 
 ## Cast `shape` from `start` (in frame fr, its centre) along `dir` (frame) up to `dist`: where its centre stops (frame).

@@ -568,8 +568,11 @@ func _core_rupture_scale() -> float:
 func _update_visuals(dt: float) -> void:
 	_hover_t += dt
 	if _body_pivot != null and is_instance_valid(_body_pivot):
-		_body_pivot.position.y = sin(_hover_t * 2.8) * 0.22
-		_body_pivot.rotation = Vector3(_aim_pitch, 0.0, _bank_roll)
+		# Shut down (heat_look, stepped in super): the bob dies, nose-down sag and wobble (pivot only).
+		var sh := heat_look.flier_offsets(0.8)
+		var calm := 1.0 - clampf(heat_look.slump, 0.0, 1.0)
+		_body_pivot.position.y = sin(_hover_t * 2.8) * 0.22 * calm + sh.x
+		_body_pivot.rotation = Vector3(_aim_pitch - sh.y, 0.0, _bank_roll + sh.z)
 	super._update_visuals(dt)
 	if _body_pivot != null and is_instance_valid(_body_pivot):   # stagger: the hull rocks away from the hit, settles
 		_body_pivot.basis = stagger_rock_basis(0.18 * anim_stagger_amp) * _body_pivot.basis

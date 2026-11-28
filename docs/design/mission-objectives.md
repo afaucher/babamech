@@ -13,7 +13,8 @@ A mission is a **list of objectives placed on the decks of one section**, then e
   bonuses: 5 to 8 minutes a deck, inside the 15 to 30 minute target.
 - **Primary**: must be done to finish the mission. **Bonus**: optional, smaller, off the main route; it pays off inside the
   mission (see §4), not only on a score screen.
-- The mission is **won** when every primary is done and a standing mech reaches the extraction portal.
+- The mission is **won** when every primary is done, the crew held the extraction zone for 30 s while an ally opened the
+  exit road door, and every standing pilot walked out through it (R2.10, 2026-11-27; §9 "The exit").
 - "Clear every deck" stops being the goal. It stays as an objective type (**Sweep**, §2.0) and as the default when a
   deck rolls nothing else, so today's demo keeps working.
 
@@ -299,7 +300,7 @@ the host only.
   defenders then close the source they guard.
 - **Raise a flag / artillery / political center / military output**: each objective step releases a wave from the pool
   (§5.4), so pressure rises as the crew gets closer to finishing and stops when it does.
-- **Extraction**: the 60 s hold at the portal is one last wave from whatever is left of the lowest deck's pool; if the
+- **Extraction**: the 30 s hold in front of the exit door draws the last groups from whatever is left of the lowest deck's pool (then patrols); if the
   pool is empty the hold is quiet, which is the reward for having cleaned up.
 - **Between decks**: enemies stay on their deck today. "From another deck" is first built as units appearing at the ramp
   or shaft after the telegraph; real travel between decks is a later step for the enemy AI.
@@ -346,8 +347,8 @@ appear from inside a closed building, never in view), with three differences:
 - **The finale is on the lowest deck**: political center or military output, the two that need a landmark.
 - **What you do above matters below**: the alarm carries downward. A deck left loud (spotters alive, artillery
   standing, gates open) raises the starting alert of the next one; a deck left quiet lowers it.
-- **Extraction is the last beat**: when the last primary is done, the extraction portal starts opening and takes 60 s.
-  That minute is a short Defend at the portal against one last wave from what is left of the pool (§5.7). Then everyone leaves together.
+- **Extraction is the last beat** (R2.10, as built 2026-11-27): when the last primary is done, the crew holds the zone in front of the exit road door for 30 s while an ally opens it.
+  Those 30 s are a short Defend against the last groups (pacing-director.md 1.5). Then the door opens and the crew walks out together.
 
 ### Example missions
 
@@ -357,7 +358,7 @@ appear from inside a closed building, never in view), with three differences:
 |---|---|---|
 | 1 | Heavy artillery (3 guns) | Raise a flag on the station roof |
 | 2 | Sweep the depot district | Seal the east gate |
-| | Extraction: hold the portal 60 s | |
+| | Extraction: hold the exit 30 s, walk out | |
 
 **B. "Government quarter" (3 decks, about 25 minutes)**
 
@@ -366,7 +367,7 @@ appear from inside a closed building, never in view), with three differences:
 | 1 | Raise the flag on the transit hub, then defend it (2 waves) | Heavy artillery (2 guns shelling the hub) |
 | 2 | Evacuate VIPs from the holding area to the freight lift | Help the local defense forces at the depot gate |
 | 3 | Clear out the political center | Seal the express lift; the artillery guarding the plaza |
-| | Extraction: hold the portal 60 s | |
+| | Extraction: hold the exit 30 s, walk out | |
 
 **C. "Break the supply line" (3 decks, about 20 minutes)**
 
@@ -375,7 +376,7 @@ appear from inside a closed building, never in view), with three differences:
 | 1 | Help the local defense forces (the holdout is the way in) | Raise a flag |
 | 2 | Heavy artillery (4 guns, one firing down the shaft onto deck 3) | Seal the west gate |
 | 3 | Attack military output (4 targets, 2 fabricators) | Defend the relay to call the extraction early |
-| | Extraction: hold the portal 60 s | |
+| | Extraction: hold the exit 30 s, walk out | |
 
 ## 7. Build plan (phases)
 
@@ -428,8 +429,8 @@ other sessions wire them. All positions are a deck's arc coordinates (x, s, metr
 mission seed. `MissionPlan.make(sec, overrides)`; `checksum()` joins the load barrier.
 
 - `objectives`: `[{id, type: sweep | flag | defend | hold, deck, role: primary | bonus, site: {x, s}, radius, needs: [ids],
-  params}]`. `flag`: `params.hold` seconds in the zone. `defend`: `params.waves`, `params.asset_hp`. `hold`: the 60 s
-  at the extraction portal, last, needs every primary.
+  params}]`. `flag`: `params.hold` seconds in the zone. `defend`: `params.waves`, `params.asset_hp`. `hold`: the 30 s (R2.10; was 60)
+  in front of the exit road door, last, needs every primary (§9 "The exit").
 - `sources`: `[{id, deck, kind: gate | lift | ramp | shaft, x, s, toward: {x, s}, load, connector, edge}]`: every door a
   wave can use (blast-door gates, lift stops, ramp ends, shaft landings); `toward` is the direction units walk out.
 - `pools`: per deck `{deck, garrison: 0.5 (less when the deck has extra flag waves), reserve: [{id, share, theme: light |
@@ -459,76 +460,134 @@ Sweep: deck clear when `enemies[k] == 0 and waves_left[k] == 0`. Flag: accumulat
 zone and no enemy is. Defend: done when its waves are released and beaten, failed when its asset reaches 0. A failed
 primary sets the outcome to lost. `state()` adds `objs: {id: [state, progress, total]}` and `reached` (the deepest deck a
 standing mech has been on, latched). HUD text (built here so host and clients read the same from the replicated state):
-an undiscovered bonus is not listed; the flag reads "Raise the flag: 40%"; once a deck's primary is done its list starts
-with "Proceed to deck n" (the extraction deck: the hold's line, or "Return to deck n: objective unfinished"), and
+an undiscovered bonus is not listed; the flag reads "Raise the flag: 40%"; in the flat list (`lines()`), once a deck's
+primary is done it starts with "Proceed to deck n" (the extraction deck: the hold's line, or "Return to deck n: objective
+unfinished"); the panel is described below; and
 `text()` reads "Proceed to deck n" until a standing mech reaches the next primary's deck. The HUD has one objective
 panel, top right (the top-centre strip was removed, playtest 2026-11-23).
 
 **Objective panel** (2026-11-24, user: "no indication of what level you are on"; reworked 2026-11-25, playtest backlog
-#3: "'v1' and 'v2' aren't clear. Maybe the deck objectives for decks you haven't visited yet read 'Proceed to deck 2',
-and once you get there the other objectives open up"). `MissionRules.panel(viewer_deck, viewer_pos)` builds it from
-the replicated state plus two local facts of the viewing pilot (their deck and (x, s) on it, never sent); `MissionHud`
-only lays it out (`panel_rows`). Nothing new on the wire: `reached` was already in `state()`.
+#3; **rebuilt 2026-11-26, playtest backlog R2.13**, user: "The objective panel still doesn't work", with the layout
+below: one section per deck, every deck always listed). `MissionRules.panel(viewer_deck, viewer_pos)` builds it from
+the replicated state plus two local facts of the viewing pilot (their deck and (x, s) on it, never sent);
+`MissionRules.fit(panel, rows)` shortens it to a height; `MissionHud` only draws it. Nothing new on the wire: `reached`
+was already in `state()`. The previous design ("DECK 1 OF 3" header, "PROCEED TO DECK N" dim and last, "Deck 1: 2
+optional left" one-liners, "Return to deck n: objective unfinished") is gone.
 
 ```
-DECK 1 OF 3                                     at the start
-RAISE THE FLAG: 0%                              this deck's list (white primary)
-PROCEED TO DECK 2                               dim, last: this deck's primary is still to do
-   SHAFT DOWN 135 M                             route hint (dim under a dim line)
+> DECK 1:                                       at the start (">" = the viewer's deck: bright, marked; others dim)
+    CLEAR HOSTILES, WAVES 2/3                   the sweep (primary, white)
+    RAISE THE FLAG: 0% (OPTIONAL)               a found bonus (dimmer cyan)
+  DECK 2:
+    PROCEED TO DECK 2                           all an unvisited deck shows (dim)
+  DECK 3:
+    PROCEED TO DECK 3
 
-DECK 1 OF 3                                     deck 1's primary done
-PROCEED TO DECK 2                               amber, first; the waypoint diamond points at the way
-   SHAFT DOWN 135 M                             (amber under an amber line)
-RAISE THE FLAG: 100% (DONE)
-RAISE THE FLAG: 0% (OPTIONAL)
+  DECK 1:                                       after going down early: deck 1 keeps its lines where they were left
+    CLEAR HOSTILES, WAVES 2/3
+    RAISE THE FLAG: 23% (OPTIONAL)
+> DECK 2:                                       visited: its objectives open up
+    RAISE THE FLAG: 0%
+  DECK 3:
+    PROCEED TO DECK 3
 
-DECK 2 OF 3                                     just arrived: deck 2's objectives open up
-CLEAR DECK 2: 6 HOSTILES
-DEFEND THE POSITION: WAVE 1 / 3 (OPTIONAL)      dimmer cyan
-TAKING POWER CORE: 60%                          the depot line, under this deck's lines
-PROCEED TO DECK 3
-   SHAFT DOWN 175 M
-DECK 1: 2 OPTIONAL LEFT                         a visited deck with found bonuses left: one dim line
-   RAMP UP 120 M                                the way up (a ramp's foot; shafts are one way)
+> DECK 1:                                       deck 1's primary done
+    CLEAR HOSTILES, WAVES 3/3                   green, its final value
+    RAISE THE FLAG: 23% (OPTIONAL)
+  DECK 2:
+    PROCEED TO DECK 2                           amber: the next step (nothing moves)
+        SHAFT DOWN 135 M                        its route hint (amber); the waypoint diamond points there
+  DECK 3:
+    PROCEED TO DECK 3
 
-DECK 3 OF 3                                     deck 3's primary done, deck 2's not
-RETURN TO DECK 2: OBJECTIVE UNFINISHED          amber, leads (route hint when a ramp up exists)
-DEFEND THE POSITION: WAVE 2 / 2 (DONE)
+  DECK 1:                                       on deck 3, its primary done, deck 2's not
+    CLEAR HOSTILES, WAVES 3/3
+  DECK 2:
+        RAMP UP 85 M                            under the header, only when a ramp up exists
+    RAISE THE FLAG: 45%                         amber: go back (no separate "Return" sentence)
+    DEFEND THE POSITION: WAVE 1/3 (OPTIONAL)
+> DECK 3:
+    DEFEND THE POSITION: WAVE 2/2
 ```
 
-- **Open decks**: a deck is open up to `max(reached, viewer deck)`: `reached` is the crew's latched deepest deck
-  (replicated), the viewer's own deck is always open (no empty panel in the moment between standing on a new deck and
-  the host's next state). This deck's list: every known objective, done / failed too, the extraction hold first once it
-  shows; a primary has no tag, white; a bonus ends in "(optional)", dimmer cyan; done green, failed red. Hidden bonuses
-  stay unlisted.
-- **Unvisited decks**: none of their objectives are listed. One line, "Proceed to deck n" (n = the first unopened deck,
-  numbered as painted on the walls), only when no opened deck below the viewer still has a primary left; decks further
-  on are not mentioned. While this deck's primary is to do it is the last line of the deck's block, dim; once it is done
-  (or the deck has none) it is the first line, amber, and the waypoint points at its route.
-- **Visited decks** (other than the viewer's, open): a deck below with a primary left reads "Deck 2: 1 objective,
-  1 optional left" with the proceed line's role and placement (it replaces it); a deck above with its primary not done
-  reads "Return to deck 1: objective unfinished", amber (leads once this deck's primary is done, else trails); a deck
-  with only found bonuses left reads "Deck 1: 2 optional left", dim, always trailing; a finished deck: no line.
-- **Co-op**: a pilot still on deck 1 while a crewmate has reached deck 2 sees "Deck 2: 1 objective, 1 optional left"
-  (not "Proceed to deck 3") with the way down, amber and first once deck 1's primary is done; on arrival the full list.
-  If deck 2's primary is done too, "Deck 2: 1 optional left" plus "Proceed to deck 3". Host and clients compute the same
-  panel from the same state; only the viewer's deck / position differ.
-- **Route hint**: under the first line each way (down first, then up), only when a walkable way exists: the nearest way
-  off the pilot's deck in that direction, straight-line along the deck rounded to 5 m, plain words ("ramp down 120 m",
-  "shaft down 90 m", "ramp up 85 m"): down, a ramp's mouth or a shaft whose drop lands on the next deck (never a stacked
-  atrium); up, a ramp's foot only. Lifts are left out while they don't carry mechs (`MissionRules.LIFTS_RIDE`,
-  BotRoutePlanner skips them too); locked connectors never count.
-- **Waypoint**: while a lead line shows ("Proceed to deck n", "Deck n: ... left", "Return to deck n") and there is no
-  extraction waypoint, the HUD's waypoint diamond points at its route (`route_at`: "RAMP DOWN 120m", "SHAFT DOWN");
-  `marker()` is untouched (the bot reads it).
-- **No prefixes**: the "-" / "^1" / "V1" direction column and its glyph fallback (`MissionRules.ARROWS`, `arrow()`,
-  `font_has_arrows`, `MissionHud.ascii_arrows`) are gone; every text is plain ASCII the HUD font draws, upper-cased.
-  `lines(deck)` stays for the flat no-panel list ("Bonus: " prefix).
-- **Height**: the panel never passes 40 % of the screen height (`MissionHud.PANEL_FRAC`, rows of 19 px). With one line
-  per deck it rarely fills (5 decks, all visited, every deck unfinished: 10 rows); too long, the trailing route hints
-  drop (the last first), then the trailing "Deck n: ... optional left" lines, then this deck's done / failed lines, then
-  the end is cut. Lead lines and the depot line stay; the downed-crew lines are never cut. The flat "OBJECTIVE" + text
-  panel of the old clear-and-extract mode was removed with that mode (2026-11-26): this panel is the only one.
+- **Sections**: every deck, in deck order, a header "Deck n:" (numbered as painted on the walls). The viewer's deck's
+  header is bright with a marker before it (U+25B6 when the HUD font has the glyph, else ">": `MissionHud.current_mark`,
+  decided once at startup), the other headers dim; no "DECK X OF Y" line.
+- **Visited decks** (up to `max(reached, viewer deck)`: `reached` is the crew's latched deepest deck; the viewer's own
+  deck always counts, so a client never shows an empty section in the moment before the host's next state): their known
+  objectives, indented: the extraction hold first once it shows (it is the last deck's), then the primary (white), then
+  the found bonuses ("(optional)", dimmer cyan); hidden bonuses are not listed. Done lines stay green with their final
+  value; failed lines red with "(failed)". Visited decks keep their lines after the crew leaves. Lines of decks other
+  than the viewer's are drawn a little dimmer.
+- **Wording** (the section names the deck, so the line doesn't): sweep "Clear hostiles, waves 2/3" (the user's words;
+  "Clear hostiles: 5 left" only while no wave count is known), flag "Raise the flag: 23%", defend "Defend the position:
+  wave 1/3", hold "Hold the exit: 40%" (percent, like the flag), then "Exit through the door" (amber) once the exit is open. `text()` and the flat `lines()` keep "Clear deck 2: 5 hostiles,
+  waves 2 / 3" (nothing around them names the deck).
+- **Unvisited decks**: exactly one line, "Proceed to deck n", every one of them.
+- **The next step** (`lead`, amber), only while the viewer's deck has no primary left and the mission is on: the nearest
+  deck below with a primary left or still unvisited (its "Proceed to deck n" turns amber), else the nearest visited deck
+  above with a primary left (that primary line turns amber: the crew must go back). Co-op: a pilot behind the crew sees
+  the crew's visited deck below with its objectives; once their own primary is done, that deck's unfinished primary is
+  amber.
+- **Route hint**: one line only, under the next step: under its "Proceed to deck n", or under the visited deck's header
+  (the go-back case); only when a walkable way exists: the nearest way off the pilot's deck that way, straight-line along
+  the deck rounded to 5 m, plain words ("ramp down 120 m", "shaft down 90 m", "ramp up 85 m"): down, a ramp's mouth or a
+  shaft whose drop lands on the next deck (never a stacked atrium); up, a ramp's foot only. Lifts are left out while
+  they don't carry mechs (`MissionRules.LIFTS_RIDE`, BotRoutePlanner skips them too); locked connectors never count.
+- **Waypoint**: `route_at` (the hint's route) is also the HUD's waypoint diamond ("RAMP DOWN 120m") when there is no
+  extraction waypoint; `marker()` is untouched (the bot reads it and `rules.plan`, never the panel).
+- **Depot and crew lines**: the depot line ("Taking power core: 60%") at the end of the viewer's section, the downed-crew
+  lines ("Pickle is down: revive with a repair drone", red) last, after every section; neither is ever cut.
+- **Height**: one panel, top right, never past 40 % of the screen height (`MissionHud.PANEL_FRAC`, rows of 19 px, no
+  title row). Every header always stays. Too long (`MissionRules.fit`, each step only as far as needed, other decks
+  farthest from the viewer first): the route hint; other decks' done / failed lines; other decks' optional lines -> one
+  "n optional" line; other decks' remaining lines -> one "1 objective, 2 optional" line (amber if it replaces an amber
+  line); then the viewer's done / failed lines and optional lines -> "n optional"; then other decks down to their header;
+  then the viewer's lines from the end. Worst case measured (`test_layout`, 5 decks all visited, two found bonuses each,
+  the depot line, one crew line): 22 rows wanted, 18 drawn on a 900 px tall screen (356 px = 40 %; 16:9 and ultrawide):
+  the two farthest decks' bonuses fold to "2 optional", nothing else is cut. The 4:3 layout (taller logical screen)
+  draws all 22.
+- **No prefixes**: no "-" / "^1" / "V1" direction column; every text is plain ASCII the HUD font draws, upper-cased.
+  The flat "OBJECTIVE" + text panel of the old clear-and-extract mode was removed with that mode (2026-11-26): this panel
+  is the only one.
+
+**The exit** (R2.10, user 2026-11-27: "a third party is opening the doors for us ... once you are in the zone it takes 30
+s to get the doors open. And waves will try to stop you"; "the crew walks out to win"; as built, uncommitted):
+- **Hold rules (unchanged, now 30 s)**: each host evaluate adds the facts.t delta (at most `MAX_STEP` 1 s) while at least
+  ONE standing (not downed) crew mech is inside the zone rect on the extraction deck. Enemies in the zone change nothing
+  (no contested state for the hold). Nobody in it: progress PAUSES (no reset, no decay), the objective stays active. A
+  partly-in crew counts fully. The zone (`MissionRules.extraction_zone`, 40 m deep across the spine at the exit's end
+  wall) contains the exit road door's whole width on every seed checked (1-50: door on the zone's x range, at its wall).
+- **Door**: when the hold completes the rules latch `exit_at` = facts.t + `EXIT_LEAD` (1 s) and the host orders the exit
+  road door open at `exit_at`, held for the rest of the mission (`MissionFlow.DOOR_HOLD`), as a replicated order on the
+  wave path: `mission.wave {wave: "door", source: "door_exit", door: "open", open_at: exit_at, hold}` (no NetMission
+  change: NetMission dedups on wave + source + open_at + hold); every machine calls `MissionWorld.open_source(id, open_at,
+  hold, open_at)`: the door's own warn / siren / opening (passable at exit_at + OPENING). A client that missed the order
+  applies the same from the state's `exit`. Nothing else opens the exit door (no plan source names it, no wave uses it).
+  Without an exit door on the deck (none on seeds 1-50) the rules' `walk_out` is off and the hold's completion wins
+  (warning logged).
+- **Win**: "won" on the first evaluate where every STANDING crew entry is inside the exit bay and at least one stands.
+  Inside = `MissionWorld.bay_contains(door_exit, position).inside` AND depth behind the door plane >= the mech's capsule
+  radius (Strider 2.2 m, Bulwark 3.6 m: the whole hull is through). Downed pilots never block (they are recovered with
+  the crew); a redeploying pilot is downed, so it does not block either (redeploy takes 3 + 5 s and lands 60-90 m from
+  the zone, which counts as active through the walk-out). Enemies are never counted: one standing in the 14 m doorway
+  cannot make the win impossible (the door never closes again).
+- **Replicated state** (`mission.state`, MissionRules.state()): `objs.hold` = ["done", 30, 30] once held; `exit` = the
+  exit door's open_at on the shared clock (-1.0 before); `outcome` "won", `reason` "objectives" at the walk-out.
+- **HUD (player-side only)**: "Hold the exit: 40%" (panel / lines / text; the zone bar "HOLDING THE EXIT 40 %"), then
+  "Exit through the door" (amber, leads the extraction deck's section, from any deck) and the EXIT waypoint on the exit
+  bay's centre once the exit is open. The ally's lines, text only, cyan, in the alert strip, once each per mission
+  (`MissionRules.ally_due`): "Working on the door" when the hold goes active, "Almost there" at 70 %, "Door's open, go!"
+  when the exit opens. No station hardware shows anything game-made; the portal / curtain code is gone (`set_portal` no
+  longer called).
+- **Entry door (crew missions)**: every machine shuts it at setup (`shut_source(door_entry, ENTRY_SHUT_AT)`, one constant,
+  so the crew in the entry bay waits behind it through the load barrier) and opens it at the barrier's `start_at` (every
+  machine has it: no message); moving leaves are never solid, so nobody is held. The host shuts it (replicated door order,
+  `door: "shut"`) once no crew mech has been in its bay or doorway for `ENTRY_CLEAR` 3 s, and reopens it whenever one is
+  found there again (a pilot redeploying to its spawn slot in the bay, a pilot walking back). Solo: the door's default
+  (open from clock 0).
+- **Logs**: `[mission] exit open at <t>`, `[mission] entry open|shut at <t>`, `[mission] exit: the crew walked out at <t>`,
+  `[mission] ally: <line>`; CombatLog `door ev=open|shut|win id= at=`.
 
 
 **Who wires what**

@@ -17,7 +17,8 @@ extends RefCounted
 ##     longer than the dock: a follower can never reach the one ahead.
 ## Pods stop 10 s at a pod stop on every other street side (pulled into the parking strip). Carts crawl at 4 m/s and stop
 ## 3 s beside each bin. Lanes: on a street (12 m) the lane next to the curb is 4.45 m out (beyond the 2.3 m parking strip
-## and its edge line); on the avenue (20 m) the outer lane is 2.93 m out (between the edge line and the dashed line).
+## and its edge line); on the avenue (20 m) the outer lane is 2.93 m out (between the edge line and the dashed line); on a
+## section spine's main road the one lane each way is centred where CityDims.avenue_lanes says (as painted).
 ##
 ## ORDERS SEAM (later phase): base_pose(vid, t) is the only place a vehicle's calm motion comes from. A pod given an order
 ## (follow, hold, go_to) would get its own motion here instead of `_lap_pose`; LifeFleet already layers firefight
@@ -368,14 +369,15 @@ func _avenue_pods(total: int) -> int:
 
 
 ## Section mode: a pod loop in the spine's avenue lane between cross lines j and j + 1, right-hand traffic (+s in the -x
-## half, -s in the +x half, the outer lane of each), a U-turn at each end (a half circle starting UTURN_IN m before the
+## half, -s in the +x half, one lane each way: CityDims.avenue_lanes, the lanes CityStreets paints), a U-turn at each end (a half circle starting UTURN_IN m before the
 ## junction box, timed into the junction's turn phase like every corner), docked against the avenue's -x edge midway.
 ## Nothing else uses the avenue lane (block loops beside the spine are dropped) and only one avenue loop U-turns at a
 ## junction, so it cannot meet another vehicle.
 func _make_avenue_loop(j: int) -> int:
 	var av := plan.avenue_x()
-	var xw := av.x + AVENUE_LANE
-	var xe := av.y - AVENUE_LANE
+	var lanes := CityDims.avenue_lanes(av)      # the drawn lane centres (CityStreets paints from the same split)
+	var xw := lanes.x
+	var xe := lanes.y
 	var xp := av.x + 1.7
 	var s_lo := float(plan.roads_s[j]["b"])
 	var s_hi := float(plan.roads_s[j + 1]["a"])

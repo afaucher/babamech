@@ -65,9 +65,11 @@ static func _alley_face(geo: CityGeo, f: CityFacade.Face) -> void:
 	for k in n:
 		var c := f.w * (float(k) + 0.5) / float(n) + _vr.randf_range(-CityFacade.ALLEY_DOOR_JITTER, CityFacade.ALLEY_DOOR_JITTER)
 		c = clampf(c, CityFacade.ALLEY_DOOR_END, f.w - CityFacade.ALLEY_DOOR_END)
-		# 0.16 out: in front of an apartment's 0.12 m base band. Pipes stand 0.41 / 0.47 m proud, clear of every style's
-		# piers (0.3), cornices (0.35) and ledges (0.3), so no face of theirs lies in a facade's plane.
-		_pane(geo, f, c - 0.6, c + 0.6, 0.0, 2.3, CityPalette.c("door_back"), 0.16)
+		# 0.2 out: in front of an apartment's 0.12 m base band and 3 cm in front of its 0.17 m ground-floor window panes (at
+		# 0.16 a back door over a window lay 1 cm from it: z-fighting, world audit 2026-11-27). Pipes stand 0.41 / 0.47 m
+		# proud, clear of every style's piers (0.3), cornices (0.35) and ledges (0.3), so no face of theirs lies in a
+		# facade's plane.
+		_pane(geo, f, c - 0.6, c + 0.6, 0.0, 2.3, CityPalette.c("door_back"), 0.2)
 		_slab(geo, f, c - CityFacade.ALLEY_HOOD_HALF, c + CityFacade.ALLEY_HOOD_HALF, CityFacade.ALLEY_HOOD_V0, CityFacade.ALLEY_HOOD_V1, CityFacade.ALLEY_HOOD_D, CityPalette.c("metal_dark"))
 	for u: float in [0.6, f.w - 0.6]:
 		_slab(geo, f, u - 0.12, u + 0.12, -0.3, f.y1 - 0.4, CityFacade.ALLEY_PIPE_D, CityPalette.c("pipe"))
@@ -90,9 +92,15 @@ static func _body(geo: CityGeo, xf: Transform3D, t: Dictionary, wall: Color, roo
 
 
 ## A box standing `d` proud of the wall. Keeps its back face whenever it extends above the roofline, past the wall edges,
-## or below an elevated tier's base.
-static func _slab(geo: CityGeo, f: CityFacade.Face, u0: float, u1: float, v0: float, v1: float, d: float, col: Color) -> void:
-	var exposed := v1 > f.y1 + 0.001 or u0 < -0.001 or u1 > f.w + 0.001 or (f.y0 > 0.001 and v0 < f.y0 - 0.001)
+## or below an elevated tier's base. `wrapped`: the same slab runs round every face of the tier (a band), so what runs
+## past a wall's ends lies inside the next face's slab and the back face is hidden there too: dropped unless the slab
+## rises above the roof or hangs below the base. (Kept, the back faces of two such bands of different depths lay in the
+## same wall plane where they overlap past the corner: z-fighting pairs, world audit 2026-11-27, apartment base band
+## against its first-floor trim band.)
+static func _slab(geo: CityGeo, f: CityFacade.Face, u0: float, u1: float, v0: float, v1: float, d: float, col: Color,
+		wrapped: bool = false) -> void:
+	var past_ends := not wrapped and (u0 < -0.001 or u1 > f.w + 0.001)
+	var exposed := v1 > f.y1 + 0.001 or past_ends or (f.y0 > 0.001 and v0 < f.y0 - 0.001)
 	var mask := CityGeo.ALL if exposed else CityGeo.NO_BACK
 	geo.box(f.xf, Vector3((u0 + u1) * 0.5, (v0 + v1) * 0.5, d * 0.5), Vector3(u1 - u0, v1 - v0, d), col, mask)
 
@@ -104,7 +112,7 @@ static func _pane(geo: CityGeo, f: CityFacade.Face, u0: float, u1: float, v0: fl
 
 static func _band(geo: CityGeo, faces: Array[CityFacade.Face], v0: float, v1: float, d: float, col: Color) -> void:
 	for f in faces:
-		_slab(geo, f, -d, f.w + d, v0, v1, d, col)
+		_slab(geo, f, -d, f.w + d, v0, v1, d, col, faces.size() == 4)
 
 
 static func _awning(geo: CityGeo, f: CityFacade.Face, u0: float, u1: float, v_top: float, v_bot: float, depth: float, col: Color,
@@ -234,7 +242,7 @@ static func _apartment(geo: CityGeo, xf: Transform3D, b: Dictionary, lot: Dictio
 	var phase := rng.randi_range(0, 1)
 	for f in faces:
 		var bays := CityFacade.bay_centres(f.w, CityFacade.APT_BAY, CityFacade.APT_BAY_MARGIN)
-		_slab(geo, f, -0.12, f.w + 0.12, -0.5, FH, 0.12, base)
+		_slab(geo, f, -0.12, f.w + 0.12, -0.5, FH, 0.12, base, true)      # wraps all four faces
 		var door := bays.size() / 2
 		for k in bays.size():
 			var c := bays[k]
@@ -512,36 +520,104 @@ static func _pillar(geo: CityGeo, xf: Transform3D, core_xf: Transform3D, b: Dict
 		_grid_facade(geo, CityFacade.faces_of(xf, podium, lot), CityPalette.c("cream"), CityPalette.c("sand"), 3.6)
 		y0 = podium["y1"]
 	var shaft := {"off": Vector2.ZERO, "size": core["size"], "y0": 0.0, "y1": ceiling + 1.0}
-	_body(geo, core_xf, shaft, stone, stone)
+	if lift:
+		# The lift's front face is drawn round its doorway below (_lift_doorway); the rest of the shaft as _body.
+		var front_bit: int = [CityGeo.PX, CityGeo.NX, CityGeo.PZ, CityGeo.NZ][int(b["front"])]
+		var cs: Vector2 = core["size"]
+		geo.box(core_xf, Vector3(0, ceiling * 0.5, 0), Vector3(cs.x, ceiling + 2.0, cs.y), stone, CityGeo.NO_BOTTOM - front_bit, stone)
+	else:
+		_body(geo, core_xf, shaft, stone, stone)
 	var flare := ceiling - 7.5
 	for f in CityFacade.faces_of(core_xf, shaft, lot):
 		var door := lift and f.side == int(b["front"])
+		var m := f.w * 0.5
 		var bays := CityFacade.bay_centres(f.w, 3.4, 0.9)
 		var pitch := CityFacade.bay_pitch(f.w, 3.4, 0.9)
-		var lo := y0 + 0.8 if not lift else 9.0
+		var lo := y0 + 0.8 if not lift else LIFT_DOOR_H + 1.0
 		for c in bays:
 			_pane(geo, f, c - pitch * 0.5 + 0.45, c + pitch * 0.5 - 0.45, lo, flare - 0.6, glass)
 		# Pilasters and the lift's channel stop under the capital's collar (flare - 0.8 .. flare, 0.8 m proud: it covers
 		# them): run up to `flare`, their tops lay in the collar's top face (z-fighting, tools/geometry_audit/).
 		var under := flare - CAPITAL_COLLAR
+		var hw := CityDims.LIFT_DOOR_W * 0.5
 		for k in bays.size() + 1:
 			var u := 0.9 + float(k) * pitch
-			_slab(geo, f, u - 0.45, u + 0.45, y0 - (0.5 if y0 <= 0.0 else 0.0), under, 0.5, stone)
+			var v0 := y0 - (0.5 if y0 <= 0.0 else 0.0)
+			if door and u + 0.45 > m - hw - 0.8 and u - 0.45 < m + hw + 0.8:
+				v0 = LIFT_DOOR_H + 0.8          # over the doorway's hazard frame: the doorway stays open
+			_slab(geo, f, u - 0.45, u + 0.45, v0, under, 0.5, stone)
 		var y := maxf(y0, 6.5) + FH * 2.0
 		while y < flare - 2.0:
 			_slab(geo, f, 0.0, f.w, y - 0.3, y + 0.3, 0.22, CityPalette.c("concrete_dark"))
 			y += FH * 2.0
 		if door:
-			# The freight lift: a mech-sized door in a hazard frame, and the guide channel running up the shaft.
-			var m := f.w * 0.5
-			_pane(geo, f, m - 5.0, m + 5.0, 0.0, 8.0, CityPalette.c("metal_dark"), 0.56)
-			_slab(geo, f, m - 5.8, m - 5.0, -0.5, 8.8, 0.7, CityPalette.c("tactile"))
-			_slab(geo, f, m + 5.0, m + 5.8, -0.5, 8.8, 0.7, CityPalette.c("tactile"))
-			_slab(geo, f, m - 5.8, m + 5.8, 8.0, 8.8, 0.7, CityPalette.c("tactile"))
-			_slab(geo, f, m - 1.8, m + 1.8, 8.8, under, 0.62, CityPalette.c("sage_dark"))
+			# The freight lift: a mech-sized doorway in a hazard frame (the shut doors baked in it), a call panel on its right
+			# jamb, and the guide channel running up the shaft.
+			_lift_doorway(geo, f, ceiling + 1.0)
+			var fh := LIFT_DOOR_H
+			_slab(geo, f, m - 5.8, m - 5.0, -0.5, fh + 0.8, 0.7, CityPalette.c("tactile"))
+			_slab(geo, f, m + 5.0, m + 5.8, -0.5, fh + 0.8, 0.7, CityPalette.c("tactile"))
+			_slab(geo, f, m - 5.8, m + 5.8, fh, fh + 0.8, 0.7, CityPalette.c("tactile"))
+			_slab(geo, f, m - 1.8, m + 1.8, fh + 0.8, under, 0.62, CityPalette.c("sage_dark"))
+			# The call panel on the right jamb's face (a plain box and its button: no display, nothing counts).
+			geo.box(f.xf, Vector3(m + 5.4, 1.6, 0.74), Vector3(0.44, 0.8, 0.08), CityPalette.c("metal_dark"), CityGeo.NO_BACK)
+			geo.box(f.xf, Vector3(m + 5.4, 1.75, 0.79), Vector3(0.18, 0.18, 0.02), CityPalette.c("marking_yellow"), CityGeo.NO_BACK)
 	capital(geo, core_xf, (core["size"] as Vector2) * 0.5, ceiling, stone)
 	if not (b["tiers"] as Array).is_empty():
 		_roof(geo, xf, b, b["tiers"][0], rng, ["planter", "ac"])
+
+
+## The freight lift's doorway (docs/design/city-ramps-and-stack.md section 9 "Lift cars"): CityDims.LIFT_DOOR_W x
+## LIFT_DOOR_H in the middle of the core's front face from the floor up. The face is drawn round it, the doorway's reveal
+## (jambs and head) runs LIFT_WALL m into the core, and the shut doors are baked across it LIFT_FILL m behind the face:
+## two leaves, a seam, a hazard band each (the same look as MissionLiftDoor's leaves standing shut). In a mission
+## MissionLiftDoor hides exactly those triangles (hide_fill: every one inside fill_box()) and builds the car behind;
+## without one the core is solid (CityDistrict collides the whole core box).
+const LIFT_DOOR_H := 9.0     ## m: the doorway's clear height (an 8 m mech capsule walks in with a step's room: R2.22)
+const LIFT_WALL := 1.0       ## m: the core's front wall at the doorway (the reveal's depth; the leaves run in it)
+const LIFT_FILL := 0.3       ## m behind the face: the baked shut doors' face
+
+static func _lift_doorway(geo: CityGeo, f: CityFacade.Face, top: float) -> void:
+	var stone := CityPalette.c("concrete")
+	var m := f.w * 0.5
+	var hw := CityDims.LIFT_DOOR_W * 0.5
+	var h := LIFT_DOOR_H
+	var a := m - hw
+	var b := m + hw
+	for r: Rect2 in [Rect2(0.0, -1.0, a, top + 1.0), Rect2(b, -1.0, f.w - b, top + 1.0), Rect2(a, h, b - a, top - h), Rect2(a, -1.0, b - a, 1.0)]:
+		_pane(geo, f, r.position.x, r.end.x, r.position.y, r.end.y, stone, 0.0)
+	var rev := CityPalette.c("concrete_dark")
+	var z := -LIFT_WALL
+	geo.quad(f.xf * Vector3(a, 0, 0), f.xf * Vector3(a, 0, z), f.xf * Vector3(a, h, z), f.xf * Vector3(a, h, 0), rev)
+	geo.quad(f.xf * Vector3(b, 0, z), f.xf * Vector3(b, 0, 0), f.xf * Vector3(b, h, 0), f.xf * Vector3(b, h, z), rev)
+	geo.quad(f.xf * Vector3(a, h, z), f.xf * Vector3(b, h, z), f.xf * Vector3(b, h, 0), f.xf * Vector3(a, h, 0), rev)
+	lift_leaves(geo, f.xf * Transform3D(Basis.IDENTITY, Vector3(m, 0, 0)), 0.0, -LIFT_FILL, true)
+
+
+## The two lift door leaves in frame `xf` (origin at floor mid-door on the face, +Z out), `open` 0..1 (each slides
+## LIFT_DOOR_W / 2 sideways), their face at z. `flat`: the baked fill (faces only, the district's); else boxes for the
+## MissionLiftDoor's moving leaves (called per leaf with its own frame: see MissionLiftDoor).
+static func lift_leaves(geo: CityGeo, xf: Transform3D, open: float, z: float, flat: bool) -> void:
+	var hw := CityDims.LIFT_DOOR_W * 0.5
+	for k: float in [-1.0, 1.0]:
+		var cx := k * hw * (0.5 + open)
+		lift_leaf(geo, xf * Transform3D(Basis.IDENTITY, Vector3(cx, 0, z)), k, flat)
+
+
+## One leaf (LIFT_DOOR_W / 2 x LIFT_DOOR_H) in frame `xf` (origin at its foot's middle on its face, +Z out); k: -1 the
+## left leaf, +1 the right. `flat`: its face and details only (proud of the face by at most 0.04 m).
+static func lift_leaf(geo: CityGeo, xf: Transform3D, k: float, flat: bool) -> void:
+	var w := CityDims.LIFT_DOOR_W * 0.5
+	var h := LIFT_DOOR_H
+	if flat:
+		geo.quad(xf * Vector3(-w * 0.5, 0, 0), xf * Vector3(w * 0.5, 0, 0), xf * Vector3(w * 0.5, h, 0), xf * Vector3(-w * 0.5, h, 0), CityPalette.c("m_leaf"))
+	else:
+		geo.box(xf, Vector3(0, h * 0.5, -0.15), Vector3(w, h, 0.3), CityPalette.c("m_leaf"))
+	var face := CityGeo.ALL - CityGeo.NZ
+	geo.box(xf, Vector3(0, h * 0.5, 0.02), Vector3(w - 0.6, 0.8, 0.04), CityPalette.c("marking_yellow"), face)
+	geo.box(xf, Vector3(-k * (w * 0.5 - 0.15), h * 0.5, 0.02), Vector3(0.3, h, 0.04), CityPalette.c("metal"), face)
+	for y: float in [1.6, h - 1.6]:
+		geo.box(xf, Vector3(0, y, 0.015), Vector3(w - 0.8, 0.25, 0.03), CityPalette.c("metal_dark"), face)
 
 
 const CAPITAL_COLLAR := 0.8     ## the collar under a pillar's capital: this tall, 0.8 m proud of the core's faces

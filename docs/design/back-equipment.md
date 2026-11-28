@@ -12,7 +12,7 @@ when its slot is selected (Controls); passives are always on.
 
 | id | Name | Type | Weight | What it does | Limit |
 | --- | --- | --- | ---: | --- | --- |
-| `repair_drone` | Repair Drone | active | 6 t | Launches a drone that circles the launcher for 60 s, repairs every mech within 15 m of the launcher, then flies home to its dock | 2 drones per mission, one out at a time, 15 heat per launch |
+| `repair_drone` | Repair Drone | active | 6 t | Launches a drone that circles the launcher for 60 s, repairs every mech within 30 m of the launcher (destroyed weapons too), then flies home to its dock; launches itself to revive its mech when it goes down | 2 drones per mission, one out at a time per slot, 15 heat per launch (none for a self-revive) |
 | `radiator` | Radiator Fins | passive | 5 t | Cooling +3 heat/s (9 -> 12 in play: a spawned mech cools at 9 /s) | none |
 | `ammo_bin` | Ammo Bin | passive | 6 t | +50% ammo on every limited-ammo weapon mounted (rockets 36 -> 54, missiles 18 -> 27) | none |
 
@@ -24,8 +24,8 @@ when its slot is selected (Controls); passives are always on.
   a destroyed back hardpoint: the slot is unusable (deselected, can't be selected), like a dry weapon.
 - Passives (radiator, ammo bin) are always on and ignore the key.
 - `WeaponRack.slots()` reports the back slot as usual, plus `equipment: true`, `passive: bool`, `active_left` (seconds of
-  repair the drone has left, 0 when none), `hint` (see As built), with `ammo` / `ammo_max` = drones left / 2. `ready` is
-  0 while a drone is out (until it has docked).
+  repair the slot's drone has left, 0 when none), `hint` (see As built), with `ammo` / `ammo_max` = drones left / 2.
+  `ready` is 0 while that slot's drone is out (until it has docked); the Bulwark's second drone slot can still launch.
 
 ## Repair drone
 - Launch: rises from its dock on the back mount out onto its orbit over 0.5 s, then circles the launcher 5 m out, 6 m
@@ -33,13 +33,14 @@ when its slot is selected (Controls); passives are always on.
   launcher (smoothed, about 0.4 s lag).
 - After 60 s it stops repairing and flies home to its dock on the launcher's back (1.5 s, homing on the moving mech,
   shrinking to the docked size), then the docked drone shows again. No early return when everyone is full: it circles
-  idle until its time is up. It dies at once (no return) when the launcher is downed or gone.
-- Repair: while circling, each second every mech within 15 m (horizontal) of the **launcher** gets 1% of its max HP
-  back, spent on its most damaged component first. About a minute in range restores 60%. Destroyed components and
-  destroyed mechs are not restored (that is `revive`, later). It repairs the launcher too.
-- Look: a small low-poly quad drone in the launcher's accent colour. Green only while it works: a green beam (thin,
-  unshaded, like the laser line) to each mech it is repairing right now, and a faint green ring on the ground at 15 m
-  around the launcher while at least one beam shows. Nothing green on the rise, while idle or on the way home.
+  idle until its time is up. It dies at once (no return) when the launcher is downed or gone (except a self-revive
+  drone, below).
+- Repair: while circling, each second every mech within 30 m (horizontal) of the **launcher** gets 1% of its max HP
+  back, spent on its most damaged component first. About a minute in range restores 60%. A destroyed WEAPON hardpoint is
+  rebuilt (2026-11-26); destroyed core components / downed mechs are the revive's job. It repairs the launcher too.
+- Look: a small low-poly quad drone in the launcher's accent colour. Green only while it works: the scan on each mech
+  it is repairing right now (below). No ground ring (removed 2026-11-26). Nothing green on the rise, while idle or on
+  the way home.
   Beam look since 2026-11-23 (the user's pick, cell C3 of the render probe `tools/scanner_beam/`): instead of the thin
   line, a "moving scan line" on each repaired target: one bright green ring around the body, level in the target's own
   up frame, travelling up and down it (15-95 % of its height, one trip up and back per 3 s, eased at the turns) with
@@ -58,6 +59,7 @@ when its slot is selected (Controls); passives are always on.
 - Repair drone: a **scheduled effect**. One broadcast `{launcher peer, start time}`. Every machine draws the drone from
   that and the launcher's (puppet) position. **Each machine repairs only its own mech** when it is inside the radius, via
   a new `heal(amount, src)` verb on `CombatTarget`, so nobody writes another mech's HP and no heal messages are sent.
+  The self-revive adds one optional field to the same broadcast (`"s": 1`), nothing else (2026-11-26).
 
 ## Needed from other sessions
 - Mech: meshes for the three back items (drone docked + flying, radiator fins, ammo bin) and mounting them on the model.
@@ -94,7 +96,7 @@ when its slot is selected (Controls); passives are always on.
   TAU x (now - t0) / `orbit_period` in the drone's level frame: a pure function of the record and the shared clock, so
   every machine draws the same orbit (no new messages, no RNG). Rise: dock -> orbit point over `rise`. Repair only while
   circling (`repairing()`: after the rise, before `life`): heals every target this machine OWNS that is not on the
-  enemy team within 15 m of the LAUNCHER across its up axis (`reach_to`; so the host also repairs host-owned non-enemy
+  enemy team within `radius` (30 m since 2026-11-26) of the LAUNCHER across its up axis (`reach_to`; so the host also repairs host-owned non-enemy
   targets such as dummies). Home (`returning()`, `home_fraction()`): from the orbit point of angle(t0 + life) around
   the current centre to the live dock (`EquipmentLook.dock`, re-read each step), smoothstep over `dock` s, scale
   FLY_SCALE -> the mount's, turning into the dock's orientation, bob faded out; `finished()` at life + dock, so it is
@@ -103,8 +105,8 @@ when its slot is selected (Controls); passives are always on.
   older than `life` is still dropped (a late joiner doesn't see a drone already on its way home).
 - **Green**: `RepairDrone.repairable(t)` (hittable, not destroyed, a component with 0 < hp < max): the one test for the
   owner's own target (exactly when `heal` restores something) and for puppets (their streamed mirror HP). Beams go to
-  repairable non-enemy targets in range while `repairing()`; the ring (centred on the launcher) shows only while a beam
-  does (`ring_shown()`).
+  repairable non-enemy targets in range while `repairing()`. (The ground ring that showed with them is gone since
+  2026-11-26; see Playtest changes.)
 - **Heal verb**: `CombatTarget.heal(amount, src) -> float` (signal `healed(amount, component, src)`): lowest HP fraction
   first, spills over, never a destroyed component, nothing on a destroyed or not-hittable target. `PlayerTarget` needs
   no override (its HP is in `hp` / `max_hp`; `is_hittable()` is false while `disabled`).
@@ -145,6 +147,41 @@ when its slot is selected (Controls); passives are always on.
   puppet, revive. Bots (`scripts/ai/player_bot.gd`) never launch the drone: they deselect any slot that is not
   `in_range` (equipment never is) and never call `activate`.
 
+## Playtest changes (2026-11-26, weapons session: R2.1 / R2.2 / R2.9 / R2.20 / R2.21)
+- **Reach 30 m** (R2.20): catalog `radius` 15 -> 30 (orbit, hover, follow unchanged). The scan wedge to a target 30 m
+  out is the same thin fan from the lens, just longer.
+- **No ground ring** (R2.21): the faint green ground ring at `radius` round the launcher is gone (mesh, node, colour,
+  `RepairDroneLook.ring_shown()`); the scan on each repaired target is the only green.
+- **Destroyed weapons rebuilt** (R2.1): `PlayerTarget.heal` overrides `CombatTarget.heal`: a destroyed WEAPON hardpoint
+  (never a core component) counts as the most damaged (its fraction = the HP banked toward it) and the heal it gets is
+  banked (`_rebuild`, owner-only, PRIVATE) while its hp stays 0, so it stays destroyed (hits on it still go to the
+  torso) until `PlayerTarget.REBUILD_AT` (25 %, 20 HP of 80) is banked; then hp jumps to that. From there it is an
+  ordinary damaged component: `is_slot_destroyed` false, the rack slot usable again but deselected (UNUSABLE SLOTS), the
+  crew sees it in the snapshot's component byte (the puppet mirror writes hp from it each snapshot). The threshold
+  stops a fraction-of-an-HP hardpoint from soaking a whole hit (damage does not spill) and stops the destroyed / alive
+  state flickering under the beam. `RepairDrone.repairable` is true for a mech with a destroyed weapon hardpoint, so the
+  scan shows. (A destroyed hardpoint's weapon model was never hidden: the wreck stays on the model.)
+- **One drone per slot** (R2.2): `WeaponRack.drones[i]` is slot i's drone; `can_launch(i)` is blocked only by slot i's
+  own drone (`drone_out_at(i)`); `drone_out()` = any out; `drone` = the newest one out. "DRONE OUT" / `active_left` per
+  slot. `CombatWorld.launch_drone` replaces a live drone of the same (shooter, hardpoint) only; `drone_at(shooter, hp)`,
+  `drones_of(shooter)`, `drone_of(shooter)` (prefers one on duty). `EquipmentLook` swaps each saddle's cradle by its own
+  hardpoint (`shown_at(shooter, hp)`). CombatNet's duplicate key is (origin, hardpoint, t): both slots can launch in one
+  step. Two drones out both heal (2 %/s): left as is.
+- **Self-revive** (R2.9, user decision; reverses "a drone never revives its launcher"): when a mech goes down (its
+  PlayerTarget `disabled` false -> true, seen by its own rack each step on the owner's machine: MissionCombat for the
+  pilot, CrewBot for host bots, both step the rack while downed) and a repair-drone slot has a charge and an intact
+  back hardpoint, the rack kills every drone of that mech still out, then launches ONE drone (lowest such slot; no
+  `can_act`, no heat, one charge) with `"self": true`. It is a normal drone (same beam / scan, `revive_tick`,
+  REVIVE_STRUCTURE, REVIVE_INVULN) that does not die while its launcher is downed (only redeploying or gone), beams its
+  own launcher (the revive time scaled to the catalog `self_revive_time`, 4 s = REVIVE_TIME: `dt x REVIVE_TIME /
+  self_revive_time`), and revives ONCE: once the launcher has been seen down and then standing (or never seen down within
+  `RepairDrone.SELF_GRACE` 2 s: a remote machine can get the launch before the snapshot), `self_done` is set and it is
+  an ordinary drone for the rest of its life (heals, revives others, dies if the launcher goes down again; a new
+  self-revive needs another charge). Holding SPACE still redeploys (the drone dies, the charge stays spent). Query:
+  `CombatWorld.self_reviving(target_id)` (any machine). The test hook `auto_respawn_delay` does not change it.
+- **Tests**: `test_back_equipment` (29 m heals / 31 m not, no ground ring, rebuild through the bank, Bulwark two drones,
+  the self-revive cases), `test_net_self_revive` (2 peers + a host bot: rebuild seen on B's puppet, A's and the bot's
+  self-revive seen on B with the flag, the scan and `self_reviving` true then false), `test_net_drone` (no ring).
 ## Later candidates
 Point defence, coolant flush, jump jets, deployable barrier, smoke, ammo carrier, heat sink bank, gyro, armour pack,
 sensor mast.

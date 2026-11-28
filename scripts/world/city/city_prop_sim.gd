@@ -239,8 +239,10 @@ static func floor_rects(plan: CityPlan) -> Array:
 	for q: Dictionary in plan.raised:      # road forms' courts and planting bands (city-variety.md)
 		out.append({"rect": q["rect"], "h": CityPlan.CURB_H})
 	var av := plan.avenue_x()
+	for r: Rect2 in CityDims.spine_planted(plan):      # a section spine's medians and verges (city-spine.md)
+		out.append({"rect": r, "h": CityPlan.CURB_H})
 	for road: Dictionary in plan.roads_x:
-		if road["kind"] != "avenue" and road["kind"] != "spine":
+		if road["kind"] != "avenue":
 			continue
 		var mid := (av.x + av.y) * 0.5
 		for j in plan.roads_s.size() - 1:
@@ -248,6 +250,7 @@ static func floor_rects(plan: CityPlan) -> Array:
 			var v1 := float(plan.roads_s[j + 1]["a"]) - 9.0
 			if v1 - v0 >= 6.0:
 				out.append({"rect": Rect2(mid - 1.5, v0, 3.0, v1 - v0), "h": CityPlan.CURB_H})
+	out.append_array(CityStation.floor_rect(plan))      # the tram station's platform (a section's top deck)
 	for l: Dictionary in plan.lots:
 		if l["kind"] != "open":
 			continue

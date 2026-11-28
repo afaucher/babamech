@@ -26,7 +26,7 @@ Measured against the **8.0 m** player mech, **5.6 m** street trees, **12 m** str
 **Palette (`EnemyMeshes`):** high-contrast cool obsidian (`#1c1f26`), slate armor (`#333845`), gunmetal steel (`#525761`), invader crimson trim (`#c21c24`), unshaded crimson optic glow (`#ff242e`, flaring white-amber on telegraph), and orange-crimson vent glow (`#ff661a`) — popping sharply against the warm sunlit cream/terracotta/sage `CityPalette` and the white/orange player mech.
 
 **Feedback (no floating ASCII text walls):**
-- Compact world-space `EnemyStatusBar`: distance-scaled crimson chevron when alerted (flashes hot yellow-white while telegraphing), thin red HP bar + amber heat sliver once alerted/damaged, 1-word status tag only during `STAGGER` or `OVERHEAT`.
+- Compact world-space `EnemyStatusBar`: a thin red HP bar once damaged, nothing else (no chevrons, tags or heat bar since R2.26, 2026-11-26). Overheat reads from the unit: fin glow, dark optics, slump, steam (`EnemyHeatLook`, docs/design/enemy-ai-structure.md "Overheat look").
 - Diegetic cues: `0.07 s` hit-flash overlay per struck component, part destruction sparks & charred stub swap, overheat droop + vents/smoke, scaled `ImpactFx` death explosion.
 
 ## 3. Components, Weak Points, Heat & TTK

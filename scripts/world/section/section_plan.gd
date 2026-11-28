@@ -22,8 +22,11 @@ extends RefCounted
 ##   connectors   [{id, kind: ramp | lift | shaft, role: critical | branch | shortcut, from, to, stops: [deck],
 ##                  vehicles, two_way, locked, x0, x1, theta0, theta1, col, row, pillar,
 ##                  top: {deck, i, j}, bottom: {deck, i, j}, lane, top_line, foot_line}]
-##                  footprint on a deck = connector_rect(); a lift's is its platform, centred on its pillar, the same
-##                  size on every stop (its stored x0..theta1 are the platform on its top stop only)
+##                  a ramp also has run_top, run_foot: the ANGLES where its slope starts and ends, ramp_end_inset(j) inside
+##                  its whole-row span (theta0..theta1, top_line..foot_line) at both ends (R2.17); ramp_run(ci, k)
+##                  footprint on a deck = connector_rect(); a ramp's is its run (the floor cut / the landing); a lift's
+##                  is its platform, centred on its pillar, the same size on every stop (its stored x0..theta1 are the
+##                  platform on its top stop only)
 ##                  HOP-ONLY RULE (validate()): every deck k+1 is reachable from deck k without a lift or a glide, by an
 ##                  unlocked ramp or a shaft whose drop lands on k+1's floor: walkable_down(k) / walkable_down_connector(k)
 ##                  (walkable_up(k): a ramp; not enforced). Plans that break it are repaired (walk_repairs), no others.
@@ -35,16 +38,20 @@ extends RefCounted
 ##   entry / extraction   {deck, i, j, col, row}
 ##   route        {vehicle: [{deck, i, j}], mech: [{deck, col, row}], vehicle_len, mech_len}   vehicle: over the segments
 ##                  vehicles keep (road_graph), so it avoids pedestrian / none segments and unbridged ramp cuts
-##   boundaries   [{deck, edge: s0 | s1 | x0 | x1, kind: bulkhead | window, backdrop, gates: [{kind: portal |
-##                  blast_door | collapsed, role: entry | extraction | "", axis, line, x, s, width}]}]
-##                  the four walls of every deck: s0 / s1 close the ends of the arc, x0 / x1 the sides (boundary_rect)
+##   boundaries   [{deck, edge: s0 | s1 | x0 | x1, kind: bulkhead | window, backdrop, gates: [{kind: road_door |
+##                  blast_door | collapsed | tram_door, role: entry | exit | none | "", axis, line, x, s, width, h}]}]
+##                  the four walls of every deck: s0 / s1 close the ends of the arc, x0 / x1 the sides (boundary_rect).
+##                  Spine ends: one ROAD_DOOR_W door on the avenue lane: road_door (role entry / exit) where the crew
+##                  comes in / leaves, else role none: blast_door (a wave gate) or collapsed. tram_door: TRAM_DECK only,
+##                  both arc ends, on the rail lane. Other gates: blast_door, role "". Wave sources: blast_door only.
 ##   hooks        [{kind: checkpoint | cordon | patrol | pylon | banner | holding | station, deck, x, s, ...}]
 ##
 ## DECK VIEW. `deck_view(k)` gathers what a geometry builder needs for one deck, in that deck's (x, s), read-only:
 ##   {deck, radius, clear_height, slab, extent: Rect2 (the ground inside the walls),
 ##    blocks [{col, row, rect, zone, region (index into decks[k].regions), pillar (id or -1)}]   row-major
 ##    pillars [{id, col, row, x, s, half, kind, lift}],
-##    road_strips [{rect, kind: perimeter | arterial | cross | avenue | rail | ramp_lane, axis, line, lane, index, form}]
+##    road_strips [{rect, kind: perimeter | arterial | cross | avenue | rail | verge | ramp_lane, axis, line, lane, index,
+##                 form}]   the rail lane is kind rail on TRAM_DECK only, verge elsewhere (lane_kind)
 ##                 one per road segment (the spine's split per lane), crossing centre to crossing centre; blocks +
 ##                 strips tile the extent; strips overlap only where roads cross,
 ##    connectors [{id, kind, role, locked, part: hole | landing | stop, rect}]   a ramp's hole runs along its spine lane
@@ -55,9 +62,22 @@ extends RefCounted
 ##    keep_clear [Rect2], walls [{edge, kind, backdrop, rect, gates}]   in EDGES order}
 
 const ZONES: Array[String] = ["urban", "park", "industrial", "open", "transit"]
-## The transit spine, west to east: [lane, width]. Ramps between decks dive out of the two outer lanes.
-const SPINE_LANES := [["ramp_a", 10.0], ["avenue", 18.0], ["rail", 12.0], ["ramp_b", 10.0]]
-const SPINE_W := 50.0
+## The transit spine, west to east: [lane, width]. Ramps between decks dive out of the two outer lanes; the avenue is
+## the main road (its end-wall door the ordinary road door); the rail lane carries the one tram track on TRAM_DECK and is
+## a planted verge on every other deck (docs/design/city-spine.md §2; 50 m wide until 2026-11-27).
+const SPINE_LANES := [["ramp_a", 10.0], ["avenue", 14.0], ["rail", 6.0], ["ramp_b", 10.0]]
+const SPINE_W := 40.0
+const TRAM_DECK := 0             ## the one deck with tram track, station and tram doors
+const ROAD_DOOR_W := 14.0        ## a road door's gate in an end wall (12.8 m clear between its jambs)
+const ROAD_DOOR_H := 9.0
+const TRAM_DOOR_W := 3.8         ## the tram door's clear width (too narrow for a mech)
+const TRAM_DOOR_H := 4.6
+## A ramp spans whole rows (top cross line to foot cross line) but its slope starts and ends this far past the edge of the
+## junction box at each end (ramp_end_inset: the cross road's half width + this, from the cross line centre; on the upper
+## deck at the top, the lower deck at the foot): flat service road there, clear of the zebra (1.8-4.8 m past the box) and
+## at the stop line (5.6-6 m), so the ramp ends clear of the junction and its crosswalks (playtest R2.17: "move it about
+## 6 m so it ends clear of the intersection and its crosswalks"; city-spine.md "Ramp ends stay out of junctions").
+const RAMP_END_PAST_BOX := 6.0
 const ARTERIAL_W := 14.0
 const PERIMETER_W := 12.0
 const LIFT_HALF := 14.0          ## half side of a freight-lift pillar (holds a LIFT_PLATFORM platform)
@@ -88,7 +108,10 @@ const CUT_TOUCH := 1.0           ## a segment this close to a floor cut / connec
 
 const DEFAULTS := {
 	"seed": 1.0, "decks": 3.0, "arc": 540.0, "width": 270.0, "radius": 400.0, "pitch": 48.0, "slab": 8.0,
-	"cell": 90.0, "ramp_grade": 0.18, "shafts": 1.0, "express": 1.0,
+	# ramp_grade: the steepest fitted slope run (pitch / run). 0.18 on the whole-row span until 2026-11-27; 0.20 on the
+	# run (13 m in from each 14 m cross road's centre) keeps every default ramp at its row count (3 rows of 90 m: 48 m
+	# over ~244 m = 0.197).
+	"cell": 90.0, "ramp_grade": 0.20, "shafts": 1.0, "express": 1.0,
 	"w_urban": 1.0, "w_park": 0.45, "w_industrial": 0.45,
 	# Road segment forms: share of the minor segments rolled lane / pedestrian / none (the rest stay streets). Live since
 	# 2026-11-23 (the city draws them); 0 / 0 / 0 makes every segment a street.
@@ -224,6 +247,34 @@ func lane_x(lane: String) -> Vector2:
 	return Vector2(x, x)
 
 
+## What a spine lane is on deck k: "avenue", "ramp_lane" (ramp_a / ramp_b), and for the rail lane "rail" on TRAM_DECK
+## (the tram's one track), "verge" (a planted strip, no track) on every other deck. "" for an unknown lane.
+func lane_kind(k: int, lane: String) -> String:
+	match lane:
+		"rail": return "rail" if k == TRAM_DECK else "verge"
+		"avenue": return "avenue"
+		"ramp_a", "ramp_b": return "ramp_lane"
+	return ""
+
+
+## The spine's lanes on deck k, west to east: [{lane, a, b, kind}] (a..b = lane_x, kind = lane_kind).
+func spine_lanes(k: int) -> Array:
+	var out := []
+	for l: Array in SPINE_LANES:
+		var lx := lane_x(str(l[0]))
+		out.append({"lane": str(l[0]), "a": lx.x, "b": lx.y, "kind": lane_kind(k, str(l[0]))})
+	return out
+
+
+## Where ramp ci's slope starts and ends, as s on deck k: Vector2(s at run_top, s at run_foot) (the stored angles times
+## the deck's radius, like every shared angle). Vector2.ZERO for anything but a ramp.
+func ramp_run(ci: int, k: int) -> Vector2:
+	var c: Dictionary = connectors[ci]
+	if c["kind"] != "ramp":
+		return Vector2.ZERO
+	return Vector2(float(c["run_top"]), float(c["run_foot"])) * radius_of(k)
+
+
 ## The buildable inside of cell (c, r) on deck k: the cell minus the roads around it.
 func cell_rect(k: int, c: int, r: int) -> Rect2:
 	var x0 := col_x[c] + line_width("s", c) * 0.5
@@ -260,14 +311,17 @@ func pillar_radius(k: int, id: int) -> float:
 	return float(PILLAR_R[pillar_style(k, id)])
 
 
-## A connector's footprint on deck k as a Rect2 (x, s): the hole on its upper deck, the landing below. A lift's is its
-## platform, LIFT_PLATFORM square centred on its pillar, the same size on every stop: scaling its stored angles by the
-## radius would stretch it past its pillar on the lower decks.
+## A connector's footprint on deck k as a Rect2 (x, s): the hole on its upper deck, the landing below. A ramp's is its
+## slope run (run_top..run_foot), not its whole-row span. A lift's is its platform, LIFT_PLATFORM square centred on its
+## pillar, the same size on every stop: scaling its stored angles by the radius would stretch it past its pillar on the
+## lower decks.
 func connector_rect(ci: int, k: int) -> Rect2:
 	var c: Dictionary = connectors[ci]
 	if c["kind"] == "lift" and int(c["pillar"]) >= 0:
 		var at := pillar_point(k, int(c["pillar"]))
 		return Rect2(at.x - LIFT_PLATFORM * 0.5, at.y - LIFT_PLATFORM * 0.5, LIFT_PLATFORM, LIFT_PLATFORM)
+	if c["kind"] == "ramp":
+		return _ramp_rect(c, k)
 	var r := radius_of(k)
 	return Rect2(float(c["x0"]), float(c["theta0"]) * r, float(c["x1"]) - float(c["x0"]),
 			(float(c["theta1"]) - float(c["theta0"])) * r)
@@ -401,25 +455,49 @@ func _ramp_lane(k: int) -> String:
 
 
 ## The ramp from deck k down to k+1 in spine lane `lane`, at the far end of deck k's crossing (where a critical ramp
-## goes), no steeper than ramp_grade: the connector fields, or {} when the grid has no room for its run.
+## goes): the fewest whole rows whose slope run (the span less ramp_end_inset at each end) is no steeper than
+## ramp_grade. The connector fields, or {} when the grid has no room for its run.
 func _ramp_at(k: int, lane: String) -> Dictionary:
 	var d := _dir(k)
 	var far_row := rows - 1 if d > 0 else 0
 	var top_line := rows - 1 if d > 0 else 1
-	var row_len := span / float(rows) * radius_of(k)
-	var need := int(ceil(p("pitch") / p("ramp_grade") / row_len))
-	if need > rows - 2:
+	var need := -1
+	for n in range(1, rows - 1):
+		var run := ramp_run_len(k, top_line, top_line - d * n)
+		if run > 0.0 and p("pitch") / run <= p("ramp_grade") + 1e-9:
+			need = n
+			break
+	if need < 0:
 		return {}
 	var foot_line := top_line - d * need
 	var lx := lane_x(lane)
 	var col := spine_line - 1 if lane == "ramp_a" else spine_line
 	var foot_row := foot_line - 1 if d > 0 else foot_line
+	# The slope's ends as angles: ramp_end_inset past the top line on deck k, short of the foot line on deck k+1.
+	var down := signf(row_theta[foot_line] - row_theta[top_line])
+	var run_top: float = row_theta[top_line] + down * ramp_end_inset(top_line) / radius_of(k)
+	var run_foot: float = row_theta[foot_line] - down * ramp_end_inset(foot_line) / radius_of(k + 1)
 	return {"lane": lane, "top_line": top_line, "foot_line": foot_line, "x0": lx.x, "x1": lx.y,
 			"theta0": minf(row_theta[top_line], row_theta[foot_line]),
 			"theta1": maxf(row_theta[top_line], row_theta[foot_line]),
+			"run_top": run_top, "run_foot": run_foot,
 			"col": col, "row": far_row, "foot_row": foot_row,
 			"top": {"deck": k, "i": spine_line, "j": top_line},
 			"bottom": {"deck": k + 1, "i": spine_line, "j": foot_line}}
+
+
+## How far a ramp's slope end sits from cross line j's centre: the cross road's half width (the junction box) plus
+## RAMP_END_PAST_BOX. 13 m on a 14 m cross road, 12 m on a 12 m perimeter road.
+func ramp_end_inset(j: int) -> float:
+	return line_width("x", j) * 0.5 + RAMP_END_PAST_BOX
+
+
+## Length in deck k's metres of the slope run of a ramp from deck k between cross lines top_line and foot_line: the rows
+## between them on deck k, less ramp_end_inset at the top (on deck k) and at the foot (on deck k+1, scaled to deck k).
+## Its grade is pitch / this.
+func ramp_run_len(k: int, top_line: int, foot_line: int) -> float:
+	var row_len := span / float(rows) * radius_of(k)
+	return float(absi(top_line - foot_line)) * row_len - ramp_end_inset(top_line) 			- ramp_end_inset(foot_line) * radius_of(k) / radius_of(k + 1)
 
 
 ## Append the ramp `spec` (_ramp_at) from deck k; its head and foot cells become transit (stations).
@@ -477,8 +555,8 @@ func _place_express() -> void:
 	_add_lift(c, rows / 2, range(deck_count), "branch", true)
 
 
-## Entry: the spine's portal through the bulkhead on the top deck. Extraction: the spine's portal at the far end of the
-## lowest deck's crossing.
+## Entry: the spine's road door (role entry) in the top deck's s0 wall. Extraction: the spine's road door (role exit) at
+## the far end of the lowest deck's crossing. The (i, j) crossing is the spine's node on the perimeter road in front.
 func _place_ends() -> void:
 	var side := _rng.randi_range(0, 1)
 	entry = {"deck": 0, "i": spine_line, "j": 0, "col": spine_line - 1 + side, "row": 0}
@@ -656,10 +734,12 @@ func _ramp_room(k: int, spec: Dictionary) -> bool:
 	return true
 
 
+## A ramp's footprint on deck k (a connector or a _ramp_at spec): its lane across, its slope run along.
 func _ramp_rect(spec: Dictionary, k: int) -> Rect2:
 	var r := radius_of(k)
-	return Rect2(float(spec["x0"]), float(spec["theta0"]) * r, float(spec["x1"]) - float(spec["x0"]),
-			(float(spec["theta1"]) - float(spec["theta0"])) * r)
+	var t0 := minf(float(spec["run_top"]), float(spec["run_foot"]))
+	var t1 := maxf(float(spec["run_top"]), float(spec["run_foot"]))
+	return Rect2(float(spec["x0"]), t0 * r, float(spec["x1"]) - float(spec["x0"]), (t1 - t0) * r)
 
 
 ## Move the shaft of deck k+1 that a shaft from deck k drops into to another free cell (first free cell in the middle
@@ -942,25 +1022,42 @@ func road_graph(locked: bool = true) -> Array:
 	return adj
 
 
-## A ramp coming down from the deck above blocks the cross road where it is too low to drive under (at its foot).
+## A ramp coming down from the deck above blocks the cross road where it passes over the road's strip too low to drive
+## under: the viaduct's clearance rises linearly (clear_height over the fitted slope run, run_foot -> run_top), taken at
+## the strip's end nearer the foot. A road whose strip misses the run is not under the ramp at all (since the R2.17 run,
+## the cross road at the foot line: the slope lands ramp_end_inset short of it).
 func _crossing_blocked(k: int, i: int, j: int) -> bool:
-	for c: Dictionary in connectors:
+	for ci in connectors.size():
+		var c: Dictionary = connectors[ci]
 		if c["kind"] != "ramp" or int(c["to"]) != k:
 			continue
 		if i != (spine_line - 1 if c["lane"] == "ramp_a" else spine_line):
 			continue
-		var n := absi(int(c["top_line"]) - int(c["foot_line"]))
-		var h := clear_height() * float(absi(j - int(c["foot_line"]))) / float(n)
-		var inside := (j - int(c["foot_line"])) * (int(c["top_line"]) - int(c["foot_line"])) >= 0 and absi(j - int(c["foot_line"])) <= n
-		if inside and h < VEHICLE_CLEARANCE:
+		var run := ramp_run(ci, k)          # x: top, y: foot
+		var lo := minf(run.x, run.y)
+		var hi := maxf(run.x, run.y)
+		var s := line_s(k, j)
+		var hw := line_width("x", j) * 0.5
+		var a := maxf(s - hw, lo)
+		var b := minf(s + hw, hi)
+		if a >= b:
+			continue
+		var f := minf(_run_frac(run, a), _run_frac(run, b))
+		if clear_height() * f < VEHICLE_CLEARANCE:
 			return true
 	return false
 
 
+## How far up a ramp's run s is, 0 at run.y (the foot) .. 1 at run.x (the top), clamped.
+static func _run_frac(run: Vector2, s: float) -> float:
+	return clampf((s - run.y) / (run.x - run.y), 0.0, 1.0)
+
+
 ## The cross lines of ramp ci's upper (`from`) deck with no bridge over its cut: strictly between its head and foot,
 ## where a mech walking down would not clear the road's underside (BRIDGE_CLEARANCE, measured on the ramp's centre line at
-## the road's edge nearer the head). Empty for anything but a ramp, or with param bridge_rule 0. Default grade: exactly
-## the first line past the head. (Never changes anything stored: the vehicle route keeps to the spine there.)
+## the road's edge nearer the head, down the fitted slope run from run_top). Empty for anything but a ramp, or with param
+## bridge_rule 0. Default grade: exactly the first line past the head. (Never changes anything stored: the vehicle route
+## keeps to the spine there.)
 func bridge_lines(ci: int) -> Array[int]:
 	var out: Array[int] = []
 	var c: Dictionary = connectors[ci]
@@ -969,10 +1066,11 @@ func bridge_lines(ci: int) -> Array[int]:
 	var k := int(c["from"])
 	var top := int(c["top_line"])
 	var foot := int(c["foot_line"])
-	var s_top := line_s(k, top)
-	var run := absf(line_s(k, foot) - s_top)
+	var rr := ramp_run(ci, k)
+	var s_top := rr.x
+	var run := absf(rr.y - rr.x)
 	for j in range(mini(top, foot) + 1, maxi(top, foot)):
-		var d := absf(line_s(k, j) - s_top) - line_width("x", j) * 0.5
+		var d := maxf(absf(line_s(k, j) - s_top) - line_width("x", j) * 0.5, 0.0)
 		if p("pitch") * d / run - p("slab") < BRIDGE_CLEARANCE:
 			out.append(j)
 	return out
@@ -1180,7 +1278,7 @@ func _forced_streets() -> Array:
 		var on: Array = c["stops"] if c["kind"] == "lift" else [int(c["from"]), int(c["to"])]
 		for k: int in on:
 			force_touching.call(k, connector_rect(ci, k).grow(CUT_TOUCH))
-	# Gates: every segment ending at a door, portal or collapsed tunnel in a wall.
+	# Gates: every segment ending at a door in a wall (road, tram or collapsed).
 	for b: Dictionary in boundaries:
 		var k := int(b["deck"])
 		for g: Dictionary in b["gates"]:
@@ -1543,10 +1641,16 @@ func _make_route() -> void:
 
 ## The section is an arc segment of the ring, walled on all four sides on every deck. A wall is a structural BULKHEAD
 ## (solid: the city is built up to it) or a pressure wall with WINDOWS onto the rest of the habitat (the low-detail ring
-## beyond is the backdrop, so the curve still reads). Where a road meets a wall there is a gate: the PORTAL the crew
-## enters or leaves by, a BLAST DOOR the occupiers have sealed, or a COLLAPSED transit tunnel. Roads without a gate end
-## at the perimeter road that runs along the inside of every wall.
+## beyond is the backdrop, so the curve still reads). Where a road meets a wall there is a gate (fiction: the section's
+## sealable blast doors to the docking / cargo areas, all shut in this lockdown; mission-section.md §8): on the spine one
+## ROAD_DOOR_W road door centred on the avenue lane, a `road_door` with role entry / exit where the crew comes in and
+## leaves, otherwise (role none) an ordinary `blast_door` the occupiers may send waves through or a `collapsed` one that
+## never opens; on TRAM_DECK a `tram_door` in both arc ends on the rail lane; elsewhere a `blast_door` (role ""). Roads
+## without a gate end at the perimeter road that runs along the inside of every wall. (The 2026-11-27 door kinds added
+## and removed no roll: the generator stream is the same.)
 func _make_boundaries() -> void:
+	var av := lane_x("avenue")
+	var rl := lane_x("rail")
 	for k in deck_count:
 		for edge in EDGES:
 			var arc_end := edge.begins_with("s")
@@ -1558,26 +1662,34 @@ func _make_boundaries() -> void:
 			var window := _rng.randf() < (0.65 if arc_end else 0.25) and not is_entry and not is_exit
 			var gates := []
 			if arc_end:
+				var s_wall: float = row_theta[j_end] * radius_of(k)
 				for i in range(1, cols):
 					var at := node_pos(k, i, j_end)
-					var kind := "blast_door"
-					var role := ""
 					var roll := _rng.randf()
-					if i == spine_line:
-						if is_entry or is_exit:
-							kind = "portal"
-							role = "entry" if is_entry else "extraction"
-						elif roll < 0.4:
-							kind = "collapsed"
-					gates.append({"kind": kind, "role": role, "axis": "s", "line": i, "x": at.x,
-							"s": row_theta[j_end] * radius_of(k), "width": line_width("s", i)})
+					if i != spine_line:
+						gates.append({"kind": "blast_door", "role": "", "axis": "s", "line": i, "x": at.x, "s": s_wall,
+								"width": line_width("s", i), "h": ROAD_DOOR_H})
+						continue
+					var kind := "blast_door"
+					var role := "none"
+					if is_entry or is_exit:
+						kind = "road_door"
+						role = "entry" if is_entry else "exit"
+					elif roll < 0.4:
+						kind = "collapsed"
+					gates.append({"kind": kind, "role": role, "axis": "s", "line": i, "x": (av.x + av.y) * 0.5, "s": s_wall,
+							"width": ROAD_DOOR_W, "h": ROAD_DOOR_H})
+					if k == TRAM_DECK:
+						gates.append({"kind": "tram_door", "role": "", "axis": "s", "line": i, "x": (rl.x + rl.y) * 0.5,
+								"s": s_wall, "width": TRAM_DOOR_W, "h": TRAM_DOOR_H})
 			else:
 				var i_end := 0 if edge == "x0" else cols
 				for j in range(1, rows):
 					if _rng.randf() >= 0.3:
 						continue       # most cross streets just end at the perimeter road
 					gates.append({"kind": "blast_door", "role": "", "axis": "x", "line": j,
-							"x": p("width") * (-0.5 if i_end == 0 else 0.5), "s": line_s(k, j), "width": line_width("x", j)})
+							"x": p("width") * (-0.5 if i_end == 0 else 0.5), "s": line_s(k, j), "width": line_width("x", j),
+							"h": ROAD_DOOR_H})
 			boundaries.append({"deck": k, "edge": edge, "kind": "window" if window else "bulkhead", "backdrop": window,
 					"gates": gates})
 
@@ -1664,7 +1776,7 @@ func _road_strips(k: int, extent: Rect2) -> Array:
 			if i == spine_line:
 				for l: Array in SPINE_LANES:
 					var lx := lane_x(str(l[0]))
-					var kind := "ramp_lane" if str(l[0]).begins_with("ramp") else str(l[0])
+					var kind := lane_kind(k, str(l[0]))
 					out.append({"rect": Rect2(lx.x, r.position.y, lx.y - lx.x, r.size.y), "kind": kind, "axis": "s",
 							"line": i, "lane": str(l[0]), "index": j, "form": form})
 				continue
@@ -1694,7 +1806,9 @@ func _make_hooks() -> void:
 			for k: int in c["stops"]:
 				var at := node_pos(k, c["top"]["i"], c["top"]["j"])
 				hooks.append({"kind": "checkpoint", "deck": k, "x": at.x, "s": at.y, "connector": int(c["id"]), "size": "light"})
-	# A cordon in front of every sealed door: the occupiers hold their side of the wall.
+	# A cordon in front of every sealed road door that may open (blast_door: not the crew's doors, not collapsed, not the
+	# tram doors): the occupiers keep a light guard post on their side of the wall (an encounter site; the barricade blocks
+	# that once dressed it were removed 2026-11-26).
 	for b: Dictionary in boundaries:
 		for g: Dictionary in b["gates"]:
 			if g["kind"] == "blast_door":
@@ -1773,6 +1887,8 @@ func checksum() -> String:
 			buf.put_32(int(v))
 		buf.put_8((1 if c["vehicles"] else 0) + (2 if c["two_way"] else 0) + (4 if c["locked"] else 0))
 		PlanHash.put(buf, [c["x0"], c["x1"], float(c["theta0"]) * 1000.0, float(c["theta1"]) * 1000.0])
+		if c["kind"] == "ramp":
+			PlanHash.put(buf, [float(c["run_top"]) * 1000.0, float(c["run_foot"]) * 1000.0])
 	for w: Dictionary in route["vehicle"]:
 		buf.put_32(node_id(w["deck"], w["i"], w["j"]))
 	for w: Dictionary in route["mech"]:
@@ -1785,6 +1901,7 @@ func checksum() -> String:
 		buf.put_utf8_string("%s:%s" % [b["edge"], b["kind"]])
 		for g: Dictionary in b["gates"]:
 			buf.put_utf8_string("%s:%s:%s" % [g["kind"], g["role"], g["axis"]])
+			PlanHash.put(buf, [g["x"], g["width"], g["h"]])
 			buf.put_32(int(g["line"]))
 	for e: Dictionary in [entry, extraction]:
 		for v in [e["deck"], e["i"], e["j"], e["col"], e["row"]]:

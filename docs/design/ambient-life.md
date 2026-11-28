@@ -38,7 +38,7 @@ speed away. A minute after the shooting stops, a door opens and one person looks
 | Pedestrian | 1.8 m | walk 1.4 m/s, run 4.5 | 24 / 60 | Sidewalks, zebra crossings, park paths, plazas |
 | Pod (shared driverless cab, 4 seats) | 3.4 x 1.8 x 1.9 m | 9 m/s streets, 12 avenue, 14 fleeing | 8 / 12 | Road lanes; docked in parking strips |
 | Service cart (delivery / cleaning) | 2.6 x 1.4 x 1.6 m | 4 m/s | 2 / 4 | Kerb side of streets, plazas |
-| Tram (3 cars, section mode only) | 3 x 9 m cars | 14 m/s | 0 / 1 | The spine's rail lane, between station hooks |
+| Tram (3 cars, a section's top deck only) | 3 x 9 m cars | 14 m/s | 0 / 1 | One way along the rail lane's centre line, door to door, one station (R2.11) |
 
 Hard caps, enforced in code and tested. Agents are simulated and drawn only near players (section 9); a district with
 nobody in it costs nothing.
@@ -60,8 +60,8 @@ reacts to another in calm state, which is what makes it free on the network (sec
 - **Pods** loop the road grid in the right-hand lane, stop at red lights and stop lines, pull into a pod stop for a
   10 s dwell now and then, and dock in a parking strip when their trip ends. Docked pods are the "parked cars".
 - **Service carts** crawl along the kerb, stopping at each bin.
-- **Tram**: end to end along the rail lane with a 20 s dwell at each station hook; one tram, so it passes about every two
-  minutes.
+- **Tram** (R2.11, top deck only): one way, in through the s0 tram door, 20 s at the station, out through the s1 door;
+  one train every two minutes.
 - **Checkpoints** (section hooks): a barrier across the lanes; every pod stops 6 s, so a short queue forms.
 - **Ramps**: pods take them between decks once ramps are built; freight lifts carry vehicles later (rescue convoys).
 
@@ -224,7 +224,7 @@ Code in `scripts/world/life/`; a lab subject `life`; shown in the test drive. Ea
   the end; the flamer is becoming a 45 m, 5 degree cone, so sweeps are long and thin), on the deciding machine only, when
   a node in group `ambient_life` exists.
 - **Section plan (answered, 2026-11-22):**
-  - **Tram**: the rail lane runs the full arc on every deck, so the tram shuttles between its deck's two end walls and
+  - **Tram** (superseded 2026-11-27 by R2.11, "Tram (R2.11)" below: top deck only, one way, one station of its own): the rail lane runs the full arc on every deck, so the tram shuttles between its deck's two end walls and
     passes a wall only through a `portal` gate. A `station` hook is the centre of a transit region beside the spine, not
     on the rail: the tram stops at x = the centre of `lane_x("rail")`, s = the hook's s. Every deck has at least one.
   - **Checkpoints**: a `checkpoint` hook sits where a cross line meets the spine (x = `col_x[spine_line]`, inside the
@@ -389,17 +389,20 @@ traffic checksums, same ids, no viewer culling unless a viewer is registered).
   from beyond 200 m of every viewer on that machine misses civilians). Poses are functions of events and the clock, so an
   agent coming back into range is exactly where the events put it (tested against an instance with no viewers).
 - **Section-mode people (`LifePlan`).** No walk edge passes through a floor cut (grown by the curb + 0.4 m), and plaza
-  bench approaches avoid them. The zebras beside spine junctions are not used (they would cross the ramp-lane cuts and the
-  rail lane away from a cross street); instead, at every inner cross line, a crossing along the cross street (on the line,
-  or a quarter of the street's width off it if the line hits a cut, a ramp mouth or kept-clear ground; off the line when a
-  heavy checkpoint's barrier stands there), split from the cross-street zebras beside the spine, in three pieces:
-  ramp_a (no signal), the avenue (the spine junction's walk signal), rail + ramp_b (`rail_edges`: started only when the
-  tram's **timetable** keeps every car more than 40 m from the line for the whole piece, `LifeTram.next_clear`).
+  bench approaches avoid them. Since 2026-11-27 (spine markings, `city-spine.md`) people cross the spine **on the drawn
+  zebras**: at every inner cross line, on the zebra on the +s side of the junction (the -s one when the +s one would cross
+  a floor cut or kept-clear ground; none when both do), from the spine-side lane of the block on one side to the block on
+  the other (`LifePlan._spine_zebras`, nodes on those lanes), in three pieces: ramp_a (no signal), the main road (the
+  spine junction's walk signal: pods cross the zebra only in the turn phase, from their stop line), rail + ramp_b
+  (`rail_edges`, only on the deck with track, `CityDims.has_track`: started only when the tram's **timetable** keeps
+  every car more than 40 m from the line for the whole piece, `LifeTram.next_clear`). Section life checksums moved
+  (node order and positions); no test pins one.
 - **Section-mode vehicles (`LifeTraffic`).** Arterial, cross and perimeter roads are streets (parking strips, pull-overs).
   A block beside the spine has ramp lanes next to it, so **its loop is dropped**; every lap path is checked (inside the
   walls, out of floor cuts and the rail / ramp lanes) and dropped if it fails. **Avenue loops** carry pods on the spine's
   avenue lane: on every other stretch between two cross lines (so no two share a junction; the parity that covers most
-  heavy checkpoints), right-hand traffic in the outer lanes, a U-turn (half circle starting 2.5 m before the box) at each
+  heavy checkpoints), right-hand traffic in the one lane each way the main road has (`CityDims.avenue_lanes`, the lanes
+  `CityStreets` paints), a U-turn (half circle starting 2.5 m before the box) at each
   end timed into the turn phase like every corner, docked against the avenue's -x edge midway; half the pods (up to two
   per loop), the rest on block loops (up to three per loop). Nothing else uses the avenue lane, so the no-overlap argument
   holds. Pods do **not** take ramps between decks in this phase (block and avenue loops only). Closed gates: no loop
@@ -408,26 +411,18 @@ traffic checksums, same ids, no viewer culling unless a viewer is registered).
   stripes) meeting mid-road across the avenue lane (or across the road the hook is on) at the cross line, a low booth at
   each end; every loop with a turn at that junction holds 6 s (`CHECK_STOP`) at its stop line, a HOLD mark before the turn
   wait in the timetable (closed form, no-overlap kept). `light`: one booth on the sidewalk corner beside the junction.
-  `cordon`: concrete barrier blocks (yellow band) across the sealed gate at the hook.
-- **Tram (`LifeTram`, `LifeTramCars`).** One per deck, three shuttle cars 3 x 9 m, 3.2 m (sky blue, cream lower band,
-  dark glazing, windscreens at both ends, roof unit), 0.6 m apart, on the rail lane's **-x track** (a quarter of the lane
-  off its centre: centred, it straddled the two drawn tracks). Shuttles between end stops 3 m short of each end wall,
-  14 m/s, 1.2 m/s^2, 20 s at every station hook's s (middle car's centre; stations within 30 m merged, clamped inside the
-  end stops), 10 s at an end before reversing; through a `portal` it turns round 100 m beyond the wall with its centre
-  beyond the wall for 40 s. Phase per deck from the seed. Halts: a threat within 60 m of any car brakes it (0.3 s
-  reaction, 2.5 m/s^2), hazards, doors shut, held to 15 s after the last threat in range, then it drives from where it
-  stands to the stop it was heading for, dwells there and rejoins its timetable at that departure, shifted (episodes in
-  `LifeTram`). Not wreckable, not pushable; sweeps / blasts / pushers ignore it. `vehicle_event("tram_bell", pos)` on
-  leaving a stop or restarting. Collision: one `AnimatableBody3D` per car (`sync_to_physics` off, layer 1, a 3 x 3.2 x 9
-  box), moved to the pose every frame; a car wholly beyond an end wall is hidden. Queries:
-  unit `tram_car_pose(i)` (`tram_state(k)` was never called and went 2026-11-25; a unit's `tram.state_of(now)`).
+  `cordon` hooks get no dressing: the concrete barrier blocks (yellow band) across the sealed gate were **removed
+  2026-11-26 by user decision** ("I can't think of anywhere they should be."; playtest backlog R2.28). The hook stays in
+  the section plan (an encounter site; Missions' call whether that site type stays).
+- **Tram (`LifeTram`, `LifeTramCars`).** Rewritten 2026-11-27 (R2.11): see "Tram (R2.11)" below. Phase 3 had one per
+  deck, shuttling on the rail lane's -x track between the end walls (10 s turns, 40 s beyond a `portal`), stopping at
+  every `station` hook. The cars, the halts and the crush rule below carry over.
   **Tram collision and crushing (2026-11-23, playtest seed 403112: the cars shoved the mech out through the portal, then,
   once the recess was sealed, pinched it against the back plate).** `LifeTramCars.settle()` after every pose: (1) a car
   is solid only while all of it is at least `LifeTram.END_CLEAR` = 5 m inside both end walls (`car_solid`; a mech is
-  4.4 m across, so it can be shoved at most to 0.6 m short of the wall plane, never into a portal's recess nor against a
-  solid end wall; the end car parked 3 m from a solid end wall is therefore not solid during its turn); (2) a car
-  switching on stays off while a character body overlaps it (a returning car passes through a mech in or near the
-  recess, never launches it); (3) pinch: a moving solid car pressing a body ahead of it that has something solid within
+  4.4 m across, so it can be shoved at most to 0.6 m short of the wall plane, never into a tram door); (2) a car
+  switching on stays off while a character body overlaps it (it passes through a mech, never launches it); (3) pinch: a
+  moving solid car pressing a body ahead of it that has something solid within
   0.5 m ahead (above 1 m: curbs and steps do not count), or that does not make way (< 30 % of the car's advance over
   0.2 s), or a car entering the END_CLEAR zone while pressing one, switches off and passes through it: a **crush**,
   `LifeTram.CRUSH_DAMAGE` = 60 HP to each leg (like a 40 m/s fall; **amount confirmed by the user 2026-11-25: 60 per
@@ -435,7 +430,7 @@ traffic checksums, same ids, no viewer culling unless a viewer is registered).
   touching it then passes through). Damage only on the machine whose mech it is (not a puppet), through the
   `PlayerTarget` (group `player_target`) whose `mech` is the body, `apply_damage(.., "leg_l"/"leg_r", "crush")`; signal
   `LifeTramCars.crushed(body, amount, applied)`. Enemies are never damaged by it. Timing, state and snapshot unchanged
-  (collision is local presentation of the same pose). Test: `tests/test_tram_portal.gd`.
+  (collision is local presentation of the same pose). Test: `tests/test_tram_door.gd`.
 - **Lab.** Option `site` (alone / section / stack), param `deck`, cameras `station`, `tram` (close), `checkpoint`
   (the clock is moved on to a dwell / a pod at the checkpoint); in section / stack a viewer node stands on the focus.
   `--life site=stack,seed=4,camera=station`.
@@ -452,7 +447,7 @@ car; a deck with no viewer on it is not drawn even when visible through a floor 
 client's shot at a civilian more than 200 m from its own viewers misses); barriers have no collision and walkers on the
 light checkpoint corner pass through its booth; the spine zebras are still drawn but unused; the test drive / mission do
 not create the stack life yet. Renders: `life_tram.png` (stack seed 4 deck 0, the tram dwelling at a station, the cordon
-blocks at the far blast door), `life_tram_close.png`, `life_checkpoint.png` (a pod held at the heavy checkpoint, arm and
+blocks at the far blast door: those blocks were removed 2026-11-26), `life_tram_close.png`, `life_checkpoint.png` (a pod held at the heavy checkpoint, arm and
 booth beyond it), `life_section_street.png` (mech eye on a section deck: one person and a service cart in frame).
 
 **Pod model adopted (user pick: candidate 7, `capsule_a`, 2026-11-22).** `LifeCars.pod()` calls
@@ -467,6 +462,51 @@ junction camera's distance). `LifeTraffic.SIZE["pod"]` is now 1.85 x 1.95 x 3.5 
 so changes the stand-alone traffic checksums (seed 1/2/3: `742568104e969d8d`, `f95817faffc270f1`, `3daf84e9a4299bca`);
 riders already left from the middle of the side. Re-rendered: `life_pod_close.png`, `life_traffic.png`,
 `life_panic_traffic.png`, `life_riders.png`, `life_wreck.png`.
+
+### Tram (R2.11, 2026-11-27: one deck, one way, door link, the station)
+
+Spec: `city-spine.md` section 5. Files: `life_tram.gd`, `life_tram_cars.gd`, the tram parts of `life_plan.gd`,
+`life_deck.gd`, `ambient_life.gd`, `life_lab.gd`; the station is `scripts/world/city/city_station.gd` (`city-props.md`
+"Station"). Tests: `tests/test_tram_door.gd` (was `test_tram_portal.gd`), `test_life_section.gd`, `test_net_life.gd`.
+
+- **One deck.** `LifeTram.make` returns a tram only for a section's top deck (deck 0); every other deck and a district on
+  its own (no rail lane) have none: no cars, no rail crossing rule (`LifePlan.rail_edges` is emptied: walkers cross the
+  rail lane like ramp_a, no signal), no tram blob in the deck's snapshot (the deck snapshot already ended at the fleet
+  when there is no tram). Life plan checksums move on decks 1.. (their wait slots no longer follow the rail rule) and on
+  deck 0 (the tram's checksum).
+- **One track, one way.** The centre line of `lane_x("rail")` (12 m today, 6 m when Missions changes the plan: the same
+  line). A train starts at `s_in` (its nose 10 m behind the s0 tunnel's back plate, 40 m behind the door plane) at
+  14 m/s, brakes at 1.2 m/s^2 into the station (`stop_s`: the platform's centre, `CityStation.of`), dwells 20 s,
+  accelerates out, and parks at `s_out` once wholly behind the s1 tunnel's plate. `pass_time` 78.8 s on the 540 m top
+  deck; `period = max(PERIOD 120, ceil(pass_time + GAP 20))` = 120 s; phase per deck from the seed as before. One train
+  at a time: a slot whose start comes while the previous train has not parked is skipped (the timetable resumes at the
+  next slot). A car is drawn unless wholly behind a tunnel's plate (`car_inside`); solid only END_CLEAR inside both walls
+  (`car_solid`, unchanged), so it is never solid in a tunnel. Modes: running | dwell | halted | waiting | away (no car
+  in sight). `tram_bell` on leaving the station, a halt or a door wait.
+- **Door link.** `AmbientLife.set_tram_door(end: String, open: bool, at: float)` is the one entry point (MissionWorld:
+  end "s0" | "s1", `at` on the shared clock; no call: both open). Host / offline only: `LifeDeck.set_tram_door` records
+  it on the deck-0 tram (`LifeTram.set_door(end, open, at) -> bool`, time-ordered `door_events` {end 0 | 1, open, t},
+  an exact repeat ignored), logs and sends `life.door` {end, open, t, deck}; a client's own call does nothing (it gets
+  `life.door` and the snapshot), so calling it on every machine is harmless. AmbientLife keeps every call and replays
+  them after a (re)setup. A door is usable `DOOR_OPEN` = 3.0 s after it starts opening. Shut ahead: the train brakes
+  (1.2 m/s^2, harder up to 2.5 when it must) to wait with its nose `END_CLEAR` = 5 m short of the door plane, and goes
+  on once the door is fully open. Shut behind (s0): the next train waits in the tunnel behind it, out of sight: no train
+  comes in. A train that can no longer stop (more than 2.5 m/s^2 needed) when a door shuts in front of it is committed
+  and runs through: shut a tram door only when `AmbientLife.tram_door_clear(end)`. Also `tram()`, `tram_door_open(end)`.
+- **Pure function.** `pose(t)` replays every train from the last slot no event can touch (`_replay`, memoised until the
+  events change) as constant-acceleration pieces (`_simulate`), with the halts `episodes` (now raw {t0, tr}) and the
+  `door_events`; `base(t)` is the timetable (people crossing go by it, `next_clear`). Two instances fed the same events,
+  at whatever times they applied them, agree at every clock time (tested). `rebase(old_now, t)` on a clock switch drops
+  the halts and keeps a shut door shut.
+- **Network.** `LifeTram.SNAP_VERSION` 2: [u8 2, u16 halts, (t0, tr) doubles, u16 door events, (u8 end, u8 open,
+  double t)]; restore checks the exact size, ends 0 / 1, finite times in order, else ignores the whole buffer.
+  `net_fields`: `episodes`, `door_events` OWNER; `AmbientLife._tram_doors` OWNER.
+- **Collision.** Each car is a `CityGeo.rounded_box` (`LifeTramCars.car_collision`): the old 3 x 3.2 x 9 m box's top
+  (3.3 m) is in the pin band (collision survey R2.25a); the crush rule and `car_solid` are unchanged.
+- **Lab.** `life` options `tram_s0` / `tram_s1` (open | shut) call `set_tram_door` at the lab's clock; camera `station`
+  looks at the train at its platform.
+- **Not built.** Walkers do not wait on the platform (no walk edge reaches the spine's ramp_b lane; the crowd's benches
+  are block, park and plaza benches only). The train is a ring line by fiction only: each pass is its own train.
 
 ### Crowd lab (lab subject `crowd`, 2026-11-22)
 

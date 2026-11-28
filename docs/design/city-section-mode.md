@@ -51,11 +51,16 @@ blocks (about 53-71 m x 76-110 m): the lot splitter already leaves alleys, and n
 
 - `arterial`, `cross`, `perimeter` (12-14 m): drawn as today's `street` (parking strips, dashed centre line, crossings).
 - `spine` (50 m), four lanes side by side from `section.lane_x(name)`:
-  - `avenue` (18 m): today's avenue look (tan carriageway, planted median, lane lines), fitted to its width.
-  - `rail` (12 m): a ballast strip (`concrete_dark`), two tracks of two rails each (`metal_dark` boxes 0.15 m high) on
-    sleepers every 2 m (`trunk` colour). No collision on rails.
-  - `ramp_a`, `ramp_b` (10 m each): plain asphalt lanes with edge lines.
-  - Crossings: the cross roads' zebra stripes span the whole spine; rails and sleepers continue through.
+  - Since 2026-11-27 (R2.11) the spine is drawn by `CityStreets.spine_layout` / `_spine`, width-agnostic, as
+    `city-spine.md` section 3 ("As built: spine markings" there): right-hand two-way roads, one lane each way.
+  - `avenue`: the main road (`CityDims.avenue_split`: 1 m edges, lanes up to 4.5 m, the rest a centre strip with a planted
+    median and a left-turn pocket for the last 28 m before each junction; stop lines, zebras, arrows; guide lines across
+    the boxes; a stop line 8 m before each road door).
+  - `rail`: one track (ballast, sleepers every 2 m, two rails, no collision) on its centre line, only on the tram deck
+    (deck 0), with a yellow keep-clear hatch in every junction box; a planted verge on every other deck.
+  - `ramp_a`, `ramp_b`: a two-way service road (the ramp's lines, stop lines, zebras, straight + right / down / merge
+    arrows, hatched 20 m short of an end wall) where a ramp part lies in the lane on that deck, else a paved promenade.
+  - Crossings: zebras per roadway (main road and service roads only); the track continues through the boxes.
 - **Floor holes** (`site.floor_holes: Array[Rect2]`): where this deck's floor is cut (a ramp diving out of a ramp lane, an
   open-air shaft). The ground mesh, markings and the deck's collision are left out over the hole; around it a 0.5 m curb
   and a 1.2 m railing (posts every 4 m, one top rail, `metal_dark`; no collision on the railing, the curb is 0.5 m of

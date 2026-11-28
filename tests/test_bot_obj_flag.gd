@@ -10,5 +10,6 @@ func _init() -> void:
 	seed_n = 6
 	goal_id = "d0_p"
 	expect = {"d0_p": "flag"}
-	limit = 70.0
+	limit = 85.0   # 2026-11-27 entry bay start (city-spine.md §4): +4 s in the bay, and the shifted fight timing sends the
+	               # bot to a supply depot mid-flag: d0_p done at ~70 s (46.6 s from the avenue). ~1.2x that.
 	super()

@@ -12,7 +12,7 @@ const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "
 ## 5. Looks (EquipmentLook): A carries the drone on its back; on B, A's puppet shows the docked drone before the launch,
 ##    the empty cradle while the drone is out (driven by the drone effect on B, not by A's rack) and the docked drone
 ##    again once it has flown home (life shortened to LIFE s on both machines through CombatWorld.overrides).
-## 6. Green only while it repairs: on B a beam goes to B's own damaged mech in range, and none once B's mech is full;
+## 6. Green only while it repairs (the scan; no ground ring since R2.21): on B a beam goes to B's own damaged mech in range, and none once B's mech is full;
 ##    on A a beam goes to B's puppet while its mirrored HP is below full.
 
 const PEERS := 2
@@ -59,7 +59,7 @@ func run_host() -> void:
 	var flat := pb.mech.global_position - td.mech.global_position
 	flat -= td.mech.up() * flat.dot(td.mech.up())
 	print("[drone] B stands %.2f m (horizontal) from A" % flat.length())
-	check(flat.length() < 14.0, "B stands within the drone's 15 m of A (%.2f m)" % flat.length())
+	check(flat.length() < 29.0, "B stands within the drone's 30 m of A (%.2f m)" % flat.length())
 	command(b, "damage", {})
 	if not check(await wait_reports("damaged", 1, 10.0), "B damaged its own mech"):
 		return
@@ -72,7 +72,7 @@ func run_host() -> void:
 		return
 	await sleep(1.0)
 	check(d.beamed().has(tb), "on A, a beam goes to B's puppet while its mirrored HP is below full")
-	check(d.look.ring_shown(), "on A, the ring shows while it repairs")
+	check(_no_ground_ring(d), "on A, no ground ring under the drone (R2.21)")
 	eq(d.look.scans_shown(), d.beamed().size(), "on A, one scan look per repaired target")
 	Session.send_event(0, CombatNet.DRONE, {"t": float(rec["t"]), "hp": "back"})   # the same launch again: dropped
 	await until(func() -> bool: return samples.size() == SAMPLES.size(), 6.0)
@@ -122,7 +122,7 @@ func run_host() -> void:
 		check(bool(vf["repairing"]), "A's drone still repairing on B")
 		check(bool(vf["beam_damaged"]), "on B, a beam went to B's own mech while it was damaged")
 		check(not bool(vf["beam_full"]), "on B, no beam to B's own mech once it is full")
-		check(not bool(vf["ring_full"]), "on B, no ring once nobody in range needs repair")
+		check(bool(vf["no_ring"]), "on B, no ground ring under A's drone (R2.21)")
 	await sleep(0.5)
 	check(not d.beamed().has(tb), "on A, no beam to B's puppet once its mirrored HP is full")
 	eq(d.look.scans_shown(), d.beamed().size(), "on A, no scan look without a repaired target")
@@ -161,7 +161,7 @@ func run_client() -> void:
 				var dn := world.drone_of("player1")
 				var own := td.combat.player_target
 				report("full", {"repairing": dn != null and dn.repairing(), "beam_damaged": beam_damaged,
-					"beam_full": dn != null and dn.beamed().has(own), "ring_full": dn != null and dn.look.ring_shown()})
+					"beam_full": dn != null and dn.beamed().has(own), "no_ring": dn != null and _no_ground_ring(dn)})
 			"damage":
 				td.combat.player_target.apply_damage(DAMAGE, "torso", "test")
 				hp_after_damage = td.combat.player_target.total_hp()
@@ -253,3 +253,11 @@ func _other_peer() -> int:
 		if int(e["peer"]) != Session.local_id():
 			return int(e["peer"])
 	return -1
+
+
+## No ground ring (R2.21): the drone node has no top-level child (the ring was one; the scan nodes are pooled, not children).
+func _no_ground_ring(d: RepairDrone) -> bool:
+	for c in d.get_children():
+		if c is Node3D and (c as Node3D).top_level:
+			return false
+	return true

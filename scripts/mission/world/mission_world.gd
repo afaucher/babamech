@@ -1,9 +1,13 @@
 class_name MissionWorld
 extends Node3D
 ## The world side of mission objectives phase 1 (docs/design/mission-objectives.md §5.6 / §7 / §9; this side:
-## docs/design/city-ramps-and-stack.md "Mission world (phase 1)"): wave doors in blast-door gates and freight lifts, the
-## flag mast and its zone ring, the defend relay, the extraction portal and its hold zone. Made by
-## CityStack.setup_mission(plan) once the stack is built (stack.mission; freed when the stack rebuilds).
+## docs/design/city-ramps-and-stack.md "Mission world (phase 1)"): wave doors in road-door gates and freight lifts, the
+## entry and exit road doors with their bays (entry_door / exit_door), the tram doors (tram_door / set_tram_door), the
+## flag mast and its zone ring, the defend relay and the extraction hold zone. Made by CityStack.setup_mission(plan) once
+## the stack is built (stack.mission; freed when the stack rebuilds). The bulkhead fiction (docs/design/city-spine.md §1):
+## every road door is shut for the whole mission (lockdown); waves come through some of them from the far side; the crew
+## comes in through the entry door and leaves through the exit door; the tram doors stay open (the train runs only while
+## its door is open). Every road door looks the same: nothing on a door marks its role.
 ##
 ## PRESENTATION plus a little collision. No mission logic, no network, no global randomness (looks: a generator seeded from
 ## the section's cosmetic seed and the piece's id). TIME is the shared mission clock, given by advance_to(t) every frame on
@@ -18,12 +22,25 @@ extends Node3D
 signal source_event(kind: String, id: Variant, world_pos: Vector3)      ## warn | open | close | seal
 signal flag_event(id: Variant, raised: bool, world_pos: Vector3)
 signal asset_event(id: Variant, kind: String, world_pos: Vector3)       ## damaged | destroyed
-signal portal_event(kind: String, world_pos: Vector3)                   ## start | open
+## A tram door was ordered open / shut at clock `at` (set_tram_door; also sent to AmbientLife.set_tram_door when the
+## scene has one): the life side's train link listens to whichever it can reach.
+signal tram_door_changed(end: String, open: bool, at: float)
+
+## The entry / exit road doors and the tram doors (ids usable with source_state, open_source / hold_source / close_source
+## for the road doors; set_tram_door for the tram doors). Never wave sources: MissionPlan's sources never name them.
+const ENTRY_ID := "door_entry"
+const EXIT_ID := "door_exit"
+const TRAM_IDS := {"s0": "tram_s0", "s1": "tram_s1"}
+## Until Missions opens the entry door at the mission's release, the door opens at setup time (clock 0: the leaves start
+## to move, passable OPENING s later) and stays open, so nobody spawned in the entry bay is ever locked in (lab, tests, a
+## mission that never orders it). Missions overrides it any time: shut_source(ENTRY_ID, t) closes it at t (not sealed),
+## open_source(ENTRY_ID, t, hold) opens it again. The exit door is shut by default.
+const ENTRY_OPEN_DEFAULT := true
 
 ## TIMING (docs/design/city-ramps-and-stack.md "Staging bay"): open_at is the moment the leaves START to move. A gate's
 ## siren, lamps and beacons run while its leaves open (open_at .. open_at + OPENING); it is passable (fully open) from
 ## open_at + OPENING (passable_after) and stays open `hold` s, then closes over CLOSE s.
-const WARN := 5.0            ## s of the silent "warn" state before open_at (the "warn" signal; a lift counts it down on its lamps)
+const WARN := 5.0            ## s of the silent "warn" state before open_at (the "warn" signal; nothing shows on a lift: its doors move at open_at)
 const OPENING := 3.0         ## s a gate's leaves take to open, from open_at (the reveal; the siren runs exactly this long)
 const LIFT_OPEN := 1.5       ## s the lift doors take, from open_at
 const CLOSE := 2.0           ## s either takes to close
@@ -62,9 +79,7 @@ var _zone_state := {}            ## objective id -> "idle" | "contested" | "ours
 var _assets := {}                ## objective id -> MissionRelayAsset
 var _asset_hp := {}              ## objective id -> 0..1
 var _asset_told := {}            ## objective id -> worst event sent (0 none, 1 damaged, 2 destroyed)
-var _portal: MissionPortal
-var portal_progress := 0.0
-var _portal_told := 0            ## 1 start sent, 2 open sent
+var portal_progress := 0.0       ## DEPRECATED (set_portal's stored value; nothing shows it): goes when Missions drops set_portal
 var _hold: MeshInstance3D
 var hold_state := "idle"
 var _cut: Array[CollisionShape3D] = []    ## district wall shapes disabled where a gate door stands
@@ -78,6 +93,7 @@ var _qi := 0                     ## next chunk to run
 var _b_us := 0                   ## usec spent in the setup's chunks
 var _wall_geo: CityGeo           ## the deck's walls being re-meshed (parts in successive chunks)
 var _wall_doors := {}            ## district -> the gates its rebuilt walls leave for wave doors, {"<side>:<a>": true} (wall_doors())
+var _lift_meshes := {}           ## block MeshInstance3D -> its original mesh (a lift car hid the baked shut doors in it: MissionLiftDoor.hide_fill)
 
 
 func net_fields() -> Dictionary:
@@ -87,13 +103,16 @@ func net_fields() -> Dictionary:
 		"_air": Net.SPAWN,                              # derived from the stack's plans (MissionAirDoors.spot: plan data only)
 		# The host decides these; Engine carries them (wave orders, mission.state) and restores a late joiner with snapshot()
 		"_sched": Net.OWNER, "_sealed": Net.OWNER, "_flag_state": Net.OWNER, "_zone_state": Net.OWNER,
-		"_asset_hp": Net.OWNER, "portal_progress": Net.OWNER, "hold_state": Net.OWNER,
+		"_asset_hp": Net.OWNER, "hold_state": Net.OWNER,
+		# (_sched also holds the entry / exit and tram doors' schedules: set_tram_door is a host-arbitrated world object, its
+		# changes stored as times on the shared clock like every door order; snapshot() / restore() carry them)
 		"now": Net.LOCAL,                                # the shared clock
+		"portal_progress": Net.LOCAL,                    # deprecated: set on every machine by MissionFlow's own replicated state, shows nothing
 		"quality": Net.LOCAL, "_doors": Net.LOCAL, "_fired": Net.LOCAL, "_door_state": Net.LOCAL, "_lights": Net.LOCAL,
-		"_flags": Net.LOCAL, "_zones": Net.LOCAL, "_assets": Net.LOCAL, "_asset_told": Net.LOCAL, "_portal": Net.LOCAL,
-		"_portal_told": Net.LOCAL, "_hold": Net.LOCAL, "_cut": Net.LOCAL, "_walled": Net.LOCAL, "_next": Net.LOCAL,
+		"_flags": Net.LOCAL, "_zones": Net.LOCAL, "_assets": Net.LOCAL, "_asset_told": Net.LOCAL,
+		"_hold": Net.LOCAL, "_cut": Net.LOCAL, "_walled": Net.LOCAL, "_next": Net.LOCAL,
 		"_blink_on": Net.LOCAL, "setup_ready": Net.LOCAL, "chunk_log": Net.LOCAL, "_queue": Net.LOCAL, "_qi": Net.LOCAL,
-		"_b_us": Net.LOCAL, "_wall_geo": Net.LOCAL, "_wall_doors": Net.LOCAL,
+		"_b_us": Net.LOCAL, "_wall_geo": Net.LOCAL, "_wall_doors": Net.LOCAL, "_lift_meshes": Net.LOCAL,
 	}
 
 
@@ -121,7 +140,7 @@ func setup(st: CityStack, p: Variant) -> void:
 ## least one) and returns true once everything is built (`setup_ready`). The first chunk matches sources to doors and queues the
 ## rest, in this order: one chunk per wave door (build + wall collision cut), the walls of each deck with gate doors re-meshed
 ## in CityDistrict's own parts (one per side, a farm side in FARM_PARTS parts), the doors posed, then per flag / defend
-## objective its site search and its build, the hold zone, the portal. chunk_log = [[label, ms], ...]. Until setup_ready every
+## objective its site search and its build, the hold zone. chunk_log = [[label, ms], ...]. Until setup_ready every
 ## call that changes state (open_source, set_flag, advance_to, restore, ...) returns at once.
 func setup_begin(st: CityStack, p: Variant) -> void:
 	stack = st
@@ -198,6 +217,34 @@ func _c_plan() -> void:
 					continue
 				used[[d, "lift", bi]] = true
 				_queue.append(["lift %s" % str(id), _c_lift.bind(id, d, bi)])
+	# The entry / exit road doors (gates with a role) and the tram doors: from the stack's plans (CityPlan.boundary()),
+	# never from the mission plan's sources (they are no wave sources).
+	for k in (stack.decks.size() if stack != null else 0):
+		var d := stack.decks[k]
+		for w: Dictionary in d.plan.boundary():
+			var side := int(w["side"])
+			for g: Dictionary in w["gates"]:
+				var role := str(g.get("role", ""))
+				var tram := str(g["kind"]) == "tram_door"
+				if not tram and (str(g["kind"]) != "blast_door" or (role != "entry" and role != "exit")):
+					continue
+				var id: String = (ENTRY_ID if role == "entry" else EXIT_ID) if not tram else str(TRAM_IDS.get(CityPlan.SIDE_EDGE[side], ""))
+				if id == "" or _sources.has(id):
+					continue
+				var key := "%d:%.2f" % [side, float(g["a"])]
+				if used.has([d, key]):
+					continue
+				used[[d, key]] = true
+				if not per_deck.has(d):
+					per_deck[d] = {}
+					decks.append(d)
+				per_deck[d][key] = true
+				var mid := (float(g["a"]) + float(g["b"])) * 0.5
+				var inward := -1.0 if side % 2 == 0 else 1.0
+				var at := float(w["at"]) + inward * SOURCE_IN
+				_sources[id] = {"id": id, "deck": k, "kind": "tram" if tram else "gate", "role": role if not tram else "tram",
+						"x": mid if side >= 2 else at, "s": at if side >= 2 else mid, "edge": CityPlan.SIDE_EDGE[side], "connector": -1}
+				_queue.append(["door %s" % id, (_c_tram if tram else _c_gate).bind(id, d, {"w": w, "g": g})])
 	# Air doors: derived from the stack's plans (not the mission plan), one per end wall where a spot passes MissionAirDoors.spot().
 	var air_holes := {}       # district -> {side: [hole]}
 	for k in (stack.decks.size() if stack != null else 0):
@@ -212,7 +259,7 @@ func _c_plan() -> void:
 			var at := float(w["at"])
 			var inward := -1.0 if side % 2 == 0 else 1.0
 			_sources[id] = {"id": id, "deck": k, "kind": "air", "x": c, "s": at + inward * 8.0, "edge": CityPlan.SIDE_EDGE[side],
-					"u": c}
+					"u": c, "usable": bool(ad["usable"]), "clear_len": float(ad["clear_len"])}
 			if not air_holes.has(d):
 				air_holes[d] = {}
 			if not per_deck.has(d):
@@ -252,17 +299,89 @@ func _c_plan() -> void:
 					_queue.append(["asset %s" % id, _build_asset.bind(o)])
 				"hold":
 					_queue.append(["hold %s" % id, _build_hold.bind(o)])
-	_queue.append(["portal", _build_portal])
 	_queue.append(["finish", _c_finish])
 
 
 func _c_gate(id: Variant, d: CityDistrict, hit: Dictionary) -> void:
 	var door := MissionGateDoor.new()
 	door.name = "MissionGate_%s" % str(id)
-	door.build(d, hit["w"], hit["g"], _look(id), bay_half(d, hit["w"], hit["g"]))
+	_fit(door, hit["w"], hit["g"])
+	door.build(d, hit["w"], hit["g"], _look(id), bay_span(d, hit["w"], hit["g"]))
 	d.add_child(door)
 	_doors[id] = door
 	_cut_wall(d, hit["w"], hit["g"], door.body)
+
+
+## A tram door: the road door at the tram door's size (MissionGateDoor.tram_config), no bay (the world's tunnel behind
+## it, open in the district's wall collision: no cut).
+func _c_tram(id: Variant, d: CityDistrict, hit: Dictionary) -> void:
+	var door := MissionGateDoor.new()
+	door.name = "MissionTram_%s" % str(id)
+	door.tram_config(float(hit["g"]["h"]))
+	_fit(door, hit["w"], hit["g"])
+	door.pier_side = 0
+	door.build(d, hit["w"], hit["g"], _look(id))
+	d.add_child(door)
+	_doors[id] = door
+
+
+## Set door's neighbour fit (door_fit) before its build.
+static func _fit(door: MissionGateDoor, w: Dictionary, g: Dictionary) -> void:
+	var f := door_fit(w, g, door.jamb, door.butt)
+	door.reach_lo = float(f["reach_lo"])
+	door.reach_hi = float(f["reach_hi"])
+	door.pier_side = int(f["pier"])
+	door.slide = int(f["slide"])
+
+
+## The frame X direction (+1 / -1) of increasing wall coordinate u on side `side` (MissionGateDoor.arc_x).
+static func _u_to_x(side: int) -> float:
+	return 1.0 if side == 0 or side == 3 else -1.0
+
+
+## How gate g of wall w fits beside the other gates on its wall (plan data only), in its frame's X: {reach_lo, reach_hi
+## (m from mid-gate the bunker frame may reach on -X / +X: INF, or the midpoint between this opening and a neighbour's
+## when both full frames would overlap), pier (the sign pier's side: +1 unless a neighbour's frame stands within its
+## reach there, then -1, 0 when both sides are taken), slide (0: the leaves part; +-1: both slide to that side because
+## the other side's leaf pocket, 2 x half + 0.3 m from mid-gate inside the wall, would cross a neighbour's gate)}.
+## j / b: this door's jamb and buttress (scaled for a tram door); a neighbour's are its own kind's.
+static func door_fit(w: Dictionary, g: Dictionary, j: float = MissionGateDoor.JAMB, b: float = MissionGateDoor.BUTT) -> Dictionary:
+	var sx := _u_to_x(int(w["side"]))
+	var mid := (float(g["a"]) + float(g["b"])) * 0.5
+	var ch := CityWalls.clear_half(g)
+	var reach := [INF, INF]          # u- side, u+ side
+	var pier_ok := [true, true]
+	var pocket_ok := [true, true]
+	var std := ch + j + b
+	for g2: Dictionary in w["gates"]:
+		if g2 == g or is_equal_approx(float(g2["a"]), float(g["a"])):
+			continue
+		var mid2 := (float(g2["a"]) + float(g2["b"])) * 0.5
+		var ch2 := CityWalls.clear_half(g2)
+		var s2 := 1.0 if str(g2["kind"]) != "tram_door" else float(g2["h"]) / MissionGateDoor.ROAD_H
+		var std2 := ch2 + (MissionGateDoor.JAMB + MissionGateDoor.BUTT) * s2
+		var up := mid2 > mid
+		var i := 1 if up else 0
+		var dist := absf(mid2 - mid)
+		if dist < std + std2:          # the full frames would overlap: both stop at the middle of the wall between the openings
+			reach[i] = minf(reach[i], ch + (dist - ch - ch2) * 0.5)
+		if dist - std2 < MissionGateDoor.pier_reach_for(ch, j, b) + 0.5:
+			pier_ok[i] = false
+		var edge2 := dist - (float(g2["b"]) - float(g2["a"])) * 0.5      # the neighbour's gate edge in the wall
+		if edge2 < ch * 2.0 + 0.3:
+			pocket_ok[i] = false
+	var plus := 1 if sx > 0.0 else 0       # the u side that is frame +X
+	var pier := 0
+	if pier_ok[plus]:
+		pier = 1
+	elif pier_ok[1 - plus]:
+		pier = -1
+	var slide := 0
+	if not pocket_ok[plus] and pocket_ok[1 - plus]:
+		slide = -1
+	elif not pocket_ok[1 - plus] and pocket_ok[plus]:
+		slide = 1
+	return {"reach_lo": reach[1 - plus], "reach_hi": reach[plus], "pier": pier, "slide": slide}
 
 
 ## An air door at `c` along end wall w of district d (MissionGateDoor configured by MissionAirDoors.config).
@@ -283,6 +402,21 @@ func _c_lift(id: Variant, d: CityDistrict, bi: int) -> void:
 	lift.build(d, bi)
 	d.add_child(lift)
 	_doors[id] = lift
+	if not lift.has_car:
+		return
+	# The car is a hollow in the core: the district's solid core box goes (restored by teardown), the car's walls stand in
+	# for it (MissionLiftDoor.body), and the baked shut doors leave the district's mesh while the car is there.
+	var col := d.get_node_or_null("Collision") as StaticBody3D
+	var want := d.core_frame(bi) * Vector3(0, d.plan.p("ceiling") * 0.5, 0)
+	if col != null:
+		for c in col.get_children():
+			var cs := c as CollisionShape3D
+			if cs != null and not cs.disabled and str(cs.get_meta("col_kind", "")) == "core" and cs.transform.origin.distance_to(want) < 0.5:
+				cs.disabled = true
+				_cut.append(cs)
+	var hid := lift.hide_fill(d)
+	if not hid.is_empty() and not _lift_meshes.has(hid[0]):
+		_lift_meshes[hid[0]] = hid[1]
 
 
 func _c_pose_doors() -> void:
@@ -302,7 +436,33 @@ func _c_site(o: Dictionary, clear_r: float) -> void:
 
 func _c_finish() -> void:
 	setup_ready = true
+	for id: Variant in _doors:
+		_apply_default(id)
+		_pose_door(id, now, true, false)
 	_next = -INF
+
+
+## The schedule door `id` starts with (and restore() falls back to when a snapshot does not name it): a tram door open
+## since forever (the train runs; the lockdown shuts road doors only), the entry door opening at clock 0 when
+## ENTRY_OPEN_DEFAULT (open since then, no close), every other door none (shut). Sets _sched / _fired; a door that already
+## has a schedule keeps it.
+func _apply_default(id: Variant) -> void:
+	if _sched.has(id):
+		return
+	var sc := default_sched(_door_kind(id), str(id))
+	if sc.is_empty():
+		return
+	_sched[id] = sc
+	_fired[id] = {"warn": true, "open": true, "close": true, "seal": bool(_fired.get(id, {}).get("seal", true))}     # a default fires no signal
+
+
+## default_sched for a door of `kind` with id `id` (see _apply_default): [] for none.
+static func default_sched(kind: String, id: String) -> Array:
+	if kind == "tram":
+		return [-INF, INF, -INF, -INF]
+	if id == ENTRY_ID and ENTRY_OPEN_DEFAULT:
+		return [0.0, INF, -INF, 0.0]
+	return []
 
 
 ## Free everything, give the walls back their baked leaves and their collision (restore = false when the decks are going
@@ -328,9 +488,13 @@ func teardown(restore: bool = true) -> void:
 		for d in _walled:
 			if is_instance_valid(d):
 				_rebuild_walls(d)
+		for mi: Variant in _lift_meshes:
+			if is_instance_valid(mi):
+				(mi as MeshInstance3D).mesh = _lift_meshes[mi]
 	_queue = []
 	_qi = 0
 	_wall_geo = null
+	_lift_meshes.clear()
 	_cut.clear()
 	_walled.clear()
 	_wall_doors.clear()
@@ -338,7 +502,6 @@ func teardown(restore: bool = true) -> void:
 	_flags.clear()
 	_zones.clear()
 	_assets.clear()
-	_portal = null
 	_hold = null
 
 
@@ -348,8 +511,6 @@ func _all_nodes() -> Array:
 	out.append_array(_flags.values())
 	out.append_array(_zones.values())
 	out.append_array(_assets.values())
-	if _portal != null:
-		out.append(_portal)
 	if _hold != null:
 		out.append(_hold)
 	return out
@@ -372,10 +533,6 @@ func source_info() -> Dictionary:
 	return _sources
 
 
-func portal_node() -> MissionPortal:
-	return _portal
-
-
 ## District k of the stack (clamped), null without a stack.
 func deck_at(k: Variant) -> CityDistrict:
 	return _deck(k)
@@ -394,8 +551,9 @@ func _look(id: Variant) -> RandomNumberGenerator:
 	return r
 
 
-## The blast-door gate a gate source means on district d: {w: wall, g: gate} of the plan's boundary(), on the wall named by
-## `edge` (s0 / s1 / x0 / x1; any wall when empty or unknown), nearest the point (x, s); {} when there is none.
+## The road-door gate a gate (wave) source means on district d: {w: wall, g: gate} of the plan's boundary(), on the wall
+## named by `edge` (s0 / s1 / x0 / x1; any wall when empty or unknown), nearest the point (x, s); {} when there is none.
+## The entry / exit doors (gates with a role) are never a wave source's, nor collapsed gates or tram doors.
 static func find_gate(d: CityDistrict, x: float, s: float, edge: String) -> Dictionary:
 	var side_want := CityPlan.SIDE_EDGE.find(edge)
 	var best := {}
@@ -404,7 +562,7 @@ static func find_gate(d: CityDistrict, x: float, s: float, edge: String) -> Dict
 		if side_want >= 0 and int(w["side"]) != side_want:
 			continue
 		for g: Dictionary in w["gates"]:
-			if str(g["kind"]) != "blast_door":
+			if str(g["kind"]) != "blast_door" or str(g.get("role", "")) != "":
 				continue
 			var mid := (float(g["a"]) + float(g["b"])) * 0.5
 			var at := float(w["at"])
@@ -514,15 +672,27 @@ func _cut_wall(d: CityDistrict, w: Dictionary, g: Dictionary, body: StaticBody3D
 			MissionProps.box_shape(body, inv * xf, Vector3.ZERO, sz)
 
 
-## Half the interior width of gate g's staging bay (MissionGateDoor): half the gate, widened behind the wall to
-## MissionGateDoor.BAY_MIN_W / 2, shrunk (symmetric) so the bay with its plates stays 0.5 m clear of a neighbouring gate's bay or
-## a portal / collapsed gate's back plate on the same wall and 2 m inside the deck's corners; never below the gate's own.
+## Half the interior width of gate g's staging bay, as far as it reaches from mid-gate on its wider side (plan_bay_span):
+## what keeps other things (air doors: MissionAirDoors.spot) clear of it. A tram door's: its tunnel's half width.
 static func bay_half(d: CityDistrict, w: Dictionary, g: Dictionary) -> float:
 	return plan_bay_half(d.plan, w, g)
 
 
 ## bay_half from the deck's plan alone (MissionAirDoors.spot: plan data only).
 static func plan_bay_half(plan: CityPlan, w: Dictionary, g: Dictionary) -> float:
+	if str(g.get("kind", "")) == "tram_door":
+		return CityWalls.clear_half(g)
+	var sp := plan_bay_span(plan, w, g)
+	return maxf(-sp.x, sp.y)
+
+
+## The interior of gate g's staging bay along its wall, relative to mid-gate in the wall coordinate u (x on an arc-end
+## wall, s on a side wall): Vector2(lo, hi), lo < 0 < hi usually. Half the gate, widened behind the wall to
+## MissionGateDoor.BAY_MIN_W / 2, shrunk (symmetric) so the bay with its plates stays 0.5 m clear of a neighbouring road
+## door's bay or a collapsed gate on the same wall and 2 m inside the deck's corners, never below the gate's own (the rule
+## before the tram doors, unchanged); then, where it would cross a tram door's tunnel (with its plates, + 0.5 m), moved
+## sideways away from it (BAY_MIN_W kept: the entry bay beside the tram tunnel sits off centre) and only then trimmed.
+static func plan_bay_span(plan: CityPlan, w: Dictionary, g: Dictionary) -> Vector2:
 	var ga := float(g["a"])
 	var gb := float(g["b"])
 	var mid := (ga + gb) * 0.5
@@ -531,19 +701,52 @@ static func plan_bay_half(plan: CityPlan, w: Dictionary, g: Dictionary) -> float
 	var plate := MissionGateDoor.PLATE
 	var e := plan.extent
 	var across := int(w["side"]) >= 2
-	var room := minf(mid - ((e.position.x if across else e.position.y) + 2.0), ((e.end.x if across else e.end.y) - 2.0) - mid) - plate
+	var lo_lim := (e.position.x if across else e.position.y) + 2.0 + plate - mid
+	var hi_lim := (e.end.x if across else e.end.y) - 2.0 - plate - mid
+	var room := minf(-lo_lim, hi_lim)
+	var trams := []
 	for g2: Dictionary in w["gates"]:
 		if g2 == g or is_equal_approx(float(g2["a"]), ga):
 			continue
 		var a2 := float(g2["a"])
 		var b2 := float(g2["b"])
-		var reach := 1.0 + CityDistrict.PORTAL_PLATE      # a portal's back plate reaches 1 m past its sides
+		if str(g2["kind"]) == "tram_door":
+			trams.append(g2)
+			continue
+		var reach := 2.0                 # a collapsed gate (never opened: no bay), as the old portal's plate
 		if str(g2["kind"]) == "blast_door":
 			reach = maxf((b2 - a2) * 0.5, MissionGateDoor.BAY_MIN_W * 0.5) + plate - (b2 - a2) * 0.5
 		var lo := a2 - reach - 0.5
 		var hi := b2 + reach + 0.5
 		room = minf(room, (lo - mid) - plate if lo >= mid else (mid - hi) - plate)
-	return maxf(minf(want, room), own)
+	var hw := maxf(minf(want, room), own)
+	var x0 := -hw
+	var x1 := hw
+	if trams.is_empty():
+		return Vector2(x0, x1)
+	for g2: Dictionary in trams:
+		var t0 := float(g2["a"]) - CityWalls.TUNNEL_PLATE - 0.5 - plate - mid      # the tunnel and its plates, + 0.5, + our plate
+		var t1 := float(g2["b"]) + CityWalls.TUNNEL_PLATE + 0.5 + plate - mid
+		if t0 >= 0.0:
+			hi_lim = minf(hi_lim, t0)
+		elif t1 <= 0.0:
+			lo_lim = maxf(lo_lim, t1)
+	var wide := maxf(hw, want)
+	x0 = -wide
+	x1 = wide
+	if x1 > hi_lim:
+		x0 -= x1 - hi_lim
+		x1 = hi_lim
+	if x0 < lo_lim:
+		x1 += lo_lim - x0
+		x0 = lo_lim
+	return Vector2(maxf(x0, lo_lim), minf(x1, hi_lim))
+
+
+## plan_bay_span in gate g's door frame X (MissionGateDoor.build's span: frame X runs along u or against it by side).
+static func bay_span(d: CityDistrict, w: Dictionary, g: Dictionary) -> Vector2:
+	var sp := plan_bay_span(d.plan, w, g)
+	return sp if _u_to_x(int(w["side"])) > 0.0 else Vector2(-sp.y, -sp.x)
 
 
 ## The calls that draw district d's walls, in CityDistrict's own order (one per side, a farm side in FARM_PARTS parts), so a
@@ -697,27 +900,6 @@ func _build_hold(o: Dictionary) -> void:
 	_apply_hold()
 
 
-## The portal frame in the extraction portal gate (SectionPlan.extraction: the spine's portal in the lowest deck's end wall).
-func _build_portal() -> void:
-	if stack.section == null:
-		return
-	var d := _deck(stack.section.extraction.get("deck", 0))
-	if d == null:
-		return
-	var side := 3 if int(stack.section.extraction.get("j", 0)) == 0 else 2
-	for w: Dictionary in d.plan.boundary():
-		if int(w["side"]) != side:
-			continue
-		for g: Dictionary in w["gates"]:
-			if str(g["kind"]) == "portal":
-				_portal = MissionPortal.new()
-				_portal.name = "MissionPortal"
-				_portal.build(d, w, g)
-				d.add_child(_portal)
-				_portal.pose(portal_progress)
-				return
-
-
 # --- Doors ---------------------------------------------------------------------------------------------------------------
 
 ## s from open_at until a door of `kind` is passable (fully open): OPENING for a gate, LIFT_OPEN for a lift.
@@ -730,6 +912,11 @@ static func passable_after(kind: String = "gate") -> float:
 ## 0..1 through warn / opening / closing. warn: WARN s before open_at; opening: from open_at for passable_after(kind) s;
 ## open until close_at. A door open (or opening) at seal_at closes over CLOSE s from then, then is sealed; one already
 ## closing finishes its closing.
+## NO JUMPS (a re-order landing on a moving door): the previous cycle (prev_close_at) always plays out first: open until
+## prev_close_at, then closing over CLOSE s, and only then the new cycle; the new opening never starts before the
+## previous closing ends (effective open_at = max(open_at, prev_close_at + CLOSE): open_source stores it so, and this
+## clamps an older schedule too), and its warn (leaves shut) shows only once the leaves are shut. So the leaves never
+## snap from open / closing to shut, nor pop back open. A pure function of the schedule (snapshot-restorable).
 static func door_state(kind: String, sched: Array, seal_at: float, t: float) -> Array:
 	if t >= seal_at:
 		var then := door_state(kind, sched, INF, seal_at)
@@ -744,18 +931,18 @@ static func door_state(kind: String, sched: Array, seal_at: float, t: float) -> 
 		return ["sealed", 1.0]
 	if sched.is_empty():
 		return ["shut", 0.0]
-	var oa := float(sched[0])
-	var ca := float(sched[1])
 	var pca := float(sched[2])
+	var oa := maxf(float(sched[0]), pca + CLOSE)
 	var t_open := passable_after(kind)
-	if t < oa - WARN:
+	var ca := maxf(float(sched[1]), oa + t_open)
+	if t < oa:
 		if t < pca:
 			return ["open", 1.0]
 		if t < pca + CLOSE:
 			return ["closing", (t - pca) / CLOSE]
+		if t >= oa - WARN:
+			return ["warn", (t - (oa - WARN)) / WARN]
 		return ["shut", 0.0]
-	if t < oa:
-		return ["warn", (t - (oa - WARN)) / WARN]
 	if t < oa + t_open:
 		return ["opening", (t - oa) / t_open]
 	if t < ca:
@@ -770,19 +957,24 @@ static func door_state(kind: String, sched: Array, seal_at: float, t: float) -> 
 static func alarm_from(sched: Array) -> float:
 	if sched.is_empty():
 		return INF
-	var oa := float(sched[0])
+	var oa := eff_open_at(sched)
 	if sched.size() > 3:
 		return clampf(float(sched[3]), oa - ALARM_LEAD, oa)
 	return oa - ALARM_LEAD
 
 
+## A schedule's effective open_at: never before its previous closing ends (door_state's no-jump rule).
+static func eff_open_at(sched: Array) -> float:
+	return maxf(float(sched[0]), float(sched[2]) + CLOSE)
+
+
 ## The gate alarm (siren + lamps + beacons at the door) at clock t: a scheduled effect, on from alarm_from(sched) (with
 ## ALARM_LEAD 0: open_at, the leaves starting to move) until the leaves are fully open (open_at + OPENING), off once
-## sealed. Gates only (a lift keeps its countdown).
+## sealed. Gates, air and tram doors (a freight lift has no alarm: its doors' motion is the tell).
 static func alarm_on(kind: String, sched: Array, seal_at: float, t: float) -> bool:
-	if (kind != "gate" and kind != "air") or sched.is_empty() or t >= seal_at:
+	if (kind != "gate" and kind != "air" and kind != "tram") or sched.is_empty() or t >= seal_at:
 		return false
-	return t >= alarm_from(sched) and t < float(sched[0]) + OPENING
+	return t >= alarm_from(sched) and t < eff_open_at(sched) + OPENING
 
 
 ## Whether source `id`'s gate alarm is on at the current clock.
@@ -792,10 +984,14 @@ func alarm(id: Variant) -> bool:
 
 ## Schedule wave source `id` to open at `open_at` (shared clock; the moment the leaves START to move): the silent warn
 ## state WARN s before, the opening (siren) passable_after(kind) s from open_at, then fully open `hold` s, then closing over
-## CLOSE s. Called again while the door is due to be open (the new open_at is not after the current close time): only the
-## hold is extended (the earlier open_at stays, no second opening). Ramp / shaft / unknown ids are accepted and do
-## nothing; a sealed source stays sealed. `order_at` (default: the current clock) is when the order arrived: the alarm
-## starts there, at most ALARM_LEAD s before open_at (ALARM_LEAD 0: at open_at); stored in the schedule (snapshot()).
+## CLOSE s. Called again while the door is due to be open (the new open_at is not after the current close time, and the
+## order came before that close time): only the hold is extended (the earlier open_at stays, no second opening). An
+## order landing while the door closes, or so soon after that its warn would start before the leaves are shut, waits:
+## the door finishes closing, then runs the normal warn / opening cycle (open_at moved to the end of the closing; never a
+## jump from open / closing to warn, never popping back open). Ramp / shaft / unknown ids are accepted and do nothing; a
+## sealed source stays sealed. `order_at` (default: the current clock) is when the order arrived: the alarm starts
+## there, at most ALARM_LEAD s before open_at (ALARM_LEAD 0: at open_at); stored in the schedule (snapshot()). Pass the
+## host's order time so every machine stores the same schedule.
 func open_source(id: Variant, open_at: float, hold: float = HOLD, order_at: float = NAN) -> void:
 	if not setup_ready:
 		return
@@ -804,19 +1000,23 @@ func open_source(id: Variant, open_at: float, hold: float = HOLD, order_at: floa
 	var kind := str(_sources[id].get("kind", ""))
 	if kind != "gate" and kind != "lift" and kind != "air":
 		return
-	var close_at := open_at + passable_after(kind) + maxf(hold, 0.0)
-	var alarm_at := clampf(now if is_nan(order_at) else order_at, open_at - ALARM_LEAD, open_at)
+	var ord := now if is_nan(order_at) else order_at
 	if _sched.has(id):
 		var sc: Array = _sched[id]
-		if open_at <= float(sc[1]):
-			if close_at > float(sc[1]):
-				sc[1] = close_at
+		var ca := float(sc[1])
+		# Due to be open at open_at (not yet closing when the order came): only the hold grows. An order that lands once
+		# the door is closing (or after) starts a new cycle that waits for the closing to end (no jump, door_state).
+		if open_at <= ca and ord < ca:
+			var keep := open_at + passable_after(kind) + maxf(hold, 0.0)
+			if keep > ca:
+				sc[1] = keep
 				(_fired[id] as Dictionary)["close"] = false
 			_next = -INF
 			return
-		_sched[id] = [open_at, close_at, float(sc[1]), alarm_at]
+		var oa := maxf(maxf(open_at, ord if open_at <= ca else open_at), ca + CLOSE)
+		_sched[id] = [oa, oa + passable_after(kind) + maxf(hold, 0.0), ca, clampf(ord, oa - ALARM_LEAD, oa)]
 	else:
-		_sched[id] = [open_at, close_at, -INF, alarm_at]
+		_sched[id] = [open_at, open_at + passable_after(kind) + maxf(hold, 0.0), -INF, clampf(ord, open_at - ALARM_LEAD, open_at)]
 	_fired[id] = {"warn": false, "open": false, "close": false, "seal": bool(_fired.get(id, {}).get("seal", false))}
 	_next = -INF
 
@@ -852,8 +1052,352 @@ func close_source(id: Variant, at: float = NAN) -> void:
 	_next = -INF
 
 
+## End source `id`'s hold at clock `at` (default: the current clock) without sealing it: the door closes from then over
+## CLOSE s (once fully open, if it is still opening) and is shut; a later open_source opens it again. No effect on a
+## source never opened, already closing / shut by then, or sealed. Missions: shut the entry door once its bay is empty.
+func shut_source(id: Variant, at: float = NAN) -> void:
+	if not setup_ready:
+		return
+	if _sealed.has(id) or not _sched.has(id):
+		return
+	var t := now if is_nan(at) else at
+	var sc: Array = _sched[id]
+	var ca := float(sc[1])
+	if ca <= t:
+		return
+	sc[1] = maxf(t, eff_open_at(sc) + passable_after(_door_kind(id)))
+	(_fired[id] as Dictionary)["close"] = false
+	_next = -INF
+
+
 func _seal_at(id: Variant) -> float:
 	return float(_sealed.get(id, INF))
+
+
+# --- Entry / exit doors, bays, tram doors (docs/design/city-spine.md §4) ---------------------------------------------------
+
+## The entry road door (the gate with role entry: top deck, the spine's main road): source_bay(id) plus `id` (ENTRY_ID,
+## an ordinary door id: open_source / hold_source / shut_source / close_source / source_state, incl. `passable`).
+## {ok = false} when the section has none. Shut unless ENTRY_OPEN_DEFAULT (then open from setup until Missions orders).
+func entry_door() -> Dictionary:
+	return _role_door(ENTRY_ID)
+
+
+## The exit road door (role exit: the lowest deck), as entry_door; shut until Missions opens it.
+func exit_door() -> Dictionary:
+	return _role_door(EXIT_ID)
+
+
+const SLOT_R := 3.6                            ## m: the widest capsule a bay slot is laid out for (Bulwark)
+const BAY_COLUMNS := 2.0 * SLOT_R + 0.2        ## m between a bay's two stand columns (7.4: two Bulwarks abreast, 0.2 m apart)
+## m behind the door plane of a bay's two stand rows: the usable volume's ends (MissionGateDoor.USE_FROM / USE_TO) less
+## SLOT_R, so a Bulwark fits each and two in line keep 1.6 m between them. A staggered layout (slot_layout) may put the
+## far column's back slot deeper, MARGIN + SLOT_R short of the bay's back wall (21.4 m).
+const BAY_ROWS: Array[float] = [MissionGateDoor.USE_FROM + SLOT_R, MissionGateDoor.USE_TO - SLOT_R]
+const SLOT_CLEAR := 0.3                        ## m a slot's walk-out line keeps off the jambs / throat walls (per side)
+
+
+## Where n (1..4) mechs stand in a bay of interior ix0..ix1 (door frame X, mid-gate 0) behind a door of clear half
+## `half` and throat half `w_out` (MissionGateDoor), in seat order: [{x, depth, aim, clear}] (aim: the frame-X point on
+## the door plane the slot faces when facing out, NAN = straight ahead; clear: the room its walk-out line keeps for a
+## SLOT_R capsule, m). Two columns BAY_COLUMNS apart as close to the door's centre line as the bay's walls allow (each slot
+## SLOT_R + MissionGateDoor.MARGIN inside them), rows BAY_ROWS (front row first; a lone mech in the front row nearest the
+## centre line; an odd last one in the -X column). Every slot walking out along its facing passes the door without
+## touching a jamb or the throat: a slot whose straight line would come within SLOT_R + SLOT_CLEAR of one (_walk_room)
+## turns to face the door-plane point that keeps its line clearest of them. Plan data only (tests read it, no scene).
+static func slot_layout(ix0: float, ix1: float, half: float, w_out: float, n: int) -> Array:
+	n = clampi(n, 1, 4)
+	var lo := ix0 + MissionGateDoor.MARGIN + SLOT_R
+	var hi := ix1 - MissionGateDoor.MARGIN - SLOT_R
+	if n == 1:
+		return [_slot(Vector2(clampf(0.0, lo, hi), BAY_ROWS[0]), ix0, ix1, half, w_out)]
+	var cols := [-BAY_COLUMNS * 0.5, BAY_COLUMNS * 0.5]
+	if cols[1] > hi:
+		cols = [hi - BAY_COLUMNS, hi]
+	if cols[0] < lo:
+		cols = [lo, lo + BAY_COLUMNS]
+	# The grid: two columns, rows BAY_ROWS; seat order front row -X, +X, back row -X, +X.
+	var layouts := [[Vector2(cols[0], BAY_ROWS[0]), Vector2(cols[1], BAY_ROWS[0]), Vector2(cols[0], BAY_ROWS[1]),
+			Vector2(cols[1], BAY_ROWS[1])]]
+	# Staggered (a bay pushed off the door's centre line): the column nearer the centre line keeps its front slot, the far
+	# column's slots step back (front by dz, back to SLOT_BACK) and in towards the centre line, BAY_COLUMNS from every
+	# other slot, so the far front slot's walk-out line clears the jamb.
+	var near_i := 0 if absf(float(cols[0])) < absf(float(cols[1])) else 1
+	var xn := float(cols[near_i])
+	var side := signf(float(cols[1 - near_i]) - xn)
+	var back := MissionGateDoor.BAY_DEPTH - MissionGateDoor.MARGIN - SLOT_R
+	var n2 := Vector2(xn, BAY_ROWS[1])
+	var f2 := Vector2(xn + side * sqrt(maxf(BAY_COLUMNS * BAY_COLUMNS - (back - BAY_ROWS[1]) * (back - BAY_ROWS[1]), 0.0)), back)
+	var dz := 0.0
+	while dz <= 3.0 + 1e-6:
+		var f1 := Vector2(xn + side * sqrt(maxf(BAY_COLUMNS * BAY_COLUMNS - dz * dz, 0.0)), BAY_ROWS[0] + dz)
+		layouts.append([Vector2(xn, BAY_ROWS[0]), f1, n2, f2])
+		dz += 0.2
+	var best: Array = []
+	var best_m := -INF
+	for lay: Array in layouts:
+		var pts: Array = lay.slice(0, n)
+		var fits := true
+		for a in pts.size():
+			var p: Vector2 = pts[a]
+			if p.x < lo - 1e-3 or p.x > hi + 1e-3:
+				fits = false
+			for b in a:
+				if p.distance_to(pts[b]) < BAY_COLUMNS - 1e-3:
+					fits = false
+		if not fits:
+			continue
+		var slots := []
+		var m := INF
+		for p: Vector2 in pts:
+			var sl := _slot(p, ix0, ix1, half, w_out)
+			slots.append(sl)
+			m = minf(m, float(sl["clear"]))
+		if m > best_m + 1e-3:
+			best_m = m
+			best = slots
+		if best_m >= SLOT_R + SLOT_CLEAR:
+			break       # the first layout (the grid first) that walks out clear wins
+	return best
+
+
+## Slot at p (frame X, depth): {x, depth, aim, clear} (slot_layout): straight ahead when that keeps SLOT_R + SLOT_CLEAR off
+## the door's edges (_walk_room), else facing the door-plane point whose line keeps the most room.
+static func _slot(p: Vector2, ix0: float, ix1: float, half: float, w_out: float) -> Dictionary:
+	var room := _walk_room(p, p.x, ix0, ix1, half, w_out)
+	var aim := NAN
+	if room < SLOT_R + SLOT_CLEAR:
+		var steps := 128
+		for k in steps + 1:
+			var xa := lerpf(-half, half, float(k) / float(steps))
+			var m := _walk_room(p, xa, ix0, ix1, half, w_out)
+			if m > room + 1e-6:
+				room = m
+				aim = xa
+	return {"x": p.x, "depth": p.y, "aim": aim, "clear": room}
+
+
+## The least distance (m) from the walk-out line of a mech standing at `at` (frame X, depth behind the door plane) facing
+## the door-plane point x = aim, from its spot to FRAME_OUT + 0.4 + 6 m in front of the door, to the door's solid edges:
+## both jambs' faces (x = +-half, from the plane to FRAME_OUT + 0.4 m out), both throat walls (x = +-w_out through the
+## wall's thickness), the room's front wall beside the throat (at the wall's thickness, from w_out out to the room's
+## side) and, where the room is narrower than the throat, its step (x = the room's side, the throat's last 1 m on).
+static func _walk_room(at: Vector2, aim: float, ix0: float, ix1: float, half: float, w_out: float) -> float:
+	var front := -(MissionGateDoor.FRAME_OUT + 0.4)
+	var wt := CityWalls.WALL_THICK
+	var end_z := front - 6.0
+	var e := Vector2(aim + (at.x - aim) * end_z / at.y, end_z)
+	var segs := []
+	for k: float in [-1.0, 1.0]:
+		var edge := ix1 if k > 0.0 else ix0
+		segs.append([Vector2(k * half, front), Vector2(k * half, 0.0)])
+		var tw := minf(w_out, k * edge)
+		segs.append([Vector2(k * half, 0.0), Vector2(k * tw, 0.0)])
+		segs.append([Vector2(k * tw, 0.0), Vector2(k * tw, wt + 1.2)])
+		if k * edge > w_out:
+			segs.append([Vector2(k * w_out, wt), Vector2(edge, wt)])
+	var m := INF
+	for sg: Array in segs:
+		m = minf(m, _seg_dist(at, e, sg[0], sg[1]))
+	return m
+
+
+## Distance between 2D segments ab and cd.
+static func _seg_dist(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> float:
+	if Geometry2D.segment_intersects_segment(a, b, c, d) != null:
+		return 0.0
+	return minf(minf(Geometry2D.get_closest_point_to_segment(c, a, b).distance_to(c), Geometry2D.get_closest_point_to_segment(d, a, b).distance_to(d)),
+			minf(Geometry2D.get_closest_point_to_segment(a, c, d).distance_to(a), Geometry2D.get_closest_point_to_segment(b, c, d).distance_to(b)))
+
+
+## Stand points for n (1..4) mechs inside door `id`'s bay, in seat order (slot_layout: two columns BAY_COLUMNS apart as
+## near the door's centre line as the bay allows, rows BAY_ROWS behind the door plane), 0.3 m above the floor (on the
+## ring circle), each fitting the widest capsule (SLOT_R). `facing_out`: facing out through the door into the map (the
+## entry spawn), each slot aimed so its straight walk passes the opening clear of the jambs; else facing in, away from the
+## door (the exit bay). Global in the tree, district-local otherwise (as source_bay). [] for an id without a bay. A lift:
+## its car (_car_slots). (CityStack.entry_bay_slots: the same rule for the entry bay.)
+func bay_slots(id: Variant, n: int, facing_out: bool = true) -> Array[Transform3D]:
+	var out: Array[Transform3D] = []
+	if _doors.get(id) is MissionLiftDoor:
+		return _car_slots(_doors[id] as MissionLiftDoor, n, facing_out)
+	var door := _doors.get(id) as MissionGateDoor
+	if door == null or not is_instance_valid(door) or door.air or door.bayless:
+		return out
+	if absf(door.arc_in.y) < 0.5:
+		return out       # a side-wall gate (no entry / exit door stands there)
+	var d := door.get_parent() as CityDistrict
+	var to_space := d.global_transform if d.is_inside_tree() else Transform3D.IDENTITY
+	for sl: Dictionary in slot_layout(door.ix0, door.ix1, door.half, door.w_out, n):
+		var a := door.arc(float(sl["x"]), float(sl["depth"]))
+		var p := d.ring.arc_to_world(a.x, a.y, 0.3)
+		var dir := d.ring.tangent_at(p) * signf(door.arc_in.y) * (1.0 if facing_out else -1.0)     # an arc-end wall's door: along s
+		if facing_out and not is_nan(float(sl["aim"])):
+			var t := door.arc(float(sl["aim"]), 0.0)
+			dir = d.ring.arc_to_world(t.x, t.y, 0.3) - p
+		out.append(to_space * Transform3D(d.ring.basis_at(p, dir), p))
+	return out
+
+
+const CAR_COLUMNS := 8.0                       ## m between a lift car's two stand columns (either side of mid-door)
+const CAR_ROWS: Array[float] = [5.5, 13.5]     ## m behind the door plane of its two stand rows
+
+
+## bay_slots for a lift car: two columns CAR_COLUMNS apart, rows CAR_ROWS behind the door plane (the widest capsule,
+## Bulwark r 3.6 m, fits each: 0.8 m between two abreast or in line, 0.4 m to the car's side walls), 0.3 m above the floor;
+## [] without a car.
+func _car_slots(lift: MissionLiftDoor, n: int, facing_out: bool) -> Array[Transform3D]:
+	var out: Array[Transform3D] = []
+	if not is_instance_valid(lift) or not lift.has_car:
+		return out
+	var d := lift.get_parent() as CityDistrict
+	var to_space := d.global_transform if d.is_inside_tree() else Transform3D.IDENTITY
+	var geo := CityGeo.new(d.ring)
+	n = clampi(n, 1, 4)
+	for i in n:
+		var lx := 0.0
+		if n > 1:
+			lx = (-0.5 if i % 2 == 0 else 0.5) * CAR_COLUMNS
+		var a := lift.arc(lx, CAR_ROWS[i / 2])
+		var p := geo.g_point(a.x, a.y, CityPlan.CURB_H + 0.3)
+		var fwd := lift.transform.basis.z.normalized() * (1.0 if facing_out else -1.0)
+		out.append(to_space * Transform3D(d.ring.basis_at(p, fwd), p))
+	return out
+
+
+## The exit bay's n (1..4) stand points facing in, away from the door (bay_slots(EXIT_ID, n, false)): where a crew that
+## walks out after the hold stands. [] when there is no exit door.
+func exit_bay_slots(n: int) -> Array[Transform3D]:
+	return bay_slots(EXIT_ID, n, false)
+
+
+func _role_door(id: String) -> Dictionary:
+	var b := source_bay(id)
+	if not bool(b.get("ok", false)):
+		return {"ok": false}
+	b["id"] = id
+	return b
+
+
+## Where a point stands relative to door `id`'s bay, exact from the door's frame: {inside (within the bay's inner walls
+## behind the door plane: in the throat through the wall, |x| <= the throat's half, or in the room, between its walls,
+## to its back wall; under its roof), doorway (within 1.5 m of the door plane either side and within door_w / 2 of
+## mid-door), depth (m behind the door plane, negative in front of it)}. The door plane is the wall's face on the map side
+## (the frame's origin). Gates, the entry / exit doors, lift cars (_car_contains) and any door with a bay; ids without one (tram and air
+## doors, unknown ids): inside false (a tram / air door still answers doorway and depth). `point` is global in the tree
+## (district-local otherwise, as source_bay's frame).
+func bay_contains(id: Variant, point: Vector3) -> Dictionary:
+	if _doors.get(id) is MissionLiftDoor:
+		return _car_contains(_doors[id] as MissionLiftDoor, point)
+	var door := _doors.get(id) as MissionGateDoor
+	if door == null or not is_instance_valid(door):
+		return {"inside": false, "doorway": false, "depth": 0.0}
+	var d := door.get_parent() as CityDistrict
+	var local := d.to_local(point) if d.is_inside_tree() else point
+	var a := d.ring.world_to_arc(local)
+	var rel := Vector2(a.x, a.y) - door.arc_mid
+	var depth := -rel.dot(door.arc_in)
+	var lx := rel.dot(door.arc_x)
+	var h := a.z - door.sill
+	# Height in the door's own frame: from 1 m under its floor to its roof (the opening's top for a bayless door), so a
+	# point on another deck at the same x / s is neither inside nor in the doorway.
+	var level := h >= -1.0 and h <= (door.gh if door.bayless or door.air else door.room_h)
+	var doorway := level and absf(depth) <= 1.5 and absf(lx) <= door.half
+	var inside := false
+	if level and not door.bayless and not door.air and depth > 0.0 and depth <= door.bay_depth:
+		if depth < CityWalls.WALL_THICK:
+			inside = absf(lx) <= door.w_out and h <= door.gh
+		else:
+			inside = lx >= door.ix0 and lx <= door.ix1
+	return {"inside": inside, "doorway": doorway, "depth": depth}
+
+
+## bay_contains for a lift car, exact from the door's frame: inside (in the doorway's throat through the front wall, |x| <=
+## door_w / 2, or in the car between its side walls to its back wall; under its roof), doorway (within 1.5 m of the door
+## plane either side and within door_w / 2 of mid-door), depth. A lift without a car: inside false.
+func _car_contains(lift: MissionLiftDoor, point: Vector3) -> Dictionary:
+	if not is_instance_valid(lift):
+		return {"inside": false, "doorway": false, "depth": 0.0}
+	var d := lift.get_parent() as CityDistrict
+	var local := d.to_local(point) if d.is_inside_tree() else point
+	var l := lift.transform.affine_inverse() * local
+	var depth := -l.z
+	var level := l.y >= -1.0 and l.y <= MissionLiftDoor.CAR_H      # this deck's car, not one a deck up or down
+	var doorway := level and absf(depth) <= 1.5 and absf(l.x) <= MissionLiftDoor.W * 0.5
+	var inside := false
+	if level and lift.has_car and depth > 0.0 and depth <= lift.car_back:
+		if depth < MissionLiftDoor.WALL:
+			inside = absf(l.x) <= MissionLiftDoor.W * 0.5 and l.y <= MissionLiftDoor.H
+		else:
+			inside = absf(l.x) <= lift.car_half
+	return {"inside": inside, "doorway": doorway, "depth": depth}
+
+
+## Tram door `end` ("s0" / "s1": the arc-end wall it is in; deck 0 only): {ok, id, deck, open (ordered open at the
+## current clock), state (source_state's), passable, frame (Transform3D as source_bay's: on the wall plane at floor
+## mid-door, +Z into the map), door (Vector2: arc point of mid-door), door_w, door_h (clear), depth (the tunnel, wall
+## plane to back plate)}; {ok = false} when there is none.
+func tram_door(end: String) -> Dictionary:
+	var id: String = str(TRAM_IDS.get(end, ""))
+	var door := _doors.get(id) as MissionGateDoor
+	if id == "" or door == null or not is_instance_valid(door):
+		return {"ok": false}
+	var d := door.get_parent() as CityDistrict
+	var to_space := d.global_transform if d.is_inside_tree() else Transform3D.IDENTITY
+	var st := source_state(id)
+	return {"ok": true, "id": id, "deck": int((_sources[id] as Dictionary).get("deck", 0)), "open": tram_open(end),
+			"state": st["state"], "passable": st["passable"], "frame": to_space * door.transform, "door": door.arc_mid,
+			"door_w": door.half * 2.0, "door_h": door.gh, "depth": CityWalls.TUNNEL_DEPTH}
+
+
+## Whether tram door `end` is ordered open at clock t (default: now): its schedule's open phase (opening / open) has begun
+## and its close time is still ahead.
+func tram_open(end: String, t: float = NAN) -> bool:
+	var sc: Array = _sched.get(str(TRAM_IDS.get(end, "")), [])
+	var tt := now if is_nan(t) else t
+	return not sc.is_empty() and tt >= eff_open_at(sc) and tt < float(sc[1])
+
+
+## Order tram door `end` ("s0" / "s1") open or shut at clock `at` (default: now): a host-arbitrated world object, the
+## change stored as times on the shared clock like every door schedule (snapshot() / restore()); the leaves move with
+## the normal mechanism (siren and lamps while they open, CLOSE s to shut, no jump: an open order on a closing door waits
+## for it to shut). Default in a mission: open (the lockdown shuts road doors only). After the change: tram_door_changed
+## and, when the scene has an AmbientLife (group "ambient_life"), its set_tram_door(end, open, at) (the train link).
+## A train that cannot stop in time runs through a shutting door: the host shuts one only when
+## AmbientLife.tram_door_clear(end) is true (or schedules `at` for when it is); this call does not check.
+func set_tram_door(end: String, open: bool, at: float = NAN) -> void:
+	if not setup_ready:
+		return
+	var id: String = str(TRAM_IDS.get(end, ""))
+	if id == "" or not _doors.has(id):
+		return
+	var t := now if is_nan(at) else at
+	var sc: Array = _sched.get(id, [])
+	if open:
+		if not sc.is_empty() and float(sc[1]) > t:
+			sc[1] = INF                      # open, opening or due to open: stays open (opens no later than t)
+			if eff_open_at(sc) > t:
+				sc[0] = maxf(t, float(sc[2]) + CLOSE)
+				sc[3] = sc[0]
+		else:
+			var ca := float(sc[1]) if not sc.is_empty() else -INF
+			var oa := maxf(t, ca + CLOSE)
+			_sched[id] = [oa, INF, ca, oa]
+			_fired[id] = {"warn": true, "open": false, "close": false, "seal": true}
+	else:
+		if sc.is_empty() or float(sc[1]) <= t:
+			return
+		sc[1] = maxf(t, eff_open_at(sc) + passable_after("tram"))
+		(_fired[id] as Dictionary)["close"] = false
+	_next = -INF
+	_tell_tram(end, open, t)
+
+
+func _tell_tram(end: String, open: bool, t: float) -> void:
+	tram_door_changed.emit(end, open, t)
+	if is_inside_tree():
+		var life := get_tree().get_first_node_in_group("ambient_life")
+		if life != null and life.has_method("set_tram_door"):
+			life.call("set_tram_door", end, open, t)
 
 
 ## {state, t (when this state began, -INF if always), open_at (the leaves start to move), close_at, alarm, alarm_from,
@@ -868,24 +1412,25 @@ func source_state(id: Variant) -> Dictionary:
 	if str(st[0]) == "sealed":
 		began = _seal_at(id)
 	elif not sc.is_empty() and now < _seal_at(id):
-		var oa := float(sc[0])
-		var ca := float(sc[1])
+		var oa := eff_open_at(sc)
+		var ca := maxf(float(sc[1]), oa + t_open)
 		match str(st[0]):
-			"warn": began = oa - WARN
+			"warn": began = maxf(oa - WARN, float(sc[2]) + CLOSE)
 			"opening": began = oa
 			"open": began = oa + t_open if now >= oa + t_open else -INF
 			"closing": began = ca if now >= ca else float(sc[2])
 			"shut": began = ca + CLOSE if now >= ca + CLOSE else (float(sc[2]) + CLOSE if float(sc[2]) > -INF else -INF)
-	return {"state": st[0], "t": began, "open_at": float(sc[0]) if not sc.is_empty() else INF,
+	return {"state": st[0], "t": began, "open_at": eff_open_at(sc) if not sc.is_empty() else INF,
 			"close_at": float(sc[1]) if not sc.is_empty() else INF, "alarm": alarm_on(kind, sc, _seal_at(id), now),
-			"alarm_from": alarm_from(sc) if kind == "gate" or kind == "air" else INF, "passable": str(st[0]) == "open",
-			"passable_at": float(sc[0]) + t_open if not sc.is_empty() else INF}
+			"alarm_from": alarm_from(sc) if kind == "gate" or kind == "air" or kind == "tram" else INF, "passable": str(st[0]) == "open",
+			"passable_at": eff_open_at(sc) + t_open if not sc.is_empty() else INF}
 
 
 ## Where units of source `id` should appear, {deck, x, s} in its deck's arc coordinates, for every kind ({} for unknown
-## ids): a gate with its door, the floor centre of its staging bay (source_bay: hidden by the leaves until they open, held
-## in by the door's collision until it is passable); every other source (lift, ramp, shaft, a gate without a door) the
-## plan's point (a lift's lobby: the core is solid, so lift units step out in sight as the doors open).
+## ids): a gate with its door, the floor centre of its staging bay (source_bay: hidden by the leaves until they open; the
+## door's shape is solid only while the leaves stand shut, so the squad holds staged units until source_state().passable);
+## every other source (lift, ramp, shaft, a gate without a door) the
+## plan's point (a lift's lobby in front of its doors, unchanged now that the lift has a car: source_bay gives the car).
 func source_point(id: Variant) -> Dictionary:
 	if not _sources.has(id):
 		return {}
@@ -902,7 +1447,7 @@ func source_point(id: Variant) -> Dictionary:
 
 
 ## The staging bay of gate source `id` (docs/design/city-ramps-and-stack.md "Staging bay"), for placing a wave inside it
-## (loose formation facing out). {ok = false} for anything else (lifts, ramps, shafts, unknown ids, a gate without a door):
+## (loose formation facing out). {ok = false} for anything else (ramps, shafts, unknown ids, a gate without a door):
 ## test `ok`. With ok = true:
 ##   deck; frame (Transform3D, global when in the tree, else district-local: origin on the wall plane at floor mid-gate, +Z
 ##   into the map, X along the wall, as MissionProps.gate_frame); center (Vector3, same space: the usable floor's centre);
@@ -912,17 +1457,27 @@ func source_point(id: Variant) -> Dictionary:
 ##   depth_from, depth_to (usable metres behind the wall plane), depth (depth_to - depth_from); height (true clear height
 ##   under the lowest thing in the bay, over the floor's highest point); door_w (clear between the jambs), door_h (clear
 ##   to the lintel's underside); door (Vector2: arc point of mid-gate on the wall plane); door_s (the wall plane's arc
-##   coordinate along `out`: x for a side wall x0 / x1, s for an end wall s0 / s1); edge (s0 / s1 / x0 / x1).
+##   coordinate along `out`: x for a side wall x0 / x1, s for an end wall s0 / s1); edge (s0 / s1 / x0 / x1); offset (m
+##   along the frame's X from mid-door to the bay's centre: 0 unless the bay sits off centre beside a tram tunnel; center,
+##   x, s and origin are the bay's centre, door / frame the door's).
+## A LIFT source answers too (R2.22: its car, docs/design/city-ramps-and-stack.md section 9 "Lift cars"), with the same keys
+## and the same frame convention (origin on the door plane, the core's face, at floor mid-door; +Z out of the car): h is
+## the floor's height over the deck road (the plaza's curb), half_width / width the car's usable width (its side walls'
+## MARGIN off), depth_from .. depth_to its usable depth (MissionLiftDoor.USE_FROM .. car_back - BACK_MARGIN), edge "",
+## offset 0; plus `kind` "lift" and `bay_depth` (the back wall's inner face). {ok = false} for a lift whose core holds no
+## car (none in section seeds 1..200).
 func source_bay(id: Variant) -> Dictionary:
+	if _doors.get(id) is MissionLiftDoor:
+		return _car_bay(id, _doors[id] as MissionLiftDoor)
 	var door := _doors.get(id) as MissionGateDoor
-	if door == null or not is_instance_valid(door) or door.air:      # an air door has no staging bay: air_door()
+	if door == null or not is_instance_valid(door) or door.air or door.bayless:      # an air door has no staging bay: air_door(); a tram door none
 		return {"ok": false}
 	var k := int((_sources[id] as Dictionary).get("deck", 0))
 	var d := door.get_parent() as CityDistrict
 	var geo := CityGeo.new(d.ring)
 	var to_space := d.global_transform if d.is_inside_tree() else Transform3D.IDENTITY
 	var mid_depth := (MissionGateDoor.USE_FROM + MissionGateDoor.USE_TO) * 0.5
-	var c := door.arc(0.0, mid_depth)
+	var c := door.arc(door.icenter, mid_depth)
 	var ex := door.arc(0.0, -EXIT)
 	var frame := to_space * door.transform
 	var hw := door.ihalf - MissionGateDoor.MARGIN
@@ -934,7 +1489,28 @@ func source_bay(id: Variant) -> Dictionary:
 			"depth": MissionGateDoor.USE_TO - MissionGateDoor.USE_FROM, "height": door.clear_height(),
 			"door_w": door.half * 2.0, "door_h": door.gh, "door": door.arc_mid,
 			"door_s": door.arc_mid.x if absf(door.arc_in.x) > 0.5 else door.arc_mid.y,
-			"edge": CityPlan.SIDE_EDGE[side] if side >= 0 else ""}
+			"edge": CityPlan.SIDE_EDGE[side] if side >= 0 else "", "offset": door.icenter}
+
+
+func _car_bay(id: Variant, lift: MissionLiftDoor) -> Dictionary:
+	if not is_instance_valid(lift) or not lift.has_car:
+		return {"ok": false}
+	var d := lift.get_parent() as CityDistrict
+	var geo := CityGeo.new(d.ring)
+	var to_space := d.global_transform if d.is_inside_tree() else Transform3D.IDENTITY
+	var d_from := MissionLiftDoor.USE_FROM
+	var d_to := lift.car_back - MissionLiftDoor.BACK_MARGIN
+	var c := lift.arc(0.0, (d_from + d_to) * 0.5)
+	var ex := lift.arc(0.0, -EXIT)
+	var frame := to_space * lift.transform
+	var hw := lift.car_half - MissionLiftDoor.MARGIN
+	return {"ok": true, "kind": "lift", "deck": int((_sources[id] as Dictionary).get("deck", 0)), "frame": frame,
+			"center": to_space * geo.g_point(c.x, c.y, CityPlan.CURB_H), "x": c.x, "s": c.y, "h": CityPlan.CURB_H, "origin": c,
+			"out": lift.arc_in, "facing": frame.basis.z.normalized(), "exit": to_space * geo.g_point(ex.x, ex.y, CityPlan.CURB_H),
+			"half_width": hw, "width": hw * 2.0, "depth_from": d_from, "depth_to": d_to, "depth": d_to - d_from,
+			"height": lift.clear_height(), "door_w": MissionLiftDoor.W, "door_h": MissionLiftDoor.H, "door": lift.arc_mid,
+			"door_s": lift.arc_mid.x if absf(lift.arc_in.x) > 0.5 else lift.arc_mid.y, "edge": "", "offset": 0.0,
+			"bay_depth": lift.car_back}
 
 
 ## The clean sign panel beside gate source `id`'s bunker frame (a flat concrete face PANEL m wide x tall, for a stencilled
@@ -943,7 +1519,7 @@ func source_bay(id: Variant) -> Dictionary:
 ## anything without a gate door.
 func source_sign_panel(id: Variant) -> Dictionary:
 	var door := _doors.get(id) as MissionGateDoor
-	if door == null or not is_instance_valid(door) or door.air:
+	if door == null or not is_instance_valid(door) or door.air or door.pier_side == 0:
 		return {"ok": false}
 	var d := door.get_parent() as CityDistrict
 	var to_space := d.global_transform if d.is_inside_tree() else Transform3D.IDENTITY
@@ -952,7 +1528,9 @@ func source_sign_panel(id: Variant) -> Dictionary:
 
 # --- Air doors (Missions' convenience API: thin wrappers over the source calls) --------------------------------------------
 
-## How many air doors deck k has (0, 1 or 2).
+## How many air doors deck k has: 1 or 2 on every deck of a section (R2.24: MissionAirDoors.spot slides along the wall
+## until the approach is clear; tests/test_air_doors.gd sweeps seeds), so Missions can always bring a dropship in and out
+## through one. 0 only off a section (a lone district with a low ceiling) or before setup.
 func air_door_count(deck: int) -> int:
 	return (_air.get(deck, []) as Array).size()
 
@@ -961,8 +1539,9 @@ func air_door_count(deck: int) -> int:
 ## centre, +Z into the deck, X along the wall), center (Vector3, the opening's centre, same space), x, s (arc of the
 ## opening's foot on the wall plane), h_bottom, h_top (the opening's sill and head above the deck floor at the wall),
 ## width, height (clear), depth (the recess, wall plane to back wall), hide (Vector3 in the recess at mid height, AIR_HIDE m
-## behind the wall plane), out (Vector3 AIR_OUT m in front of the opening at mid height), facing (unit, into the deck)};
-## {ok = false} when there is no such door.
+## behind the wall plane), out (Vector3 AIR_OUT m in front of the opening at mid height), facing (unit, into the deck),
+## usable (true: at least MissionAirDoors.APPROACH m of clear straight flight for the whole opening), clear_len (m of that
+## flight: air_door_approach)}; {ok = false} when there is no such door.
 func air_door(deck: int, i: int) -> Dictionary:
 	var ids: Array = _air.get(deck, [])
 	if i < 0 or i >= ids.size() or not _doors.has(ids[i]):
@@ -974,7 +1553,21 @@ func air_door(deck: int, i: int) -> Dictionary:
 	var fr := to_space * door.transform * Transform3D(Basis.IDENTITY, Vector3(0, mid_h, 0))
 	return {"ok": true, "id": ids[i], "deck": deck, "frame": fr, "center": fr.origin, "x": door.arc_mid.x, "s": door.arc_mid.y,
 			"h_bottom": MissionAirDoors.SILL, "h_top": MissionAirDoors.HEAD, "width": MissionAirDoors.W, "height": MissionAirDoors.HEAD - MissionAirDoors.SILL, "depth": MissionAirDoors.DEPTH,
-			"hide": fr * Vector3(0, 0, -AIR_HIDE), "out": fr * Vector3(0, 0, AIR_OUT), "facing": fr.basis.z.normalized()}
+			"hide": fr * Vector3(0, 0, -AIR_HIDE), "out": fr * Vector3(0, 0, AIR_OUT), "facing": fr.basis.z.normalized(),
+			"usable": bool(_sources[ids[i]].get("usable", false)), "clear_len": float(_sources[ids[i]].get("clear_len", 0.0))}
+
+
+## The clear straight approach of air door i of deck k (MissionAirDoors.approach_len, plan data only): {ok, from (Vector3,
+## the opening's centre on the wall plane, at mid height), to (Vector3, clear_len m straight into the deck along facing,
+## same space as air_door().frame), clear_len (m, >= MissionAirDoors.APPROACH 30 for every door, at most REACH 80)}. A box
+## the opening's size (12 m + 1 m a side, 6 m) flies from `from` to `to` without touching a building, pillar, column,
+## ramp sign or ceiling opening. {ok = false} when there is no such door.
+func air_door_approach(deck: int, i: int) -> Dictionary:
+	var a := air_door(deck, i)
+	if not bool(a.get("ok", false)):
+		return {"ok": false}
+	var cl := float(a["clear_len"])
+	return {"ok": true, "from": a["center"], "to": (a["center"] as Vector3) + (a["facing"] as Vector3) * cl, "clear_len": cl}
 
 
 ## open_source for air door i of deck k (open_at: the leaves start to move; passable OPENING s later).
@@ -1018,10 +1611,13 @@ func _pose_door(id: Variant, t: float, force: bool = false, fire: bool = true) -
 			gd.pose(state, float(st[1]), t, alarm_now, alarm_now and _heard(id))
 			if changed:
 				gd.door_shape.disabled = not gd.blocks(state)
-			_light(id, door, kind, alarm_now or state == "opening" or state == "open")
+			_light(id, door, kind, alarm_now or (not gd.bayless and (state == "opening" or state == "open")))
 		elif door is MissionLiftDoor:
-			(door as MissionLiftDoor).pose(state, float(st[1]), float(sc[0]) - t if not sc.is_empty() else 0.0)
-			_light(id, door, kind, state == "warn" or state == "opening")
+			var ld := door as MissionLiftDoor
+			ld.pose(state, float(st[1]))
+			if changed and ld.door_shape != null:
+				ld.door_shape.disabled = not ld.blocks(state)
+			_light(id, door, kind, ld.has_car and (state == "opening" or state == "open" or state == "closing"))
 	_door_state[id] = state
 	if fire:
 		_fire_door(id, sc, t)
@@ -1068,8 +1664,8 @@ func _door_point(id: Variant) -> Vector3:
 
 
 ## One small OmniLight3D per door while it is lit (none at GraphicsQuality.LOW), removed afterwards: a gate's hangs high in
-## its staging bay while the leaves open and it stands open (the units waiting there readable); a lift's in front of its
-## doors through the countdown.
+## its staging bay while the leaves open and it stands open (the units waiting there readable); a lift car's high in the
+## car while its doors open, stand open and close.
 func _light(id: Variant, door: Node3D, kind: String, on: bool) -> void:
 	on = on and quality != GraphicsQuality.LOW
 	var l: OmniLight3D = _lights.get(id)
@@ -1085,11 +1681,11 @@ func _light(id: Variant, door: Node3D, kind: String, on: bool) -> void:
 			l.light_energy = 3.0
 			l.omni_range = 24.0
 			l.position = (door as MissionGateDoor).light_point()
-		else:
-			l.light_color = CityPalette.C["m_beacon"]
-			l.light_energy = 2.5
-			l.omni_range = 16.0
-			l.position = Vector3(0, MissionLiftDoor.H + 2.5, 3.0)
+		else:      # a lift car's own light, lighting what stands in it while its doors are open
+			l.light_color = CityPalette.C["strip"]
+			l.light_energy = 3.0
+			l.omni_range = 20.0
+			l.position = (door as MissionLiftDoor).light_point()
 		door.add_child(l)
 		_lights[id] = l
 	elif not on and l != null:
@@ -1098,7 +1694,7 @@ func _light(id: Variant, door: Node3D, kind: String, on: bool) -> void:
 		_lights.erase(id)
 
 
-# --- Flag, zones, asset, portal ------------------------------------------------------------------------------------------
+# --- Flag, zones, asset, hold -------------------------------------------------------------------------------------------------
 
 ## Where flag objective `id` stands: {deck, x, s, h, snapped, ok, fit, moved_for_fit} ({} for unknown ids). ok = false: no
 ## clear ground inside the radius, the plan's site kept. fit: the widest mech reaches the zone (SiteFit.snap_fit);
@@ -1190,20 +1786,11 @@ func _apply_asset(id: Variant) -> void:
 	_asset_told[id] = maxi(told, lv)
 
 
-## The extraction portal's charge 0..1 (segments light up, the curtain brightens; dark at 0, fully lit at 1).
-func set_portal(progress: float) -> void:
-	if not setup_ready:
-		return
-	portal_progress = clampf(progress, 0.0, 1.0)
-	if _portal != null:
-		_portal.pose(portal_progress)
-	var at := _portal.world_point() if _portal != null else Vector3.ZERO
-	if portal_progress > 0.0 and _portal_told < 1:
-		_portal_told = 1
-		portal_event.emit("start", at)
-	if portal_progress >= 1.0 and _portal_told < 2:
-		_portal_told = 2
-		portal_event.emit("open", at)
+## DEPRECATED, draws nothing: the extraction portal and its curtain are gone (docs/design/city-spine.md §4: the crew
+## leaves through the exit road door, exit_door()). Kept so MissionFlow's call (mission_flow.gd, _push "portal:") runs
+## until Missions drops it; it only stores the value in portal_progress (read by tests/test_mission_objectives.gd).
+func set_portal(p: float) -> void:
+	portal_progress = clampf(p, 0.0, 1.0)
 
 
 ## The extraction hold zone's colour: idle, holding (orange), contested (red), done (green).
@@ -1283,13 +1870,14 @@ func set_quality(q: int) -> void:
 	for id: Variant in _doors:
 		var ds := str(_door_state.get(id, ""))
 		var gate := _doors[id] is MissionGateDoor
-		_light(id, _doors[id], _door_kind(id), (alarm(id) or ds == "opening" or ds == "open") if gate else (ds == "warn" or ds == "opening"))
+		var bayless := gate and (_doors[id] as MissionGateDoor).bayless
+		_light(id, _doors[id], _door_kind(id), (alarm(id) or (not bayless and (ds == "opening" or ds == "open"))) if gate else (ds == "warn" or ds == "opening"))
 	for id: Variant in _assets:
 		_apply_asset(id)
 
 
-## Everything a late joiner needs, in one message: door schedules, the sealed set, flags, zones, asset health, portal and
-## hold zone, and the clock it was taken at.
+## Everything a late joiner needs, in one message: door schedules (the entry / exit and tram doors' too), the sealed
+## set, flags, zones, asset health, the hold zone, and the clock it was taken at.
 func snapshot() -> Dictionary:
 	var doors := {}
 	for id: Variant in _sched:
@@ -1298,7 +1886,7 @@ func snapshot() -> Dictionary:
 	for id: Variant in _flag_state:
 		flags[id] = (_flag_state[id] as Array).duplicate()
 	return {"now": now, "doors": doors, "sealed": _sealed.duplicate(), "flags": flags, "zones": _zone_state.duplicate(),
-			"assets": _asset_hp.duplicate(), "portal": portal_progress, "hold": hold_state}
+			"assets": _asset_hp.duplicate(), "hold": hold_state}
 
 
 ## Take a snapshot() and show its state at its clock (no signal replays for moments already past).
@@ -1349,13 +1937,15 @@ func restore(d: Dictionary) -> void:
 			_asset_hp[id] = clampf(float(assets[id]), 0.0, 1.0)
 			_asset_told[id] = asset_level(float(_asset_hp[id]))
 			_apply_asset(id)
-	portal_progress = clampf(float(d.get("portal", portal_progress)), 0.0, 1.0)
-	_portal_told = 2 if portal_progress >= 1.0 else (1 if portal_progress > 0.0 else 0)
-	if _portal != null:
-		_portal.pose(portal_progress)
 	set_hold_zone(str(d.get("hold", hold_state)))
 	for id: Variant in _doors:
+		_apply_default(id)          # a snapshot that does not name a door (an older one): its default
 		_pose_door(id, now, true)
+	for end: String in TRAM_IDS:
+		if _doors.has(TRAM_IDS[end]):
+			var sc: Array = _sched.get(TRAM_IDS[end], [])
+			var open := tram_open(end) or (not sc.is_empty() and now < eff_open_at(sc) and float(sc[1]) > eff_open_at(sc))
+			_tell_tram(end, open, eff_open_at(sc) if open and not sc.is_empty() else (float(sc[1]) if not sc.is_empty() else -INF))
 	for id: Variant in _flags:
 		_pose_flag(id, now)
 	_next = -INF
@@ -1363,8 +1953,8 @@ func restore(d: Dictionary) -> void:
 
 # --- A stand-in plan (lab, tests) -------------------------------------------------------------------------------------------
 
-## A Dictionary with MissionPlan's fields (§9) for stack st, until MissionPlan is usable: a gate source at every blast-door
-## gate of every deck (on the gate's road line, SOURCE_IN m inside the wall, `edge` named), a lift source at every stop of
+## A Dictionary with MissionPlan's fields (§9) for stack st, until MissionPlan is usable: a gate source at every road-door
+## gate without a role (not the entry / exit doors) of every deck (on the gate's road line, SOURCE_IN m inside the wall, `edge` named), a lift source at every stop of
 ## every freight lift (the platform centre moved toward the spine by the pillar radius + 4 m, `connector` named), one flag
 ## on the top deck, one defend relay on the second, and the extraction hold.
 static func stand_in_plan(st: CityStack) -> Dictionary:
@@ -1376,7 +1966,7 @@ static func stand_in_plan(st: CityStack) -> Dictionary:
 			var side := int(w["side"])
 			var inward := -1.0 if side % 2 == 0 else 1.0
 			for g: Dictionary in w["gates"]:
-				if str(g["kind"]) != "blast_door":
+				if str(g["kind"]) != "blast_door" or str(g.get("role", "")) != "":
 					continue
 				var mid := (float(g["a"]) + float(g["b"])) * 0.5
 				var at := float(w["at"]) + inward * SOURCE_IN

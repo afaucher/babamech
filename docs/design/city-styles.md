@@ -81,6 +81,12 @@ The underside of the next deck: panels in three sand tones, girders along the ar
 long **light strip** per bay, service ducts, hatches, and openings where the deck above is cut. The strips are separate
 geometry with an emissive material that the light rig drives. Full design: `ceiling-and-pillars.md`.
 
+**Nothing at the ceiling casts a shadow** (playtest R2.5, 2026-11-26). The ceiling and strips never did, but a pillar
+capital's drop panel and a park column's top disc are built into the block / column meshes, which cast: the daylight
+(58 deg) threw the thin band of their sun-facing edges ~30 m away onto towers, walls and gates, with no caster in sight.
+`CityDistrict._add` now moves every triangle within `CEILING_PATCH` (1.45 m) of the ceiling into a child "CeilingPatch"
+drawn the same with no shadow; the geo (digest, triangle count) is untouched. Lab probe: `--city shadow_off=patchcast`.
+
 ## Side walls: vertical farm
 
 **Decision (user, 2026-11-22):** the big window walls looking out at a backdrop of fake buildings never read as a real

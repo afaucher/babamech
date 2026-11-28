@@ -14,37 +14,38 @@ const SITE_PRIORITY: Array[String] = ["extraction", "departure", "checkpoint", "
 const SITE_WEIGHT := {"light": 1.0, "medium": 2.0, "heavy": 4.0}
 
 
-## Where the crew first sets foot on deck k following the critical path: {deck, kind: portal | ramp | lift | shaft, x, s,
-## connector (id, -1 for the portal)}, in deck k's (x, s). Deck 0: the entry road node on the avenue's centre (where
-## CityStack.entry_transform puts the crew). Below: the landing of the critical connector down from deck k-1 (a ramp's
-## foot end on deck k, a lift's platform centre).
+## Where the crew first sets foot on deck k following the critical path: {deck, kind: road_door | ramp | lift | shaft, x,
+## s, connector (id, -1 for the road door)}, in deck k's (x, s). Deck 0: on the avenue's centre on the perimeter road just
+## inside the entry road door (the entry node). Below: the landing of the critical connector down from deck k-1 (where a
+## ramp's slope run ends on deck k, run_foot; a lift's platform centre).
 static func arrival(plan: SectionPlan, k: int) -> Dictionary:
 	if k <= 0:
-		return _end_point(plan, 0, "portal", -1, _avenue_mid(plan), plan.line_s(0, int(plan.entry["j"])))
+		return _end_point(plan, 0, "road_door", -1, _avenue_mid(plan), plan.line_s(0, int(plan.entry["j"])))
 	var ci := _critical_between(plan, k - 1)
 	if ci < 0:
-		return _end_point(plan, k, "portal", -1, _avenue_mid(plan), 0.0)
+		return _end_point(plan, k, "road_door", -1, _avenue_mid(plan), 0.0)
 	var c: Dictionary = plan.connectors[ci]
 	var rect := plan.connector_rect(ci, k)
 	if c["kind"] == "ramp":
-		return _end_point(plan, k, "ramp", ci, rect.get_center().x, plan.row_theta[int(c["foot_line"])] * plan.radius_of(k))
+		return _end_point(plan, k, "ramp", ci, rect.get_center().x, plan.ramp_run(ci, k).y)
 	return _end_point(plan, k, str(c["kind"]), ci, rect.get_center().x, rect.get_center().y)
 
 
-## Where the crew leaves deck k: same shape as arrival(), kind ramp | lift | portal. The head of the critical connector
-## down from deck k (a ramp's top end of its cut on deck k, a lift's platform centre); on the lowest deck the extraction
-## road node, on the avenue's centre like the entry (kind "portal", connector -1).
+## Where the crew leaves deck k: same shape as arrival(), kind ramp | lift | road_door. The head of the critical
+## connector down from deck k (where a ramp's slope run starts on deck k, run_top; a lift's platform centre); on the
+## lowest deck the extraction node in front of the exit road door, on the avenue's centre like the entry (kind
+## "road_door", connector -1).
 static func departure(plan: SectionPlan, k: int) -> Dictionary:
 	if k >= plan.deck_count - 1:
 		var last := plan.deck_count - 1
-		return _end_point(plan, last, "portal", -1, _avenue_mid(plan), plan.line_s(last, int(plan.extraction["j"])))
+		return _end_point(plan, last, "road_door", -1, _avenue_mid(plan), plan.line_s(last, int(plan.extraction["j"])))
 	var ci := _critical_between(plan, k)
 	if ci < 0:
-		return _end_point(plan, k, "portal", -1, _avenue_mid(plan), 0.0)
+		return _end_point(plan, k, "road_door", -1, _avenue_mid(plan), 0.0)
 	var c: Dictionary = plan.connectors[ci]
 	var rect := plan.connector_rect(ci, k)
 	if c["kind"] == "ramp":
-		return _end_point(plan, k, "ramp", ci, rect.get_center().x, plan.row_theta[int(c["top_line"])] * plan.radius_of(k))
+		return _end_point(plan, k, "ramp", ci, rect.get_center().x, plan.ramp_run(ci, k).x)
 	return _end_point(plan, k, str(c["kind"]), ci, rect.get_center().x, rect.get_center().y)
 
 

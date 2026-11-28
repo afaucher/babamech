@@ -10,8 +10,11 @@ const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "
 ##    player_revived), nobody else applies anything (no revive signal on A's or B's puppet of C), and after the snapshots
 ##    every machine agrees on C's component HP (within one snapshot step).
 ## 3. Once B's drone has flown home, C goes down again and holds the respawn key: A sees C redeploying (puppet flag, crew
-##    facts redeploying, pacing facts disabled), then C stands at its respawn point with 50 % structure, and A and B
-##    agree with C on its position and its component HP.
+##    facts redeploying, pacing facts disabled), then C stands at its respawn point FULLY restored (R2.12: every
+##    component at 100 %, incl. the weapon hardpoint C destroyed before going down: its weapon is usable again on C's own
+##    rack), and A and B agree with C on its position and its component HP (structure rides C's mech snapshot, so every
+##    machine sees the rebuilt hardpoint). AMMO is not replicated (WeaponMount.ammo is the owner's, never in the
+##    snapshot: a puppet shows only the barrel pose), so only C's own rack is checked for the refill.
 
 const PEERS := 3
 const SEED := 11
@@ -101,7 +104,7 @@ func run_host() -> void:
 	# 3. B's drone (life shortened to LIFE s on every machine) flies home; C goes down again and holds to respawn.
 	check(await until(func() -> bool: return world.drone_of("player%d" % b) == null, LIFE + 6.0), "B's drone flew home")
 	await sleep(0.5)
-	command(c, "down", {"hold": true})
+	command(c, "down", {"hold": true, "break": "side_l"})
 	check(await until(func() -> bool: return tc.redeploying, 8.0), "A sees C redeploying after the hold")
 	cf = _fact_of(c)
 	check(bool(cf.get("downed", false)) and bool(cf.get("redeploying", false)), "the host's crew facts: C redeploying (%s)" % [cf])
@@ -117,7 +120,10 @@ func run_host() -> void:
 		var vb2: Dictionary = reported(b, "respawned")
 		eq(int(vc2["respawns"]), 1, "C respawned once")
 		for k: String in (vc2["hp"] as Dictionary):
-			near(float(vc2["hp"][k]), DownedRules.RESPAWN_STRUCTURE, 0.01, "C's %s at 50 %%" % k)
+			near(float(vc2["hp"][k]), 1.0, 0.01, "C's %s at full (R2.12)" % k)
+		check((vc2["hp"] as Dictionary).has("side_l"), "C's snapshot carries the side_l hardpoint")
+		check(bool(vc2.get("side_l_usable", false)), "C's own rack: the rebuilt side_l weapon is usable again")
+		check(bool(vc2.get("ammo_full", false)), "C's own rack: every limited-ammo weapon full (%s)" % str(vc2.get("ammo", [])))
 		_agree(vc2["hp"] as Dictionary, tc, "A after the respawn")
 		_agree_dict(vc2["hp"] as Dictionary, vb2["hp"] as Dictionary, "B after the respawn")
 		var off_a := pc.mech.global_position.distance_to(vc2["pos"] as Vector3)
@@ -162,6 +168,13 @@ func run_client() -> void:
 				report("near", td.mech.global_position)
 			"down":
 				var pt := td.combat.player_target
+				var brk := str(data.get("break", ""))
+				if brk != "":
+					for i in td.combat.rack.slot_count():   # R2.12: empty every limited-ammo weapon too
+						var wm := td.combat.rack.mounts[i] as WeaponMount
+						if wm != null and td.combat.rack.ammo_max[i] >= 0:
+							wm.ammo = 0
+					pt.apply_damage(1000.0, brk, "test")
 				pt.apply_damage(300.0, "torso", "test")
 				pt.apply_damage(1000.0, "head", "test")
 				pt.respawn_held = bool(data.get("hold", false))
@@ -188,8 +201,18 @@ func run_client() -> void:
 				var p2 := int(data.get("peer", Session.local_id()))
 				var tg2 := td.downed.target_of(p2)
 				var m2 := td.mech if p2 == Session.local_id() else td.mech_of(p2)
+				var rk := td.combat.rack
+				var ammo: Array = []
+				var full := true
+				for i in rk.slot_count():
+					var wm2 := rk.mounts[i] as WeaponMount
+					if wm2 != null and rk.ammo_max[i] >= 0:
+						ammo.append([rk.weapons[i], wm2.ammo, rk.ammo_max[i]])
+						full = full and wm2.ammo == rk.ammo_max[i]
+				var sl := rk.hardpoints.find("side_l") + 1
 				report(str(data["key"]), {"revives": revives, "respawns": respawns, "puppet_revives": puppet_revives,
-					"hp": tg2.component_fractions() if tg2 != null else {}, "pos": m2.global_position if m2 != null else Vector3.ZERO})
+					"hp": tg2.component_fractions() if tg2 != null else {}, "pos": m2.global_position if m2 != null else Vector3.ZERO,
+					"side_l_usable": sl > 0 and rk.usable(sl), "ammo": ammo, "ammo_full": full})
 
 
 func _load_and_go() -> bool:

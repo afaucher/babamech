@@ -51,8 +51,9 @@ static func from_world_bay(b: Dictionary) -> Dictionary:
 	var ex: Variant = b.get("exit_arc")
 	var exit := ex as Vector2 if ex is Vector2 else door + out * 6.0
 	var hw := float(b.get("half_width", float(b.get("width", 20.0)) * 0.5))
-	return {"out": out, "door": door, "exit": exit,
-			"half": maxf(hw, 0.0), "v_min": maxf(d_from, DOOR_MARGIN), "v_max": d_to,
+	var margin := float(b.get("door_margin", DOOR_MARGIN))   # a lift car (no leaves inside): MissionFlow passes 1 m
+	return {"out": out, "door": door, "exit": exit, "door_margin": margin,
+			"half": maxf(hw, 0.0), "v_min": maxf(d_from, margin), "v_max": d_to,
 			"height": float(b.get("height", 12.0)), "door_w": float(b.get("door_w", hw * 2.0)),
 			"door_h": float(b.get("door_h", b.get("height", 12.0)))}
 
@@ -174,7 +175,7 @@ static func exit_path(bay: Dictionary, slot: Dictionary, cruise_h: float, ground
 	var air := is_air(str(slot["kind"]))
 	var low := float(slot["h"]) if air else ground_h
 	var pts: Array[Vector3] = []
-	var funnel := door - out * minf(float(slot["v"]), DOOR_MARGIN) + right * lane
+	var funnel := door - out * minf(float(slot["v"]), float(bay.get("door_margin", DOOR_MARGIN))) + right * lane
 	pts.append(Vector3(funnel.x, funnel.y, low))
 	var past := door + out * LANE_OUT + right * lane
 	pts.append(Vector3(past.x, past.y, low))

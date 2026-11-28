@@ -18,12 +18,14 @@ func setup() -> void:
 	_plan_flag()
 	_plan_defend()
 	_plan_sweep_hold()
+	_plan_exit()
 	_plan_hud()
 	_plan_set_site()
 	_plan_state()
 	_plan_labels()
 	_plan_flag_percent()
 	_plan_next_floor()
+	_panel_golden()
 	_panel_structure()
 	_panel_coop()
 	_panel_matrix()
@@ -268,7 +270,7 @@ func _fake_plan() -> MissionPlan:
 		{"id": "d2_p", "type": "defend", "deck": 2, "role": "primary", "site": {"x": 0.0, "s": 100.0}, "radius": 30.0,
 			"needs": [], "params": {"waves": 2, "asset_hp": 1.0}},
 		{"id": "hold", "type": "hold", "deck": 2, "role": "primary", "site": {"x": 0.0, "s": 0.0}, "radius": 0.0,
-			"needs": ["d0_p", "d1_p", "d2_p"], "params": {"hold": 60.0, "zone": Rect2(-10, -10, 20, 20)}},
+			"needs": ["d0_p", "d1_p", "d2_p"], "params": {"hold": 30.0, "zone": Rect2(-10, -10, 20, 20)}},
 	]
 	return mp
 
@@ -422,26 +424,39 @@ func _plan_sweep_hold() -> void:
 	eq(m.obj_state("d2_p"), "done", "a defend with no waves is done once started")
 	eq(m.obj_state("hold"), "known", "every primary done: the hold appears")
 	eq(m.current(), "hold", "current: the hold")
-	eq(m.text(), "Hold the extraction portal: 60 s", "hold text")
+	eq(m.text(), "Hold the exit: 0%", "hold text")
 	eq(m.marker().get("deck", -1), 2, "marker on the hold")
 	t += 2.0
 	m.evaluate({"t": t, "crew": [_crew(false, 2, 0, 0)]})
 	eq(m.obj_state("hold"), "active", "hold: a mech in the zone")
-	for i in 30:
+	for i in 14:
 		t += 1.0
 		m.evaluate({"t": t, "crew": [_crew(false, 2, 0, 0)]})
-	eq(m.text(), "Hold the extraction portal: 29 s", "hold counts down (the starting call counts too)")
+	eq(m.text(), "Hold the exit: 50%", "hold in percent (the starting call counts too, at most MAX_STEP)")
 	t += 1.0
 	m.evaluate({"t": t, "crew": [_crew(false, 2, 50, 0)]})
-	for i in 28:
+	for i in 13:
 		t += 1.0
 		m.evaluate({"t": t, "crew": [_crew(false, 2, 0, 0)]})
 	eq(m.outcome, "", "hold paused while out of the zone: not yet")
-	for i in 3:
+	eq(m.text(), "Hold the exit: 93%", "28 of 30 s")
+	check(not m.exit_open(), "the exit stays shut during the hold")
+	for i in 2:
 		t += 1.0
 		m.evaluate({"t": t, "crew": [_crew(false, 2, 0, 0)]})
-	eq(m.obj_state("hold"), "done", "hold: done at 60 s")
-	eq(m.outcome, "won", "every primary done: won")
+	eq(m.obj_state("hold"), "done", "hold: done at 30 s")
+	eq(m.outcome, "", "the hold done: not won yet, the crew walks out")
+	check(m.exit_open(), "the hold done: the exit opens")
+	near(m.exit_at, t + MissionRules.EXIT_LEAD, 0.001, "exit_at = the completing evaluate's t + EXIT_LEAD")
+	eq(m.text(), MissionRules.EXIT_LINE, "text: Exit through the door")
+	t += 1.0
+	m.evaluate({"t": t, "crew": [_crew(false, 2, 0, 0)]})
+	eq(m.outcome, "", "standing in the zone does not win")
+	var inside := _crew(false, 2, 0, 0)
+	inside["exit"] = true
+	t += 1.0
+	check(m.evaluate({"t": t, "crew": [inside]}), "the walk-out is a change")
+	eq(m.outcome, "won", "every standing mech in the exit bay: won")
 	eq(m.reason, "objectives", "reason")
 	eq(m.text(), "Mission complete", "text")
 	check(not m.is_done("d0_b1"), "bonuses need not be done")
@@ -450,6 +465,140 @@ func _plan_sweep_hold() -> void:
 	w.evaluate({"crew": [_crew(true)]})
 	eq(w.outcome, "lost", "plan mode: wipe on, all down, no t: lost")
 	eq(w.reason, "crew_down", "plan mode: wipe reason")
+
+
+## Rules of _fake_plan with every primary done (as a client would have them) and the hold known: the host evaluates on.
+func _at_hold(opts: Dictionary = {}) -> MissionRules:
+	var o := opts.duplicate()
+	o["plan"] = _fake_plan()
+	var m := MissionRules.make(SectionPlan.make({"seed": 5.0, "decks": 3.0}), o)
+	m.apply_state({"done": ["d0_p", "d1_p", "d2_p"], "objs": {"d0_p": ["done", 20.0, 20.0], "d1_p": ["done", 0.0, 0.0],
+		"d2_p": ["done", 2.0, 2.0], "hold": ["known", 0.0, 30.0]}, "reached": 2})
+	return m
+
+
+## The extraction hold's rules as they are (R2.10: the user asked how it works) and the walk-out.
+func _plan_exit() -> void:
+	# The hold: one standing mech in the zone is enough; enemies in it change nothing; empty: paused (no reset, no decay).
+	var m := _at_hold()
+	var t := 0.0
+	var a := _crew(false, 2, 0, 0, 1)
+	var b := _crew(false, 2, 80, 0, 2)
+	m.evaluate({"t": t, "crew": [b]})
+	eq(m.obj_state("hold"), "known", "nobody in the zone: the hold waits")
+	t += 1.0
+	m.evaluate({"t": t, "crew": [a, b]})
+	eq(m.obj_state("hold"), "active", "one of two in the zone: active")
+	near(m.obj_progress("hold"), 1.0, 0.001, "partly in: progress runs (the activating call counts)")
+	t += 1.0
+	m.evaluate({"t": t, "crew": [a, b], "zone_enemies": {"hold": 5}})
+	near(m.obj_progress("hold"), 2.0, 0.001, "enemies in the zone: progress runs anyway")
+	for i in 10:
+		t += 1.0
+		m.evaluate({"t": t, "crew": [b]})
+	near(m.obj_progress("hold"), 2.0, 0.001, "empty zone: paused, no decay")
+	eq(m.obj_state("hold"), "active", "empty zone: still active")
+	t += 1.0
+	m.evaluate({"t": t, "crew": [_crew(true, 2, 0, 0, 1), b]})
+	near(m.obj_progress("hold"), 2.0, 0.001, "a downed mech in the zone holds nothing")
+	t += 1.0
+	m.evaluate({"t": t, "crew": [_crew(false, 1, 0, 0, 1)]})
+	near(m.obj_progress("hold"), 2.0, 0.001, "the right x / s on another deck holds nothing")
+	t += 5.0
+	m.evaluate({"t": t, "crew": [a]})
+	near(m.obj_progress("hold"), 3.0, 0.001, "a 5 s gap adds at most MAX_STEP")
+	eq(m.text(), "Hold the exit: 10%", "text in percent")
+	eq(m.state()["exit"], -1.0, "state: no exit yet")
+	while m.obj_state("hold") != "done" and t < 100.0:
+		t += 0.25
+		m.evaluate({"t": t, "crew": [a]})
+	near(t, 19.0 + 27.0, 0.3, "done 27 s of zone time later (30 s in all)")
+	check(m.exit_open() and m.outcome == "", "hold done: the exit opens, not won")
+	eq(float(m.state()["exit"]), m.exit_at, "state carries exit")
+	# The win: every STANDING mech inside the exit bay, at least one standing.
+	var cases := [
+		[[[false, true], [false, false]], "", "one in, one standing outside: no win"],
+		[[[false, false], [false, false]], "", "nobody in: no win"],
+		[[[true, true], [true, true]], "", "nobody standing (exit flags or not): no win"],
+		[[[false, true], [true, false]], "won", "one in, the other downed: won (downed pilots are recovered)"],
+		[[[false, true], [false, true]], "won", "both in: won"],
+	]
+	for c: Array in cases:
+		var r := _at_hold()
+		var tt := 0.0
+		while r.obj_state("hold") != "done":
+			tt += 1.0
+			r.evaluate({"t": tt, "crew": [a]})
+		var crew: Array = []
+		var i := 0
+		for e: Array in c[0]:
+			var f := _crew(bool(e[0]), 2, 0, 0, i + 1)
+			f["exit"] = bool(e[1])
+			crew.append(f)
+			i += 1
+		r.evaluate({"t": tt + 1.0, "crew": crew})
+		eq(r.outcome, str(c[1]), str(c[2]))
+	# A redeploying pilot (downed + redeploying) does not hold the win back.
+	var rd := _at_hold()
+	t = 0.0
+	while rd.obj_state("hold") != "done":
+		t += 1.0
+		rd.evaluate({"t": t, "crew": [a]})
+	var me := _crew(false, 2, 0, 0, 1)
+	me["exit"] = true
+	var away := {"peer": -2, "downed": true, "redeploying": true, "deck": 2, "x": 0.0, "s": 300.0}
+	rd.evaluate({"t": t + 1.0, "crew": [me, away]})
+	eq(rd.outcome, "won", "a redeploying pilot does not block the walk-out")
+	# walk_out off (no exit door on the deck): the hold's completion wins, as before.
+	var wo := _at_hold({"walk_out": false})
+	t = 0.0
+	while wo.outcome == "" and t < 100.0:
+		t += 1.0
+		wo.evaluate({"t": t, "crew": [a]})
+	eq(wo.outcome, "won", "walk_out off: won at the hold's completion")
+	check(not wo.exit_open(), "walk_out off: no exit phase")
+	near(t, 31.0, 0.01, "walk_out off: at 30 s of zone time (the first evaluate starts the clock)")
+	# A client: the state carries the exit; text, marker (the exit bay), lines and panel follow.
+	var cl := _at_hold()
+	cl.set_exit(2, 4.0, 60.0)
+	cl.apply_state({"objs": {"hold": ["active", 12.0, 30.0]}})
+	eq(cl.lines(2)[0], "Hold the exit: 40%", "lines: the hold in percent")
+	eq(_texts(_section(cl.panel(2, Vector2.ZERO), 2))[0], "Hold the exit: 40%", "panel: the hold leads deck 3 in percent")
+	check(not cl.exit_open(), "client: no exit yet")
+	cl.apply_state({"objs": {"hold": ["done", 30.0, 30.0]}, "exit": 41.0})
+	check(cl.exit_open(), "client: the state's exit opens it")
+	eq(cl.text(), "Exit through the door", "client text")
+	eq(cl.marker(), {"deck": 2, "x": 4.0, "s": 60.0}, "marker: the exit bay")
+	eq(cl.lines(2)[0], "Exit through the door", "lines: the exit leads, no (done)")
+	eq(_texts(_section(cl.panel(2, Vector2.ZERO), 2))[0], "Exit through the door", "panel: the exit leads deck 3")
+	eq(_texts(_leads(cl.panel(2, Vector2.ZERO))), ["Exit through the door"], "panel: the exit is amber on its deck")
+	eq(_texts(_leads(cl.panel(0, Vector2.ZERO))), ["Exit through the door"], "panel: amber from another deck too")
+	cl.apply_state({"outcome": "won", "reason": "objectives"})
+	eq(cl.marker(), {}, "won: no marker")
+	eq(_texts(_section(cl.panel(2, Vector2.ZERO), 2)), ["Defend the position: wave 2/2", "Hold the exit: 100%"],
+		"won: the hold's row is done again")
+	# The ally's lines: once each, from the state, no spam when progress stalls.
+	var al := _at_hold()
+	var said := {}
+	eq(al.ally_due(said), [] as Array[String], "hold known only: nothing")
+	al.apply_state({"objs": {"hold": ["active", 1.0, 30.0]}})
+	eq(al.ally_due(said), ["Working on the door"] as Array[String], "entering the zone: working on the door")
+	eq(al.ally_due(said), [] as Array[String], "once")
+	al.apply_state({"objs": {"hold": ["active", 20.0, 30.0]}})
+	eq(al.ally_due(said), [] as Array[String], "66 %: nothing yet")
+	al.apply_state({"objs": {"hold": ["active", 21.0, 30.0]}})
+	eq(al.ally_due(said), ["Almost there"] as Array[String], "70 %: almost there")
+	for i in 5:
+		al.apply_state({"objs": {"hold": ["active", 21.0 if i % 2 == 0 else 22.0, 30.0]}})
+		eq(al.ally_due(said), [] as Array[String], "stalled / leaving and coming back: no repeat")
+	al.apply_state({"objs": {"hold": ["done", 30.0, 30.0]}, "exit": 50.0})
+	eq(al.ally_due(said), ["Door's open, go!"] as Array[String], "the exit opens: door's open, go")
+	eq(al.ally_due(said), [] as Array[String], "once")
+	var late := _at_hold()
+	late.apply_state({"objs": {"hold": ["done", 30.0, 30.0]}, "exit": 50.0})
+	var said2 := {}
+	eq(late.ally_due(said2), ["Door's open, go!"] as Array[String], "a late state: only the newest line")
+	eq(said2.size(), 3, "the older lines are marked said")
 
 
 func _plan_hud() -> void:
@@ -608,14 +757,14 @@ func _plan_flag_percent() -> void:
 	eq(MissionRules.flag_percent(20.0, 20.0, false), 99, "full but not done: 99 %")
 	eq(MissionRules.flag_percent(10.0, 20.0, false), 50, "half: 50 %")
 	eq(MissionRules.flag_percent(0.0, 0.0, false), 0, "no total: 0 %")
-	# Time limits keep seconds: the hold counts down.
+	# The hold reads in percent too (R2.10: "Hold the exit: 40%", like the flag; no seconds).
 	var h := _prules()
-	h.apply_state({"objs": {"hold": ["active", 18.0, 60.0]}})
+	h.apply_state({"objs": {"hold": ["active", 12.0, 30.0]}})
 	var hl := ""
 	for l in h.lines(2):
 		if l.begins_with("Hold"):
 			hl = l
-	eq(hl, "Hold the extraction portal: 42 s", "the hold stays a countdown in seconds")
+	eq(hl, "Hold the exit: 40%", "the hold in percent, no seconds")
 
 
 ## "Proceed to deck n" from a deck's primary done until a standing crew mech reaches the next deck; host and
@@ -660,35 +809,68 @@ func _plan_next_floor() -> void:
 	eq(m.obj_state("d1_p"), "done", "sweep done")
 	eq(m.lines(1)[0], "Proceed to deck 3", "deck 2 done: proceed to deck 3")
 	eq(m.obj_state("hold"), "known", "the hold appears")
-	check(m.lines(2)[0].begins_with("Hold the extraction portal"), "extraction deck: the hold's line first (%s)" % m.lines(2)[0])
-	check(m.text().begins_with("Hold the extraction portal"), "text: the hold (the crew has been on deck 3)")
+	check(m.lines(2)[0].begins_with("Hold the exit"), "extraction deck: the hold's line first (%s)" % m.lines(2)[0])
+	check(m.text().begins_with("Hold the exit"), "text: the hold (the crew has been on deck 3)")
 
 
-# --- The objective panel (MissionRules.panel: docs/design/mission-objectives.md §9 "Objective panel") ------------
+# --- The objective panel (MissionRules.panel: docs/design/mission-objectives.md §9 "Objective panel", R2.13) -------
 
-## All the text a panel shows (header, every line).
+## The panel as the user wrote it: "Deck n:" headers flush, a deck's lines indented two spaces, a route hint four.
+func _view(rows: Array) -> Array[String]:
+	var out: Array[String] = []
+	for l: Dictionary in rows:
+		match str(l["role"]):
+			"header":
+				out.append(str(l["text"]))
+			"route":
+				out.append("    " + str(l["text"]))
+			_:
+				out.append("  " + str(l["text"]))
+	return out
+
+
+## An ASCII rendering for the log: "> " before the viewer's deck header, "[amber]" after the next step's rows.
+func _ascii(title: String, rows: Array) -> void:
+	var out: Array[String] = ["--- " + title]
+	for l: Dictionary in rows:
+		var t := str(l["text"]).to_upper()
+		match str(l["role"]):
+			"header":
+				t = ("> " if bool(l.get("current", false)) else "  ") + t
+			"route":
+				t = "        " + t
+			"crew":
+				t = "  " + t
+			_:
+				t = "    " + t
+		if bool(l.get("lead", false)):
+			t += "   [amber]"
+		out.append(t)
+	print("\n".join(out))
+
+
+## Every text of a panel.
 func _panel_texts(pn: Dictionary) -> Array[String]:
-	var out: Array[String] = [str(pn["header"])]
+	var out: Array[String] = []
 	for l: Dictionary in pn["lines"]:
 		out.append(str(l["text"]))
 	return out
 
 
-## The panel's lines as [text] (optionally only those of `part`).
-func _ptexts(pn: Dictionary, part: String = "") -> Array:
+## The rows of deck d's section (header excluded).
+func _section(pn: Dictionary, d: int) -> Array:
 	var out: Array = []
+	var cur := -1
 	for l: Dictionary in pn["lines"]:
-		if part == "" or l["part"] == part:
-			out.append(str(l["text"]))
+		if l["role"] == "header":
+			cur = int(l["deck"])
+		elif cur == d:
+			out.append(l)
 	return out
 
 
-## The first line whose text begins with `head`, {} none.
-func _pline(pn: Dictionary, head: String) -> Dictionary:
-	for l: Dictionary in pn["lines"]:
-		if str(l["text"]).begins_with(head):
-			return l
-	return {}
+func _leads(pn: Dictionary) -> Array:
+	return (pn["lines"] as Array).filter(func(l: Dictionary) -> bool: return bool(l["lead"]))
 
 
 ## "ramp down 120 m" for route() of deck k from `at` toward dir, "" when there is no way.
@@ -696,132 +878,177 @@ func _route_text(m: MissionRules, k: int, at: Vector2, dir: int) -> String:
 	return str(m.route(k, at, dir).get("text", ""))
 
 
-## The fake 3-deck plan through a run: the start, a found bonus, the primary done, arrival on deck 2, deck 3 with deck
-## 1's bonus left, the return line, finished decks, the outcome, plain mode.
-func _panel_structure() -> void:
-	var m := _prules()
-	var at := Vector2(0.0, 0.0)
-	var down := _route_text(m, 0, at, 1)
-	check(down != "", "the fake section has a way down from deck 1 (%s)" % down)
-	# Deck 1 of 3 at the start: the flag, then "Proceed to deck 2" (dim, last) and its route hint; deck 2 / 3 unlisted.
+## The user's example (R2.13): deck 1 a sweep (primary) and a flag (bonus), deck 2 a flag primary and a far defend
+## bonus, deck 3 a defend primary and the extraction hold.
+func _golden_plan() -> MissionPlan:
+	var mp := MissionPlan.new()
+	mp.deck_count = 3
+	mp.objectives = [
+		{"id": "d0_p", "type": "sweep", "deck": 0, "role": "primary", "site": {"x": 0.0, "s": 0.0}, "radius": 0.0,
+			"needs": [], "params": {}},
+		{"id": "d0_b0", "type": "flag", "deck": 0, "role": "bonus", "site": {"x": 0.0, "s": 100.0}, "radius": 14.0,
+			"needs": [], "params": {"hold": 20.0}},
+		{"id": "d1_p", "type": "flag", "deck": 1, "role": "primary", "site": {"x": 0.0, "s": 50.0}, "radius": 14.0,
+			"needs": [], "params": {"hold": 20.0}},
+		{"id": "d1_b0", "type": "defend", "deck": 1, "role": "bonus", "site": {"x": 300.0, "s": 300.0}, "radius": 30.0,
+			"needs": [], "params": {"waves": 3, "asset_hp": 1.0}},
+		{"id": "d2_p", "type": "defend", "deck": 2, "role": "primary", "site": {"x": 0.0, "s": 100.0}, "radius": 30.0,
+			"needs": [], "params": {"waves": 2, "asset_hp": 1.0}},
+		{"id": "hold", "type": "hold", "deck": 2, "role": "primary", "site": {"x": 0.0, "s": 0.0}, "radius": 0.0,
+			"needs": ["d0_p", "d1_p", "d2_p"], "params": {"hold": 30.0, "zone": Rect2(-10, -10, 20, 20)}},
+	]
+	return mp
+
+
+func _grules() -> MissionRules:
+	return MissionRules.make(SectionPlan.make({"seed": 5.0, "decks": 3.0}), {"plan": _golden_plan()})
+
+
+## The user's layout as a golden: at the start; after raising deck 1's flag to 23 % and going down early (deck 1 keeps
+## its lines where they were left, deck 2 opens, deck 3 stays "Proceed to deck 3"); the client reads the same.
+func _panel_golden() -> void:
+	var m := _grules()
+	var wv := [[2, 3], [0, 0], [0, 0]]
+	m.evaluate({"t": 0.0, "crew": [_crew(false, 0, 0.0, 50.0)], "enemies": [4, 0, 0], "waves": wv})
+	var at := Vector2(0.0, 50.0)
 	var pn := m.panel(0, at)
-	eq(str(pn["header"]), "DECK 1 of 3", "panel header on deck 1")
-	eq(_ptexts(pn), ["Raise the flag: 0%", "Proceed to deck 2", down], "deck 1 at the start: the flag, then proceed")
-	eq(_pline(pn, "Proceed")["role"], "next", "the proceed line's role")
-	eq(_pline(pn, "Proceed")["part"], "tail", "primary to do: the proceed line trails")
-	eq(_pline(pn, down)["role"], "route", "the route hint's role")
-	eq((pn["route_at"] as Dictionary), {}, "no waypoint while the proceed line trails")
-	for s in _panel_texts(pn):
-		check(not s.contains("Clear deck") and not s.contains("Defend"), "unvisited decks' objectives are not listed (%s)" % s)
-	check(not MissionRules.make(SectionPlan.make({"seed": 5.0, "decks": 3.0})).panel(0, at).is_empty(),
-		"the natural plan has a panel too")
-	# A found bonus is listed (optional), before the proceed line.
-	m.evaluate({"t": 0.0, "crew": [_crew(false, 0, 100.0, -100.0)], "enemies": [1, 5, 0]})
-	pn = m.panel(0, at)
-	eq(_ptexts(pn), ["Raise the flag: 0%", "Raise the flag: 0% (optional)", "Proceed to deck 2", down],
-		"the found bonus reads (optional), the proceed line stays last")
-	eq(pn["lines"][1]["role"], "bonus", "the bonus's role")
-	# Deck 1's primary done: "Proceed to deck 2" leads (amber), its route under it, the waypoint goes there.
-	var on := [_crew(false, 0, 0.0, 150.0)]
-	var t := 0.0
-	for i in 22:
-		t += 1.0
-		m.evaluate({"t": t, "crew": on, "enemies": [0, 5, 0]})
-	pn = m.panel(0, at)
-	eq(_ptexts(pn), ["Proceed to deck 2", down, "Raise the flag: 100% (done)",
-		"Defend the position: wave 1 / 2 (optional)", "Raise the flag: 0% (optional)"], "primary done: proceed first")
-	eq(pn["lines"][0]["part"], "lead", "the proceed line leads")
-	eq(pn["lines"][1]["part"], "lead", "with its route hint")
-	eq(pn["route_at"], m.route(0, at, 1), "route_at: the way down while the proceed line leads")
-	eq(m.text(), "Proceed to deck 2", "text(): proceed with the deck number")
-	eq(m.lines(0)[0], "Proceed to deck 2", "lines(): proceed with the deck number")
-	# Arrival on deck 2: its objectives open up; deck 1's two found bonuses: one line; proceed to deck 3 trails.
-	t += 1.0
-	m.evaluate({"t": t, "crew": [_crew(false, 1, 0.0, 0.0)], "enemies": [0, 5, 0]})
-	pn = m.panel(1, at)
-	eq(str(pn["header"]), "DECK 2 of 3", "panel header on deck 2")
-	eq(_ptexts(pn, "here"), ["Clear deck 2: 5 hostiles", "Defend the position: wave 1 / 3 (optional)"],
-		"on arrival deck 2's list opens (its bonus found 50 m away)")
-	var tail := _ptexts(pn, "tail")
-	eq(tail[0], "Proceed to deck 3", "deck 2's primary to do: proceed to deck 3 trails first")
-	check(tail.has("Deck 1: 2 optional left"), "deck 1's found bonuses: one line (%s)" % [tail])
-	eq(_pline(pn, "Deck 1")["role"], "deck", "an optional-only deck's role")
-	var up := _route_text(m, 1, at, -1)
-	eq(tail.has(up), up != "", "the way up only when a ramp up exists (%s)" % up)
-	for s in _panel_texts(pn):
-		check(not s.contains("Defend the position: wave 1 / 2") or s.begins_with("Deck"), "deck 3's defend not listed (%s)" % s)
-	# Deck 3, deck 1's far bonus left, deck 2 finished: one line for deck 1, nothing for deck 2, no proceed (last deck).
-	var d3 := _prules()
-	d3.apply_state({"objs": {"d0_p": ["done", 20.0, 20.0], "d0_b0": ["done", 2.0, 2.0], "d0_b1": ["known", 0.0, 20.0],
-		"d1_p": ["done", 0.0, 0.0], "d2_p": ["active", 0.0, 2.0]}, "reached": 2})
-	pn = d3.panel(2, at)
-	eq(_ptexts(pn, "here"), ["Defend the position: wave 1 / 2"], "deck 3's list (the hold hidden)")
-	var l3 := _ptexts(pn, "tail")
-	eq(l3[0], "Deck 1: 1 optional left", "deck 1's bonus: one line")
-	check(l3.size() <= 2, "and its route hint only (%s)" % [l3])
-	for s in _panel_texts(pn):
-		check(not s.contains("Deck 2") and not s.contains("deck 2:") and not s.contains("Proceed"), "deck 2 done, no proceed (%s)" % s)
-	# The return line: deck 3's primary done while deck 2's is not: it leads, amber, with the way up.
-	var r := _prules()
-	r.apply_state({"objs": {"d0_p": ["done", 20.0, 20.0], "d2_p": ["done", 2.0, 2.0]}, "reached": 2})
+	eq(_view(pn["lines"]), ["Deck 1:", "  Clear hostiles, waves 2/3", "  Raise the flag: 0% (optional)",
+		"Deck 2:", "  Proceed to deck 2", "Deck 3:", "  Proceed to deck 3"] as Array[String], "golden: deck 1 at the start")
+	eq(int(pn["deck"]), 0, "golden: the viewer is on deck 1")
+	eq((pn["lines"] as Array).filter(func(l: Dictionary) -> bool: return bool(l["current"])).map(
+		func(l: Dictionary) -> String: return l["text"]), ["Deck 1:"], "golden: deck 1's header is the current one")
+	eq(_leads(pn), [], "golden: deck 1's primary to do, nothing amber")
+	eq(pn["route_at"], {}, "golden: no waypoint")
+	_ascii("deck 1 of 3 at the start", MissionRules.fit(pn, 99))
+	# Deck 1's flag to 23 %, then down to deck 2 early (deck 1's sweep not done).
+	var on := [_crew(false, 0, 0.0, 100.0)]
+	for t: float in [1.0, 2.0, 3.0, 4.0, 4.6]:
+		m.evaluate({"t": t, "crew": on, "enemies": [4, 0, 0], "waves": wv})
+	m.evaluate({"t": 4.6, "crew": [_crew(false, 1, 0.0, 0.0)], "enemies": [4, 0, 0], "waves": wv})
+	eq(m.state()["reached"], 1, "golden: the crew reached deck 2")
+	pn = m.panel(1, Vector2.ZERO)
+	var want: Array[String] = ["Deck 1:", "  Clear hostiles, waves 2/3", "  Raise the flag: 23% (optional)",
+		"Deck 2:", "  Raise the flag: 0%", "Deck 3:", "  Proceed to deck 3"]
+	eq(_view(pn["lines"]), want, "golden: down early, flag at 23 %")
+	eq((pn["lines"] as Array).filter(func(l: Dictionary) -> bool: return bool(l["current"])).map(
+		func(l: Dictionary) -> String: return l["text"]), ["Deck 2:"], "golden: the marker follows the viewer to deck 2")
+	eq(_leads(pn), [], "golden: deck 2's primary to do, nothing amber")
+	_ascii("after going down early, deck 1's flag at 23 %", MissionRules.fit(pn, 99))
+	# The client from the replicated state (JSON and var_to_bytes), and a crewmate still on deck 1 sees deck 2 opened too.
+	var cj := _grules()
+	cj.apply_state(JSON.parse_string(JSON.stringify(m.state())))
+	var cb := _grules()
+	cb.apply_state(bytes_to_var(var_to_bytes(m.state())))
+	for v in 3:
+		eq(cj.panel(v, Vector2.ZERO), m.panel(v, Vector2.ZERO), "golden: client = host (JSON), viewer deck %d" % (v + 1))
+		eq(cb.panel(v, Vector2.ZERO), m.panel(v, Vector2.ZERO), "golden: client = host (var_to_bytes), viewer deck %d" % (v + 1))
+	var behind := m.panel(0, at)
+	eq(_view(behind["lines"]), want, "golden: a pilot still on deck 1 reads the same sections")
+	eq((behind["lines"] as Array)[0]["current"], true, "golden: with deck 1 marked for them")
+
+
+## Through a run on the golden plan: deck 1's primary done (deck 2's proceed line amber with the way down, the waypoint
+## there), deck 2 visited, deck 3 with deck 2's primary unfinished (that primary amber, the way up under deck 2's
+## header), the hold, the outcome; hidden bonuses never listed.
+func _panel_structure() -> void:
+	var at := Vector2.ZERO
+	var m := _grules()
+	var down := _route_text(m, 0, at, 1)
+	check(down != "", "the section has a way down from deck 1 (%s)" % down)
+	# Deck 1's primary done, deck 2 unvisited.
+	m.apply_state({"objs": {"d0_p": ["done", 3.0, 3.0], "d0_b0": ["active", 4.6, 20.0]}, "reached": 0})
+	var pn := m.panel(0, at)
+	eq(_view(pn["lines"]), ["Deck 1:", "  Clear hostiles, waves 3/3", "  Raise the flag: 23% (optional)", "Deck 2:",
+		"  Proceed to deck 2", "    " + down, "Deck 3:", "  Proceed to deck 3"] as Array[String],
+		"deck 1's primary done: deck 2's proceed line with the way down under it")
+	eq(_leads(pn).map(func(l: Dictionary) -> String: return l["text"]), ["Proceed to deck 2", down],
+		"the proceed line and its hint are the next step (amber); deck 3's is not")
+	eq(pn["route_at"], m.route(0, at, 1), "route_at: the way down (the waypoint)")
+	eq(_section(pn, 0)[0]["state"], "done", "the done primary keeps its final value, state done")
+	_ascii("deck 1's primary done", MissionRules.fit(pn, 99))
+	# A hidden bonus is never listed (deck 2's far defend), visited or not.
+	m.apply_state({"reached": 1})
+	for s in _panel_texts(m.panel(1, at)):
+		check(not s.begins_with("Defend the position: wave 1/3"), "deck 2's hidden defend not listed (%s)" % s)
+	# On deck 3 with its primary done, deck 2's flag unfinished: that line amber, the way up under deck 2's header.
+	var r := _grules()
+	r.apply_state({"objs": {"d0_p": ["done", 3.0, 3.0], "d2_p": ["done", 2.0, 2.0], "d1_p": ["active", 9.0, 20.0],
+		"d1_b0": ["known", 0.0, 3.0]}, "reached": 2})
 	pn = r.panel(2, at)
-	eq(pn["lines"][0]["text"], "Return to deck 2: objective unfinished", "the return line first")
-	eq(pn["lines"][0]["role"], "return", "the return line's role")
-	eq(pn["lines"][0]["part"], "lead", "it leads once this deck's primary is done")
-	var up3 := _route_text(r, 2, at, -1)
-	if up3 != "":
-		eq(pn["lines"][1]["text"], up3, "the way up under it")
+	var up := _route_text(r, 2, at, -1)
+	var body1 := _section(pn, 1)
+	var i0 := 0
+	if up != "":
+		eq(body1[0]["text"], up, "the way up right under deck 2's header")
+		eq(body1[0]["role"], "route", "as a route hint")
 		eq(int(pn["route_at"]["dir"]), -1, "the waypoint points up")
-	r.apply_state({"objs": {"d2_p": ["active", 0.0, 2.0]}})
-	pn = r.panel(2, at)
-	eq(pn["lines"][0]["part"], "here", "this deck's primary to do: its list first")
-	eq(_pline(pn, "Return")["part"], "tail", "the return line trails")
-	# Finished decks contribute nothing.
-	var f := _prules()
-	f.apply_state({"objs": {"d0_p": ["done", 20.0, 20.0], "d0_b1": ["done", 20.0, 20.0], "d0_b0": ["done", 2.0, 2.0]},
-		"reached": 1})
-	for s in _panel_texts(f.panel(1, at)):
-		check(not s.contains("Deck 1") and not s.contains("deck 1"), "a finished deck has no line (%s)" % s)
-	# The outcome: this deck's list only.
-	var o := _prules()
-	o.apply_state({"outcome": "lost", "reason": "objective_failed", "objs": {"d0_p": ["failed", 2.0, 20.0]}, "reached": 0})
-	eq(_ptexts(o.panel(0, at)), ["Raise the flag: 10% (failed)"], "after the outcome: this deck's list only")
+		i0 = 1
+	else:
+		eq(pn["route_at"], {}, "no ramp up: no hint, no waypoint")
+	eq(body1[i0]["text"], "Raise the flag: 45%", "deck 2's unfinished primary")
+	check(bool(body1[i0]["lead"]), "it is amber (the next step: go back)")
+	check(not bool(body1[i0 + 1]["lead"]), "its bonus is not")
+	eq(_section(pn, 2).map(func(l: Dictionary) -> String: return l["text"]), ["Defend the position: wave 2/2"],
+		"deck 3's own section (the hold hidden)")
+	for s in _panel_texts(pn):
+		check(not s.begins_with("Return to deck"), "no separate return sentence (%s)" % s)
+	_ascii("on deck 3, deck 2's primary unfinished", MissionRules.fit(pn, 99))
+	# Every primary done: the hold shows first in the last deck's section; from deck 1 it is the next step.
+	var h := _grules()
+	h.apply_state({"objs": {"d0_p": ["done", 3.0, 3.0], "d1_p": ["done", 20.0, 20.0], "d2_p": ["done", 2.0, 2.0],
+		"hold": ["known", 0.0, 30.0]}, "reached": 2})
+	eq(_section(h.panel(2, at), 2).map(func(l: Dictionary) -> String: return l["text"]),
+		["Hold the exit: 0%", "Defend the position: wave 2/2"], "the hold leads the last deck's section")
+	eq(_leads(h.panel(2, at)), [], "on the hold's deck: nothing amber")
+	var hp := h.panel(0, at)
+	check(bool(_section(hp, 2).filter(func(l: Dictionary) -> bool: return l["role"] != "route")[0]["lead"]),
+		"from deck 1 the hold is the next step")
+	# The outcome: every section stays, nothing amber, no hint.
+	var o := _grules()
+	o.apply_state({"outcome": "lost", "reason": "objective_failed", "objs": {"d0_p": ["done", 3.0, 3.0],
+		"d1_p": ["failed", 2.0, 20.0]}, "reached": 1})
+	pn = o.panel(1, at)
+	eq(_view(pn["lines"]), ["Deck 1:", "  Clear hostiles, waves 3/3", "Deck 2:", "  Raise the flag: 10% (failed)",
+		"Deck 3:", "  Proceed to deck 3"] as Array[String], "after the outcome: the sections, the failed line")
+	eq(_leads(pn), [], "after the outcome: nothing amber")
+	check(MissionRules.make(SectionPlan.make({"seed": 5.0, "decks": 3.0})).panel(0, at)["lines"].size() >= 6,
+		"the natural plan has a panel too")
 
 
 ## Co-op: `reached` is the crew's, the viewer's deck is local. A pilot still on deck 1 while a crewmate stands on deck 2
-## sees "Deck 2: n objectives left" (visited by the crew) with the way down, never "Proceed to deck 3"; on arrival the
-## full list; deck 2's primary done but a bonus left: that deck line plus "Proceed to deck 3".
+## sees deck 2's objectives (visited by the crew); once deck 1's primary is done, deck 2's unfinished primary is the
+## next step with the way down under deck 2's header; deck 2's primary done too: the proceed line of deck 3.
 func _panel_coop() -> void:
-	var m := _prules()
-	var at := Vector2(0.0, 0.0)
+	var m := _grules()
+	var at := Vector2.ZERO
 	var down := _route_text(m, 0, at, 1)
 	m.apply_state({"objs": {"d1_b0": ["known", 0.0, 3.0]}, "reached": 1})
 	var pn := m.panel(0, at)
-	eq(_ptexts(pn), ["Raise the flag: 0%", "Deck 2: 1 objective, 1 optional left", down],
-		"behind the crew: deck 2's line and the way down")
-	eq(_pline(pn, "Deck 2")["role"], "next", "a visited deck below with a primary left reads like proceed")
-	eq(_pline(pn, "Deck 2")["part"], "tail", "and trails while deck 1's primary is to do")
-	m.apply_state({"objs": {"d0_p": ["done", 20.0, 20.0]}})
+	eq(_view(pn["lines"]), ["Deck 1:", "  Clear hostiles: 0 left", "Deck 2:", "  Raise the flag: 0%",
+		"  Defend the position: wave 1/3 (optional)", "Deck 3:", "  Proceed to deck 3"] as Array[String],
+		"behind the crew: deck 2 is listed (visited), deck 1's primary to do")
+	eq(_leads(pn), [], "nothing amber while deck 1's primary is to do")
+	m.apply_state({"objs": {"d0_p": ["done", 0.0, 0.0]}})
 	pn = m.panel(0, at)
-	eq(_ptexts(pn).slice(0, 2), ["Deck 2: 1 objective, 1 optional left", down], "deck 1 done: it leads")
+	var b := _section(pn, 1)
+	eq(b[0]["text"], down, "deck 1 done: the way down under deck 2's header")
+	check(bool(b[1]["lead"]) and b[1]["role"] == "primary", "deck 2's primary is the next step")
 	eq(pn["route_at"], m.route(0, at, 1), "the waypoint points at the way down")
-	eq(_ptexts(m.panel(1, at), "here"), ["Clear deck 2: 0 hostiles", "Defend the position: wave 1 / 3 (optional)"],
-		"on arrival: deck 2's full list")
-	m.apply_state({"objs": {"d1_p": ["done", 0.0, 0.0]}})
+	m.apply_state({"objs": {"d1_p": ["done", 20.0, 20.0]}})
 	pn = m.panel(0, at)
-	eq(_ptexts(pn).slice(0, 2), ["Proceed to deck 3", down], "deck 2's primary done: proceed to the next unvisited deck")
-	check(_ptexts(pn).has("Deck 2: 1 optional left"), "deck 2's bonus: one line (%s)" % [_ptexts(pn)])
-	# Two crews' views from one replicated state: the pilot on deck 2 sees deck 2's list, the one behind sees its line.
-	var c := _prules()
+	eq(_leads(pn).map(func(l: Dictionary) -> String: return l["text"]), ["Proceed to deck 3", down],
+		"deck 2's primary done: deck 3's proceed line, with the way down")
+	var c := _grules()
 	c.apply_state(JSON.parse_string(JSON.stringify(m.state())))
 	eq(c.panel(0, at), m.panel(0, at), "the behind pilot's panel on a client = on the host")
 	eq(c.panel(1, at), m.panel(1, at), "the front pilot's panel on a client = on the host")
 
 
-## 2-, 3- and 5-deck sections (generated plans), every viewer deck, every `reached`, this deck's primary to do and done:
-## unvisited decks contribute exactly one "Proceed to deck n" line (only when no visited deck below has a primary left)
-## and none of their objectives; this deck's lines are this deck's; each visited deck with something left has exactly
-## one line; route hints right under the first line each way, only via a walkable connector; no prefixes, no "?".
+## 2-, 3- and 5-deck sections (generated plans), every viewer deck, every `reached`, the viewer's primary to do and done:
+## every deck has its header, in order, only the viewer's marked current; an unvisited deck shows exactly "Proceed to
+## deck n" (plus the hint when it is the next step); a visited deck lists exactly its known objectives; the next step
+## is where the rule says and nowhere else; at most one hint, right under its line, via a walkable way; no "DECK X OF Y",
+## no prefix, no "?".
 func _panel_matrix() -> void:
 	var at := Vector2(30.0, -60.0)
 	for n: int in [2, 3, 5]:
@@ -830,82 +1057,82 @@ func _panel_matrix() -> void:
 		eq(m.deck_count, n, "%d-deck plan" % n)
 		var base := {}
 		for o: Dictionary in m.objectives:
-			base[o["id"]] = ["known", 0.0, 20.0]
+			base[o["id"]] = ["hidden" if o["role"] == "bonus" and str(o["id"]).ends_with("1") else "known", 0.0, 20.0]
 		for v in n:
 			for reached in range(-1, n):
 				for vdone: bool in [false, true]:
 					var objs := base.duplicate()
-					var vp := m.plan.primary(v)
-					if vdone and not vp.is_empty():
-						objs[vp["id"]] = ["done", 20.0, 20.0]
+					if vdone:
+						for o: Dictionary in m.objectives:
+							if int(o["deck"]) == v and o["role"] == "primary":
+								objs[o["id"]] = ["done", 20.0, 20.0]
 					m.apply_state({"objs": objs, "reached": reached})
 					var tag := "%d decks, viewer deck %d, reached %d, primary %s" % [n, v + 1, reached, "done" if vdone else "to do"]
-					_matrix_case(m, sec, v, reached, vdone, at, tag)
+					_matrix_case(m, sec, v, reached, at, tag)
 
 
-func _matrix_case(m: MissionRules, sec: SectionPlan, v: int, reached: int, vdone: bool, at: Vector2, tag: String) -> void:
+func _matrix_case(m: MissionRules, sec: SectionPlan, v: int, reached: int, at: Vector2, tag: String) -> void:
 	var n := m.deck_count
 	var pn := m.panel(v, at)
 	var ls: Array = pn["lines"]
-	eq(str(pn["header"]), "DECK %d of %d" % [v + 1, n], tag + ": header")
 	var open_to := maxi(reached, v)
-	var proceed: Array = []
-	var here_idx: Array = []
-	var per_deck := {}
-	for i in ls.size():
-		var l: Dictionary = ls[i]
-		var role := str(l["role"])
-		var text := str(l["text"])
-		check(text.strip_edges() != "" and not text.contains("?"), tag + ": text (%s)" % text)
-		check(not text.begins_with("V1") and not text.begins_with("^") and not text.contains("▼") and not text.contains("▲")
-			and not text.contains("–"), tag + ": no direction prefix (%s)" % text)
-		if role == "primary" or role == "bonus":
-			eq(int(l["deck"]), v, tag + ": this deck's lines only (%s)" % text)
-			eq(l["part"], "here", tag + ": part of an objective line")
-			here_idx.append(i)
-		elif role == "route":
-			var rx := RegEx.create_from_string("^(ramp|shaft|lift) (down|up) [0-9]+ m$")
-			check(rx.search(text) != null, tag + ": route text without glyphs (%s)" % text)
-			var dir := int(l["dir"])
-			check(_way_exists(sec, v, dir), tag + ": a route hint only via a walkable way (%s)" % text)
-			eq(text, _route_text(m, v, at, dir), tag + ": the route hint is route()")
-			check(i > 0 and int(ls[i - 1]["dir"]) == dir and ls[i - 1]["role"] != "route", tag + ": right under a line its way")
-			var first := -1
-			for j in ls.size():
-				if int(ls[j]["dir"]) == dir and ls[j]["role"] != "route" and ls[j]["part"] == ls[i]["part"]:
-					first = j
+	var heads: Array = ls.filter(func(l: Dictionary) -> bool: return l["role"] == "header")
+	eq(heads.map(func(l: Dictionary) -> String: return l["text"]), range(n).map(func(d: int) -> String: return "Deck %d:" % (d + 1)),
+		tag + ": every deck's header, in order")
+	eq(heads.filter(func(l: Dictionary) -> bool: return bool(l["current"])).map(func(l: Dictionary) -> int: return int(l["deck"])), [v],
+		tag + ": only the viewer's deck is current")
+	# The next step, computed here independently.
+	var left := func(d: int) -> bool:
+		for o: Dictionary in m.objectives:
+			if int(o["deck"]) == d and o["role"] == "primary" and ["known", "active"].has(m.obj_state(o["id"])):
+				return true
+		return false
+	var target := -1
+	if not left.call(v):
+		for d in range(v + 1, n):
+			if d > open_to or left.call(d):
+				target = d
+				break
+		if target < 0:
+			for d in range(v - 1, -1, -1):
+				if left.call(d):
+					target = d
 					break
-			eq(first, i - 1, tag + ": under the first line that way (%s)" % text)
+	var routes := 0
+	for d in n:
+		var body := _section(pn, d)
+		var objs := body.filter(func(l: Dictionary) -> bool: return l["role"] != "route")
+		for i in body.size():
+			var l: Dictionary = body[i]
+			var text := str(l["text"])
+			check(text.strip_edges() != "" and not text.contains("?"), tag + ": text (%s)" % text)
+			check(not text.begins_with("V1") and not text.begins_with("^") and not text.to_upper().contains(" OF %d" % n),
+				tag + ": no prefix, no 'of n' (%s)" % text)
+			eq(int(l["deck"]), d, tag + ": a row in its own deck's section (%s)" % text)
+			eq(bool(l["lead"]), d == target and (l["role"] == "route" or l["role"] == "proceed" or (l["role"] == "primary"
+				and ["known", "active"].has(str(l["state"])))), tag + ": lead only on the next step (%s)" % text)
+			if l["role"] == "route":
+				routes += 1
+				var dir := 1 if target > v else -1
+				eq(text, _route_text(m, v, at, dir), tag + ": the hint is route() toward the next step")
+				check(_way_exists(sec, v, dir), tag + ": a hint only via a walkable way (%s)" % text)
+				var rx := RegEx.create_from_string("^(ramp|shaft) (down|up) [0-9]+ m$")
+				check(rx.search(text) != null, tag + ": route text without glyphs (%s)" % text)
+				eq(i, 0 if d <= open_to else 1, tag + ": under the header (visited) or the proceed line (unvisited)")
+		if d > open_to:
+			eq(objs.map(func(l: Dictionary) -> String: return l["text"]), [MissionRules.proceed_text(d)],
+				tag + ": unvisited deck %d: only the proceed line" % (d + 1))
 		else:
-			var d := int(l["deck"])
-			if text.begins_with("Proceed"):
-				proceed.append(i)
-				eq(text, MissionRules.proceed_text(d), tag + ": proceed text")
-			else:
-				check(d <= open_to and d != v, tag + ": a deck line for a visited deck (%s)" % text)
-				per_deck[d] = int(per_deck.get(d, 0)) + 1
-	# Unvisited decks: one proceed line at most, never their objectives.
-	check(proceed.size() <= 1, tag + ": one proceed line at most")
-	var below_primary := false
-	for d in range(v + 1, open_to + 1):
-		below_primary = below_primary or not m.plan.primary(d).is_empty()
-	var want_proceed := open_to + 1 < n and not below_primary
-	eq(proceed.size() == 1, want_proceed, tag + ": a proceed line exactly when the next deck is unvisited")
-	if proceed.size() == 1:
-		var pl: Dictionary = ls[proceed[0]]
-		eq(int(pl["deck"]), open_to + 1, tag + ": proceed to the first unvisited deck")
-		if vdone:
-			eq(proceed[0], 0, tag + ": primary done: the proceed line is first")
-			eq(pl["part"], "lead", tag + ": and leads")
-		else:
-			eq(pl["part"], "tail", tag + ": primary to do: it trails")
-			for i: int in here_idx:
-				check(i < proceed[0], tag + ": after this deck's lines")
-	# Visited decks with something left: exactly one line each; hidden bonuses aside, every deck here has its primary.
-	for d in range(0, open_to + 1):
-		if d == v:
-			continue
-		eq(int(per_deck.get(d, 0)), 1, tag + ": deck %d has one line" % (d + 1))
+			var want := 0
+			for o: Dictionary in m.objectives:
+				if int(o["deck"]) == d and m.obj_state(o["id"]) != "hidden":
+					want += 1
+			eq(objs.size(), want, tag + ": visited deck %d lists its known objectives" % (d + 1))
+			for l: Dictionary in objs:
+				check(l["role"] == "primary" or l["role"] == "bonus", tag + ": objective rows only (%s)" % l["text"])
+	var want_route := target >= 0 and _way_exists(sec, v, 1 if target > v else -1)
+	eq(routes, 1 if want_route else 0, tag + ": one hint exactly when there is a next step and a way")
+	eq(not (pn["route_at"] as Dictionary).is_empty(), want_route, tag + ": route_at with the hint")
 
 
 ## The route hint: route() is the nearest way off the viewer's deck in that direction (down: a ramp mouth or a shaft that
@@ -950,7 +1177,7 @@ func _panel_routes() -> void:
 	check(atrium >= 0, "seed 9: deck 1 has a stacked atrium shaft")
 	check(ramp9 >= 0 and s9.connectors[ramp9]["kind"] == "ramp", "seed 9: the walkable way down from deck 1 is a ramp")
 	var rc: Dictionary = s9.connectors[ramp9]
-	var mouth := Vector2((float(rc["x0"]) + float(rc["x1"])) * 0.5, s9.line_s(0, int(rc["top_line"])))
+	var mouth := Vector2((float(rc["x0"]) + float(rc["x1"])) * 0.5, s9.ramp_run(ramp9, 0).x)
 	var rim := s9.connector_rect(atrium, 0).get_center() if atrium >= 0 else Vector2.ZERO
 	for at: Vector2 in [Vector2.ZERO, rim, Vector2(60.0, -150.0), Vector2(-80.0, 220.0)]:
 		var rt := m9.route(0, at, 1)
@@ -993,9 +1220,9 @@ func _nearest_ok(sec: SectionPlan, k: int, at: Vector2, dir: int, d: float) -> b
 		var p := Vector2(INF, INF)
 		var lane := (float(c["x0"]) + float(c["x1"])) * 0.5
 		if c["kind"] == "ramp" and dir > 0 and int(c["from"]) == k:
-			p = Vector2(lane, sec.line_s(k, int(c["top_line"])))
+			p = Vector2(lane, sec.ramp_run(ci, k).x)
 		elif c["kind"] == "ramp" and dir < 0 and int(c["to"]) == k:
-			p = Vector2(lane, sec.line_s(k, int(c["foot_line"])))
+			p = Vector2(lane, sec.ramp_run(ci, k).y)
 		elif c["kind"] == "shaft" and dir > 0 and int(c["from"]) == k and _lands(sec, ci):
 			p = sec.connector_rect(ci, k).get_center()
 		if p.is_finite() and at.distance_to(p) < d - 0.01:
@@ -1004,8 +1231,8 @@ func _nearest_ok(sec: SectionPlan, k: int, at: Vector2, dir: int, d: float) -> b
 
 
 ## Every panel text reads as a sentence in every state and from every `reached` (no "?", empty name, raw id,
-## placeholder, "V1" / "^1" prefix), the HUD font has every glyph the panel uses, and a client fed the host's state()
-## (JSON and var_to_bytes) shows the same panel from every deck.
+## placeholder, "V1" / "^1" prefix, "DECK X OF Y"; only headers end in ":"), the HUD font has every glyph the panel uses,
+## and a client fed the host's state() (JSON and var_to_bytes) shows the same panel from every deck.
 func _panel_states() -> void:
 	var font := ThemeDB.fallback_font
 	var missing := {}
@@ -1020,20 +1247,22 @@ func _panel_states() -> void:
 			for v in 3:
 				var pn := m.panel(v, Vector2(10.0, 20.0))
 				var tag := "panel %s reached %d deck %d" % [st, reached, v + 1]
-				for s in _panel_texts(pn):
+				for l: Dictionary in pn["lines"]:
+					var s := str(l["text"])
 					check(s.strip_edges() != "", tag + ": no empty text")
 					check(not s.contains("?"), tag + ": no '?' in %s" % s)
 					check(not s.begins_with("V1") and not s.begins_with("V2") and not s.begins_with("^1"), tag + ": no prefix in %s" % s)
+					check(not s.to_upper().contains(" OF 3"), tag + ": no 'DECK X OF Y' (%s)" % s)
 					check(not s.contains("%s") and not s.contains("%d") and not s.contains("  "), tag + ": no placeholder in %s" % s)
 					check(not s.contains("d0_") and not s.contains("d1_") and not s.contains("d2_") and s != "hold",
 						tag + ": no raw id in %s" % s)
-					check(not s.ends_with(":") and not s.begins_with(":"), tag + ": no empty name in %s" % s)
+					eq(s.ends_with(":"), l["role"] == "header", tag + ": only a header ends in ':' (%s)" % s)
+					check(not s.begins_with(":"), tag + ": no empty name in %s" % s)
+					if st == "hidden":
+						check(l["role"] != "bonus", tag + ": no hidden bonus listed (%s)" % s)
 					for ch in (s + s.to_upper()):
 						if not font.has_char(ch.unicode_at(0)):
 							missing[ch] = true
-				for l: Dictionary in pn["lines"]:
-					if st == "hidden":
-						check(l["role"] != "bonus", tag + ": no hidden bonus listed (%s)" % l["text"])
 	eq(missing.keys(), [], "the HUD font has every glyph the panel uses")
 	# State round trip: the client's panel equals the host's from every deck (a hangar bot's negative id in the crew
 	# changes nothing), the co-op case included (one pilot on deck 2, the viewer behind on deck 1).
@@ -1053,26 +1282,96 @@ func _panel_states() -> void:
 		eq(cb.panel(v, Vector2(5.0, -40.0)), h.panel(v, Vector2(5.0, -40.0)), "client panel = host panel (var_to_bytes), deck %d" % (v + 1))
 
 
-## MissionHud.panel_rows fits the panel to a row limit: the trailing route hints drop first (the last first), then the
-## trailing "Deck n: ... left" lines, then this deck's done / failed lines, then the end is cut; the lead lines and the
-## depot line stay.
+## MissionRules.fit shortens the panel to a row limit, in the order of R2.13: the route hint; other decks' done /
+## failed rows; other decks' optional rows -> "n optional"; other decks' rows -> one summary; then the viewer's done /
+## failed rows and optional rows; then other decks to their header; then the viewer's rows from the end. Headers and the
+## depot line always stay.
 func _panel_fit() -> void:
-	var L := func(text: String, role: String, part: String, st: String = "") -> Dictionary:
-		return {"text": text, "role": role, "state": st, "deck": 0, "dir": 0, "part": part}
-	var pn := {"extra": ["Taking power core: 60%"], "lines": [
-		L.call("Return to deck 1: objective unfinished", "return", "lead"), L.call("ramp up 80 m", "route", "lead"),
-		L.call("Raise the flag: 40%", "primary", "here", "active"), L.call("Raise the flag: 100% (done)", "bonus", "here", "done"),
-		L.call("Deck 3: 1 objective left", "next", "tail"), L.call("shaft down 90 m", "route", "tail"),
-		L.call("Deck 2: 1 optional left", "deck", "tail")]}
-	var all := MissionHud.panel_rows(pn, 99).map(func(r: Dictionary) -> String: return r["text"])
-	eq(all, ["Return to deck 1: objective unfinished", "ramp up 80 m", "Raise the flag: 40%", "Raise the flag: 100% (done)",
-		"Taking power core: 60%", "Deck 3: 1 objective left", "shaft down 90 m", "Deck 2: 1 optional left"],
-		"rows: lead, this deck, the depot line, the tail")
-	eq(MissionHud.panel_rows(pn, 7).map(func(r: Dictionary) -> String: return r["text"]), all.filter(func(t: String) -> bool: return t != "shaft down 90 m"),
-		"too long: the trailing route hint drops first")
-	eq(MissionHud.panel_rows(pn, 6).size(), 6, "then the optional-only deck line")
-	check(not MissionHud.panel_rows(pn, 6).map(func(r: Dictionary) -> String: return r["text"]).has("Deck 2: 1 optional left"), "the deck line went")
-	var five := MissionHud.panel_rows(pn, 5).map(func(r: Dictionary) -> String: return r["text"])
-	eq(five, ["Return to deck 1: objective unfinished", "ramp up 80 m", "Raise the flag: 40%", "Taking power core: 60%",
-		"Deck 3: 1 objective left"], "then this deck's done line; the lead lines and the depot line stay")
-	eq(MissionHud.panel_rows(pn, 3).size(), 3, "then the end is cut")
+	var L := func(text: String, role: String, d: int, st: String = "", lead: bool = false) -> Dictionary:
+		return {"text": text, "role": role, "deck": d, "state": st, "current": false, "lead": lead, "dir": 0}
+	var H := func(d: int) -> Dictionary:
+		var h: Dictionary = L.call(MissionRules.deck_header(d), "header", d)
+		h["current"] = d == 1
+		return h
+	var pn := {"deck": 1, "extra": ["Taking power core: 60%"], "lines": [
+		H.call(0), L.call("Raise the flag: 100%", "primary", 0, "done"), L.call("A (optional)", "bonus", 0, "known"),
+		L.call("B (optional)", "bonus", 0, "known"), L.call("C (optional)", "bonus", 0, "done"),
+		H.call(1), L.call("Clear hostiles, waves 3/3", "primary", 1, "done"), L.call("D (optional)", "bonus", 1, "known"),
+		L.call("E (optional)", "bonus", 1, "active"),
+		H.call(2), L.call("Proceed to deck 3", "proceed", 2, "", true), L.call("ramp down 80 m", "route", 2, "", true)]}
+	var T := func(limit: int) -> Array:
+		return MissionRules.fit(pn, limit).map(func(r: Dictionary) -> String: return r["text"])
+	var all := ["Deck 1:", "Raise the flag: 100%", "A (optional)", "B (optional)", "C (optional)", "Deck 2:",
+		"Clear hostiles, waves 3/3", "D (optional)", "E (optional)", "Taking power core: 60%", "Deck 3:",
+		"Proceed to deck 3", "ramp down 80 m"]
+	eq(T.call(99), all, "rows: every section in order, the depot line at the end of the viewer's section")
+	eq(T.call(12), all.filter(func(s: String) -> bool: return s != "ramp down 80 m"), "1. the route hint goes first")
+	eq(T.call(11), all.filter(func(s: String) -> bool: return not ["ramp down 80 m", "C (optional)"].has(s)),
+		"2. other decks' done rows, the last first")
+	eq(T.call(10), ["Deck 1:", "A (optional)", "B (optional)", "Deck 2:", "Clear hostiles, waves 3/3", "D (optional)",
+		"E (optional)", "Taking power core: 60%", "Deck 3:", "Proceed to deck 3"], "2. ... all of them")
+	eq(T.call(9), ["Deck 1:", "2 optional", "Deck 2:", "Clear hostiles, waves 3/3", "D (optional)", "E (optional)",
+		"Taking power core: 60%", "Deck 3:", "Proceed to deck 3"], "3. other decks' optional rows -> 'n optional'")
+	eq(T.call(8), ["Deck 1:", "2 optional", "Deck 2:", "D (optional)", "E (optional)", "Taking power core: 60%",
+		"Deck 3:", "Proceed to deck 3"], "5. then the viewer's done row")
+	eq(T.call(7), ["Deck 1:", "2 optional", "Deck 2:", "2 optional", "Taking power core: 60%", "Deck 3:",
+		"Proceed to deck 3"], "5. then the viewer's optional rows")
+	eq(T.call(6), ["Deck 1:", "2 optional", "Deck 2:", "2 optional", "Taking power core: 60%", "Deck 3:"],
+		"6. then other decks down to their header (farthest first, the lower one on a tie)")
+	eq(T.call(4), ["Deck 1:", "Deck 2:", "Taking power core: 60%", "Deck 3:"], "7. headers and the depot line always stay")
+	eq(T.call(2), T.call(4), "never below the headers and the depot line")
+	var lead := MissionRules.fit(pn, 9).filter(func(r: Dictionary) -> bool: return bool(r["lead"]))
+	eq(lead.map(func(r: Dictionary) -> String: return r["text"]), ["Proceed to deck 3"], "the next step keeps its amber")
+	# 4. other decks' rows -> one summary (keeping the amber of an unfinished primary it replaces).
+	var q := {"deck": 0, "extra": [], "lines": [H.call(0), L.call("Raise the flag: 10%", "primary", 0, "active"),
+		L.call("F (optional)", "bonus", 0, "known"),
+		H.call(1), L.call("Defend the position: wave 1/3", "primary", 1, "known", true),
+		L.call("G (optional)", "bonus", 1, "known"), L.call("I (optional)", "bonus", 1, "known")]}
+	var four := MissionRules.fit(q, 5)
+	eq(four.map(func(r: Dictionary) -> String: return r["text"]), ["Deck 1:", "Raise the flag: 10%", "F (optional)",
+		"Deck 2:", "1 objective, 2 optional"], "4. another deck's rows -> one summary line")
+	check(bool(four[4]["lead"]), "the summary keeps the amber")
+	# A real 5-deck panel at the height cap of a 900 px screen (MissionHud.max_rows), every deck visited, two found
+	# bonuses each, the depot line and one crew line: every header stays, the viewer's section is whole.
+	var sec := SectionPlan.make({"seed": 21.0, "decks": 5.0})
+	var mp := MissionPlan.new()
+	mp.deck_count = 5
+	var needs: Array = []
+	for k in 5:
+		mp.objectives.append({"id": "p%d" % k, "type": "flag", "deck": k, "role": "primary", "site": {"x": 0.0, "s": 50.0},
+			"radius": 14.0, "needs": [], "params": {"hold": 20.0}})
+		mp.objectives.append({"id": "f%d" % k, "type": "flag", "deck": k, "role": "bonus", "site": {"x": 60.0, "s": -80.0},
+			"radius": 14.0, "needs": [], "params": {"hold": 20.0}})
+		mp.objectives.append({"id": "b%d" % k, "type": "defend", "deck": k, "role": "bonus", "site": {"x": -60.0, "s": 90.0},
+			"radius": 30.0, "needs": [], "params": {"waves": 3, "asset_hp": 1.0}})
+		needs.append("p%d" % k)
+	mp.objectives.append({"id": "hold", "type": "hold", "deck": 4, "role": "primary", "site": {"x": 0.0, "s": 0.0},
+		"radius": 0.0, "needs": needs, "params": {"hold": 30.0, "zone": Rect2(-10, -10, 20, 20)}})
+	var r5 := MissionRules.make(sec, {"plan": mp})
+	var o5 := {}
+	for o: Dictionary in r5.objectives:
+		o5[o["id"]] = ["known", 1.0, 3.0] if o["type"] == "defend" else ["known", 3.0, 20.0]
+	o5["hold"] = ["hidden", 0.0, 30.0]
+	o5["p0"] = ["done", 20.0, 20.0]
+	o5["p1"] = ["done", 20.0, 20.0]
+	o5["f0"] = ["done", 20.0, 20.0]
+	r5.apply_state({"objs": o5, "reached": 4})
+	var cap := MissionHud.max_rows(900.0) - 1   # one crew line
+	var p5 := r5.panel(2, Vector2(20.0, 30.0))
+	p5["extra"] = ["Taking power core: 60%"]
+	var full := MissionRules.fit(p5, 99)
+	var fitted := MissionRules.fit(p5, cap)
+	print("5 decks all visited: %d rows unfitted, %d rows at the 900 px cap (%d + 1 crew line)" % [full.size(), fitted.size(), cap])
+	check(fitted.size() <= cap, "5 decks: fits the cap (%d <= %d)" % [fitted.size(), cap])
+	eq(fitted.filter(func(r: Dictionary) -> bool: return r["role"] == "header").size(), 5, "5 decks: every header stays")
+	eq(_section({"lines": fitted}, 2).size(), _section({"lines": full}, 2).size(), "5 decks: the viewer's section is whole")
+	var with_crew := fitted.duplicate()
+	with_crew.append({"text": "Pickle is down: revive with a repair drone", "role": "crew", "deck": -1, "state": "",
+		"current": false, "lead": false, "dir": 0})
+	_ascii("5 decks at the height cap (900 px: %d rows), viewer on deck 3" % (cap + 1), with_crew)
+	_ascii("the same, unfitted (%d rows)" % full.size(), full)
+
+
+## The texts of panel rows.
+func _texts(rows: Array) -> Array:
+	return rows.map(func(l: Dictionary) -> String: return str(l["text"]))

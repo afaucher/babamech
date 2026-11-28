@@ -564,12 +564,17 @@ func _on_air_hunt_path() -> void:
 
 func _update_visuals(dt: float) -> void:
 	_hover_t += dt
+	_step_heat_look(dt)
 	if not puppet:
 		_scan_yaw = sin(_hover_t * 2.1) * 0.45 if not is_alerted() else 0.0
 	if _body_pivot != null:
-		var bob := sin(_hover_t * 3.8) * 0.22
-		_body_pivot.position.y = bob
-		_body_pivot.rotation = Vector3(_bank_pitch, _scan_yaw, sin(_hover_t * 2.4) * 0.06)
+		# Shut down (heat_look): the hover bob dies, the hull sags a little nose down and wobbles (pivot only: the hit
+		# spheres stay on the unit).
+		var sh := heat_look.flier_offsets(1.0)
+		var calm := 1.0 - clampf(heat_look.slump, 0.0, 1.0)
+		var bob := sin(_hover_t * 3.8) * 0.22 * calm
+		_body_pivot.position.y = bob + sh.x
+		_body_pivot.rotation = Vector3(_bank_pitch - sh.y, _scan_yaw, sin(_hover_t * 2.4) * 0.06 + sh.z)
 		_step_stagger_anim(dt)   # stagger: the hull rocks away from the hit and settles (EnemyStaggerAnim)
 		_body_pivot.basis = stagger_rock_basis(0.35 * anim_stagger_amp) * _body_pivot.basis
 	_update_spotlight()
@@ -581,9 +586,7 @@ func _update_visuals(dt: float) -> void:
 			_telegraph_fx.hide_telegraph()
 			_telegraph_fx.tick_only(dt)
 		_update_reveal_fx(dt)
-	if _status_bar != null:
-		var tag := "OVERHEAT" if heat.shutdown else ("STAGGER" if knock.staggered() else "")
-		_status_bar.refresh(core_hp_ratio(), heat_ratio, is_alerted(), ai_state == STATE_TELEGRAPH, tag, _dead, dt, revealed)
+	_refresh_status_bar()
 
 
 ## Show the belly spotlight ONLY when alerted and locking onto a nearby player mech (<= 45 m), aimed directly at it!

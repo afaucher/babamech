@@ -9,8 +9,9 @@ extends Node3D
 ## Open with `.\run.ps1 -MissionScene [-Seed N]`, or Play -> Launch mission in the menu.
 ##
 ## THE CITY (city_mode): STACK (the default; `--stack`) builds the multi-deck mission section (SectionPlan from the seed,
-##   CityStack, docs/design/city-ramps-and-stack.md) and spawns the crew on the section's entry road
-##   (CityStack.entry_transform(), entry_spawn()). The stack is placed so the ENTRY DECK's floor passes through the world
+##   CityStack, docs/design/city-ramps-and-stack.md) and spawns the crew in the section's ENTRY BAY behind the entry road
+##   door (docs/design/city-spine.md §4; placed on the avenue by build_city, then moved into the bay once the mission
+##   world is set up: place_crew / _place_in_bay; QUIET_SECTION tests keep the avenue). The stack is placed so the ENTRY DECK's floor passes through the world
 ##   origin (stack.position = -section.deck_offset(entry deck)): `city` is that deck's CityDistrict, so every system that
 ##   still reads one district (combat, enemy spawner, audio, player AI) gets a plan and a RingFrame that are right in
 ##   world space on the entry deck. Every mech's ring is `city.ring`: the axis is shared, so its up / gravity is right on
@@ -459,6 +460,7 @@ func _finish_setup(args: PackedStringArray, stepped: bool) -> void:
 		mission.name = "MissionFlow"
 		add_child(mission)
 		mission.setup(self)
+		_place_in_bay()   # the mission world exists now: the crew starts in the entry bay
 		mission.finished.connect(func(_o: String) -> void: _leave_mission())
 		for id: int in _left:
 			_tell_mission_retired(id)   # retired while the mission loaded, before MissionFlow existed
@@ -640,26 +642,16 @@ func build_city(seed: int, built: bool = false) -> void:
 	var k := int(stack.section.entry["deck"])
 	stack.position = -stack.section.deck_offset(k)   # the entry deck's floor through the world origin
 	city = stack.decks[k]
-	var n := spawn_order.size()
-	for i in n:
-		var m := mech_of(spawn_order[i])
+	for p: int in spawn_order:
+		var m := mech_of(p)
 		if m == null:
 			continue   # a member who left (CrewSync.retire): spawn_order keeps the launch crew's slots
 		m.ring = city.ring   # stack: the entry deck's frame, on the shared axis (right on every deck)
 		var ma := m.get_node_or_null("Audio") as MechAudio
 		if ma != null:
 			ma.city = city
-		_audio_deck.erase(spawn_order[i])
-		# The stack's crew slots: one column per carriageway (clear of the planted median and the rail lane), rows going
-		# in, slid past anything blocking (plan data only: the same on every machine).
-		var xf := crew_spawn(i, n)
-		if m == mech:
-			spawn_xf = xf
-		else:
-			m.global_transform = xf
-			m.velocity = Vector3.ZERO
-			MechSpawn.rig_of(m).gait.reset([])
-	respawn()
+		_audio_deck.erase(p)
+	place_crew()   # on the avenue here (no mission world yet); in the entry bay once it is set up (_place_in_bay)
 	if combat != null:
 		combat.rebuild_encounters(self)
 	if combat_audio != null and city.props != null:
@@ -670,6 +662,39 @@ func build_city(seed: int, built: bool = false) -> void:
 		banners.setup(stack, combat.world)
 	if mission != null:
 		mission.rebuild()   # solo N: the new city's section and objectives
+		_place_in_bay()
+
+
+## Put every mech of spawn_order at its crew slot (crew_spawn: CityStack.spawn_transforms, plan data only, the same on
+## every machine): the local one through spawn_xf + respawn(), the others (puppets, offline crew, the host's bots) set
+## still with feet re-planted. A host bot's respawn slot (CrewBot.spawn) follows.
+func place_crew() -> void:
+	var n := spawn_order.size()
+	for i in n:
+		var m := mech_of(spawn_order[i])
+		if m == null:
+			continue   # a member who left (CrewSync.retire): spawn_order keeps the launch crew's slots
+		var xf := crew_spawn(i, n)
+		if m == mech:
+			spawn_xf = xf
+		else:
+			m.global_transform = xf
+			m.velocity = Vector3.ZERO
+			MechSpawn.rig_of(m).gait.reset([])
+			m.reset_physics_interpolation()
+			var cb := crew_bots.get(spawn_order[i]) as CrewBot
+			if cb != null and is_instance_valid(cb):
+				cb.spawn = xf
+	respawn()
+
+
+## Once the mission world is set up (MissionFlow.setup, after the stepped setup_mission or its own one-call setup; or
+## MissionFlow.rebuild), the crew starts in the ENTRY BAY (docs/design/city-spine.md §4: CityStack.spawn_in_bay /
+## entry_bay_slots) instead of the avenue build_city placed it on. Before the load barrier's report, so every machine
+## places every mech the same. Without a mission world (QUIET_SECTION tests, MissionFlow.test_quiet) the avenue stays.
+func _place_in_bay() -> void:
+	if stack != null and stack.spawn_in_bay():
+		place_crew()
 
 
 ## Ambient life for this scene: the city's civilians and vehicles, pushed by every mech (puppets too: src = owner peer)
@@ -752,9 +777,10 @@ static func entry_spawn(entry: Transform3D, deck: CityDistrict, i: int, n: int) 
 	return to_deck * Transform3D(ring.basis_at(p, ring.tangent_at(p) * ahead), p)
 
 
-## Stack mode: the i-th of n crew slots, from CityStack.spawn_transforms(n) (one column per carriageway, clear of the
-## planted median and the rail lane, rows going in, slid past anything blocking: plan data only, the same on every
-## machine). Beyond the stack's 4 slots (offline perf crews), entry_spawn() around the entry.
+## Stack mode: the i-th of n crew slots, from CityStack.spawn_transforms(n): in the entry bay once the mission world is
+## set up (CityStack.entry_bay_slots), else on the avenue (one column per carriageway, clear of the planted median and the
+## rail lane, rows going in, slid past anything blocking). Plan data only, the same on every machine. Beyond the stack's
+## 4 slots (offline perf crews), entry_spawn() around the avenue entry.
 func crew_spawn(i: int, n: int) -> Transform3D:
 	var slots := stack.spawn_transforms(n)
 	if i < slots.size():
@@ -1020,6 +1046,7 @@ func _physics_process(delta: float) -> void:
 		mech.turn_input = 0.0
 		mech.running = false
 		mech.thrust_input = false
+		mech.climb_input = 0.0
 	elif not drive_override:
 		var mv := Vector2.ZERO
 		if Input.is_physical_key_pressed(KEY_W): mv.y += 1.0
@@ -1029,6 +1056,9 @@ func _physics_process(delta: float) -> void:
 		mech.move_input = mv.limit_length(1.0)
 		mech.running = Input.is_physical_key_pressed(KEY_SHIFT)
 		mech.thrust_input = Input.is_physical_key_pressed(KEY_SPACE)
+		# A hover chassis climbs on Space and descends on Ctrl (bipeds ignore climb_input and thrust on Space).
+		mech.climb_input = (1.0 if Input.is_physical_key_pressed(KEY_SPACE) else 0.0) \
+			- (1.0 if Input.is_physical_key_pressed(KEY_CTRL) else 0.0)
 		if cam != null:
 			cam.zoomed = Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
 		# Turn the body toward the camera's yaw (full turn input beyond ~15 degrees off).
@@ -1055,6 +1085,7 @@ func _downed_controls() -> void:
 		mech.turn_input = 0.0
 		mech.running = false
 		mech.thrust_input = false
+		mech.climb_input = 0.0
 		if not drive_override:
 			pt.respawn_held = InputMap.has_action(DownedRules.ACTION) and Input.is_action_pressed(DownedRules.ACTION)
 		if combat.rack != null:

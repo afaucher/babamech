@@ -22,7 +22,7 @@ extends Node
 ##
 ## THE PLAN (docs/design/mission-objectives.md §7 phase 1, §9). Every machine builds plan = MissionPlan.make(section, test_plan),
 ## rules = MissionRules.make(section, {plan}), director = PacingDirector.make(plan, test_director, crew_scale()), then
-## stack.setup_mission(plan) (Environment's MissionWorld: wave doors, flag masts, defend relays, the portal) and
+## stack.setup_mission(plan) (Environment's MissionWorld: wave doors, flag masts, defend relays, the hold zone, the road doors) and
 ## rules.set_site() from its flag_site / asset_site, all before the first evaluate. The load barrier's checksum joins
 ## plan.checksum() (MissionScene.mission_checksum). The HOST / SOLO tick (same gate, EVAL_INTERVAL, t = Session.host_time(),
 ## solo: this node's mission clock) evaluates the rules first, then ticks the director with the fresh state:
@@ -49,8 +49,24 @@ extends Node
 ## when it goes active: _arm_assets); outside that window the relay is scenery. The host's applied hits come back
 ## through damage_asset. PRESENTATION on every machine from the replicated state
 ## (_present, 4 Hz): set_flag(id, true) once a flag is done, set_zone(id, idle | contested | ours) (from the crew and
-## the enemies this machine sees in the ring: cosmetic), set_asset(id, hp), set_portal(hold progress), set_hold_zone; the
-## mission clock goes to MissionWorld.advance_to every frame. A failed primary ends the mission "lost" (objective_failed).
+## the enemies this machine sees in the ring: cosmetic), set_asset(id, hp), set_hold_zone; the ally's HUD lines
+## (MissionRules.ally_due -> hud_model.ally); the mission clock goes to MissionWorld.advance_to every frame. A failed
+## primary ends the mission "lost" (objective_failed).
+##
+## THE EXIT (R2.10, docs/design/mission-objectives.md §9 "The exit"): the extraction is a 30 s hold in the zone in front of
+## the exit road door while an ally opens it. When the hold completes the rules latch exit_at (facts.t + EXIT_LEAD) and the
+## HOST orders the exit door open at exit_at, held open for the rest of the mission (DOOR_HOLD): a replicated door order
+## on the wave path (mission.wave {wave: "door", source: MissionWorld.EXIT_ID, door: "open", open_at, hold}; every machine
+## applies it in _door_order -> MissionWorld.open_source(id, open_at, hold, open_at); a client that missed it applies the
+## same from the state's "exit"). Nothing else ever opens the exit door (no plan source names it). Crew facts then carry
+## `exit`: the mech is inside the exit bay (bay_contains inside, at least its capsule radius past the door plane:
+## _in_exit), and the rules win once every standing pilot is in. No exit door on the deck (exit_door().ok false): the
+## rules' walk_out is off and the hold's completion wins (warned).
+## THE ENTRY DOOR (crew missions): at setup every machine shuts it (shut_source at ENTRY_SHUT_AT, a constant: the same
+## schedule everywhere), so the crew waits behind it through the load barrier; at the release every machine opens it at
+## the barrier's shared start_at (Session.mission.start_at: no message needed; the leaves are never solid while moving). The HOST shuts it again (a replicated
+## door order) once no crew mech has been in its bay or doorway for ENTRY_CLEAR s, and reopens it whenever one is found
+## there after that. Solo: the door's default (open from clock 0).
 ##
 ## CREW SCALE (AGENTS.md rule 8; docs/networking.md "Crew scale"; user 2026-11-25: "Run it from the host, enforce this! And
 ## ease off when a player leaves."): crew_scale() is the ONE read of the co-op scale on this machine (1..4): the director's
@@ -67,6 +83,9 @@ extends Node
 ## (hud_model.build().banner) for END_HOLD s, then: the HOST calls Session.mission.end(reason) (mission.end to the crew, whose
 ## MissionScene goes back to the hangar on Session.mission_ended); SOLO just leaves; a CLIENT waits for the host's
 ## mission.end and only leaves on its own after CLIENT_GRACE more seconds. `finished` tells MissionScene to leave.
+## DEBRIEF (R2.15a): at the outcome the host / solo freezes MissionStats into `debrief` (once) and the end above is
+## Session.mission.end(end_reason(), debrief) (solo too: NetMission keeps it for the hangar's board). The crew quitting
+## before an outcome ends with no debrief.
 
 signal outcome_reached(outcome: String, reason: String)
 ## The end flow is over: leave the mission scene (MissionScene does, when it is the current scene).
@@ -86,9 +105,16 @@ const ASSET_HP_SCALE := [1.75, 1.35, 1.0, 1.0]
 const ASSET_RADIUS := 2.5         ## m, the relay's hit-sphere radius for combat
 const ASSET_HEIGHT := 6.0         ## m, the hit spheres stack this high
 const ROUTE_EVERY := 2.0          ## s between the host's source route measurements (PacingDirector source choice)
-const ROLL_OUT_HOLD := 15.0       ## s a gate stays open once its staged group starts rolling out (none is shut in)
+const ROLL_OUT_HOLD := 15.0       ## s a gate stays open once its staged group starts rolling out (then MissionBays holds it
+                                  ## while anyone is still inside)
+const STAGE_TIMEOUT := 20.0       ## s past its open_at a staged group waits for a door that never becomes passable
+const LIFT_DOOR_MARGIN := 1.0     ## m behind a lift car's door plane its formation starts (no leaves inside the car)
 const SCALE_LEAD := 1.0           ## s on the shared clock between the host's scale decision and `at` (every machine has it)
 const SCALE_STEP := 0.001         ## s: each new change's `at` is at least this after the previous one (strict order)
+const DOOR_HOLD := 100000.0       ## s a road door ordered open stays open (the rest of the mission)
+const DOOR_LEAD := 0.5            ## s on the shared clock between the host's entry door decision and its `at`
+const ENTRY_SHUT_AT := -1.0e6     ## the entry door's setup shut (crew): one constant, so every machine stores one schedule
+const ENTRY_CLEAR := 3.0          ## s with no crew mech in the entry bay / doorway before the host shuts the entry door
 
 ## Tests: overrides for MissionPlan.make / PacingDirector.make (set the same on every machine of a test:
 ## the plan's checksum includes its options).
@@ -112,6 +138,9 @@ var plan: MissionPlan
 var director: PacingDirector
 var pacing: PacingFacts           ## host: the fight as the director sees it (engaged, in play, kills, pilot structure)
 var _rollouts: Array = []         ## host: staged gate groups waiting for their door [{wave, source, open_at}]
+## Host: nobody is shut in a bay (MissionBays: hold while occupied, push out, withdraw; playtest R2.4).
+var bays: MissionBays
+var _holds := 0                   ## host: hold orders sent (their wave key)
 var _routes: Dictionary = {}      ## host: last _source_routes()
 var _route_t := -INF              ## host: when they were computed
 var world: MissionWorld
@@ -144,6 +173,17 @@ var hud_model: MissionHudModel
 ## The military supply depots (MissionDepots child, every machine; pacing-director.md §2). Their state rides in
 ## plan_state()["depots"]; the claim / grant messages are MissionDepots' own.
 var depots: MissionDepots
+## The debrief's counters (MissionStats child, HOST / SOLO only: clients never count; docs/design/debrief-stats.md). Made
+## fresh by rebuild; at the outcome _check_outcome freezes it into `debrief`, which _tick_end hands to
+## Session.mission.end(end_reason(), debrief) (host: rides mission.end to the crew; solo: kept in NetMission.last_debrief).
+var stats: MissionStats
+var debrief: Dictionary = {}      ## host / solo: the payload built once at the outcome ({} before, and on clients)
+var door_log: Array = []          ## every machine: road door orders applied here [{id, door, at}] (tests, logs)
+var _exit_sent := false           ## host: the exit door order went out
+var _entry_shut := false          ## host: the entry door was ordered shut (after the crew left its bay)
+var _entry_clear_t := 0.0         ## host: s the entry bay and doorway have been free of crew mechs
+var _entry_opened := false        ## every machine: the release's entry door opening was applied
+var _ally_said: Dictionary = {}   ## every machine: the ally lines already shown (MissionRules.ally_due)
 
 
 ## Authority (scripts/net/net.gd): the rules and the director declare the mission's progress themselves
@@ -152,6 +192,8 @@ func net_fields() -> Dictionary:
 	return {"drive": Net.LOCAL, "rules": Net.LOCAL, "crew": Net.SPAWN, "released": Net.LOCAL, "end_left": Net.LOCAL,
 		"ended": Net.LOCAL, "evaluations": Net.LOCAL, "_eval_left": Net.PRIVATE, "_end_wait": Net.LOCAL,
 		"plan": Net.LOCAL, "director": Net.LOCAL, "world": Net.LOCAL, "pacing": Net.LOCAL, "_rollouts": Net.PRIVATE,
+		"bays": Net.LOCAL,             # MissionBays declares its own (host bookkeeping)
+		"_holds": Net.PRIVATE,
 		"_routes": Net.PRIVATE, "_route_t": Net.PRIVATE,
 		"_asset_targets": Net.LOCAL,   # this machine's combat registrations of the relays
 		"_asset_armed": Net.PRIVATE,   # host: relays whose defend went active (their one HP reset done)
@@ -163,11 +205,18 @@ func net_fields() -> Dictionary:
 		"scale_log": Net.LOCAL, "scale_dups": Net.LOCAL,
 		"_pushed": Net.LOCAL,
 		"hud_model": Net.LOCAL,        # this machine's HUD view (MissionHudModel declares its own state)
-		"depots": Net.LOCAL}   # MissionDepots declares its own state (net_fields)
+		"depots": Net.LOCAL,   # MissionDepots declares its own state (net_fields)
+		"stats": Net.LOCAL,    # MissionStats declares its own (host counters)
+		"debrief": Net.OWNER,  # the host builds it at the outcome; mission.end carries it
+		"door_log": Net.LOCAL, # this machine's applied door orders (the orders themselves ride mission.wave)
+		"_exit_sent": Net.PRIVATE, "_entry_shut": Net.PRIVATE, "_entry_clear_t": Net.PRIVATE,   # host door bookkeeping
+		"_entry_opened": Net.LOCAL,   # this machine applied the release's opening (from the shared start_at)
+		"_ally_said": Net.LOCAL}      # this machine's HUD memory of the ally lines
 
 
 func _init() -> void:
 	hud_model = MissionHudModel.new(self)
+	bays = MissionBays.new(self)
 
 
 func _ready() -> void:
@@ -201,6 +250,8 @@ func setup(td: MissionScene) -> void:
 			for o: Variant in sess.mission.waves:
 				if o is Dictionary:
 					_on_wave(o)
+		if released:
+			_entry_release()
 	else:
 		released = true
 
@@ -212,12 +263,17 @@ func rebuild() -> void:
 		depots.teardown()
 		depots.queue_free()
 	depots = null
+	if stats != null and is_instance_valid(stats):
+		stats.queue_free()
+	stats = null
 	plan = null
 	director = null
 	if pacing != null:
 		pacing.unbind()
 	pacing = null
 	_rollouts = []
+	bays.reset()
+	_holds = 0
 	_routes = {}
 	_route_t = -INF
 	world = null
@@ -235,6 +291,12 @@ func rebuild() -> void:
 	_pushed = {}
 	hud_model.reset()
 	_clock = 0.0
+	door_log = []
+	_exit_sent = false
+	_entry_shut = false
+	_entry_clear_t = 0.0
+	_entry_opened = false
+	_ally_said = {}
 	rules = null
 	if sec == null or test_quiet:
 		pass   # no section (defensive), or TEST-ONLY QuietSectionFixture: no rules, nothing released, never ends
@@ -258,10 +320,17 @@ func rebuild() -> void:
 			if not site.is_empty() and bool(site.get("ok", true)):   # ok false: no clear ground, the plan's site stays
 				rules.set_site(id, float(site["x"]), float(site["s"]))
 				director.set_site(id, float(site["x"]), float(site["s"]))
+		_setup_doors()
 		depots = MissionDepots.new()
 		depots.name = "MissionDepots"
 		add_child(depots)
 		depots.setup(self)
+		if deciding():
+			stats = MissionStats.new()
+			stats.name = "MissionStats"
+			add_child(stats)
+			stats.setup(self)
+	debrief = {}
 	end_left = -1.0
 	_end_wait = 0.0
 	ended = false
@@ -341,12 +410,33 @@ func _fact(peer: int, m: Node3D, downed: bool, redeploying: bool = false) -> Dic
 	if m == null:
 		return {"peer": peer, "downed": true, "redeploying": false, "deck": -1, "x": 0.0, "s": 0.0}
 	var a := drive.stack.to_deck_arc(m.global_position)
-	return {"peer": peer, "downed": downed, "redeploying": redeploying, "deck": int(a["deck"]), "x": float(a["x"]),
+	var f := {"peer": peer, "downed": downed, "redeploying": redeploying, "deck": int(a["deck"]), "x": float(a["x"]),
 		"s": float(a["s"])}
+	if rules != null and rules.exit_open():
+		f["exit"] = _in_exit(m)
+	return f
+
+
+## The walk-out's "inside" (R2.10): mech `m` is inside the exit bay (MissionWorld.bay_contains `inside`: behind the door
+## plane, within the bay's walls, under its roof) with its centre at least its capsule radius behind the door plane, so
+## the whole hull is through (a Bulwark 3.6 m, a Strider 2.2 m). False without a world or an exit door.
+func _in_exit(m: Node3D) -> bool:
+	if world == null or not is_instance_valid(world) or m == null:
+		return false
+	var bc := world.bay_contains(MissionWorld.EXIT_ID, m.global_position)
+	return bool(bc.get("inside", false)) and float(bc.get("depth", 0.0)) >= mech_radius(m)
+
+
+## The mech's capsule radius: its MechController's chassis (MechCatalog.movement capsule_radius, applied at spawn on every
+## machine, puppets too: MechController.apply_chassis), the Strider's for anything else.
+static func mech_radius(m: Node3D) -> float:
+	var id: Variant = m.get("chassis_id")
+	return float(MechCatalog.movement(str(id) if id != null else "strider")["capsule_radius"])
 
 
 func _on_go(_elapsed: float) -> void:
 	released = true
+	_entry_release()
 
 
 func _on_ended(_reason: String) -> void:
@@ -368,6 +458,10 @@ func _on_state(d: Dictionary) -> void:
 		if d.get("assets") is Dictionary:
 			for id: Variant in d["assets"]:
 				asset_hp[str(id)] = float(d["assets"][id])
+		if rules.exit_open() and not _exit_applied():
+			# The state says the exit is open but its door order has not been applied here (yet): the same order.
+			_door_order({"wave": "door", "source": MissionWorld.EXIT_ID, "door": "open", "open_at": rules.exit_at,
+				"hold": DOOR_HOLD})
 		_present()
 	_check_outcome()
 
@@ -378,6 +472,11 @@ func _check_outcome() -> void:
 	end_left = END_HOLD
 	_end_wait = 0.0
 	print("[mission] %s (%s)" % [rules.outcome, rules.reason])
+	if rules.outcome == "won" and rules.exit_open():
+		print("[mission] exit: the crew walked out at %.2f" % now())
+		CombatLog.note_door("win", MissionWorld.EXIT_ID, now())
+	if deciding() and stats != null and debrief.is_empty():
+		debrief = stats.finish(rules.outcome, end_reason())   # once, at the outcome: the counters freeze here
 	outcome_reached.emit(rules.outcome, rules.reason)
 
 
@@ -398,7 +497,9 @@ func _tick_end(dt: float) -> void:
 	if end_left > 0.0:
 		return
 	if crew and sess != null and sess.online():
-		sess.mission.end(end_reason())
+		sess.mission.end(end_reason(), debrief)
+	elif not crew and sess != null:
+		sess.mission.end(end_reason(), debrief)   # solo: NetMission just keeps the debrief for the hangar's board
 	_finish()
 
 
@@ -425,8 +526,13 @@ func _evaluate_plan() -> bool:
 		"waves": director.state()["waves"], "zone_enemies": _zone_enemies(live), "assets": asset_hp.duplicate(),
 		"defend_waves": director.objective_waves()})
 	_arm_assets()
+	if rules.exit_open() and not _exit_sent:
+		_exit_sent = true
+		_send_door(MissionWorld.EXIT_ID, "open", rules.exit_at)
+	_tick_entry(t, crew_f)
 	var orders := director.tick(t, _director_facts(enemies, crew_f, live))
 	for o: Dictionary in orders:
+		o["order_t"] = t   # when the host ordered it (_no_snap: a door already closing / shut then is not re-extended)
 		if crew:
 			Net.session().mission.host_wave(o)
 		_open(o)
@@ -524,7 +630,7 @@ func _director_facts(enemies: Array, crew_f: Array, live: Array) -> Dictionary:
 	return {"alive": enemies, "garrison_alive": garrison, "wave_alive": wave_alive, "wave_pending": _pending.duplicate(),
 		"crew_deck": decks, "crew": crew_f, "wave_size": wave_sizes(), "objectives": rules.state(), "closed": [],
 		"active": pf.get("active", enemies), "engaging": pf.get("engaging", []), "pilots": pf.get("pilots", {}),
-		"kills": pf.get("kills", []), "source_route": _source_routes(crew_f)}
+		"kills": pf.get("kills", []), "source_route": _source_routes(crew_f), "busy_sources": bays.busy_sources()}
 
 
 ## Host: {source id: walk-route metres from the standing crew's centre on its deck} (EnemyNav.find_arc_path over the
@@ -667,28 +773,180 @@ func _wire_air_doors() -> void:
 
 
 ## Host: open air door `id` (deck `deck`) at `open_at` for `hold` s on every machine: the same replicated order as a
-## wave's gate (mission.wave), marked "air" (no wave, no units, no reinforcement alert). Again with the same open_at and a
-## longer hold it extends the hold (MissionWorld.open_source).
-func order_air_door(id: String, deck: int, open_at: float, hold: float) -> void:
+## wave's gate (mission.wave), marked "air" (no wave, no units). `arriving` (a dropship comes out through it) gives the
+## crew its alert, "Dropship, north air door", with the INBOUND marker on the door's `out` point (playtest R2.24); its way
+## back in does not. Again with the same open_at and a longer hold it extends the hold (MissionWorld.open_source; clients
+## apply it since NetMission dedups on wave + source + open_at + hold).
+func order_air_door(id: String, deck: int, open_at: float, hold: float, arriving: bool = false) -> void:
 	var o := {"wave": "air", "deck": deck, "source": id, "open_at": open_at, "hold": hold, "max_units": 0, "air": true,
 		"reason": "dropship"}
+	if arriving:
+		o["arrive"] = true
 	if crew:
 		Net.session().mission.host_wave(o)
 	_open(o)
 
 
+## Host: keep wave door `src` open until at least `until_t` on every machine (MissionBays: someone is still inside). A
+## replicated "hold" order (mission.wave, hold_only: no units, no alert) with the door's own open_at; every machine calls
+## MissionWorld.hold_source (it only ever extends, never re-opens a door that is shut).
+func hold_door(src: String, until_t: float) -> void:
+	if world == null:
+		return
+	var st := world.source_state(src)
+	if str(st.get("state", "")) in ["shut", "sealed"]:
+		return
+	var oa := float(st.get("open_at", INF))
+	if oa == INF:
+		return
+	_holds += 1
+	var o := {"wave": "hold", "deck": int(plan.source(src).get("deck", 0)) if plan != null else 0, "source": src,
+		"open_at": oa, "hold": snappedf(until_t - oa, 0.01), "until": until_t, "hold_only": true, "max_units": 0,
+		"reason": "hold", "n": _holds}
+	if crew:
+		Net.session().mission.host_wave(o)
+	_open(o)
+
+
+## Host: open wave door `src` again at `at` on every machine (MissionBays rule 5: a crew mech is inside its bay / car while
+## it closes or is shut). A replicated "hold" order with `reopen` (no units, no alert): every machine calls
+## MissionWorld.open_source (a closing door finishes closing first, then opens: never a jump). Never a sealed door.
+func reopen_door(src: String, at: float) -> void:
+	if world == null:
+		return
+	if str(world.source_state(src).get("state", "")) == "sealed":
+		return
+	_holds += 1
+	var o := {"wave": "hold", "deck": int(plan.source(src).get("deck", 0)) if plan != null else 0, "source": src,
+		"open_at": at, "hold": MissionBays.KEEP, "until": at + MissionBays.KEEP, "hold_only": true, "reopen": true,
+		"max_units": 0, "reason": "crew", "n": _holds}
+	if crew:
+		Net.session().mission.host_wave(o)
+	_open(o)
+
+
+# --- The exit and entry road doors (see THE EXIT / THE ENTRY DOOR in the header) -------------------------------------
+
+## Every machine, at rebuild once the world is set up: the exit bay for the rules (marker, walk_out), and (crew) the entry
+## door shut for the load barrier.
+func _setup_doors() -> void:
+	if world == null or rules == null:
+		return
+	var ex := world.exit_door()
+	if bool(ex.get("ok", false)):
+		rules.set_exit(int(ex.get("deck", 0)), float(ex.get("x", 0.0)), float(ex.get("s", 0.0)))
+	else:
+		rules.options["walk_out"] = false
+		push_warning("[mission] no exit door on this section: the hold's completion wins the mission")
+		print("[mission] exit: no exit door (seed %d): the hold wins" % (drive.seed_value if drive != null else 0))
+	if crew and not released and bool(world.entry_door().get("ok", false)):
+		world.shut_source(MissionWorld.ENTRY_ID, ENTRY_SHUT_AT)
+
+
+## Every machine of a crew, at the release: the entry door opens at the barrier's shared start_at (siren and leaves on
+## every machine together; moving leaves are never solid, so nobody is held; no message: every machine has start_at). Once.
+func _entry_release() -> void:
+	if _entry_opened or not crew or world == null or not is_instance_valid(world):
+		return
+	if not bool(world.entry_door().get("ok", false)):
+		return
+	_entry_opened = true
+	var sess := Net.session()
+	var at := float(sess.mission.start_at) if sess != null and sess.mission.start_at > 0.0 else now()
+	_door_order({"wave": "door", "source": MissionWorld.ENTRY_ID, "door": "open", "open_at": at, "hold": DOOR_HOLD})
+
+
+## Host, every evaluation (crew): once the crew has left the entry bay (no crew mech, standing or downed, inside it or in
+## its doorway for ENTRY_CLEAR s, the door fully open), order it shut; when a crew mech is found there after that (a
+## respawn, a pilot walking back to it), order it open again. Never shut on a mech: the doorway counts.
+func _tick_entry(t: float, _crew_f: Array) -> void:
+	if not crew or world == null or not _entry_opened or not bool(world.entry_door().get("ok", false)):
+		return
+	var someone := false
+	for c: Dictionary in drive.crew_members():
+		var m: Variant = c.get("mech")
+		if not is_instance_valid(m):
+			continue
+		var bc := world.bay_contains(MissionWorld.ENTRY_ID, (m as Node3D).global_position)
+		if bool(bc.get("inside", false)) or bool(bc.get("doorway", false)):
+			someone = true
+			break
+	if someone:
+		_entry_clear_t = 0.0
+		if _entry_shut:
+			_entry_shut = false
+			_send_door(MissionWorld.ENTRY_ID, "open", t + DOOR_LEAD)
+		return
+	if _entry_shut or not bool(world.source_state(MissionWorld.ENTRY_ID).get("passable", false)):
+		return
+	_entry_clear_t += EVAL_INTERVAL
+	if _entry_clear_t >= ENTRY_CLEAR:
+		_entry_shut = true
+		_send_door(MissionWorld.ENTRY_ID, "shut", t + DOOR_LEAD)
+
+
+## Host: a road door order for every machine: the wave path (mission.wave {wave: "door", source, door: open | shut,
+## open_at: the moment, hold}), applied here too. An "open" holds DOOR_HOLD s; a "shut" carries hold -1 (NetMission
+## dedups on wave + source + open_at + hold: two orders never share a moment).
+func _send_door(id: String, what: String, at: float) -> void:
+	var o := {"wave": "door", "deck": 0, "source": id, "door": what, "open_at": at,
+		"hold": DOOR_HOLD if what == "open" else -1.0, "max_units": 0, "reason": "door"}
+	if crew:
+		Net.session().mission.host_wave(o)
+	_door_order(o)
+
+
+## Every machine: apply a road door order (the host's own, mission.wave, or the state's exit fallback).
+func _door_order(o: Dictionary) -> void:
+	var id := str(o.get("source", ""))
+	var what := str(o.get("door", ""))
+	var at := float(o.get("open_at", 0.0))
+	if id == MissionWorld.EXIT_ID and what == "open" and _exit_applied():
+		return   # the order and the state's fallback: the same open_at, once
+	door_log.append({"id": id, "door": what, "at": at})
+	if world != null and is_instance_valid(world):
+		if what == "open":
+			world.open_source(id, at, float(o.get("hold", DOOR_HOLD)), at)
+		elif what == "shut":
+			world.shut_source(id, at)
+	print("[mission] %s %s at %.2f" % ["exit" if id == MissionWorld.EXIT_ID else "entry", what, at])
+	CombatLog.note_door(what, id, at)
+
+
+## The exit door's open order was applied on this machine.
+func _exit_applied() -> bool:
+	for d: Dictionary in door_log:
+		if str(d["id"]) == MissionWorld.EXIT_ID and str(d["door"]) == "open":
+			return true
+	return false
+
+
 ## Every machine: a wave order from the director (host / solo) or the host (mission.wave): schedule its door. An air door
-## order (o.air, a dropship's) only schedules its door with its hold.
+## order (o.air, a dropship's) only schedules its door with its hold (and, arriving, the crew's alert); a hold order
+## (o.hold_only) only extends a door's hold; a road door order (o.door: the exit / entry door) goes to _door_order.
 func _open(o: Dictionary) -> void:
 	var src := str(o.get("source", ""))
 	var open_at := float(o.get("open_at", 0.0))
+	if o.has("door"):
+		_door_order(o)
+		return
+	if bool(o.get("hold_only", false)):
+		if world != null:
+			if bool(o.get("reopen", false)):
+				world.open_source(src, open_at, float(o.get("hold", MissionBays.KEEP)), open_at)
+			else:
+				world.hold_source(src, float(o.get("until", open_at)))
+		return
 	if bool(o.get("air", false)):
 		opened.append({"wave": "air", "source": src, "open_at": open_at})
 		if world != null:
 			world.open_source(src, open_at, float(o.get("hold", MissionWorld.HOLD)))
+		if bool(o.get("arrive", false)):
+			hud_model.alert(o.duplicate(), "Dropship, " + air_words(int(o.get("deck", 0)), src), int(o.get("deck", 0)))
 		return
 	opened.append({"wave": str(o.get("wave", "")), "source": src, "open_at": open_at})
 	if world != null:
+		_no_snap(src, open_at, float(o.get("order_t", NAN)))
 		world.open_source(src, open_at)
 	hud_model.alert(o.duplicate(), "Reinforcements, " + source_words(src), int(o.get("deck", 0)))
 	var wid := str(o.get("wave", ""))
@@ -696,6 +954,71 @@ func _open(o: Dictionary) -> void:
 	print("[mission] wave %s: %s opens at %.2f (%s units, cap room %d, %s)" % [wid, src, open_at, size,
 		int(o.get("max_units", 0)), str(o.get("reason", ""))])
 	wave_ordered.emit(o)
+
+
+## Every machine, before scheduling a wave door: when the door is still due open (or closing) less than WARN + CLOSE
+## before the new open_at, MissionWorld would re-schedule it and its leaves would snap shut into the "warn" state (and
+## slam on anyone in the doorway: playtest R2.4). Extend the current schedule up to the new open_at instead, so
+## open_source only extends the hold. A pure function of the schedule and the order (no clock): every machine does the
+## same. Not when the host ordered it at or after the door's close (`order_t`, the order's own time): extending a door
+## that is already closing or shut would pop its leaves back open; open_source's own cycle waits for the closing then.
+func _no_snap(src: String, open_at: float, order_t: float = NAN) -> void:
+	var st := world.source_state(src)
+	if str(st.get("state", "")) == "sealed":
+		return
+	var ca := float(st.get("close_at", INF))
+	if ca == INF or open_at <= ca:
+		return
+	if not is_nan(order_t) and order_t >= ca:
+		return
+	if open_at - MissionWorld.WARN < ca + MissionWorld.CLOSE:
+		world.hold_source(src, open_at)
+
+
+## "north air door" (playtest R2.24's alert wording, as source_words): the side of deck `deck` air door `id` is on.
+func air_words(deck: int, id: String) -> String:
+	if world == null:
+		return "air door"
+	for i in world.air_door_count(deck):
+		var d := world.air_door(deck, i)
+		if str(d.get("id", "")) != id:
+			continue
+		var x := float(d.get("x", 0.0))
+		var s := float(d.get("s", 0.0))
+		var dir := ""
+		if drive != null and drive.stack != null and drive.stack.section != null:
+			var sec := drive.stack.section
+			var fx := x / maxf(sec.p("width") * 0.5, 1.0)
+			var fs := s / maxf(sec.arc_of(deck) * 0.5, 1.0)
+			if absf(fx) > absf(fs):
+				dir = "east" if fx > 0.0 else "west"
+			else:
+				dir = "north" if fs > 0.0 else "south"
+		return ("%s air door" % dir) if dir != "" else "air door"
+	return "air door"
+
+
+## The world point a wave / air order's INBOUND marker sits on (playtest R2.24: always the real opening): an air door's
+## `out` point; a gate's or lift's door opening (its door node's world_point); else (ramp, shaft) the plan's mouth point at
+## MissionHudModel.SOURCE_H. null when unknown.
+func alert_point(o: Dictionary) -> Variant:
+	if world == null or drive == null or drive.stack == null:
+		return null
+	var src := str(o.get("source", ""))
+	if bool(o.get("air", false)):
+		var k := int(o.get("deck", 0))
+		for i in world.air_door_count(k):
+			var d := world.air_door(k, i)
+			if str(d.get("id", "")) == src and d.get("out") is Vector3:
+				return d["out"]
+		return null
+	var door: Variant = world.door_nodes().get(src)
+	if door != null and is_instance_valid(door) and (door as Object).has_method("world_point"):
+		return (door as Object).call("world_point")
+	var sp := world.source_point(src)
+	if sp.is_empty():
+		return null
+	return drive.stack.from_deck_arc(int(sp["deck"]), float(sp["x"]), float(sp["s"]), MissionHudModel.SOURCE_H)
 
 
 ## Client: the host's wave order.
@@ -708,6 +1031,7 @@ func _on_wave(o: Dictionary) -> void:
 ## Host: spawn the waves whose door has opened; roll out staged gate groups whose door is passable.
 func _spawn_due() -> void:
 	_roll_due()
+	bays.tick(get_physics_process_delta_time())
 	if _spawns.is_empty():
 		return
 	var t := now()
@@ -750,40 +1074,79 @@ func _roll_due() -> void:
 		return
 	var t := now()
 	var rest: Array = []
+	var squad: Variant = drive.combat.squad if drive.combat != null else null
 	for r: Dictionary in _rollouts:
-		if t >= float(r["open_at"]) and _passable(str(r["source"]), float(r["open_at"]), t):
-			var squad: Variant = drive.combat.squad if drive.combat != null else null
+		var src := str(r["source"])
+		var wid := str(r["wave"])
+		var gone := _door_gone(src, float(r["open_at"]), t)
+		if gone != "":
+			# Rule 5: a staged group whose door got sealed / never opens is not left dormant behind it: withdrawn.
+			var n := (squad as EnemySquad).unstage_wave(wid, "bay:" + gone) if is_instance_valid(squad) else 0
+			print("[mission] bay %s: wave %s never got its door (%s): %d staged units withdrawn" % [src, wid, gone, n])
+			CombatLog.note_source("removed", src, wid, "staged", "%s:%d" % [gone, n])
+		elif t >= float(r["open_at"]) and _passable(src, float(r["open_at"]), t):
 			if is_instance_valid(squad):
-				(squad as EnemySquad).roll_out_wave(str(r["wave"]))
+				(squad as EnemySquad).roll_out_wave(wid)
+			hold_door(src, t + ROLL_OUT_HOLD)
 			if world != null:
-				world.hold_source(str(r["source"]), t + ROLL_OUT_HOLD)
+				bays.track(src, t + ROLL_OUT_HOLD, world.source_bay(src), source_bay(src))
 		else:
 			rest.append(r)
 	_rollouts = rest
 
 
-## A gate's door is passable now: MissionWorld's source_state passable / passable_at, else open_at + OPENING.
+## A staged group's door will not let it out: "sealed", or "stuck" (still not passable STAGE_TIMEOUT s after its open_at);
+## "" while it may still open.
+func _door_gone(src: String, open_at: float, t: float) -> String:
+	if world == null:
+		return ""
+	var st: Dictionary = world.source_state(src)
+	if str(st.get("state", "")) == "sealed":
+		return "sealed"
+	if t >= open_at + STAGE_TIMEOUT and not bool(st.get("passable", false)):
+		return "stuck"
+	return ""
+
+
+## A bay's door is passable now: MissionWorld's source_state passable (fully open); a world without a schedule
+## (passable_at but no state) at open_at + OPENING. Never through a sealed door.
 func _passable(src: String, open_at: float, t: float) -> bool:
 	if world == null:
 		return true
 	var st: Dictionary = world.source_state(src)
+	if str(st.get("state", "")) == "sealed":
+		return false
+	if st.has("passable"):
+		return bool(st["passable"])
 	if st.has("passable_at"):
-		return bool(st.get("passable", false)) or t >= float(st["passable_at"])
+		return t >= float(st["passable_at"])
 	return t >= open_at + MissionWorld.passable_after(str(plan.source(src).get("kind", "gate")))
 
 
-## The staging bay of a gate source in arc coordinates (BayFormation.from_world_bay of MissionWorld.source_bay), {} when
-## the source has none (lift, ramp, shaft, a gate without a door).
+## The staging bay of a gate or lift source in arc coordinates (BayFormation.from_world_bay of MissionWorld.source_bay), {}
+## when the source has none (ramp, shaft, a gate without a door, a lift until Environment builds its car: R2.22 switches on
+## by itself when source_bay(id) answers `ok` for a lift). A lift car's door has no leaves to clear inside, so its
+## formation starts LIFT_DOOR_MARGIN m behind the door plane (a gate bay's, BayFormation.DOOR_MARGIN).
 func source_bay(src: String) -> Dictionary:
-	if world == null or plan == null or str(plan.source(src).get("kind", "")) != "gate":
+	if world == null or plan == null:
+		return {}
+	var kind := str(plan.source(src).get("kind", ""))
+	if kind != "gate" and kind != "lift":
 		return {}
 	var b := world.source_bay(src)
 	if not bool(b.get("ok", false)):
 		return {}
+	return arc_bay(b, drive.stack if drive != null else null, kind)
+
+
+## BayFormation's arc bay from a source_bay dictionary `b` (`kind`: gate | lift), `exit_arc` from its world `exit`.
+static func arc_bay(b: Dictionary, stack: CityStack, kind: String = "gate") -> Dictionary:
 	var d := b.duplicate()
-	if d.get("exit") is Vector3 and drive != null and drive.stack != null:
-		var a := drive.stack.to_deck_arc(d["exit"] as Vector3)
+	if d.get("exit") is Vector3 and stack != null:
+		var a := stack.to_deck_arc(d["exit"] as Vector3)
 		d["exit_arc"] = Vector2(float(a["x"]), float(a["s"]))
+	if kind == "lift" and not d.has("door_margin"):
+		d["door_margin"] = LIFT_DOOR_MARGIN
 	return BayFormation.from_world_bay(d)
 
 
@@ -996,7 +1359,8 @@ func _tick_world(dt: float) -> void:
 		_present()
 
 
-## Push the replicated state to the world (flags, zones, relays, portal) and refresh this machine's zone view.
+## Push the replicated state to the world (flags, zones, relays, the hold zone) and refresh this machine's zone view and
+## the ally's lines.
 func _present() -> void:
 	_sync_asset_targets()
 	if plan == null or world == null or not is_instance_valid(world) or drive == null or drive.stack == null:
@@ -1025,15 +1389,13 @@ func _present() -> void:
 				var hp := float(asset_hp.get(id, 1.0))
 				_push("asset:" + id, hp, func() -> void: world.set_asset(id, hp))
 			"hold":
-				var tot := maxf(float(rules.state().get("objs", {}).get(id, [0, 0, 0])[2]), 0.001)
-				var p := clampf(rules.obj_progress(id) / tot, 0.0, 1.0)
-				if st == "done":
-					p = 1.0
 				var inside := _crew_in_zone(o, crew_f)
 				hud_model.zones[id] = {"crew": inside, "enemies": 0}
-				_push("portal:" + id, snappedf(p, 0.005), func() -> void: world.set_portal(p))
 				var hz := "done" if st == "done" else ("holding" if inside and st == "active" else "idle")
 				_push("hold:" + id, hz, func() -> void: world.set_hold_zone(hz))
+	for line in rules.ally_due(_ally_said):
+		hud_model.ally(line, now())
+		print("[mission] ally: %s" % line)
 
 
 func _push(key: String, v: Variant, f: Callable) -> void:

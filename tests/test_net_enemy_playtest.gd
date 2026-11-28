@@ -5,6 +5,9 @@ const QUIET_SECTION := true   # TEST-ONLY QuietSectionFixture (docs/testing.md "
 ##       `revealed == true` and emits `stragglers_revealed` on the client puppet with ZERO wire-format changes.
 ##   (b) When host kills an airborne EnemyDrone (~15 m altitude), the client puppet's charred wreck runs the same
 ##       deterministic falling-wreck physics and settles flush on the floor (< 2.5 m) instead of floating mid-air!
+##   (c) Overheat look (R2.27): a host unit overheats and reboots; the client's puppet shows the shutdown look (optics
+##       dark, slumped, fins hot within 0.1 of the host's heat) and the reboot (lights back, upright), and its squad
+##       emits "overheated" / "rebooted" exactly once each (CombatAudio's cues), on both machines.
 
 const PEERS := 2
 const LINKS := ["off"]
@@ -14,6 +17,7 @@ var td: MissionScene
 var world: CombatWorld
 var sync: EnemySync
 var revealed_events: Array[String] = []
+var heat_events: Dictionary = {}   ## "overheated|<id>" / "rebooted|<id>" -> count (squad events on this machine)
 
 
 func run_host() -> void:
@@ -70,8 +74,54 @@ func run_host() -> void:
 			check(not d_falling, "peer %d drone wreck finished falling" % p)
 			check(d_h < 2.5, "peer %d drone puppet wreck landed on floor/roof instead of floating (h=%.2f m)" % [p, d_h])
 
+	await _overheat_cycle()
 	_command_all("finish", {})
 	check(await wait_done(peers - 1, 20.0), "client finished cleanly")
+
+
+## (c) An awake finned unit on the host overheats, then reboots; every client's puppet shows the look and hears it once.
+func _overheat_cycle() -> void:
+	var u: EnemyBase = null
+	for e in td.combat.squad.enemies:
+		if is_instance_valid(e) and not e.destroyed() and td.combat.squad.deck_awake(e.spawn_deck) 				and (e is EnemyTurret or e is EnemyStrider or e is EnemyTank):
+			u = e
+			break
+	if not check(u != null, "an awake turret / strider / tank to overheat"):
+		return
+	var id := u.target_id
+	u.heat.add(u.heat.cap)
+	await sleep(1.2)
+	check(u.heat_look.shut and u.heat_look.slump > 0.85, "host %s shows the shutdown look" % id)
+	eq(int(heat_events.get("overheated|" + id, 0)), 1, "host squad emitted 'overheated' once for %s" % id)
+	var host_heat := u.heat.fraction()
+	var st := await _collect("ov_on")
+	for p: int in st:
+		var lk: Dictionary = (st[p]["looks"] as Dictionary).get(id, {})
+		print("  overheat %s: host heat %.2f, peer %d look %s" % [id, host_heat, p, lk])
+		check(bool(lk.get("shut", false)), "peer %d puppet %s is shut down" % [p, id])
+		check(float(lk.get("lights", 1.0)) <= 0.01, "peer %d puppet %s optics dark (%.2f)" % [p, id, float(lk.get("lights", 1.0))])
+		check(float(lk.get("slump", 0.0)) > 0.85, "peer %d puppet %s slumped (%.2f)" % [p, id, float(lk.get("slump", 0.0))])
+		check(absf(float(lk.get("glow", -1.0)) - host_heat) < 0.1,
+			"peer %d puppet %s fins in the host's band (%.2f vs host %.2f)" % [p, id, float(lk.get("glow", -1.0)), host_heat])
+		eq(int((st[p]["heat_events"] as Dictionary).get("overheated|" + id, 0)), 1,
+			"peer %d squad emitted 'overheated' once for %s" % [p, id])
+	u.heat.value = u.heat.cap * (Heat.REBOOT_AT - 0.05)
+	await sleep(1.6)
+	check(not u.heat_look.shut and absf(u.heat_look.slump) < 0.05, "host %s rebooted and upright" % id)
+	eq(int(heat_events.get("rebooted|" + id, 0)), 1, "host squad emitted 'rebooted' once for %s" % id)
+	host_heat = u.heat.fraction()
+	var st2 := await _collect("ov_off")
+	for p: int in st2:
+		var lk: Dictionary = (st2[p]["looks"] as Dictionary).get(id, {})
+		print("  reboot %s: host heat %.2f, peer %d look %s" % [id, host_heat, p, lk])
+		check(not bool(lk.get("shut", true)), "peer %d puppet %s rebooted" % [p, id])
+		check(float(lk.get("lights", 0.0)) >= 0.99, "peer %d puppet %s lights back on" % [p, id])
+		check(absf(float(lk.get("slump", 1.0))) < 0.05, "peer %d puppet %s upright again" % [p, id])
+		check(absf(float(lk.get("glow", -1.0)) - host_heat) < 0.1,
+			"peer %d puppet %s fins in the host's band after the reboot (%.2f vs %.2f)" % [p, id, float(lk.get("glow", -1.0)), host_heat])
+		var evs: Dictionary = st2[p]["heat_events"]
+		eq(int(evs.get("rebooted|" + id, 0)), 1, "peer %d squad emitted 'rebooted' once for %s" % [p, id])
+		eq(int(evs.get("overheated|" + id, 0)), 1, "peer %d still one 'overheated' for %s" % [p, id])
 
 
 func run_client() -> void:
@@ -109,6 +159,11 @@ func _load_and_go() -> bool:
 	td.drive_override = true
 	world = td.combat.world
 	sync = td.enemy_sync
+	td.combat.squad.enemy_event.connect(func(kind: String, enemy: Node, _payload: Dictionary) -> void:
+		if (kind == "overheated" or kind == "rebooted") and enemy is EnemyBase:
+			var k := kind + "|" + (enemy as EnemyBase).target_id
+			heat_events[k] = int(heat_events.get(k, 0)) + 1
+	)
 	td.combat.squad.stragglers_revealed.connect(func(_deck: int, units: Array) -> void:
 		for u in units:
 			if u is EnemyBase:
@@ -123,6 +178,7 @@ func _state() -> Dictionary:
 	var dead := {}
 	var heights := {}
 	var falling := {}
+	var looks := {}
 	for e in td.combat.squad.enemies:
 		if not is_instance_valid(e):
 			continue
@@ -131,7 +187,10 @@ func _state() -> Dictionary:
 		dead[e.target_id] = e.destroyed()
 		heights[e.target_id] = r.height(e.global_position)
 		falling[e.target_id] = e is EnemyFlier and (e as EnemyFlier)._wreck_falling
-	return {"revealed": rev, "rev_events": revealed_events.duplicate(), "dead": dead, "heights": heights, "falling": falling}
+		looks[e.target_id] = {"shut": e.heat_look.shut, "lights": e.heat_look.shown_lights(), "slump": e.heat_look.slump,
+			"glow": e.heat_look.shown_heat()}
+	return {"revealed": rev, "rev_events": revealed_events.duplicate(), "dead": dead, "heights": heights, "falling": falling,
+		"looks": looks, "heat_events": heat_events.duplicate()}
 
 
 func _command_all(cmd: String, data: Dictionary) -> void:

@@ -27,9 +27,17 @@ extends TestCase
 ## end blocks CityDistrict.END_GUARD tall; same shape counts). Was GOLDEN_COLLISION {"1/0": [1367, 4047391608], "4/1":
 ## [2030, 4209122442]}, GOLDEN_LIVE {"1/0": [1367, 4047391608], "4/1": [2075, 2245239995]}, PRE_PLATE {"1/0": [1366,
 ## 1996002468], "4/1": [2030, 4209122442]}.
-const GOLDEN_COLLISION := {"1/0": [1367, 1339546450], "4/1": [2030, 1937480447]}
-const GOLDEN_LIVE := {"1/0": [1367, 1339546450], "4/1": [2075, 2085075242]}
-const PRE_PLATE := {"1/0": [1366, 3206981072], "4/1": [2030, 1937480447]}      ## forms off, portal plates left out
+## Re-pinned 2026-11-27 (collision survey R2.25a): rounded pin-band tiers and columns (CityGeo.rounded_box, 6 shapes for 1) and the
+## sinking ramps' mouth guards (CityDistrict.SUNK_DROP) changed the collision only; plan checksums and meshes are unchanged.
+## Re-pinned 2026-11-27 (bulkhead doors R2.11a): 1/0 lost the entry portal's back plate (the entry is a solid road door
+## without a mission) and gained two tram doors with their tunnels (plates in 10 m pieces, a back plate each: asserted per
+## tram door in _deck); 4/1 is unchanged. Was 1/0 [1454, 1343207875] (forms off and live), PRE_PLATE {"1/0": [1453,
+## 1497064033], "4/1": [2242, 1356518764]} (gone with the portal).
+## Re-pinned 2026-11-27 (40 m spine plan, Missions' SectionPlan: every block beside the spine moves, road / tram door
+## gates, ramp slope runs; CityPlan ramps on the run): the default forms fall differently on the moved plan (1/0 now has
+## 4 form shapes, 4/1 none). Was 1/0 [1491, 4017364927] (off and live), 4/1 [2242, 1356518764] / live [2287, 2000460101].
+const GOLDEN_COLLISION := {"1/0": [1505, 1333652606], "4/1": [2198, 985987444]}
+const GOLDEN_LIVE := {"1/0": [1509, 4117062219], "4/1": [2198, 985987444]}
 const FORMS_OFF := {"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0}
 const FARM_TRIS_PER_M := 32.0      ## budget: lit + light-bar triangles per metre of farm wall (target ~30)
 
@@ -67,9 +75,9 @@ func _kinds() -> void:
 	check(farms > 10, "the sections have farm walls (%d)" % farms)
 
 
-## [shape count, hash]; with `skip_plates`, [count, hash, plates] leaving out the portal back plates (a box
-## PORTAL_PLATE + 0.1 thick across the arc, more than GATE_RECESS - 0.5 m past an end of the extent).
-func _collision_hash(d: CityDistrict, skip_plates: bool = false) -> Array:
+## [shape count, hash]; with `plates_too`, [count, hash, plates]: the tram tunnels' back plates counted (a box
+## CityWalls.TUNNEL_PLATE thick across the arc, more than TUNNEL_DEPTH - 1 m past an end of the extent).
+func _collision_hash(d: CityDistrict, plates_too: bool = false) -> Array:
 	var h := 0
 	var n := 0
 	var plates := 0
@@ -77,22 +85,21 @@ func _collision_hash(d: CityDistrict, skip_plates: bool = false) -> Array:
 	var col := d.get_node("Collision")
 	for c in col.get_children():
 		var cs := c as CollisionShape3D
-		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else (cs.shape as ConvexPolygonShape3D).points
-		if skip_plates and sz is Vector3 and absf((sz as Vector3).z - (CityDistrict.PORTAL_PLATE + 0.1)) < 0.001:
+		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else ((cs.shape as ConvexPolygonShape3D).points if cs.shape is ConvexPolygonShape3D else Vector2((cs.shape as CylinderShape3D).radius, (cs.shape as CylinderShape3D).height))
+		if plates_too and sz is Vector3 and absf((sz as Vector3).z - CityWalls.TUNNEL_PLATE) < 0.001:
 			var s := d.ring.world_to_arc(cs.transform.origin).y
-			if s > e.end.y + CityWalls.GATE_RECESS - 0.5 or s < e.position.y - CityWalls.GATE_RECESS + 0.5:
+			if s > e.end.y + CityWalls.TUNNEL_DEPTH - 1.0 or s < e.position.y - CityWalls.TUNNEL_DEPTH + 1.0:
 				plates += 1
-				continue
 		h = hash([h, cs.transform, sz])
 		n += 1
-	return [n, h, plates] if skip_plates else [n, h]
+	return [n, h, plates] if plates_too else [n, h]
 
 
 func _shape_list(d: CityDistrict) -> Array:
 	var out := []
 	for c in d.get_node("Collision").get_children():
 		var cs := c as CollisionShape3D
-		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else (cs.shape as ConvexPolygonShape3D).points
+		var sz: Variant = (cs.shape as BoxShape3D).size if cs.shape is BoxShape3D else ((cs.shape as ConvexPolygonShape3D).points if cs.shape is ConvexPolygonShape3D else Vector2((cs.shape as CylinderShape3D).radius, (cs.shape as CylinderShape3D).height))
 		out.append(hash([cs.transform, sz]))
 	return out
 
@@ -113,13 +120,11 @@ func _deck(seed_: int, k: int) -> void:
 	add_child(o)
 	o.build_deck(SectionPlan.make(off_sp), k)
 	eq(_collision_hash(o), GOLDEN_COLLISION[key], tag + " (forms off): collision identical to the window walls' (count, hash)")
-	var portals := 0
+	var trams := 0
 	for w: Dictionary in o.plan.boundary():
 		for g: Dictionary in w["gates"]:
-			portals += 1 if str(g["kind"]) == "portal" else 0
-	var pre := _collision_hash(o, true)
-	eq([pre[0], pre[1]], PRE_PLATE[key], tag + " (forms off): without the portal back plates, the collision before the map was sealed")
-	eq(pre[2], portals, tag + ": one back plate per portal (%d)" % portals)
+			trams += 1 if str(g["kind"]) == "tram_door" else 0
+	eq(_collision_hash(o, true)[2], trams, tag + ": one tunnel back plate per tram door (%d)" % trams)
 	eq(_collision_hash(d), GOLDEN_LIVE[key], tag + " (forms live): collision as captured (count, hash)")
 	# The road forms only add the ground they raise (CityPlan.raised: courts, planting bands), as one run of boxes after
 	# the sidewalks; every other shape (walls, gates, buildings, ramps) is the forms-off deck's, in the same order.

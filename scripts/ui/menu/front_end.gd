@@ -3,15 +3,27 @@ extends Control
 ## The menus (scenes/menu.tscn): a panel of screens on the left, the 3D mech preview (MechStage) on the right. Built in
 ## code, like Bridge to Friendship's screens. Screens:
 ##   main      Play / Host, Join, Settings, Lab, Quit; the pilot's name and head.
-##   settings  name, head (live in the preview), video, audio, the simulated link. Every change is saved at once.
+##   settings  name, head (live in the preview), video (display mode, window resolution, ...), audio, the simulated
+##             link. Every change is saved at once and applied live.
 ##   hangar    the pre-mission placeholder: the crew (name, head, chassis of every player, from the roster), chassis and
 ##             loadout (hardpoints, weapons with weight / passive heat / active heat), Invite, Launch (stub), Leave.
+##   debrief   (playtest R2.15a) back from a mission with a debrief (NetMission.last_debrief, the host's numbers): the
+##             hangar with the debrief board over the bay (DebriefBoard: pilots across the top, a stat per row); Next goes
+##             to the loadout (the hangar screen) for the next mission. `--menu-screen debrief` shows a stub board.
 ##   busy      opening / joining a crew, with Cancel.
 ## Play / Host: a Steam lobby (alone it is solo); without Steam an ENet crew on DEFAULT_PORT (dev: a second window's Join
 ## finds it). Join: the first open Steam lobby for this game and build; without Steam, ENet on 127.0.0.1.
+## Type (playtest R2.16): the panel's base text is FONT (18 px on the 1600x900 canvas, so about 22 px at 1080p and 29 at
+## 1440p under canvas_items stretch), notes NOTE_FONT, section heads SECTION_FONT; nothing smaller than NOTE_FONT.
 
 const LAB_SCENE := "res://scenes/lab.tscn"
 const LAUNCH_ALERT_TIME := 2.5   ## seconds of bay alert between Launch and the mission loading
+const PANEL_W := 560.0           ## the menu panel's width (the bay preview takes the rest)
+const FONT := 18                 ## the panel's base text: rows, pickers, crew lines
+const NOTE_FONT := 15            ## notes and hints (the smallest text in the menu)
+const SECTION_FONT := 16         ## section heads (CREW, MECH, LOADOUT, ...)
+const ROW_LABEL_W := 190.0       ## the label column of a settings / loadout row
+const ROW_H := 40.0              ## the height of a picker row
 
 var screen := ""
 var settings: Dictionary = {}
@@ -47,6 +59,13 @@ var bot_skill_pick: OptionButton
 var bot_remove: Dictionary = {}
 var ff_check: CheckBox               ## Hangar: the crew's friendly fire (host / solo edit it; a client sees the host's)
 var stats_label: Label
+var display_pick: OptionButton       ## Settings: Windowed / Fullscreen (GameSettings "fullscreen")
+var resolution_pick: OptionButton    ## Settings: the window size (GameSettings "resolution"; item 0 = the default window)
+var resolution_ids: Array = []       ## per resolution_pick item: the saved "WxH" string ("" = default)
+## Debrief (R2.15a): the board over the bay, its layer, and Next (to the loadout). Null on other screens.
+var debrief_layer: Control
+var debrief_board: DebriefBoard
+var btn_next: Button
 ## A Steam invite waiting for an answer (Session.pending_invite): a modal over the whole menu naming the inviter, with
 ## Accept (leave whatever this is and join) and Decline. Null when none is shown.
 var invite_prompt: Control
@@ -73,7 +92,10 @@ func _ready() -> void:
 	row.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(row)
 	var left := PanelContainer.new()
-	left.custom_minimum_size = Vector2(520, 0)
+	left.custom_minimum_size = Vector2(PANEL_W, 0)
+	var type := Theme.new()   # the panel's base text size (R2.16): every row, picker and checkbox without its own
+	type.default_font_size = FONT
+	left.theme = type
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.1, 0.11, 0.14, 0.97)
 	sb.border_color = Color(0.9, 0.48, 0.12)
@@ -85,7 +107,7 @@ func _ready() -> void:
 		margin.add_theme_constant_override("margin_" + side, 28)
 	left.add_child(margin)
 	var col := VBoxContainer.new()
-	col.add_theme_constant_override("separation", 10)
+	col.add_theme_constant_override("separation", 12)
 	margin.add_child(col)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -93,7 +115,7 @@ func _ready() -> void:
 	col.add_child(scroll)
 	panel_box = VBoxContainer.new()
 	panel_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	panel_box.add_theme_constant_override("separation", 10)
+	panel_box.add_theme_constant_override("separation", 12)
 	scroll.add_child(panel_box)
 	# The screen's main actions, pinned under the scrolling part so they are always on screen (the hangar's Launch /
 	# Settings / Leave crew when the crew list and notes make the panel taller than the window).
@@ -137,7 +159,12 @@ func _ready() -> void:
 		first = "hangar"
 	elif Session.busy():
 		first = "busy"
-	show_screen(first if first in ["main", "settings", "hangar", "busy"] else "main")
+	# Back from a mission with a debrief (the host's, or solo's): the hangar opens on the board.
+	if first == "hangar" and not NetMission.last_debrief.is_empty():
+		first = "debrief"
+	if first == "debrief" and NetMission.last_debrief.is_empty():
+		NetMission.last_debrief = NetMission.clean_debrief(DebriefStats.stub(_crew_entries_for_stub()))   # --menu-screen debrief
+	show_screen(first if first in ["main", "settings", "hangar", "debrief", "busy"] else "main")
 	if LoadingScreen.handoff:   # back from a mission: its loading screen hands over to this one, which fades out
 		LoadingScreen.handoff = false
 		var cover := LoadingScreen.cover(self)
@@ -189,9 +216,16 @@ func show_screen(s: String) -> void:
 	bot_remove.clear()
 	ff_check = null
 	stats_label = null
+	display_pick = null
+	resolution_pick = null
+	resolution_ids = []
+	btn_next = null
+	if s != "debrief":
+		_close_debrief()
 	match s:
 		"settings": _build_settings()
 		"hangar": _build_hangar()
+		"debrief": _build_debrief()
 		"busy": _build_busy()
 		_: _build_main()
 	_refresh_stage()
@@ -212,7 +246,7 @@ func _build_main() -> void:
 	_gap(18)
 	_text("Pilot: %s   Head: %s" % [Session.display_name("Pilot"), MechCatalog.head_name(Session.local_head())], 16)
 	_text("Steam: %s" % ("online" if Session.steam_available() else "not running (Play hosts over LAN, Join looks on this PC)"),
-		13, Color(0.6, 0.62, 0.65))
+		NOTE_FONT, Color(0.6, 0.62, 0.65))
 	if Session.last_reason != "":
 		_text(Session.last_reason, 15, Color(1.0, 0.6, 0.4))
 
@@ -233,7 +267,19 @@ func _build_settings() -> void:
 	_row("Head", head_pick)
 	_row("Accent", _accent_swatches())
 	_section("Video")
-	_row("Fullscreen", _check(bool(settings["fullscreen"]), func(on: bool) -> void: _set_setting("fullscreen", on)))
+	display_pick = _option(["Windowed", "Fullscreen"], 1 if bool(settings["fullscreen"]) else 0, func(i: int) -> void:
+		_set_setting("fullscreen", i == 1)
+		_mark_resolution())
+	_row("Display", display_pick)
+	resolution_ids = [""]
+	var res_labels: Array = ["Default window (%s)" % GameSettings.resolution_label(GameSettings.DEFAULT_WINDOW)]
+	for r: Vector2i in GameSettings.resolution_list(GameSettings.screen_size()):
+		resolution_ids.append(GameSettings.resolution_id(r))
+		res_labels.append(GameSettings.resolution_label(r))
+	resolution_pick = _option(res_labels, maxi(resolution_ids.find(str(settings["resolution"])), 0), func(i: int) -> void:
+		_set_setting("resolution", str(resolution_ids[i])))
+	_row("Resolution", resolution_pick)
+	_mark_resolution()
 	_row("VSync", _check(bool(settings["vsync"]), func(on: bool) -> void: _set_setting("vsync", on)))
 	_row("Anti-aliasing", _option(["Off", "MSAA 2x", "MSAA 4x"], int(settings["msaa"]), func(i: int) -> void: _set_setting("msaa", i)))
 	quality_pick = _option(["Low", "Medium", "High"], int(settings["quality"]), func(i: int) -> void:
@@ -247,7 +293,7 @@ func _build_settings() -> void:
 			_set_setting("renderer", GraphicsQuality.RENDERERS[i])
 			_update_graphics_note())
 	_row("Renderer", renderer_pick)
-	quality_note = _text("", 13, Color(0.6, 0.62, 0.65))
+	quality_note = _text("", NOTE_FONT, Color(0.6, 0.62, 0.65))
 	quality_note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	btn_restart = _button("Restart now", func() -> void: GraphicsQuality.restart(get_tree()))
 	_update_graphics_note()
@@ -262,7 +308,7 @@ func _build_settings() -> void:
 			_set_setting("link_sim", presets[i])
 			if Session.online() and Session.hosting:
 				Session.set_link(presets[i])))
-	_text("Applies to crews you host.", 13, Color(0.6, 0.62, 0.65))
+	_text("Applies to crews you host.", NOTE_FONT, Color(0.6, 0.62, 0.65))
 	_gap(12)
 	btn_back = _button("Back", func() -> void: show_screen("hangar" if Session.online() else "main"))
 
@@ -286,7 +332,7 @@ func _update_graphics_note() -> void:
 
 func _build_hangar() -> void:
 	_title("Hangar", 40)
-	_text("Pre-mission: pick your mech and loadout.", 15, Color(0.7, 0.72, 0.75))
+	_text("Pre-mission: pick your mech and loadout.", 17, Color(0.7, 0.72, 0.75))
 	_section("Crew")
 	crew_list = VBoxContainer.new()
 	panel_box.add_child(crew_list)
@@ -308,7 +354,7 @@ func _build_hangar() -> void:
 			_set_chassis(str(MechCatalog.CHASSIS_ORDER[i]))
 			show_screen("hangar"))
 	_row("Chassis", chassis_pick)
-	_text(str(MechCatalog.chassis(str(settings["chassis"]))["blurb"]), 13, Color(0.6, 0.62, 0.65))
+	_text(str(MechCatalog.chassis(str(settings["chassis"]))["blurb"]), NOTE_FONT, Color(0.6, 0.62, 0.65))
 	_section("Loadout")
 	var loadout := _loadout()
 	for hp: Dictionary in MechCatalog.chassis(str(settings["chassis"]))["hardpoints"]:
@@ -330,12 +376,15 @@ func _build_hangar() -> void:
 			_play_mount_sfx(chosen))
 		weapon_picks[hp_id] = pick
 		_row(str(hp["label"]), pick)
+	_gap(4)
 	stats_label = Label.new()
-	stats_label.add_theme_font_size_override("font_size", 14)
+	stats_label.add_theme_font_size_override("font_size", 16)
+	stats_label.add_theme_constant_override("line_spacing", 4)
+	stats_label.add_theme_color_override("font_color", Color(0.82, 0.84, 0.86))
 	panel_box.add_child(stats_label)
 	_update_stats()
 	if note != "":
-		_text(note, 13, Color(1.0, 0.75, 0.4))
+		_text(note, NOTE_FONT, Color(1.0, 0.75, 0.4))
 	var client := Session.online() and not Session.hosting
 	btn_launch = _button("Waiting for the host to launch" if client else "Launch mission", _on_launch, footer)
 	btn_launch.disabled = client
@@ -343,6 +392,51 @@ func _build_hangar() -> void:
 		_button("Invite crew (Steam)", func() -> void: Session.invite_crew(), footer)
 	_button("Settings", func() -> void: show_screen("settings"), footer)
 	btn_leave = _button("Leave crew" if Session.online() else "Back", _on_leave, footer)
+
+
+## The debrief (R2.15a): the menu panel names the outcome and holds Next; the board stands over the bay.
+func _build_debrief() -> void:
+	var t := DebriefStats.table(NetMission.last_debrief)
+	_title("Debrief", 40)   # the outcome and time are on the board only
+	_text("Highlighted: the crew's best in that row.", NOTE_FONT, Color(0.6, 0.62, 0.65))
+	_text("Next takes the crew back to the loadout for the next mission.", NOTE_FONT, Color(0.6, 0.62, 0.65))
+	btn_next = _button("Next: loadout", _on_debrief_next, footer)
+	btn_next.name = "Next"
+	if debrief_layer == null or not is_instance_valid(debrief_layer):
+		debrief_layer = MarginContainer.new()
+		debrief_layer.name = "DebriefLayer"
+		debrief_layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		add_child(debrief_layer)
+		debrief_layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		debrief_layer.add_theme_constant_override("margin_left", int(PANEL_W) + 28)
+		for side in ["right", "top", "bottom"]:
+			debrief_layer.add_theme_constant_override("margin_" + side, 28)
+		debrief_board = DebriefBoard.new()
+		debrief_board.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		debrief_board.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+		debrief_layer.add_child(debrief_board)
+		move_child(debrief_layer, status_label.get_index())   # under the status line and the invite prompt
+	debrief_board.show_table(t)
+
+
+func _on_debrief_next() -> void:
+	NetMission.clear_debrief()
+	show_screen("hangar")
+
+
+func _close_debrief() -> void:
+	if debrief_layer != null and is_instance_valid(debrief_layer):
+		debrief_layer.queue_free()
+	debrief_layer = null
+	debrief_board = null
+
+
+## The crew a stub debrief names (--menu-screen debrief): the roster online, else this pilot plus a demo crew with a bot.
+func _crew_entries_for_stub() -> Array:
+	if Session.online():
+		return Session.crew()
+	return [{"peer": 1, "name": Session.display_name("Pilot")}, {"peer": 2, "name": "Ripley"},
+		{"peer": 3, "name": "Vasquez"}, {"peer": -1, "name": "Bishop"}]
 
 
 func _build_busy() -> void:
@@ -422,6 +516,7 @@ func _play_launch(delay: float) -> void:
 	if launching:
 		return
 	launching = true
+	NetMission.clear_debrief()
 	if btn_launch == null or not is_instance_valid(btn_launch):
 		show_screen("hangar")
 	btn_launch.disabled = true
@@ -471,7 +566,7 @@ func _on_session_ended(_reason: String) -> void:
 		stage.set_alert(false)
 		show_screen("main")
 		return
-	if screen == "hangar" or screen == "busy":
+	if screen in ["hangar", "debrief", "busy"]:
 		show_screen("main")
 
 
@@ -644,8 +739,17 @@ func _push_profile() -> void:
 
 func _set_setting(key: String, value: Variant) -> void:
 	settings = GameSettings.set_value(key, value)
-	if key in ["fullscreen", "vsync", "msaa", "master", "music", "sfx"]:
+	if key in ["fullscreen", "resolution", "vsync", "msaa", "master", "music", "sfx"]:
 		GameSettings.apply(settings)
+
+
+## The resolution picker only sizes a window: in fullscreen the display's own resolution is used, so it greys out.
+func _mark_resolution() -> void:
+	if resolution_pick == null or not is_instance_valid(resolution_pick):
+		return
+	var full := bool(settings["fullscreen"])
+	resolution_pick.disabled = full
+	resolution_pick.tooltip_text = "Fullscreen uses the display's resolution." if full else "The window's size."
 
 
 func _loadout() -> Dictionary:
@@ -676,8 +780,8 @@ func _update_stats() -> void:
 	if stats_label == null:
 		return
 	var st := hangar_stats(str(settings["chassis"]), _loadout())
-	stats_label.text = "Weapons %d   Weight %.0f / %.0f t%s\nPassive heat %.1f/s vs cooling %.1f/s (net %+.1f)\nHottest shot %.0f of %.0f heat capacity" % [
-		st["weapons"], st["weight"], st["max_weight"], "  OVERWEIGHT" if st["overweight"] else "",
+	stats_label.text = "Weight %.0f / %.0f t, %d weapons%s\nPassive heat %.1f/s vs cooling %.1f/s (net %+.1f)\nHottest shot %.0f of %.0f heat capacity" % [
+		st["weight"], st["max_weight"], st["weapons"], "   OVERWEIGHT" if st["overweight"] else "",
 		st["passive_heat"], st["cooling"], st["net_cooling"], st["peak_heat"], st["heat_cap"]]
 
 
@@ -699,7 +803,7 @@ func _fill_crew() -> void:
 		else:
 			l.text = "%d  %s   %s head, %s%s" % [int(e["seat"]), str(e["name"]), MechCatalog.head_name(str(e["head"])),
 				str(MechCatalog.chassis(str(e["chassis"]))["name"]), "   (you)" if bool(e.get("you", false)) else ""]
-		l.add_theme_font_size_override("font_size", 16)
+		l.add_theme_font_size_override("font_size", FONT)
 		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		if bot and host_lobby:
 			var row := HBoxContainer.new()
@@ -720,7 +824,7 @@ func _fill_crew() -> void:
 	if Session.online():
 		var free := NetSession.MAX_CREW - entries.size()
 		if free > 0:
-			_text_into(crew_list, "%d seat%s open" % [free, "" if free == 1 else "s"], 13, Color(0.6, 0.62, 0.65))
+			_text_into(crew_list, "%d seat%s open" % [free, "" if free == 1 else "s"], NOTE_FONT, Color(0.6, 0.62, 0.65))
 	if host_lobby:
 		var row2 := HBoxContainer.new()
 		btn_add_bot = Button.new()
@@ -766,12 +870,14 @@ func _crew_entries() -> Array:
 func _refresh_stage() -> void:
 	if stage == null:
 		return
-	if screen == "hangar":
+	if screen == "hangar" or screen == "debrief":
 		var mechs: Array = []
 		for e: Dictionary in _crew_entries():
 			mechs.append({"head": e["head"], "chassis": e["chassis"], "name": e["name"], "accent": e.get("accent", MechAccent.DEFAULT),
 				"loadout": _loadout() if bool(e.get("you", false)) else e.get("loadout", {})})
 		stage.show_mechs(mechs, true)
+		if stage.bay != null:
+			stage.bay.show_tags(screen != "debrief")   # the board names the pilots; the tags would show behind it
 	else:
 		stage.show_mechs([{"head": Session.local_head(), "chassis": Session.local_chassis(), "loadout": _loadout(), "name": "",
 			"accent": Session.local_accent()}])
@@ -814,8 +920,8 @@ func _text_into(box: Container, t: String, size_: int, col: Color) -> Label:
 
 
 func _section(t: String) -> void:
-	_gap(6)
-	_text(t.to_upper(), 14, Color(0.9, 0.48, 0.12))
+	_gap(10)
+	_text(t.to_upper(), SECTION_FONT, Color(0.9, 0.48, 0.12))
 
 
 func _gap(h: int) -> void:
@@ -842,7 +948,10 @@ func _row(label: String, w: Control) -> void:
 	var h := HBoxContainer.new()
 	var l := Label.new()
 	l.text = label
-	l.custom_minimum_size = Vector2(170, 0)
+	l.custom_minimum_size = Vector2(ROW_LABEL_W, ROW_H)
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	l.add_theme_color_override("font_color", Color(0.8, 0.82, 0.85))
+	h.add_theme_constant_override("separation", 10)
 	h.add_child(l)
 	w.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	h.add_child(w)
@@ -854,6 +963,7 @@ func _option(labels: Array, selected: int, cb: Callable) -> OptionButton:
 	# Long item labels (equipment notes) must not widen the menu panel: the button keeps the panel's width and clips its
 	# text (the popup list still shows each item in full). Without this the hangar panel grew to ~910 px and squeezed the bay.
 	o.fit_to_longest_item = false
+	o.custom_minimum_size = Vector2(0, ROW_H)
 	o.clip_text = true
 	o.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	for t: Variant in labels:

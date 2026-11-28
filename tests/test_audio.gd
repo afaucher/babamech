@@ -46,6 +46,7 @@ func setup() -> void:
 	await _test_mech_step_signal(a)
 	await _test_remote_mech_audio(a)
 	await _test_combat_props_and_enemy_contract(a)
+	await _test_enemy_heat_cues(a)
 	await _test_real_end_to_end_firefight(a)
 	await _test_audio_lab(a)
 
@@ -831,6 +832,126 @@ func _test_combat_props_and_enemy_contract(a: AudioDirector) -> void:
 	pt.queue_free()
 	city.queue_free()
 	dummy.queue_free()
+	ca.queue_free()
+	world.queue_free()
+	await frames(2)
+
+
+## Zero-crossing rate (Hz) of the 16-bit PCM in `wav` between fractions u0 and u1 of its length (a dominant-pitch proxy).
+static func _zcr_span(wav: AudioStreamWAV, u0: float, u1: float) -> float:
+	var bytes := wav.data
+	var n := bytes.size() / 2
+	var i0 := int(u0 * n)
+	var i1 := int(u1 * n)
+	var prev := 0.0
+	var crossings := 0
+	for i in range(i0, i1):
+		var u := int(bytes[i * 2]) | (int(bytes[i * 2 + 1]) << 8)
+		if u >= 32768:
+			u -= 65536
+		var f := float(u)
+		if i > i0 and ((prev < 0.0 and f >= 0.0) or (prev >= 0.0 and f < 0.0)):
+			crossings += 1
+		prev = f
+	return float(crossings) * float(wav.mix_rate) / (2.0 * float(maxi(i1 - i0, 1)))
+
+
+## RMS of the PCM in `wav` between fractions u0 and u1 of its length.
+static func _rms_span(wav: AudioStreamWAV, u0: float, u1: float) -> float:
+	var bytes := wav.data
+	var n := bytes.size() / 2
+	var i0 := int(u0 * n)
+	var i1 := int(u1 * n)
+	var sq := 0.0
+	for i in range(i0, i1):
+		var u := int(bytes[i * 2]) | (int(bytes[i * 2 + 1]) << 8)
+		if u >= 32768:
+			u -= 65536
+		var f := float(u) / 32768.0
+		sq += f * f
+	return sqrt(sq / float(maxi(i1 - i0, 1)))
+
+
+## R2.27: an overheated enemy's power-down whine and its reboot spin-up: shape, loudness, and one positional play per
+## transition at the unit (the host hears it through the unit's Heat and its squad event; a client through the squad).
+func _test_enemy_heat_cues(a: AudioDirector) -> void:
+	var oh := SoundBank.synthesize("enemy.overheat")
+	var rb := SoundBank.synthesize("enemy.reboot")
+	var so := AudioSynth.analyze(oh)
+	var sr := AudioSynth.analyze(rb)
+	check(float(so["duration"]) >= 0.8 and float(so["duration"]) <= 1.25, "enemy.overheat lasts 0.8-1.25 s (%.2f)" % float(so["duration"]))
+	check(float(sr["duration"]) >= 0.6 and float(sr["duration"]) <= 1.0, "enemy.reboot lasts 0.6-1.0 s (%.2f)" % float(sr["duration"]))
+	check(float(so["rms"]) > 0.02 and float(sr["rms"]) > 0.02, "both heat cues are non-silent (rms %.3f / %.3f)" % [float(so["rms"]), float(sr["rms"])])
+	var oz0 := _zcr_span(oh, 0.0, 0.33)
+	var oz1 := _zcr_span(oh, 0.67, 1.0)
+	check(oz1 < oz0 * 0.6, "enemy.overheat pitch falls (zcr %.0f -> %.0f Hz)" % [oz0, oz1])
+	check(_rms_span(oh, 0.67, 1.0) < _rms_span(oh, 0.0, 0.33), "enemy.overheat level falls")
+	var rz0 := _zcr_span(rb, 0.0, 0.33)
+	var rz1 := _zcr_span(rb, 0.67, 1.0)
+	check(rz1 > rz0 * 1.6, "enemy.reboot pitch rises (zcr %.0f -> %.0f Hz)" % [rz0, rz1])
+	# Quieter than gunfire (effective level = rms dB + cue dB; all on the world bus when an enemy fires).
+	var eff := func(cid: String, st: Dictionary) -> float: return float(st["rms_db"]) + float(SoundBank.spec(cid).get("db", 0.0))
+	var gun_db: float = eff.call("wpn.autocannon.fire", AudioSynth.analyze(SoundBank.synthesize("wpn.autocannon.fire")))
+	var oh_db: float = eff.call("enemy.overheat", so)
+	var rb_db: float = eff.call("enemy.reboot", sr)
+	check(oh_db < gun_db - 3.0 and rb_db < gun_db - 3.0, "heat cues (%.1f / %.1f dB) clearly under gunfire (%.1f dB)" % [oh_db, rb_db, gun_db])
+	for cid: String in ["enemy.overheat", "enemy.reboot"]:
+		var sp := SoundBank.spec(cid)
+		check(str(sp["bus"]) == AudioDirector.BUS_SFX_WORLD and str(sp["profile"]) == "weapon" and int(sp["priority"]) < 2,
+			"%s: world bus, weapon attenuation (as the enemy fire accent), below weapon priority" % cid)
+		check(SoundBank.PREWARM_PRIORITY.has(cid), "%s is prewarmed" % cid)
+	near(CombatAudio.unit_heat_pitch(null), 1.0, 0.001, "a unit of unknown size plays the heat cues at pitch 1")
+
+	# Routing: a unit whose Heat overheats AND whose squad reports it plays the cue once, 3D at the unit, world bus.
+	a.reset_state()
+	a.record_events = true
+	var world := CombatWorld.new()
+	world.use_physics = false
+	add_child(world)
+	var ca := CombatAudio.new()
+	add_child(ca)
+	ca.bind(world, null, null, "player1")
+	var sq := MockEnemySquad.new()
+	add_child(sq)
+	ca.bind_squad(sq)
+	var unit := TargetDummy.new()
+	unit.target_id = "hot_1"
+	unit.set_max_hp({"torso": 400.0})
+	unit.position = Vector3(6, 0, -30)
+	add_child(unit)
+	world.register(unit)
+	ca.step(0.05)
+	a.clear_events()
+	unit.heat.add(unit.heat.cap + 1.0)
+	sq.enemy_event.emit("overheated", sq, {"id": "hot_1", "pos": unit.global_position})
+	var ev := _events(a, "enemy.overheat")
+	check(ev.size() == 1, "overheat plays once per event across Heat + squad routes (%d)" % ev.size())
+	check(ev.size() == 1 and str(ev[0]["kind"]) == "3d" and str(ev[0]["bus"]) == AudioDirector.BUS_SFX_WORLD
+		and (ev[0]["pos"] as Vector3).distance_to(unit.global_position) < 0.01, "overheat is 3D on the world bus at the unit")
+	check(not _has_prefix(a, "ui.") and _kinds(a, "enemy.overheat").count("2d") == 0, "no UI beep or 2D cue for an enemy overheat")
+	a.advance_clock(0.5)
+	a.clear_events()
+	unit.heat.value = 0.0
+	unit.heat.tick(0.0)
+	sq.enemy_event.emit("rebooted", sq, {"id": "hot_1", "pos": unit.global_position})
+	var rv := _events(a, "enemy.reboot")
+	check(rv.size() == 1 and str(rv[0]["kind"]) == "3d" and (rv[0]["pos"] as Vector3).distance_to(unit.global_position) < 0.01,
+		"reboot plays once, 3D at the unit (%d)" % rv.size())
+	# A client's puppet: only the squad event (EnemySync replays the host's heat event), no Heat signal.
+	a.advance_clock(0.5)
+	a.clear_events()
+	sq.enemy_event.emit("overheated", sq, {"id": "puppet_7", "pos": Vector3(-8, 0, -40)})
+	var pv := _events(a, "enemy.overheat")
+	check(pv.size() == 1 and (pv[0]["pos"] as Vector3).distance_to(Vector3(-8, 0, -40)) < 0.01,
+		"a squad-only (client puppet) overheat plays at the unit")
+	# A second unit shutting down a moment later still sounds; a repeated overheat of the same unit does not.
+	a.advance_clock(0.1)
+	sq.enemy_event.emit("overheated", sq, {"id": "puppet_8", "pos": Vector3(8, 0, -40)})
+	sq.enemy_event.emit("overheated", sq, {"id": "puppet_7", "pos": Vector3(-8, 0, -40)})
+	eq(_events(a, "enemy.overheat").size(), 2, "a second unit's overheat plays, a duplicate of the first does not")
+	world.unregister(unit)
+	unit.queue_free()
+	sq.queue_free()
 	ca.queue_free()
 	world.queue_free()
 	await frames(2)

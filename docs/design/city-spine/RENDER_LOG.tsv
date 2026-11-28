@@ -1,0 +1,19 @@
+﻿time	file	workflow	seed	size	refs	control	seconds	prompt_file
+2026-11-26T22:38:16	tramdoor_square_bunker_s71.png	flux3_klein_t2i	71	1024x576			6.3	tramdoor_square_bunker_prompt.txt
+2026-11-26T22:38:20	tramdoor_square_plain_s71.png	flux3_klein_t2i	71	1024x576			3.3	tramdoor_square_plain_prompt.txt
+2026-11-26T22:38:24	tramdoor_square_civic_s71.png	flux3_klein_t2i	71	1024x576			3.28	tramdoor_square_civic_prompt.txt
+2026-11-26T22:38:27	tramdoor_arch_bunker_s71.png	flux3_klein_t2i	71	1024x576			3.72	tramdoor_arch_bunker_prompt.txt
+2026-11-26T22:38:31	tramdoor_arch_plain_s71.png	flux3_klein_t2i	71	1024x576			3.72	tramdoor_arch_plain_prompt.txt
+2026-11-26T22:38:35	tramdoor_arch_civic_s71.png	flux3_klein_t2i	71	1024x576			3.69	tramdoor_arch_civic_prompt.txt
+2026-11-26T22:38:39	tramdoor_hood_bunker_s71.png	flux3_klein_t2i	71	1024x576			3.68	tramdoor_hood_bunker_prompt.txt
+2026-11-26T22:38:43	tramdoor_hood_plain_s71.png	flux3_klein_t2i	71	1024x576			3.7	tramdoor_hood_plain_prompt.txt
+2026-11-26T22:38:47	tramdoor_hood_civic_s71.png	flux3_klein_t2i	71	1024x576			3.68	tramdoor_hood_civic_prompt.txt
+2026-11-26T22:38:50	station_canopy_kerb_s72.png	flux3_klein_t2i	72	1024x576			3.31	station_canopy_kerb_prompt.txt
+2026-11-26T22:38:54	station_canopy_island_s72.png	flux3_klein_t2i	72	1024x576			3.28	station_canopy_island_prompt.txt
+2026-11-26T22:38:58	station_canopy_plaza_s72.png	flux3_klein_t2i	72	1024x576			3.27	station_canopy_plaza_prompt.txt
+2026-11-26T22:39:01	station_shelters_kerb_s72.png	flux3_klein_t2i	72	1024x576			3.42	station_shelters_kerb_prompt.txt
+2026-11-26T22:39:05	station_shelters_island_s72.png	flux3_klein_t2i	72	1024x576			3.3	station_shelters_island_prompt.txt
+2026-11-26T22:39:08	station_shelters_plaza_s72.png	flux3_klein_t2i	72	1024x576			3.3	station_shelters_plaza_prompt.txt
+2026-11-26T22:39:12	station_open_kerb_s72.png	flux3_klein_t2i	72	1024x576			3.42	station_open_kerb_prompt.txt
+2026-11-26T22:39:16	station_open_island_s72.png	flux3_klein_t2i	72	1024x576			3.31	station_open_island_prompt.txt
+2026-11-26T22:39:19	station_open_plaza_s72.png	flux3_klein_t2i	72	1024x576			3.29	station_open_plaza_prompt.txt

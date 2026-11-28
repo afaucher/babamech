@@ -161,6 +161,10 @@ Threat and pacing records (`docs/design/pacing-director.md` section 3; summaries
   `MissionFlow._apply_scale`), printed on EVERY machine at the host's `at` (shared clock, 3 decimals: compare `at` across
   machines' logs, it is the same); `pilot` = who left (negative for a hangar bot, 0 when learned from mission state). The
   run log also has `[mission] scale a -> b (reason, pilot, at)` and, on the host, `[mission] scale decided ...`.
+- `debrief outcome= time= pilots=<id>,... <id>=<key>:<value>,... ...`: HOST / SOLO only, once at the outcome
+  (`CombatLog.note_debrief`, from `MissionStats.finish`): the debrief's counters exactly as they ride `mission.end` (a
+  leaver's id is marked `<id>L`). Printed through the running log, else as a plain `FlowLog` line (so `--no-combat-log`
+  keeps it). Sources and error bounds: `docs/design/debrief-stats.md`. Clients print none (they compute no stat).
 Cost: one scan of `world.targets` every 0.25 s, the threat record at 1 Hz, at most 12 p>e rays a second (3 per physics
 step, `CombatWorld.shot_ray`), strings only when a line prints. `tests/test_combat_log.gd` checks the records (a staged
 physics scene with real turrets and a wall for the threat counts and the ray budget), `PilotIntensity` against the

@@ -162,20 +162,20 @@ func _update_visuals(dt: float) -> void:
 	# Body: hips sink with speed (longer reach) and dip between steps; the stagger knocks them along the push and down;
 	# shutdown slumps them.
 	var shift := sa.push * (0.55 * sa.stumble * amp)
-	_hip_h = HIP_Y - RUN_DROP * k - STEP_BOB * k * (1.0 - _gait.lift_amount()) - 0.3 * sa.k * amp \
-		- (0.35 if heat.shutdown else 0.0)
+	var slump := heat_look.slump   # heat shutdown: the hips sink (knees bend over planted feet), torso droops and lists
+	_hip_h = HIP_Y - RUN_DROP * k - STEP_BOB * k * (1.0 - _gait.lift_amount()) - 0.3 * sa.k * amp - 0.55 * slump
 	_step_legs(dt, shift)
 	var tilt := Basis.IDENTITY
 	var axis := Vector3.UP.cross(sa.push)
 	if sa.active and axis.length_squared() > 1e-6:
 		tilt = Basis(axis.normalized(), (0.34 * sa.k + 0.06 * sa.shake) * amp)
-	var droop := deg_to_rad(-22.0) if heat.shutdown else 0.0
+	var droop := deg_to_rad(-22.0) * slump
 	var aim_y := _aim_yaw + (0.55 * sa.aim_off * sa.side + 0.16 * sa.shake) * amp
 	var aim_p := -0.12 * move_speed_ratio + droop - 0.3 * sa.aim_off * amp
 	_chassis_pivot.position = Vector3(shift.x, _hip_h, shift.z)
-	_chassis_pivot.basis = tilt * Basis.from_euler(Vector3(aim_p, aim_y, 0.0))
-	if _sensor_mi != null:   # the sensor head takes a knock with the hit and shakes it off
-		_sensor_mi.rotation = Vector3(0.45 * sa.k * amp, 0.5 * sa.shake * amp, -0.3 * sa.k * sa.side * amp)
+	_chassis_pivot.basis = tilt * Basis.from_euler(Vector3(aim_p, aim_y, 0.06 * slump))
+	if _sensor_mi != null:   # the sensor head takes a knock with the hit and shakes it off; nods down when shut down
+		_sensor_mi.rotation = Vector3(0.45 * sa.k * amp - 0.3 * slump, 0.5 * sa.shake * amp, -0.3 * sa.k * sa.side * amp)
 
 
 ## The legs: gait homes under the hips (unit frame -> world on the unit's own floor plane), then each leg solved to its

@@ -19,8 +19,10 @@ extends Node
 ##   help     reviver=0|1 dist=<m, -1 none>                 right after `down`: the call for help (DownedCrew.help_facts:
 ##                                                         a standing crewmate with a repair drone that can revive, and
 ##                                                         the nearest one's distance); no help source: not printed
-##   revive   by=<shooter> down_s= tot=                     stood up in place by a crewmate's drone (DownedRules): not a death
-##   respawn  hold=1|0 down_s= tot=                         back up: hold=1 after the hold + redeploy (50 % structure),
+##   revive   by=<shooter>|self down_s= tot=                stood up in place by a crewmate's drone, or by its own (self,
+##                                                         R2.9 self-revive) (DownedRules): not a death
+##   respawn  hold=1|0 down_s= tot=                         back up: hold=1 after the hold + redeploy (full structure and
+##                                                         ammo since R2.12: tot=100),
 ##                                                         hold=0 any other way (the test hook, repair_all)
 ##   summary  hp= core= comp=<comp>:<%>,... heat= shut= in= out= near= nearest= combat=0|1 deck= obj= down=0|1
 ##            every SUMMARY_EVERY s of mission time: in / out = damage in this window, near = live enemies within
@@ -69,7 +71,10 @@ extends Node
 ##   pace     deck= from= to= i= reason=        director state change (note_pace, or mission state `pace` on change)
 ##   release  wave= deck= src= size= kinds=<kind>:<n>,... reason=      (note_release, host)
 ##   scout    ev=started|cancelled|completed drone= deck=             (note_scout, host)
+##   source   ev=hold|push|reentry|removed|wreck src= unit= kind= why=  a wave door's occupancy (note_source, host)
 ##   depot    ev=claim|grant|deny|empty depot= left=                  (note_depot, every machine for its own pilot)
+##   door     ev=open|shut|win id= at=      the extraction's road doors (note_door, every machine): the exit / entry door
+##                                          orders as applied here (at = the shared-clock moment), win = the crew walked out
 ##   scale    from= to= reason=leave|state pilot= at=<shared clock>    the crew scale changed here (note_scale, every machine,
 ##                                                                     at the host's `at`; MissionFlow._apply_scale)
 ## Values never contain spaces ("-" = empty). "In combat" counts the player's own shots (CombatWorld.fired), damage taken
@@ -472,7 +477,8 @@ func _on_revived(by: String, time_down: float) -> void:
 		_deaths.remove_at(_deaths.size() - 1)
 	_deck_stats.deaths = maxi(_deck_stats.deaths - 1, 0)
 	_mission_stats.deaths = maxi(_mission_stats.deaths - 1, 0)
-	_say("revive", "by=%s down_s=%.1f tot=%d" % [_v(by), time_down, roundi(_tot_pct())])
+	# by=self: its own repair drone stood it up (R2.9 self-revive: still a revive, never one "given" to anyone)
+	_say("revive", "by=%s down_s=%.1f tot=%d" % ["self" if by != "" and by == me else _v(by), time_down, roundi(_tot_pct())])
 
 
 ## PlayerTarget.player_respawned: back up after the hold + redeploy (held) or the test hook's instant respawn. A death.
@@ -917,6 +923,20 @@ static func note_scout(event: String, drone_id: String, deck: int = -1) -> void:
 		c._say("scout", "ev=%s drone=%s deck=%d" % [_v(event), _v(drone_id), deck])
 
 
+## A wave door's occupancy event (host, MissionBays): hold / push / reentry / removed (counted gone, no kill) / wreck.
+static func note_source(event: String, source: String, unit_id: String = "", kind: String = "", why: String = "") -> void:
+	var c := _running()
+	if c != null:
+		c._say("source", "ev=%s src=%s unit=%s kind=%s why=%s" % [_v(event), _v(source), _v(unit_id), _v(kind), _v(why)])
+
+
+## A road door order applied on this machine (open / shut: the exit or entry door, MissionFlow) or the walk-out win (win).
+static func note_door(event: String, door_id: String, at: float) -> void:
+	var c := _running()
+	if c != null:
+		c._say("door", "ev=%s id=%s at=%.3f" % [_v(event), _v(door_id), at])
+
+
 ## A depot event for this machine's pilot: claim / grant / deny / empty.
 static func note_depot(event: String, depot_id: String, cores_left: int = -1) -> void:
 	var c := _running()
@@ -938,6 +958,30 @@ static func note_scale(from: int, to: int, reason: String, pilot: int, at: float
 	var c := _running()
 	if c != null:
 		c._say("scale", "from=%d to=%d reason=%s pilot=%d at=%.3f" % [from, to, _v(reason), pilot, at])
+
+
+## The host's (solo's) debrief at the outcome (MissionStats.finish, once): `debrief outcome= time= pilots=<id>,...` then
+## one `<id>=<key>:<value>,...` per pilot (a leaver's id marked `<id>L`). Printed through the running log, else as a plain
+## FlowLog line (the log is off, or already ended): the debrief line is never lost to --no-combat-log.
+static func note_debrief(d: Dictionary) -> void:
+	var ids := PackedStringArray()
+	var rows := PackedStringArray()
+	var stats: Dictionary = d.get("stats", {})
+	for p: Dictionary in d.get("pilots", []):
+		var id := str(int(p["id"])) + ("L" if bool(p.get("left", false)) else "")
+		ids.append(id)
+		var kv := PackedStringArray()
+		var row: Dictionary = stats.get(str(int(p["id"])), {})
+		for k: String in row:
+			kv.append("%s:%s" % [k, str(row[k])])
+		rows.append("%s=%s" % [id, ",".join(kv) if not kv.is_empty() else "-"])
+	var body := "outcome=%s time=%.1f pilots=%s %s" % [_v(str(d.get("outcome", ""))), float(d.get("time", 0.0)),
+		_v(",".join(ids)), " ".join(rows)]
+	var c := current
+	if c != null and is_instance_valid(c) and c.started:
+		c._say("debrief", body)
+	else:
+		FlowLog.say("debrief", body)
 
 
 ## "tank:2,drone:1" from an Array of kinds (counted, first-seen order), a Dictionary kind -> n, or a String.

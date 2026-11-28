@@ -6,7 +6,8 @@ extends Node
 ##   mech     the bot's MechController (real physics, not a puppet; owner_peer 1 = this machine, pilot id in the
 ##            MechSpawn "owner_peer" meta), made by MissionScene._spawn_crew
 ##   target   its PlayerTarget "player<id>" (owner 1: every hit on the bot is decided here); downed it holds still with
-##            no weapons, waits for a revive and then redeploys (auto_redeploy, DownedCrew / DownedRules)
+##            no weapons, waits for a revive and then redeploys (auto_redeploy, DownedCrew / DownedRules; once its AI
+##            runs, BotAid.wait_s decides how long: while a reviver is plausibly coming)
 ##   rack     its WeaponRack (shooter "player<id>", peer 1, no camera, no input), stepped here before CombatWorld.advance;
 ##            CombatNet.add_bot(id) sends its fire records and drone launches to the crew
 ##   ai       its MissionBot (attach_crew), started at mission_go; until then the mech stands still

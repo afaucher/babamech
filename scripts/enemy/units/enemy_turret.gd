@@ -115,7 +115,7 @@ func _update_visuals(dt: float) -> void:
 func _apply_turret_pose() -> void:
 	if _turret_pivot == null or _gun_pivot == null:
 		return
-	var droop := deg_to_rad(-24.0) if heat.shutdown else 0.0
+	var droop := deg_to_rad(-24.0) * heat_look.slump   # heat shutdown: the gun droops (eased, heat_look)
 	var kick_rad := deg_to_rad(minf(aim_kick * 0.45, 22.0))
 	_turret_pivot.rotation.y = _yaw
 	_gun_pivot.rotation.x = _pitch + droop + kick_rad

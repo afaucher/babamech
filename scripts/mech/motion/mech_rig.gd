@@ -66,6 +66,9 @@ var reached_fraction := 1.0  ## legs whose IK target was in reach last frame (di
 ## Co-op puppets: the owner's leg_yaw from its snapshots, used instead of the twist computed here (NAN = compute it).
 var twist_override := NAN
 var sag := 0.0               ## the shutdown slump now: 0 standing, 1 slumped (overshoots past either end while easing)
+## A hover chassis (the Wasp: model.is_hover()) has no gait: update_pose hands the model to this instead (bank, fan tilt,
+## rotor spin, legs from the motion; scripts/mech/motion/hover_pose.gd).
+var hover_pose := HoverPose.new()
 
 var _body: MechController
 var _air_time := 0.0
@@ -102,7 +105,7 @@ func net_fields() -> Dictionary:
 		"twist_override": Net.LOCAL, "sag": Net.LOCAL, "_body": Net.LOCAL, "_air_time": Net.LOCAL, "_airborne": Net.LOCAL,
 		"_prev_xf": Net.LOCAL, "_land_t": Net.LOCAL, "_land_depth": Net.LOCAL, "_reversed": Net.LOCAL,
 		"_pilot_facing": Net.LOCAL, "_pilot_steps": Net.LOCAL, "_sag_v": Net.LOCAL, "_rise_t": Net.LOCAL,
-		"_rig_chassis": Net.LOCAL}
+		"_rig_chassis": Net.LOCAL, "hover_pose": Net.LOCAL}
 
 
 ## The Strider's rig and gait numbers (a fresh MechRig / Gait's), once.
@@ -173,6 +176,9 @@ func update_pose(delta: float) -> void:
 	if _body == null or model == null:
 		return
 	sync_chassis()
+	if model.is_hover():
+		hover_pose.update(delta, _body, model)   # no gait, no IK: the hover chassis poses from its motion
+		return
 	var up := _body.up()
 	var vel := _body.velocity
 	var on_floor := _body.grounded()

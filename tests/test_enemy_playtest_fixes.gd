@@ -529,15 +529,19 @@ func _deck_rehome_and_fell_out_cull() -> void:
 # --- 7. Diegetic-Only Indicators (No Overhead Diamonds, No Floating Beacons, Physical Reveal Flare) -------
 
 func _diegetic_beacons_and_status_bars() -> void:
-	# A. EnemyStatusBar: zero floating overhead diamonds or LOCATE tags; stays hidden on undamaged alerted/revealed units.
+	# A. EnemyStatusBar: only the HP bar (no diamonds, tags or heat bar, R2.26); hidden on an undamaged unit.
 	var sb := EnemyStatusBar.new()
 	add_child(sb)
 	await frames(1)
-	sb.refresh(1.0, 0.0, true, true, "", false, DT, true)
-	check(not sb.visible, "EnemyStatusBar stays hidden on undamaged alerted/telegraphing/revealed enemy (no overhead diamond)")
-	check(not sb._tag.visible, "no floating LOCATE tag over revealed enemy")
-	sb.refresh(0.5, 0.0, true, false, "", false, DT, false)
+	sb.refresh(1.0, false)
+	check(not sb.visible, "EnemyStatusBar stays hidden on an undamaged enemy (no overhead diamond)")
+	for c in sb.get_children():
+		check(not (c is Label3D), "no floating text over an enemy (%s)" % c.name)
+	eq(sb.get_child_count(), 2, "the bar is its backing and the HP fill only (no heat bar)")
+	sb.refresh(0.5, false)
 	check(sb.visible and sb._bar_hp.visible, "EnemyStatusBar still shows compact HP bar when actually damaged")
+	sb.refresh(0.5, true)
+	check(not sb.visible, "hidden on a dead unit")
 	sb.queue_free()
 
 	# B. EnemyTelegraphFx: keeps muzzle charge orb & Scout Drone Alert Beacon; hides comms relay ring & dropship ground ring;

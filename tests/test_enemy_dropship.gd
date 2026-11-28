@@ -12,7 +12,12 @@ extends TestCase
 ##      through an air door, removed inside its recess, the door shut again afterwards), the hull box never touching the
 ##      collision world (buildings, towers, pillars, park columns, walls, ceiling, the door frames; mechs aside), never
 ##      outside the deck's walls (but in a door) or above its ceiling, through the wall plane only while that door is
-##      passable; the squad lands on valid street ground. Deck 0 again with the air doors switched off (the fallback).
+##      passable; the squad lands on valid street ground; every trooper is created in the ship's own bay (within
+##      TROOP_FROM_SHIP m of the hull, the ship unstaged and hittable); the crew's "Dropship, <side> air door" alert puts
+##      its INBOUND marker on the arrival door's `out` point. Deck 0 again with the air doors switched off: no dropship
+##      and no troops at all on that deck (playtest R2.24: the in-deck fallback is gone); a deck with no usable air door
+##      likewise.
+##   7. Census: decks without a usable air door over seeds 1-100 (printed; Environment's R2.24 guarantee closes it).
 
 const DT := 1.0 / 60.0
 const TEST_TIMEOUT := 900
@@ -20,6 +25,8 @@ const ROUND_TRIP_SEEDS := [1, 4, 7, 403112]
 const ROUND_TRIP_LIMIT := 150.0   ## game s per flight
 const DOOR_SHUT_WITHIN := 13.0   ## mission-clock s from the ship leaving / entering a door until it is shut (hold <= 5 s after
                                  ## the hull is clear + up to 3 s opening + 2 s closing + margin)
+const TROOP_FROM_SHIP := 4.0     ## m: a trooper is created this close to its ship (its bay is 1.2 m under the hull's centre)
+const NO_SHIP_WAIT := 6.0        ## s watched for troops on a deck that got no dropship
 
 
 func setup() -> void:
@@ -29,6 +36,7 @@ func setup() -> void:
 	await _multi_seed_stack_reachable_drop_zones()
 	await _coop_enemy_sync_add_and_gone()
 	await _stack_round_trips_clear()
+	_air_door_census()
 	finish()
 
 
@@ -240,10 +248,16 @@ func _rooftop_drop_and_scout_drone_beacon_cap() -> void:
 		if drone._beacon_count >= 1:
 			break
 	check(drone._beacon_count >= 1, "scout drone completed Alert Beacon")
-	eq(int(sq._deck_drops.get(0, 0)), 1, "scout drone beacon triggered 1 Drop Ship on deck 0")
-	# A second call to request_dropship on deck 0 must be refused by max_drops_per_deck = 1!
+	# A bare district has no mission world, so no air door: the beacon's call brings NO dropship (R2.24: no in-deck
+	# appear point). The per-deck cap is checked on the real stack below (round trips lift it; here it would be moot).
+	eq(int(sq._deck_drops.get(0, 0)), 0, "no air door: the scout's beacon brings no dropship on deck 0")
 	var second := sq.request_dropship(p.global_position, 0)
-	check(second == null, "strict max_drops_per_deck cap blocks 2nd dropship on same deck")
+	check(second == null, "no air door: request_dropship creates nothing")
+	var ships := 0
+	for e in sq.enemies:
+		if is_instance_valid(e) and e.enemy_type == "dropship":
+			ships += 1
+	eq(ships, 0, "no dropship exists on a deck without an air door")
 
 	p.queue_free()
 	sq.queue_free()
@@ -418,6 +432,7 @@ func _stack_round_trips_clear() -> void:
 	q.collide_with_areas = false
 	var flights := 0
 	var through_doors := 0
+	var no_door_runs := 0
 	Engine.time_scale = 2.0
 	for seed_n: int in ROUND_TRIP_SEEDS:
 		var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
@@ -458,19 +473,61 @@ func _stack_round_trips_clear() -> void:
 			# ship through the same door during the door checks (what made "shut again" fail intermittently).
 			sq.drops_enabled = false
 			var tag := "seed %d deck %d%s" % [seed_n, k, "" if doors_on else " (doors off)"]
+			var door_n := 0
+			for i in (mw.air_door_count(k) if doors_on else 0):
+				var cand := mw.air_door(k, i)
+				if bool(cand.get("ok", false)) and bool(cand.get("usable", true)):
+					door_n += 1
+			if door_n == 0:
+				# No usable air door: no dropship at all, and no troops appear on the deck (no in-deck fallback).
+				check(ds == null, tag + ": no usable air door: no dropship is created")
+				if ds != null:
+					sq.remove_enemy(ds)
+					ds.queue_free()
+				var drop_before := 0
+				for e in sq.enemies:
+					if is_instance_valid(e) and "_drop_" in e.target_id:
+						drop_before += 1
+				var t0 := 0.0
+				while t0 < NO_SHIP_WAIT:
+					await get_tree().physics_frame
+					t0 += Engine.time_scale / float(Engine.physics_ticks_per_second)
+				var drop_after := 0
+				for e in sq.enemies:
+					if is_instance_valid(e) and "_drop_" in e.target_id:
+						drop_after += 1
+				eq(drop_after, drop_before, tag + ": no troops appear on a deck without a usable air door")
+				no_door_runs += 1
+				continue
 			if not check(ds != null, tag + ": a dropship is called in"):
 				continue
 			flights += 1
-			var door_n := mw.air_door_count(k) if doors_on else 0
 			var air_in := str(ds._air_in.get("id", ""))
-			if door_n > 0:
-				through_doors += 1
-				check(air_in != "" and ds.staged and not ds.is_hittable(), tag + ": created hidden in an air door's recess, not hittable")
-			else:
-				check(air_in == "" and not ds.staged, tag + ": no air door: the in-deck appear point")
+			through_doors += 1
+			check(air_in != "" and ds.staged and not ds.is_hittable(), tag + ": created hidden in an air door's recess, not hittable")
+			# The crew's alert: "Dropship, <side> air door", its INBOUND marker on the door's out point.
+			var out_pt: Variant = null
+			for i in mw.air_door_count(k):
+				var cand := mw.air_door(k, i)
+				if str(cand.get("id", "")) == air_in:
+					out_pt = cand["out"]
+			var alert_ok := false
+			var alert_txt := ""
+			for a: Dictionary in td.mission.hud_model.build().get("alerts", []):
+				if str(a["text"]).begins_with("Dropship"):
+					alert_txt = str(a["text"])
+					alert_ok = a["pos"] is Vector3 and out_pt is Vector3 and (a["pos"] as Vector3).distance_to(out_pt) < 0.01
+			check(alert_ok, tag + ": the crew is told (\"%s\") with the INBOUND marker on %s's out point" % [alert_txt, air_in])
 			var drop_arc := ds._arc2(ds._drop_pos)
 			var landed := [null]
-			ds.troops_deployed.connect(func(_d: EnemyDropDrone, arr: Array) -> void: landed[0] = arr.duplicate())
+			var from_ship := [INF, false]   # worst trooper distance from the ship at its creation, ship still staged / unhittable
+			ds.troops_deployed.connect(func(d: EnemyDropDrone, arr: Array) -> void:
+				landed[0] = arr.duplicate()
+				var worst := 0.0
+				for tr: Variant in arr:
+					worst = maxf(worst, (tr as Node3D).global_position.distance_to(d.global_position))
+				from_ship[0] = worst
+				from_ship[1] = d.staged or not d.is_hittable())
 			var removed := [false]
 			var ds_id := ds.target_id
 			var on_removed := func(e: EnemyBase) -> void:
@@ -533,6 +590,8 @@ func _stack_round_trips_clear() -> void:
 			check(removed[0], tag + ": the round trip ends (left the deck) within %.0f s (%.1f)" % [ROUND_TRIP_LIMIT, t])
 			var arr: Array = landed[0] if landed[0] is Array else []
 			check(arr.size() >= 3, tag + ": the squad was dropped (%d)" % arr.size())
+			check(float(from_ship[0]) <= TROOP_FROM_SHIP and not bool(from_ship[1]),
+				tag + ": every trooper is created in the visible ship's bay (worst %.1f m)" % float(from_ship[0]))
 			check(EnemySquad._valid_ground_drop_point(plan, drop_arc), tag + ": the drop zone is valid street ground")
 			if door_n > 0 and air_out != "":
 				var dd := {}
@@ -565,8 +624,41 @@ func _stack_round_trips_clear() -> void:
 			eq(others, 0, tag + ": no other dropship joined during the checks (call-ins off)")
 		sq.air_doors_enabled = true
 		sq.drops_enabled = true
+		if seed_n == ROUND_TRIP_SEEDS[0]:
+			# The strict per-deck cap (1 solo) on a deck with air doors.
+			sq.max_drops_per_deck = 1
+			sq._deck_drops.clear()
+			for e in sq.enemies.duplicate():
+				if is_instance_valid(e) and e.enemy_type == "dropship":
+					sq.remove_enemy(e)
+					e.queue_free()
+			var first := sq.request_dropship(td.mech.global_position, 1)
+			var again := sq.request_dropship(td.mech.global_position, 1)
+			check(first != null and again == null, "max_drops_per_deck 1: a second dropship on the same deck is refused")
 		td.queue_free()
 		await frames(2)
 	Engine.time_scale = 1.0
-	check(flights >= 16, "round trips flown over %d seeds (%d)" % [ROUND_TRIP_SEEDS.size(), flights])
-	check(through_doors >= 8, "most went through air doors (%d)" % through_doors)
+	check(flights >= 8, "round trips flown over %d seeds (%d)" % [ROUND_TRIP_SEEDS.size(), flights])
+	eq(through_doors, flights, "every dropship went through an air door (%d)" % through_doors)
+	check(no_door_runs >= ROUND_TRIP_SEEDS.size(), "the doors-off runs brought no ship (%d)" % no_door_runs)
+
+
+## Decks with no usable air door (MissionAirDoors.doors: plan data only) over seeds 1-100: those get no dropships until
+## Environment's guarantee (>= 1 usable air door per deck, R2.24) lands. Printed for the report; no assertion here.
+func _air_door_census() -> void:
+	var none := 0
+	var decks := 0
+	var list := PackedStringArray()
+	for s in range(1, 101):
+		var sec := SectionPlan.make({"seed": float(s)})
+		for k in sec.deck_count:
+			decks += 1
+			var usable := 0
+			for ad: Dictionary in MissionAirDoors.doors(CityPlan.for_deck(sec, k)):
+				if bool(ad.get("usable", true)):
+					usable += 1
+			if usable == 0:
+				none += 1
+				if list.size() < 40:
+					list.append("%d/%d" % [s, k])
+	print("air door census: %d of %d decks (seeds 1-100) have no usable air door: %s" % [none, decks, ", ".join(list)])

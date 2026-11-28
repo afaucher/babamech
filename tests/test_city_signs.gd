@@ -1,6 +1,6 @@
 extends TestCase
 ## Deck lettering (CitySigns, docs/design/city-signs.md) on every deck of sections 1, 4 and 403112: the number is the deck
-## index + 1 on every sign; every gate of a bulkhead / farm wall (portals too) has exactly one sign, the over-gate one, and
+## index + 1 on every sign; every road door of a bulkhead / farm wall has exactly one sign, the over-gate one (none over a tram door), and
 ## nothing beside it (user feedback 2026-11-25); every freight lift one over its door, every ramp one at both ends with
 ## the right arrow and destination; no sign kind other than over_gate / lift / ramp, none over a shaft cut; signs off each
 ## other, above the floor and under the ceiling; every vertex of every sign (both looks) lies on or
@@ -45,7 +45,8 @@ func _deck(sec: SectionPlan, seed_: int, k: int) -> void:
 			numbers_ok = numbers_ok and int(s["back"]["number"]) == k + 1
 	check(kinds_ok, "%s: only over-gate, lift and ramp signs (none beside a gate, none over a shaft)" % what)
 	check(numbers_ok, "%s: every sign shows deck %s (ramp backs too)" % [what, CitySigns.label(k + 1)])
-	# Exactly one sign per wall gate / portal: the over-gate one (user feedback 2026-11-25: one sign above each door).
+	# Exactly one sign per road door: the over-gate one (user feedback 2026-11-25: one sign above each door); the entry /
+	# exit doors are road doors like any other; none over a tram door (R2.11a).
 	var gi := 0
 	var per_gate := {}
 	for s: Dictionary in signs:
@@ -54,11 +55,11 @@ func _deck(sec: SectionPlan, seed_: int, k: int) -> void:
 	var wrong := []
 	for w: Dictionary in plan.boundary():
 		for g: Dictionary in w["gates"]:
-			var want := 1 if (w["kind"] == "bulkhead" or w["kind"] == "farm") else 0
+			var want := 1 if (w["kind"] == "bulkhead" or w["kind"] == "farm") and str(g["kind"]) != "tram_door" else 0
 			if int(per_gate.get(gi, 0)) != want:
 				wrong.append("%d:%s %.0f..%.0f has %d" % [int(w["side"]), str(g["kind"]), float(g["a"]), float(g["b"]), int(per_gate.get(gi, 0))])
 			gi += 1
-	check(wrong.is_empty(), "%s: exactly one sign per wall gate / portal (%s)" % [what, str(wrong)])
+	check(wrong.is_empty(), "%s: exactly one sign per road door, none over a tram door (%s)" % [what, str(wrong)])
 	_over_gates(plan, signs, what)
 	# Every freight lift door.
 	for i in plan.buildings.size():
@@ -143,7 +144,7 @@ func _deck(sec: SectionPlan, seed_: int, k: int) -> void:
 			signs.size(), counts["over_gate"], counts["lift"], counts["ramp"], tris["white"], tris["dark"]])
 
 
-## Every gate of a bulkhead / farm wall (portals too) has a sign centred over it: inside the gate's width (so inside the
+## Every road door of a bulkhead / farm wall (not the tram doors) has a sign centred over it: inside the gate's width (so inside the
 ## wall), its bottom over the gate's top + a bunker's lintel and beacons (4.7 m) and over a bulkhead's gallery band, under
 ## the ceiling. And it reads from the road that ends at the gate: from its centre line 40, 60 and 80 m out at 10 m up, no
 ## building tier of the plan stands between the eye and the sign's centre (plan data). Blocks by a ceiling-touching tower
@@ -154,7 +155,7 @@ func _over_gates(plan: CityPlan, signs: Array, what: String) -> void:
 	var ceiling := plan.p("ceiling")
 	for w: Dictionary in plan.boundary():
 		for g: Dictionary in w["gates"]:
-			if w["kind"] != "bulkhead" and w["kind"] != "farm":
+			if (w["kind"] != "bulkhead" and w["kind"] != "farm") or str(g["kind"]) == "tram_door":
 				gi += 1
 				continue
 			var over := {}

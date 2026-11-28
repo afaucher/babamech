@@ -56,6 +56,15 @@ extends Node
 ##   END      The host leaving the mission (Esc in the test drive) sends mission.end {reason}: every client gets
 ##            mission_ended(reason) and goes back to the hangar; the crew is back in "lobby". A client leaving the
 ##            mission only leaves it on its own machine (the host's mission goes on without its mech moving).
+##   DEBRIEF  (playtest R2.15a) The host's end at an outcome carries the mission's debrief: end(reason, debrief) puts it
+##            in mission.end {reason, debrief} (one reliable message: the board and its stats can't arrive out of step).
+##            Every machine keeps it in NetMission.last_debrief (static: it survives the scene change to the hangar,
+##            where FrontEnd shows the board, DebriefStats / DebriefBoard). Solo, end(reason, debrief) just keeps it.
+##            Clients never compute a stat: the host's counters are the only numbers. Shape (v1), cleaned by
+##            clean_debrief: {v: 1, outcome: "won" | "lost" | "", reason, time: mission s, pilots: [{id, name, bot, left}] in
+##            seat order (bots: negative ids, by name; left: true = left mid-mission, the column stays, greyed), stats:
+##            {"<pilot id>": {stat key: number}} (keys: DebriefStats.STATS; unknown keys still show, as extra rows;
+##            non-numbers are dropped), labels: {stat key: display text} for those extra keys}.
 ##
 ## Offline (solo) none of this runs: the hangar hands its seed + mode to the test drive itself (MissionScene.solo_launch).
 
@@ -101,6 +110,13 @@ var build_ms: Dictionary = {}
 
 ## Launches on this machine since the process started (the [Flow] log tells a relaunch apart).
 static var launches := 0
+## The last mission's debrief (DEBRIEF above; {} = none to show). Kept across scene changes and reset(); the hangar
+## clears it (clear_debrief) once the crew pressed Next or a new mission launched.
+static var last_debrief: Dictionary = {}
+
+const DEBRIEF_PILOTS := 8      ## at most this many pilots in a debrief (4 crew; room for later)
+const DEBRIEF_STATS := 32      ## at most this many stats per pilot
+const DEBRIEF_NAME := 24       ## pilot names and stat keys are cut to this many characters
 
 var _sums: Dictionary = {}   ## host: peer -> reported checksum
 var _judged: Dictionary = {}   ## host: peer -> true once its checksum was logged ok
@@ -204,6 +220,7 @@ func host_launch(seed_value: int, mode: String = MODE_STACK) -> bool:
 	for e: Dictionary in s.crew():
 		crew.append(e.duplicate(true))
 	reset()
+	clear_debrief()
 	desyncs.clear()
 	slow.clear()
 	params = {"seed": seed_value, "mode": clean_mode(mode), "start_t": s.host_time() + LAUNCH_LEAD, "crew": crew,
@@ -235,13 +252,21 @@ func report_built(checksum: String, ms: int = 0) -> void:
 		s.send_event(1, "mission.ready", {"sum": local_sum, "ms": ms})
 
 
-## Leave the mission. The host ends it for everyone; a client only for itself.
-func end(reason: String = "") -> void:
+## Leave the mission. The host ends it for everyone; a client only for itself. `debrief` (the host's, or solo's, at an
+## outcome: DEBRIEF above) is kept here and, from the host, rides mission.end to the crew. A client's is ignored: only
+## the host's numbers count.
+func end(reason: String = "", debrief: Dictionary = {}) -> void:
+	var s := _s()
+	var deciding := s == null or not s.online() or s.hosting
+	if deciding and not debrief.is_empty():
+		last_debrief = clean_debrief(debrief)
 	if phase == IDLE and params.is_empty():
 		return
-	var s := _s()
 	if s != null and s.online() and s.hosting:
-		s.send_event(0, "mission.end", {"reason": reason if reason != "" else HOST_ENDED})
+		var msg := {"reason": reason if reason != "" else HOST_ENDED}
+		if not debrief.is_empty():
+			msg["debrief"] = last_debrief
+		s.send_event(0, "mission.end", msg)
 		FlowLog.say("mission_ended", reason if reason != "" else HOST_ENDED)
 		_note("mission end: %s" % (reason if reason != "" else HOST_ENDED))
 	if s != null:
@@ -360,6 +385,47 @@ func _on_depot_event(from: int, kind: String, data: Dictionary) -> void:
 				"n": int(data.get("n", 0))})
 
 
+## The debrief as it may be believed from the wire (DEBRIEF above): pilots with an int id and a short name, numeric
+## stats only (bools / strings / nested values dropped), bounded sizes. Pilots without a stats row get an empty one.
+static func clean_debrief(d: Dictionary) -> Dictionary:
+	var pilots: Array = []
+	var stats := {}
+	var raw_stats: Dictionary = d.get("stats", {}) if d.get("stats") is Dictionary else {}
+	for p: Variant in (d.get("pilots", []) if d.get("pilots") is Array else []):
+		if not (p is Dictionary) or pilots.size() >= DEBRIEF_PILOTS:
+			continue
+		var id := int((p as Dictionary).get("id", 0))
+		if id == 0 or stats.has(str(id)):
+			continue
+		pilots.append({"id": id, "name": str((p as Dictionary).get("name", "")).left(DEBRIEF_NAME), "bot": id < 0,
+			"left": (p as Dictionary).get("left", false) is bool and bool((p as Dictionary).get("left", false))})
+		var row := {}
+		var src: Variant = raw_stats.get(str(id), raw_stats.get(id, {}))
+		if src is Dictionary:
+			for k: Variant in src:
+				var v: Variant = (src as Dictionary)[k]
+				if row.size() >= DEBRIEF_STATS or not (v is int or v is float):
+					continue
+				var f := float(v)
+				if is_nan(f) or is_inf(f):
+					continue
+				row[str(k).left(DEBRIEF_NAME)] = v
+		stats[str(id)] = row
+	var labels := {}   # display text for extra stat keys ({key: text}); strings only
+	var raw_labels: Dictionary = d.get("labels", {}) if d.get("labels") is Dictionary else {}
+	for k: Variant in raw_labels:
+		if labels.size() < DEBRIEF_STATS and raw_labels[k] is String and str(raw_labels[k]) != "":
+			labels[str(k).left(DEBRIEF_NAME)] = str(raw_labels[k]).left(32)
+	var t := float(d.get("time", 0.0)) if (d.get("time") is int or d.get("time") is float) else 0.0
+	return {"v": 1, "outcome": str(d.get("outcome", "")).left(16), "reason": str(d.get("reason", "")).left(80),
+		"time": maxf(t, 0.0) if not is_nan(t) and not is_inf(t) else 0.0, "pilots": pilots, "stats": stats, "labels": labels}
+
+
+## The hangar showed the debrief (Next) or a new mission launched: nothing left to show.
+static func clear_debrief() -> void:
+	last_debrief = {}
+
+
 ## A known mission mode: the stack is the only one (anything else builds it).
 static func clean_mode(_mode: String) -> String:
 	return MODE_STACK
@@ -399,6 +465,7 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 	match kind:
 		"mission.launch":
 			reset()
+			clear_debrief()
 			var crew: Array = []
 			for e: Variant in data.get("crew", []) as Array:
 				if e is Dictionary:
@@ -440,6 +507,8 @@ func _on_event(from: int, kind: String, data: Dictionary, _stamp: float) -> void
 		"mission.end":
 			if phase != IDLE:
 				var why := str(data.get("reason", HOST_ENDED))
+				if data.get("debrief") is Dictionary and not (data["debrief"] as Dictionary).is_empty():
+					last_debrief = clean_debrief(data["debrief"])
 				FlowLog.say("mission_ended", why)
 				s.set_crew_state("lobby")
 				reset()
@@ -455,9 +524,14 @@ func _take_state(d: Dictionary) -> void:
 
 func _take_wave(o: Dictionary) -> void:
 	var order := o.duplicate(true)
+	# A duplicate is the same order (mission.go and mission.wave may both carry it): same wave, source, open_at AND hold.
+	# An air door's hold extension (a dropship still in the doorway, MissionFlow.order_air_door) repeats wave "air" and
+	# the open_at with a longer hold: it is NOT a duplicate (R2.24: dropped, the client's door closed ~2 s early).
 	for w: Dictionary in waves:
-		if str(w.get("wave", "")) == str(order.get("wave", "")) and is_equal_approx(float(w.get("open_at", 0.0)), float(order.get("open_at", 0.0))):
-			return   # mission.go and mission.wave may both carry it
+		if str(w.get("wave", "")) == str(order.get("wave", "")) and str(w.get("source", "")) == str(order.get("source", "")) \
+				and is_equal_approx(float(w.get("open_at", 0.0)), float(order.get("open_at", 0.0))) \
+				and is_equal_approx(float(w.get("hold", -1.0)), float(order.get("hold", -1.0))):
+			return
 	waves.append(order)
 	_s().mission_wave.emit(order)
 

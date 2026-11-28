@@ -11,9 +11,9 @@ extends RefCounted
 ## toward where it travels (yaw only, YAW_FOLLOW s smoothing) and bobs a little. While it is out, the launcher's back
 ## mount shows the empty cradle (EquipmentLook, every machine). The placeholder MeshKit quad (spinning rotors) is the
 ## fallback when the part is missing. GREEN ONLY WHILE IT WORKS: a SCAN on every non-enemy target in range that is being
-## repaired right now (RepairDrone.repairable: the drone's `beamed` list), and a faint green ring on the ground at
-## `radius` around the launcher only while at least one scan shows. Nothing green during the rise, while idle (everyone
-## full) or on the way home.
+## repaired right now (RepairDrone.repairable: the drone's `beamed` list). No ground ring (removed 2026-11-26, R2.21: the
+## scan on the repaired target is the only green). Nothing green during the rise, while idle (everyone full) or on the
+## way home.
 ## THE SCAN (the user's pick, cell C3 of the render probe tools/scanner_beam/): one bright ring (CORE) round the target,
 ## level in the target's own up frame (CombatTarget.up), travelling up and down its body between SCAN_LO and SCAN_HI of
 ## its height once per SCAN_PERIOD s (eased at the turns), with three fainter trail rings where it was TRAIL_DT, 2x, 3x
@@ -25,11 +25,10 @@ extends RefCounted
 ## pool (CombatWorld.take_mesh) and go back when the drone leaves (give_back).
 ##
 ## update(state) keys (all read-only here): pos, up (the drone's), frame (its level frame), base (the launcher's
-## position), now, dt, first (the first step), radius, beamed (targets repaired this step), age, life, rise, home
+## position), now, dt, first (the first step), beamed (targets repaired this step), age, life, rise, home
 ## (0..1 of the flight home), dock ({pos, scale, basis} of the docked drone), launcher (its node, for the accent).
 
 const GREEN := Color(0.25, 1.0, 0.45)
-const RING_GREEN := Color(0.10, 0.38, 0.17)   ## the faint ground ring (unshaded: a dim colour reads as faint)
 const BEAMS := 4                  ## scan sets kept (one per repaired target; a crew is at most 4)
 ## The scan look (user's pick: render probe tools/scanner_beam/, cell C3). Parts of one set, in order:
 const SCAN_PARTS := ["head", "trail1", "trail2", "trail3", "band", "wedge", "edge", "edge"]
@@ -69,7 +68,6 @@ var flying_mesh := false          ## drawn with the Mech session's flying mesh (
 var yaw := 0.0                    ## heading about up in the drone's frame (rad; 0 = the frame's -Z)
 var _body: MeshInstance3D
 var _rotors: Array = []
-var _ring: MeshInstance3D
 var _beams: Array = []            ## BEAMS scan sets: each an Array of SCAN_PARTS.size() MeshInstance3D
 var _fit: Dictionary = {}         ## target instance id -> scan_fit {h, r} (cached once)
 var _borrowed := false            ## scan nodes came from world.take_mesh (handed back in give_back)
@@ -78,7 +76,7 @@ var _prev_pos := Vector3.ZERO
 
 func net_fields() -> Dictionary:
 	return {"host": Net.LOCAL, "world": Net.LOCAL, "shooter": Net.LOCAL, "t0": Net.LOCAL, "flying_mesh": Net.LOCAL,
-		"yaw": Net.LOCAL, "_body": Net.LOCAL, "_rotors": Net.LOCAL, "_ring": Net.LOCAL, "_beams": Net.LOCAL,
+		"yaw": Net.LOCAL, "_body": Net.LOCAL, "_rotors": Net.LOCAL, "_beams": Net.LOCAL,
 		"_fit": Net.LOCAL, "_borrowed": Net.LOCAL, "_prev_pos": Net.LOCAL}
 
 
@@ -89,15 +87,10 @@ func setup(h: Node3D, w: CombatWorld, s: String, start: float) -> void:
 	t0 = start
 
 
-## One step of the look: turn toward travel, then draw body, ring and scans from `s` (keys in the header).
+## One step of the look: turn toward travel, then draw body and scans from `s` (keys in the header).
 func update(s: Dictionary) -> void:
 	_turn(s)
 	_draw(s)
-
-
-## The faint green ground ring shows now (only while at least one scan does).
-func ring_shown() -> bool:
-	return _ring != null and _ring.visible and host.visible
 
 
 ## Scan sets showing now (one per repaired target; tests).
@@ -186,9 +179,6 @@ func _draw(s: Dictionary) -> void:
 		_body.scale = Vector3.ONE * _body_scale(s)
 	for i in _rotors.size():
 		(_rotors[i] as Node3D).rotation.y = now * 40.0 * (1.0 if i % 2 == 0 else -1.0)
-	var r := float(s["radius"])
-	_ring.global_transform = Transform3D(b * Basis.from_scale(Vector3(r, 1.0, r)), (s["base"] as Vector3) + up * 0.08)
-	_ring.visible = not beamed.is_empty()             # green only while it repairs someone
 	if _beams.is_empty() and not beamed.is_empty():
 		_build_scans()                                # (handed back on leaving the tree: borrow again)
 	for i in _beams.size():
@@ -215,9 +205,6 @@ func _build(s: Dictionary) -> void:
 		host.add_child(_body)
 	else:
 		_build_placeholder(accent)
-	_ring = CombatMeshes.instance(CombatMeshes.ring(RING_GREEN, 0.985, 48))
-	_ring.top_level = true
-	host.add_child(_ring)
 	_build_scans()
 
 

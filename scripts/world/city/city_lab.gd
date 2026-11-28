@@ -26,9 +26,11 @@ extends Node3D
 ## farm wall from 12 m up, "farm_near" stands at mech eye height on the lane beside it looking along it, "farm_gate" faces
 ## the first gate in it. With no farm wall they use a window wall (the hull's, `walls=1` on its own), else the avenue.
 ##   --city site=section,seed=1,deck=0,camera=farm_far
-## Mission world (MissionLab, site "stack" only): option "mission" puts MissionWorld's doors, flag, relay and portal in the
-## stack and loops them; "mission_phase" pins one look; cameras mission_gate / _bay / _lift / _flag / _asset / _portal.
+## Mission world (MissionLab, site "stack" only): option "mission" puts MissionWorld's doors, flag, relay and hold zone in
+## the stack and loops them; "mission_phase" pins one look; cameras mission_gate / _bay / _lift / _flag / _asset, and the
+## bulkhead doors entry_door / exit_door / tram_door / tram_door_s1 (docs/design/city-spine.md §4).
 ##   --city site=stack,seed=1,mission=all,mission_phase=warn,camera=mission_gate
+##   --city site=stack,seed=1,deck=0,mission=doors,mission_phase=open,camera=entry_door
 ## Downtown (docs/design/city-downtown.md): param "downtown" is the zone's share of the blocks on its own; on a section
 ## or stack 0 leaves the zone to the seed (CityPlan.for_deck), more forces that share. Cameras (the first deck with a
 ## zone): downtown_avenue (10 m up along a street through the zone), downtown_perch (on a 6.5 m podium roof at a mech's
@@ -68,9 +70,9 @@ const PARAMS := [
 const FORMS_OFF := {"f_lane": 0.0, "f_pedestrian": 0.0, "f_none": 0.0}
 const CAMERAS := ["lab", "avenue", "street", "rooftop", "plaza", "pillar", "park", "gate", "props", "ramp", "shaft", "ramp_foot",
 		"ramp_under", "ramp_head", "ramp_cut", "farm_far", "farm_near", "farm_gate", "mission_gate", "mission_bay", "mission_air", "mission_air_farm", "mission_lift", "mission_flag", "mission_flag_far",
-		"mission_asset", "mission_portal", "downtown_avenue", "downtown_perch", "downtown_plaza", "downtown_arcade", "downtown_top", "downtown_street",
+		"mission_asset", "entry_door", "exit_door", "tram_door", "tram_door_s1", "downtown_avenue", "downtown_perch", "downtown_plaza", "downtown_arcade", "downtown_top", "downtown_street",
 		"tint_street", "variety_top", "alley", "alley_top", "alley_pillar", "lane", "pedestrian", "court",
-		"sign_lift", "sign_ramp", "sign_road"]
+		"sign_lift", "sign_ramp", "sign_road", "station", "spine_top", "spine_cross", "spine_ramp", "spine_door"]
 const SETTLE_FRAMES := 8         ## rebuild once the sliders have been still this long
 const DOZER_SPEED := 12.0        ## m/s: a mech's walk
 const DOZER_RADIUS := 1.6
@@ -92,6 +94,8 @@ var _dozer_s := 0.0
 var _hid_decks := false         ## downtown_top hid the other decks of the stack
 var _nudge := 0.0               ## --city nudge=m (command line only): every camera's eye moves this far along x and s, for a
                                 ## second frame of the same view (z-fighting shimmers as the camera moves)
+var _shadow_off: PackedStringArray = []     ## --city shadow_off=A+B (command line only, a shadow probe): every mesh whose node
+                                            ## name begins with A or B stops casting shadows; "dump" prints every caster
 
 
 func _init() -> void:
@@ -106,6 +110,8 @@ func _init() -> void:
 			params[kv[0]] = float(kv[1])
 		elif kv[0] == "nudge" and kv[1].is_valid_float():
 			_nudge = float(kv[1])
+		elif kv[0] == "shadow_off":
+			_shadow_off = kv[1].split("+", false)
 		elif options.has(kv[0]):
 			options[kv[0]] = kv[1]
 	CitySigns.style = str(options["deck_signs"])      # deck lettering look (docs/design/city-signs.md), before any build
@@ -298,9 +304,9 @@ func _apply_view() -> void:
 	var inside: bool = options["camera"] != "lab"
 	var ceil_opt := str(options["ceiling"])
 	var back_opt := str(options["backdrop"])
-	var top_view: bool = options["camera"] in ["downtown_top", "variety_top", "alley_top"]     # from above: no ceiling
+	var top_view: bool = options["camera"] in ["downtown_top", "variety_top", "alley_top", "spine_top"]     # from above: no ceiling
 	var dv := _downtown_view(str(options["camera"])) if str(options["camera"]).begins_with("downtown_") else {}
-	if dv.is_empty() and (options["camera"] == "variety_top" or options["camera"] == "alley_top"):
+	if dv.is_empty() and (options["camera"] in ["variety_top", "alley_top", "spine_top"]):
 		dv = {"district": district}      # hide the decks above / below the one on show
 	for d in _districts():
 		d.set_ceiling_visible(ceil_opt == "on" or (ceil_opt == "auto" and inside and not top_view))
@@ -450,7 +456,7 @@ func _apply_view() -> void:
 				on = dv["district"]
 				eye = dv["eye"]
 				target = dv["target"]
-		"mission_gate", "mission_bay", "mission_air", "mission_air_farm", "mission_lift", "mission_flag", "mission_flag_far", "mission_asset", "mission_portal":     # MissionLab
+		"mission_gate", "mission_bay", "mission_air", "mission_air_farm", "mission_lift", "mission_flag", "mission_flag_far", "mission_asset", "entry_door", "exit_door", "tram_door", "tram_door_s1":     # MissionLab
 			var mv := mission_lab.view(str(options["camera"]))
 			if not mv.is_empty():
 				on = mv["district"]
@@ -487,6 +493,20 @@ func _apply_view() -> void:
 				on = sv["district"]
 				eye = sv["eye"]
 				target = sv["target"]
+		"station":     # the tram station (CityStation, the top deck): from across the track, 30 m along, at 6 m
+			for d: CityDistrict in _districts():
+				if d.props != null and not d.props.station.is_empty():
+					on = d
+					var st: Dictionary = d.props.station
+					var c := float(st["stop_s"])
+					eye = Vector3(float(st["track_x"]) - 14.0, c - 30.0, 6.0)
+					target = Vector3(float(st["x1"]) - 1.0, c + 2.0, 1.5)
+					break
+		"spine_top", "spine_cross", "spine_ramp", "spine_door":     # the spine's markings (city-spine.md section 3)
+			var spv := _spine_view(str(options["camera"]))
+			if not spv.is_empty():
+				eye = spv["eye"]
+				target = spv["target"]
 	if stack != null:
 		stack.set_active_deck(stack.decks.find(on))
 	eye += Vector3(_nudge, _nudge, 0.0)
@@ -495,6 +515,89 @@ func _apply_view() -> void:
 	var q := on.global_transform * ring.arc_to_world(target.x, target.y, target.z)
 	_cam.global_transform = Transform3D(Basis.looking_at(q - p, on.global_transform.basis * ring.up_at(on.to_local(p))), p)
 	_cam.make_current()
+	_probe_shadows()
+
+
+## A spine camera on the deck on show (docs/design/city-spine.md section 3), {eye, target} in arc coordinates, {} off a
+## section. The junction a ramp leaves from (else the one a ramp lands on, else the middle one), looking toward the ramp:
+##   spine_top    straight down from 85 m: the junction, its approaches and the ramp mouth (no ceiling, other decks hidden)
+##   spine_cross  along the spine at the junction from 26 m up, 55 m back
+##   spine_ramp   the ramp's mouth from beside it, 22 m up
+##   spine_door   down the main road to the road door in the +s bulkhead (the -s one without it)
+func _spine_view(cam: String) -> Dictionary:
+	var plan := district.plan
+	var road := CityStreets.spine_road(plan)
+	if road.is_empty() or plan.roads_s.size() < 3:
+		return {}
+	var cx := (float(road["a"]) + float(road["b"])) * 0.5
+	var ns := plan.roads_s.size()
+	var ramp := {}
+	for r: Dictionary in plan.ramps:
+		if r["role"] == "top":
+			ramp = r
+			break
+	if ramp.is_empty() and not plan.ramps.is_empty():
+		ramp = plan.ramps[0]
+	var j := ns / 2
+	var away := 1.0
+	if not ramp.is_empty():
+		var top: bool = ramp["role"] == "top"
+		var end_s := float(ramp["s_top"]) if top else float(ramp["s_foot"])
+		away = signf(float(ramp["s_foot"]) - float(ramp["s_top"])) * (1.0 if top else -1.0)
+		var best := INF
+		for k in range(1, ns - 1):
+			var c := (float(plan.roads_s[k]["a"]) + float(plan.roads_s[k]["b"])) * 0.5
+			if absf(c - end_s) < best:
+				best = absf(c - end_s)
+				j = k
+	var js := (float(plan.roads_s[j]["a"]) + float(plan.roads_s[j]["b"])) * 0.5
+	match cam:
+		"spine_top":
+			return {"eye": Vector3(cx, js + away * 18.0, 85.0), "target": Vector3(cx, js + away * 19.0, 0.0)}
+		"spine_cross":
+			return {"eye": Vector3(cx - 4.0, js - away * 55.0, 26.0), "target": Vector3(cx, js + away * 12.0, 0.0)}
+		"spine_ramp":
+			if ramp.is_empty():
+				return {}
+			var rm := (float(ramp["x0"]) + float(ramp["x1"])) * 0.5
+			var side := signf(cx - rm) if absf(cx - rm) > 0.1 else 1.0
+			return {"eye": Vector3(rm + side * 26.0, js - away * 34.0, 22.0), "target": Vector3(rm, js + away * 10.0, 0.0)}
+		"spine_door":
+			var av := plan.avenue_x()
+			var walls := CityStreets.end_walls(plan)
+			var at := float(walls[ns - 1]["at"]) if walls.has(ns - 1) else plan.extent.end.y
+			var dir := 1.0
+			if not walls.has(ns - 1) and walls.has(0):
+				at = float(walls[0]["at"])
+				dir = -1.0
+			var am := (av.x + av.y) * 0.5
+			return {"eye": Vector3(am - 6.0, at - dir * 62.0, 18.0), "target": Vector3(am, at - dir * 6.0, 2.0)}
+	return {}
+
+
+static func _probe_match(n: String, t: String) -> bool:
+	return n.begins_with(t.trim_suffix("*")) if t.ends_with("*") else n == t
+
+
+## --city shadow_off=A+B (command line only): the shadow probe, to find which mesh casts a shadow by switching casters
+## off one node name at a time ("Block*" matches a prefix; a node also matches by its parent's name). "nosun": the
+## daylight casts nothing; "dump": print every caster; "patchcast": the ceiling patches cast again (the look before R2.5).
+func _probe_shadows() -> void:
+	if _shadow_off.is_empty():
+		return
+	if "nosun" in _shadow_off:
+		_rig().sun.shadow_enabled = false
+	for g in find_children("*", "GeometryInstance3D", true, false):
+		var gi := g as GeometryInstance3D
+		if "patchcast" in _shadow_off and gi.name == &"CeilingPatch":
+			gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+		if gi.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF:
+			continue
+		if "dump" in _shadow_off:
+			print("[caster] %s  layers %d  size %s" % [str(get_path_to(gi)), gi.layers, str(gi.get_aabb().size)])
+		for t in _shadow_off:
+			if _probe_match(str(gi.name), t) or _probe_match(str(gi.get_parent().name), t):
+				gi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 
 ## A city-variety camera on the deck on show (else the first deck that has one): {district, eye, target} in arc

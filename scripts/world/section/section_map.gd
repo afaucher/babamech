@@ -22,7 +22,12 @@ const C_MECH := Color(0.3, 1.0, 0.95)
 const C_ENTRY := Color(0.35, 1.0, 0.45)
 const C_EXIT := Color(1.0, 0.35, 0.4)
 const C_WALL := {"bulkhead": Color(0.62, 0.64, 0.68), "window": Color(0.55, 0.8, 0.95, 0.75)}
-const C_GATE := {"portal": Color(0.35, 1.0, 0.45), "blast_door": Color(0.95, 0.25, 0.3), "collapsed": Color(0.55, 0.4, 0.3)}
+## Gate kinds (SectionPlan._make_boundaries). The map is a level-design view, so it tells the crew's doors apart; the
+## built doors all look the same.
+const C_GATE := {"road_door": Color(0.35, 1.0, 0.45), "blast_door": Color(0.95, 0.25, 0.3), "collapsed": Color(0.55, 0.4, 0.3),
+		"tram_door": Color(0.75, 0.55, 1.0)}
+const C_RAIL := Color(0.36, 0.38, 0.44)
+const C_VERGE := Color(0.32, 0.46, 0.3)
 const C_HOOK := {"checkpoint": Color(1.0, 0.3, 0.3), "holding": Color(1.0, 1.0, 1.0), "patrol": Color(1.0, 0.45, 0.75)}
 
 var plan: SectionPlan
@@ -97,14 +102,14 @@ func _draw_section(area: Rect2) -> void:
 			_band(at, th, th + wt, plan.radius_of(k) - plan.clear_height(), plan.radius_of(k), C_WALL[b["kind"]])
 			for g: Dictionary in b["gates"]:
 				if int(g["line"]) == plan.spine_line:
-					_band(at, th, th + wt, plan.radius_of(k) - 12.0, plan.radius_of(k), C_GATE[g["kind"]])
+					_band(at, th, th + wt, plan.radius_of(k) - float(g["h"]), plan.radius_of(k), C_GATE[g["kind"]])
 	for c: Dictionary in plan.connectors:
 		var from := plan.radius_of(int(c["from"]))
 		var to := plan.radius_of(int(c["to"]))
 		match str(c["kind"]):
 			"ramp":
-				var t_top: float = plan.row_theta[int(c["top_line"])]
-				var t_foot: float = plan.row_theta[int(c["foot_line"])]
+				var t_top := float(c["run_top"])       # the slope run (inside the whole-row span)
+				var t_foot := float(c["run_foot"])
 				_band(at, minf(t_top, t_foot), maxf(t_top, t_foot), from, from + plan.p("slab"), Color(0.1, 0.1, 0.12))
 				var pts := PackedVector2Array()
 				for n in 13:
@@ -191,7 +196,7 @@ func _draw_plans(area: Rect2) -> void:
 		var full := plan.arc_of(k)
 		_rect(at, Rect2(-plan.p("width") * 0.5, -full * 0.5, plan.p("width"), full), C_ROAD)
 		var rail := plan.lane_x("rail")
-		_rect(at, Rect2(rail.x, -full * 0.5, rail.y - rail.x, full), Color(0.36, 0.38, 0.44))
+		_rect(at, Rect2(rail.x, -full * 0.5, rail.y - rail.x, full), C_RAIL if plan.lane_kind(k, "rail") == "rail" else C_VERGE)
 		for edge in SectionPlan.EDGES:
 			var b := plan.boundary(k, edge)
 			_rect(at, plan.boundary_rect(k, edge), C_WALL[b["kind"]])
@@ -217,8 +222,9 @@ func _draw_plans(area: Rect2) -> void:
 			match str(c["kind"]):
 				"ramp":
 					_rect(at, rect, Color(0.08, 0.08, 0.1) if int(c["from"]) == k else C_RAMP.darkened(0.45))
-					var a: Vector2 = at.call(rect.get_center().x, plan.row_theta[int(c["top_line"])] * plan.radius_of(k))
-					var b: Vector2 = at.call(rect.get_center().x, plan.row_theta[int(c["foot_line"])] * plan.radius_of(k))
+					var run := plan.ramp_run(ci, k)
+					var a: Vector2 = at.call(rect.get_center().x, run.x)
+					var b: Vector2 = at.call(rect.get_center().x, run.y)
 					draw_line(a, b, C_RAMP, 2.0, true)
 					draw_circle(b if int(c["to"]) == k else a, 3.0, C_RAMP)
 				"shaft":
@@ -319,7 +325,8 @@ func _draw_legend(at: Vector2) -> void:
 			["open air", ZONE_COLORS["open"]], ["transit", ZONE_COLORS["transit"]], ["pillar", C_PILLAR], ["lift", C_LIFT],
 			["ramp", C_RAMP], ["shaft", C_SHAFT], ["vehicles", C_VEHICLE], ["mechs", C_MECH], ["checkpoint", C_HOOK["checkpoint"]],
 			["patrol", C_HOOK["patrol"]], ["civilians", C_HOOK["holding"]], ["pedestrian", C_WALK], ["wall", C_WALL["bulkhead"]], ["window", C_WALL["window"]],
-			["sealed", C_GATE["blast_door"]], ["collapsed", C_GATE["collapsed"]]]
+			["road door", C_GATE["blast_door"]], ["entry / exit", C_GATE["road_door"]], ["collapsed", C_GATE["collapsed"]],
+			["tram door", C_GATE["tram_door"]], ["verge", C_VERGE]]
 	for it: Array in items:
 		draw_rect(Rect2(x, at.y - 8.0, 9.0, 9.0), it[1])
 		draw_string(font, Vector2(x + 12.0, at.y + 1.0), str(it[0]), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.85, 0.87, 0.9))

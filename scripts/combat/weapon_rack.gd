@@ -58,8 +58,8 @@ extends Node
 ##                        launch now; "" otherwise)
 ##   For equipment: built true; enabled = selected (active: deselected by default, auto-deselected after each launch and
 ##   when unusable; passives always true); ammo / ammo_max = drones left / charges (-1 for passives), ready 1 = can
-##   launch now (0 while a drone is out, when none are left, or shut down; passives 1), hold "DESTROYED" / "DRONE OUT"
-##   (rising, circling or flying home) / "EMPTY" / "PASSIVE" / "", in_range false, blocked false, designating /
+##   launch now (0 while this slot's drone is out, when none are left, or shut down; passives 1), hold "DESTROYED" /
+##   "DRONE OUT" (this slot's drone rising, circling or flying home) / "EMPTY" / "PASSIVE" / "", in_range false, blocked false, designating /
 ##   on_target false, muzzle = the hardpoint node, usable = not destroyed (and, active, a charge left).
 ##   heat_state() -> {heat: float, cap: float, fraction: float 0..1, shutdown: bool}   (the MechController's gauge)
 ##   designator_on() -> bool  (the guided track is on, see above)   aim() -> Vector3 (this step's aim point)
@@ -73,10 +73,18 @@ extends Node
 ## ACTIVE equipment (the repair drone) is a selectable slot like a
 ## weapon: its key toggles it, a double tap solos it, soloing another slot deselects it, set_enabled works, and the
 ## UNUSABLE rule applies (no charges left / hardpoint destroyed). It starts deselected. While it is selected, a FRESH
-## trigger press (edge, not hold-repeat) launches the drone if it can (can_launch: a charge left, none of this rack's
-## drones out, hardpoint intact, the mech can act): it pays the catalog active_heat, calls CombatWorld.launch_drone
+## trigger press (edge, not hold-repeat) launches the drone if it can (can_launch: a charge left, THIS SLOT's drone not
+## out, hardpoint intact, the mech can act): it pays the catalog active_heat, calls CombatWorld.launch_drone
 ## (CombatNet broadcasts it), and the slot deselects itself, so a held / later trigger never spends the next charge;
-## reselect to launch again. activate(n) launches directly regardless of selection (tests / bots). Passives ignore the
+## reselect to launch again. ONE DRONE PER SLOT (2026-11-26, R2.2): `drones[i]` is slot i's drone; the Bulwark's two drone
+## saddles fly one each (both out heal 2 %/s); `drone` is the newest one out, drone_out() any, drone_out_at(i) slot i.
+## SELF-REVIVE (user decision 2026-11-26): each step the rack watches its own PlayerTarget (world.targets, target_id ==
+## shooter); on the edge standing -> disabled, on the machine that owns it, `_self_revive` launches ONE drone (the lowest
+## slot with a charge, an intact hardpoint and no drone of its own out) with "self": true, bypassing can_act and paying no
+## heat, after killing every drone of this mech still out. It spends a charge and revives the mech like a crewmate's
+## drone (RepairDrone SELF-REVIVE); the pilot may still hold SPACE to redeploy (the drone dies, the charge is spent). It
+## runs wherever the rack steps while the mech is down: MissionCombat (the local pilot), CrewBot (host bots).
+## activate(n) launches directly regardless of selection (tests / bots). Passives ignore the
 ## key, stay enabled, and a double tap elsewhere never disables them. Passives apply here: the
 ## radiator's cooling_bonus heat/s is shed from the mech's gauge each step; the ammo bin's ammo_bonus (+50 %) is added
 ## to every limited-ammo weapon when the loadout is built (bonus_ammo: rounded up to a whole salvo).
@@ -96,6 +104,7 @@ extends Node
 
 const DOUBLE_TAP := 0.3           ## s: a second press of the same number within this solos the slot
 const LOS_SLACK := 0.75           ## m short of the aim point a hit must be to count as blocked (the aim point is a surface)
+const SELF_REVIVER := "repair_drone"   ## the equipment that launches itself to revive its mech (DownedRules.REVIVER)
 
 signal slot_changed(slot: int)
 signal fired(slot: int)
@@ -124,8 +133,11 @@ var _glows: Array = []                    ## per slot: ChargeGlow for a charging
 var charges: Array[int] = []              ## per slot: launches left of active equipment (-1 = not equipment)
 var ammo_max: Array[int] = []             ## per slot: the weapon's full ammo with the ammo bin (-1 = unlimited)
 var cooling_bonus := 0.0                  ## heat/s the mounted equipment sheds (radiator)
-var drone: RepairDrone                    ## this rack's repair drone while it is out, else null
+var drone: RepairDrone                    ## this rack's newest repair drone while one is out, else null
+var drones: Array = []                    ## per slot: that slot's repair drone while it is out, else null
 var _trigger_was := false                 ## the trigger last step (equipment launches on a fresh press)
+var _was_down := false                    ## the own PlayerTarget was disabled last step (self-revive edge)
+var _own_target: PlayerTarget             ## cached: this rack's mech's PlayerTarget in world.targets
 
 var _chassis := ""
 var _loadout: Dictionary = {}
@@ -163,7 +175,7 @@ func net_fields() -> Dictionary:
 		"_chassis": Net.LOCAL, "_loadout": Net.LOCAL, "_last_slot": Net.PRIVATE, "_last_press": Net.PRIVATE,
 		"_hp_nodes": Net.LOCAL, "_substitutions": Net.LOCAL, "_glows": Net.LOCAL,
 		"charges": Net.OWNER, "ammo_max": Net.SPAWN, "cooling_bonus": Net.SPAWN, "drone": Net.LOCAL,
-		"_trigger_was": Net.PRIVATE}
+		"drones": Net.LOCAL, "_trigger_was": Net.PRIVATE, "_was_down": Net.PRIVATE, "_own_target": Net.LOCAL}
 
 
 func bind(w: CombatWorld, m: MechController, mm: MechModel, cam: ChaseCamera = null, shooter_id: String = "player",
@@ -229,6 +241,7 @@ func rebuild() -> void:
 	while enabled.size() < hardpoints.size():
 		enabled.append(true)
 	enabled.resize(hardpoints.size())
+	drones.resize(hardpoints.size())          # (new slots null; a drone already out keeps its slot)
 	for i in slot_count():
 		if MechCatalog.is_equipment(weapons[i]):
 			enabled[i] = not _active(weapons[i])    # passives always on; active equipment starts DESELECTED
@@ -349,7 +362,7 @@ func activate(n: int) -> bool:
 	if not _launch(n - 1):
 		return false
 	slot_changed.emit(n)
-	return drone != null
+	return drone_out_at(n - 1)
 
 
 ## Resupply (the owner, a supply depot's power core): every limited-ammo weapon back to its full ammo (ammo_max, with
@@ -370,12 +383,12 @@ func refill_ammo() -> int:
 	return n
 
 
-## Slot index `i`'s active equipment can launch now: a charge left, no drone of this rack out (rising, circling or flying
-## home), hardpoint intact, the mech can act.
+## Slot index `i`'s active equipment can launch now: a charge left, this slot's drone not out (rising, circling or flying
+## home; another slot's drone does not block it), hardpoint intact, the mech can act.
 func can_launch(i: int) -> bool:
 	if not _is_equipment(i) or not _active(weapons[i]) or world == null:
 		return false
-	return charges[i] > 0 and not drone_out() and heat_bridge != null and heat_bridge.can_act() \
+	return charges[i] > 0 and not drone_out_at(i) and heat_bridge != null and heat_bridge.can_act() \
 		and not _slot_broken(hardpoints[i])
 
 
@@ -386,10 +399,52 @@ func _launch(i: int) -> bool:
 		return false
 	var st := _stats(weapons[i])
 	heat_bridge.add(float(st.get("active_heat", 0.0)))
-	charges[i] -= 1
-	drone = world.launch_drone({"shooter": shooter, "peer": peer, "hardpoint": hardpoints[i], "weapon": weapons[i],
-		"t": world.now})
+	_send_drone(i, false)
 	return true
+
+
+## Spend slot index `i`'s charge and launch its drone (`self_revive`: the record's "self" flag). The slot's drone and
+## `drone` point at it.
+func _send_drone(i: int, self_revive: bool) -> void:
+	charges[i] -= 1
+	var rec := {"shooter": shooter, "peer": peer, "hardpoint": hardpoints[i], "weapon": weapons[i], "t": world.now}
+	if self_revive:
+		rec["self"] = true
+	var d := world.launch_drone(rec)
+	drones[i] = d
+	if d != null:
+		drone = d
+
+
+## SELF-REVIVE (header): this rack's mech just went down on this machine. Launch ONE self-revive drone from the lowest
+## slot that can (a repair drone with a charge, its hardpoint intact, its own drone not out once the mech's other drones
+## are killed). No can_act, no heat. False when no slot can (the normal downed flow goes on).
+func _self_revive() -> bool:
+	var pick := -1
+	for i in slot_count():
+		if weapons[i] == SELF_REVIVER and charges[i] > 0 and not _slot_broken(hardpoints[i]):
+			pick = i
+			break
+	if pick < 0:
+		return false
+	for d: RepairDrone in world.drones_of(shooter):   # every drone still out dies with the launcher, first
+		d.kill()
+	if drone_out_at(pick):
+		return false
+	_send_drone(pick, true)
+	return true
+
+
+## This rack's mech's PlayerTarget in the combat world (cached), or null (a lab model / test rack without one).
+func own_target() -> PlayerTarget:
+	if _own_target != null and is_instance_valid(_own_target) and _own_target.target_id == shooter:
+		return _own_target
+	_own_target = null
+	for t in world.targets:
+		if is_instance_valid(t) and t is PlayerTarget and t.target_id == shooter:
+			_own_target = t as PlayerTarget
+			break
+	return _own_target
 
 
 ## Extra cooling (heat/s) from intact equipment now: the radiator's cooling_bonus unless its hardpoint is destroyed.
@@ -403,11 +458,26 @@ func _cooling_now() -> float:
 	return c
 
 
-## This rack's repair drone is out (launched, not yet docked: rising, circling or flying home).
+## One of this rack's repair drones is out (launched, not yet docked: rising, circling or flying home). Keeps `drone` on
+## the newest one still out (null when none is).
 func drone_out() -> bool:
-	if drone != null and (not is_instance_valid(drone) or drone.finished()):
-		drone = null
-	return drone != null
+	var newest: RepairDrone = null
+	for i in drones.size():
+		if drone_out_at(i) and (newest == null or (drones[i] as RepairDrone).t0 >= newest.t0):
+			newest = drones[i]
+	drone = newest
+	return newest != null
+
+
+## Slot index `i`'s repair drone is out (launched from that slot, not yet docked, not dead or removed).
+func drone_out_at(i: int) -> bool:
+	if i < 0 or i >= drones.size():
+		return false
+	var d: Variant = drones[i]
+	if d != null and (not is_instance_valid(d) or (d as RepairDrone).finished() or world == null
+			or not world.effects.has(d)):
+		drones[i] = null
+	return drones[i] != null
 
 
 func set_trigger(on: bool) -> void:
@@ -451,6 +521,11 @@ func step(dt: float) -> void:
 		aim_point = _camera_aim()
 	var pull := trigger and not _trigger_was          # a fresh trigger press (equipment launches on the edge only)
 	_trigger_was = trigger
+	var pt := own_target()
+	var down := pt != null and pt.disabled
+	if down and not _was_down and world.owns(pt):
+		_self_revive()                                # SELF-REVIVE: the mech just went down here
+	_was_down = down
 	_step_equipment(pull)
 	var pf := CombatWorld.profiling                   # bench only (tests/bench_combat_fx.gd): per-phase timers
 	var passive := 0.0
@@ -620,7 +695,7 @@ func _equipment_slot(i: int) -> Dictionary:
 	var st := _stats(w)
 	var broken := _slot_broken(hardpoints[i])
 	var active := _active(w)
-	var out_now := active and drone_out()
+	var out_now := active and drone_out_at(i)
 	var can := can_launch(i)
 	var sel: bool = (enabled[i] and usable(i + 1)) if active else true
 	var hint := ""
@@ -643,7 +718,7 @@ func _equipment_slot(i: int) -> Dictionary:
 		"ready": (1.0 if can else 0.0) if active else (0.0 if broken else 1.0), "reloading": false,
 		"heat_per_shot": float(st.get("active_heat", 0.0)), "blocked": false, "in_range": false, "hold": hold,
 		"built": true, "muzzle": muzzle(i + 1), "designating": false, "on_target": false,
-		"equipment": true, "passive": not active, "active_left": drone.time_left() if out_now else 0.0,
+		"equipment": true, "passive": not active, "active_left": (drones[i] as RepairDrone).time_left() if out_now else 0.0,
 		"usable": usable(i + 1), "hint": hint}
 
 

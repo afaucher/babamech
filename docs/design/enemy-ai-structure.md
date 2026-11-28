@@ -35,6 +35,30 @@ Flight (`EnemyFlier._fly_toward`): `_air_fly_timers`, `_air_steer_goal`, `_air_k
 - Prove a refactor with traces (state, target, position, telegraph / fire / alert events, puppet_state per tick);
   the 2026-11-26 harness was temporary (see docs/coordination/antigravity.md for how it was built).
 
+## Overheat look (R2.27, 2026-11-26; presentation only)
+- Nothing floats over an enemy but the HP bar (`EnemyStatusBar.refresh(hp_ratio, dead)`, R2.26). Overheat reads from the
+  unit, like the player mech (radiator glow, MechRig sag).
+- `EnemyGlow`: every enemy mesh's lit surface is ONE shared ShaderMaterial (`EnemyMeshes` commits with
+  `EnemyGlow.materials()`), driven per MeshInstance3D by instance uniforms: `vent_heat` (-1 = the old constant look;
+  0..1 = the VENT_GLOW fins from a dim ember through orange to white-hot), `lights` (optics / lamps, every other lit
+  face), `optic_heat` (troopers: the visor carries the heat ramp, their fins are only on jump packs). Fins are found by
+  vertex colour; `vent_color(h)` mirrors the shader for tests. No per-unit material, so batching is unchanged.
+- `EnemyHeatLook` (`e.heat_look`, Net.LOCAL): stepped first in `_update_visuals` (`_step_heat_look`; the drone and the
+  dropship call it themselves). Shut state from the unit's own `overheated` / `rebooted` signals: the host's
+  heat.shutdown edge in `tick`, and on a client EnemySync's replay of the host's reliable heat event; the same moments
+  the squad's "overheated" / "rebooted" events fire, which CombatAudio plays (`enemy.overheat` / `enemy.reboot`), so
+  look and sound line up on every machine. If the replicated `heat.shutdown` disagrees for 0.5 s it is adopted silently.
+  Fin glow = heat fraction (host gauge; puppet: the stream's u8), quantised to 1/24, written at 10 Hz when it moves.
+- Timing from the moment: shutdown: lights stutter out in 0.25 s, `slump` 0 -> 1 on an underdamped spring (~0.6 s,
+  ~20 % overshoot), steam every 0.22 s while the fins are above half heat. Reboot: lights flicker back over 0.7 s, the
+  body rises from +0.3 s (settled by ~0.9 s).
+- Units read `heat_look.slump` on VISUAL pivots only (hit spheres follow the root): strider hips -0.55 m (knees bend over
+  planted feet), torso -22 deg and a small list, sensor nods; trooper crouches and slumps forward 0.35 rad; turret gun
+  -24 deg; tank barrel -12 deg; drone / gunship / dropship (`flier_offsets`, x1 / x0.8 / x0.6): the bob dies, nose down
+  0.3 rad, sink 0.25 m (inside the bob envelope), roll wobble 0.12 rad at 5.5 rad/s. A wreck goes back to the plain look.
+- Most fins sit at the rear (turret, strider, tank): from the front the shutdown reads from the dark optics, the slump
+  and the steam above the unit; the glow ramp reads from the side / rear.
+
 ## Open
 - Gunship contact memory is wired but OFF (`contact_memory = 0.0`). With the drone's 8 s the corner wiggle fell from
   194.5 s to 47.0 s over 52 corner runs (seeds 4, 1, 403112; 20 s each, the strict 6 s / > 20 m / < 6 m / >= 6

@@ -30,7 +30,12 @@ func setup() -> void:
 	sc.not_blank(img, Rect2(0.72, 0.6, 0.28, 0.4), "HUD weapon rows")
 	check(hud.crew_panel.visible and hud.crew_panel.cards.size() == 3, "demo crew panel shows three teammates")
 	sc.not_blank(img, Rect2(0.0, 0.38, 0.21, 0.28), "HUD crew panel (above the status corner)")
-	sc.not_blank(img, Rect2(0.33, 0.04, 0.34, 0.05), "HUD objective line (top centre)")
+	# The objectives are one panel top right since 2026-11-23 (the top-centre strip is gone; test_layout checks the place).
+	sc.not_blank(img, Rect2(0.78, 0.045, 0.2, 0.06), "HUD objective panel (top right)")
+	check(hud.mission_hud.list_panel.visible and hud.mission_hud.list_panel.get_global_rect().position.x > 800.0,
+		"the objective panel shows, in the right half")
+	# A destroyed mounted part (the demo's left-shoulder rocket pod, R2.14): drawn dark with a red outline, no cross.
+	eq(float(hud.components().get("shoulder_l", 1.0)), 0.0, "the demo has a destroyed mounted part (shoulder_l)")
 	hud.mission_hud.demo_banner = true
 	await frames(4)
 	var img2 := await sc.grab("hud_demo_banner")

@@ -88,7 +88,9 @@ host -> crew     mission.end    {reason}                the host left the missio
   (`CityPlan.checksum()`), its street-prop layout (`CityPropLayout.checksum`: props are host-arbitrated by index and
   block shots) and its air doors (`MissionWorld.air_checksum`), so a layout difference in any of them is a desync.
   Restore paths that take a peer's buffer validate it and ignore a malformed one instead of reading past its end or
-  allocating by the peer's count: `CityProps.restore` (`valid_snapshot`), `LifeCrowd` / `LifeFleet` / `LifeTram.restore`,
+  allocating by the peer's count: `CityProps.restore` (`valid_snapshot`), `LifeCrowd` / `LifeFleet` / `LifeTram.restore`
+  (version 2 since 2026-11-27: the halts and the tram door events; the tram exists on a section's top deck only, and the
+  host's `AmbientLife.set_tram_door` reaches the crew as `life.door` {end, open, t, deck}),
   `AmbientLife.restore` (sizes clamped to what arrived), `MissionWorld.restore` (only known ids and shapes); the snapshot
   codecs (`NetMechCodec` / `NetEnemyCodec.decode`) stop at a short entry.
   The host compares with its own: a mismatch is printed (`[Net] DESYNC ...`), noted in telemetry (`NetTelemetry.note`, a
@@ -236,7 +238,7 @@ host -> crew     mission.go     {start_at, state?}   carries the latest state (i
   leaves on its own `CLIENT_GRACE` (6 s) later. Esc still leaves as before.
 - **Solo** (offline): the same rules evaluated locally (local seconds for t), the same banner, then back to the menu on
   its hangar (`FrontEnd.next_screen = "hangar"`). No automatic respawn any more (user decision 2026-11-24): a downed mech
-  waits for a crewmate's repair drone or its pilot holds SPACE to respawn (docs/design/pacing-director.md §4,
+  waits for a crewmate's repair drone (or its own, launched automatically when it has a charge: self-revive) or its pilot holds SPACE to respawn (docs/design/pacing-director.md §4,
   `DownedRules`); `MissionRules` "wipe" stays off by default (on: lost when every pilot is down and nobody redeploys).
 - **The plan** (mission objectives, docs/design/mission-objectives.md §7 / §9; THE ONLY MODE since 2026-11-25, user:
   "Cut the legacy modes."; no setting, `--objectives` accepted and ignored, `--no-objectives` gone). `mission.launch`
@@ -265,6 +267,12 @@ host -> crew     mission.go     {start_at, state?}   carries the latest state (i
   the mission "lost" with reason `objective_failed` (banner MISSION FAILED, mission.end "Objective failed"). Late
   joiners: none mid-mission (refused); a barrier latecomer gets the state and the pending orders in mission.go
   (MissionWorld.snapshot() is not sent: the doors are rebuilt from the orders, the rest from the state).
+  Bulkhead doors (2026-11-27, R2.11a, docs/design/city-spine.md §4): the entry / exit road doors (`ENTRY_ID` / `EXIT_ID`)
+  are ordinary door ids (`open_source` / `shut_source` orders, same rule as wave doors); the tram doors are a
+  host-arbitrated world object, `set_tram_door(end, open, at)` storing a time on the shared clock in `_sched` (OWNER, in
+  snapshot()). Every machine starts from the same defaults (entry door opening at clock 0 while `ENTRY_OPEN_DEFAULT`,
+  tram doors open, the rest shut); a change must reach every machine as an order with its `at` (Missions' wiring, not
+  built yet). The portal state (`portal_progress`) is a deprecated local stub.
   Tests: `test_mission_objectives` (solo: won through flag, two defends and the hold; lost by a destroyed relay; waves
   spawn), `test_net_objectives` (2) / `test_net_objectives_3` (3), scenario `tests/net_objectives_case.gd`: equal
   objective states, progress, wave counters, orders and door schedules on every machine, wave units on every client.
@@ -308,7 +316,14 @@ host -> client   T_SNAP  the host's mech + the other clients' (<= 173 B)  each f
 - **Damage and mounts**: `MechPuppet.components` {name: 0..1}, `hull` (torso fraction), `downed` (the owner's
   `PlayerTarget.disabled`), `disable_cause`, `redeploying`; copied every frame onto the puppet's PlayerTarget (`hp`, `disabled`,
   `disable_cause`, `redeploying`, `revive_progress`, `aid_charges`: a read-only mirror, the owner decides; a revive is applied by
-  the downed mech's owner from the repair drone it sees beaming it, nothing is sent). Each weapon model on a puppet turns to the owner's
+  the downed mech's owner from the repair drone it sees beaming it, nothing is sent; a destroyed weapon hardpoint the
+  owner's drone rebuilt comes back alive on the mirror from the same component byte). REPAIR DRONE (scheduled effect,
+  CombatNet): `combat.drone {t, hp(, b)(, s)}` reliable, one per launch, relayed by the host; duplicates dropped by
+  (origin, hardpoint, t) (the Bulwark's two drone slots can launch in one step). `s` (2026-11-26, optional): 1 = a
+  SELF-REVIVE drone (WeaponRack launched it when its own mech went down); validated on receipt (only 1 / true counts),
+  it sets the record's `"self": true` on every machine, also for a bot's (`b`) drone and on a late (fast-forwarded)
+  arrival; each machine then watches the launcher's PlayerTarget (own or mirror) to know when the one revive is done
+  (`CombatWorld.self_reviving(id)`). No other message. Each weapon model on a puppet turns to the owner's
   `aim_yaw` / `aim_pitch` (`WeaponPose.apply`). Owner side: `CrewSync.component_fractions(pt)`, `CrewSync.mount_aims(rack)`.
 - **Crew panel**: `hud.crew_panel.status_source = CrewSync.status`: hp = the hull, heat, state "disabled" (downed) /
   "overheat" / "ok" from the snapshots.
@@ -341,7 +356,7 @@ host -> client   T_SNAP  the host's mech + the other clients' (<= 173 B)  each f
   bot). A client's packet from the host carries the host's mech, its bots and the other clients' (<= 3 entries, 155 B).
   Everywhere else a bot is a puppet. Bot mechs' and PlayerTargets' `owner_peer` is 1, so every hit on a bot is decided
   and applied on the host (victim's owner), a bot's hit on a mech by its victim, on host-owned targets by the host.
-- **Fire records:** CombatNet `add_bot(id)`: `combat.fire {r, b: id}` / `combat.drone {t, hp, b}` from the host; a
+- **Fire records:** CombatNet `add_bot(id)`: `combat.fire {r, b: id}` / `combat.drone {t, hp, b(, s)}` from the host; a
   receiver accepts `b` only from the host for a seated bot and rebuilds shooter "player<b>", peer 1. Charge glows too:
   `add_bot(id, rack)` watches the bot's rack like the local one and sends `combat.charge {hp, t, on, b}`.
 - **Puppet accuracy:** a bot's puppet holds the same bound as a player's (test_net_hangar_bots: <= 0.5 m at render
@@ -414,6 +429,13 @@ host -> crew     enemy.ev     {l: [[kind, n, data]...]}               one reliab
   0.33-0.45 m, mean 0.04 m) and a turret's aim; a client's damage then kill shown on every machine with the wreck and
   the per-deck count; a host enemy bolt decided and taken on the victim's machine only; a telegraph targeting a
   client's puppet arriving >= 0.3 s ahead.
+- **Dropships** (R2.24): a host-owned enemy like the rest (`EnemyDropDrone`, AI on the host): `add` brings its puppet
+  (also while dormant in an air door's recess), the stream poses it (bay / pitch as its aim), `tele` its drop, its
+  troopers are `add`ed under the bay, `gone` removes it in the recess. Its air doors are scheduled effects
+  (`MissionFlow.order_air_door` -> `mission.wave` "air"); a hold extension repeats wave + open_at with a longer hold, so
+  `NetMission._take_wave` dedupes on wave + source + open_at + hold (it used to drop extensions: the client's door closed
+  ~2 s early). `test_net_dropship` (2, off / coast): the ship in every phase (worst 0.07-0.8 m), the same troopers
+  first seen under the client's ship, a re-sent manifest mid-exfil, nothing left after, the same door states / times.
 
 ## Next (in cast's build-plan order)
 1. (Done: mech snapshots, above.)

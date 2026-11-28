@@ -10,8 +10,10 @@ const OWNER_META := &"owner_peer"
 ## `peer` is the owner (the crew member whose machine drives it; owner authority, docs/networking.md), kept as the
 ## "owner_peer" meta (owner_of): 0 = nobody's (labs). `accent` (a MechAccent id, "" = the default) is applied once the
 ## model exists (the rig builds it when it enters the tree).
+## `drafts`: a MechCatalog.DRAFT_CHASSIS id (the Wasp) builds that chassis, controller and model (the hover lab and its
+## tests); false everywhere in the game, where a draft id gives the Strider.
 static func make(head: String = "chicken", chassis: String = "strider", loadout: Dictionary = {}, peer: int = 0,
-		accent: String = "") -> MechController:
+		accent: String = "", drafts: bool = false) -> MechController:
 	var m := MechController.new()
 	m.name = "Mech"
 	m.set_meta(OWNER_META, peer)
@@ -32,8 +34,10 @@ static func make(head: String = "chicken", chassis: String = "strider", loadout:
 	m.add_child(audio)
 	# The chassis' movement numbers and capsule (MechCatalog "movement": the Strider's r 2.2 / h 8, the Bulwark's r 3.6 / h 8),
 	# the same on every machine (puppets too): the crew entry carries the chassis id.
-	m.apply_chassis(chassis)
+	m.apply_chassis(chassis, drafts)
 	m.ready.connect(func() -> void:
+		if drafts:
+			rig.model.show_drafts = true
 		rig.model.configure(head, chassis, loadout)
 		rig.sync_chassis()   # the chassis' rig numbers, before max_step()
 		if accent != "":

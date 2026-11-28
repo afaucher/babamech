@@ -312,7 +312,7 @@ func _downed_hud(hud: MechHud, mh: MissionHud, tag: String) -> void:
 		has_row = has_row or (str(r["role"]) == "crew" and str(r["text"]) == crew_line)
 	check(has_row, t + " (plan): the crew line is a row of the structured panel")
 	var pr := mh.list_panel.get_global_rect()
-	check(pr.size.y >= MissionHud.LIST_HEAD + MissionHud.ROW * float(rows.size()) - 0.5,
+	check(pr.size.y >= MissionHud.PANEL_TOP + MissionHud.ROW * float(rows.size()) - 0.5,
 		t + " (plan): the panel is tall enough for its %d rows" % rows.size())
 	check(pr.size.y <= root.size.y * MissionHud.PANEL_FRAC + 0.5, t + " (plan): within the panel's height cap")
 	check(pr.end.y <= root.end.y and not pr.intersects(mh.downed_panel.get_global_rect()), t + " (plan): on screen, clear of the prompt")
@@ -341,23 +341,22 @@ func _long_plan() -> MissionPlan:
 	return mp
 
 
-## The objective panel with the longest content (5 decks all visited by the crew, two found bonuses on each and every
-## other deck's primary left, the depot line, this deck's primary done so the "Deck n: ... left" / "Return to deck n"
-## lines lead with their route hints): still the one panel, top right, on screen, at most MissionHud.PANEL_FRAC of the
-## screen height; every other deck still has its line; the depot line shows; no direction prefix ("V1", "^1") anywhere.
+## The objective panel with the longest content (R2.13: 5 decks, every one visited by the crew, two found bonuses on
+## each, the depot line and a downed-crew line), from every viewer deck: still the one panel, top right, on screen, at
+## most MissionHud.PANEL_FRAC of the screen height; every deck header stays, the viewer's is the current one; the depot
+## and crew lines show; no "DECK X OF Y", no prefix, no "?".
 func _long_panel(hud: MechHud, mh: MissionHud, tag: String) -> void:
 	var sec := SectionPlan.make({"seed": 21.0, "decks": 5.0})
 	var rules := MissionRules.make(sec, {"plan": _long_plan()})
 	var objs := {}
 	for o: Dictionary in rules.objectives:
-		objs[o["id"]] = ["known", 3.0, 20.0]
-	objs["p0"] = ["done", 20.0, 20.0]
+		objs[o["id"]] = ["known", 1.0, 3.0] if o["type"] == "defend" else ["known", 3.0, 20.0]
+	objs["hold"] = ["hidden", 0.0, 60.0]
 	rules.apply_state({"objs": objs, "left": [4, 6, 8, 10, 12], "reached": 4})
 	var core_line := MissionDepots.line_for(0.6)
+	mh.demo_downed = true
+	var crew_line := str((MissionHud.DEMO_DOWNED["lines"] as Array)[0])
 	for v: int in [0, 2, 4]:
-		var vo := objs.duplicate()
-		vo["p%d" % v] = ["done", 20.0, 20.0]
-		rules.apply_state({"objs": vo})
 		var pn := rules.panel(v, Vector2(20.0, 30.0))
 		pn["extra"] = [core_line]
 		hud.demo = false
@@ -370,31 +369,34 @@ func _long_panel(hud: MechHud, mh: MissionHud, tag: String) -> void:
 		var root := hud.root.get_global_rect()
 		check(r.size.y <= root.size.y * MissionHud.PANEL_FRAC + 0.5,
 			t + ": the panel stays within %d %% of the screen height (%.0f of %.0f)" % [roundi(MissionHud.PANEL_FRAC * 100.0), r.size.y, root.size.y])
-		lc.on_screen(mh.list_panel, t + " long objective panel", Vector2(MissionHud.LIST_W, MissionHud.LIST_HEAD + MissionHud.ROW * 3.0), 1.0)
+		var rows := mh.shown_rows()
+		check(r.size.y >= MissionHud.PANEL_TOP + MissionHud.ROW * float(rows.size()) - 0.5, t + ": tall enough for its %d rows" % rows.size())
+		lc.on_screen(mh.list_panel, t + " long objective panel", Vector2(MissionHud.LIST_W, MissionHud.ROW * float(rows.size())), 1.0)
+		var heads: Array = rows.filter(func(x: Dictionary) -> bool: return x["role"] == "header")
+		eq(heads.map(func(x: Dictionary) -> String: return x["text"]), ["Deck 1:", "Deck 2:", "Deck 3:", "Deck 4:", "Deck 5:"],
+			t + ": every deck header stays")
+		eq(heads.filter(func(x: Dictionary) -> bool: return bool(x["current"])).map(func(x: Dictionary) -> int: return int(x["deck"])), [v],
+			t + ": the viewer's deck is the current one")
 		var shown := mh.shown_lines()
-		check(str(pn["header"]).begins_with("DECK %d of 5" % (v + 1)), t + ": header %s" % pn["header"])
 		check(shown.has(core_line), t + ": the depot line is in the panel")
-		for d in 5:
-			if d == v:
-				continue
-			var any := false
-			for s: String in shown:
-				any = any or s.to_upper().contains("DECK %d" % (d + 1))
-			check(any, t + ": deck %d still has a line (%s)" % [d + 1, shown])
+		eq(shown[-1], crew_line, t + ": the crew line is last, never cut")
 		for s: String in shown:
-			check(not s.begins_with("V1") and not s.begins_with("^1") and not s.contains("?"), t + ": no prefix in %s" % s)
-		var ok := mh.list_panel.get_global_rect().end.y <= root.end.y
+			check(not s.begins_with("V1") and not s.begins_with("^1") and not s.contains("?") and not s.to_upper().contains(" OF 5"),
+				t + ": no prefix in %s" % s)
+		var ok := r.end.y <= root.end.y
 		check(ok and not r.intersects(hud.weapon_panel.get_global_rect()) and not r.intersects(hud.crew_panel.get_global_rect()),
 			t + ": clear of the weapons and the crew panel")
-		print("%s: %d rows, panel %.0f x %.0f at (%.0f, %.0f)" % [t, shown.size(), r.size.x, r.size.y, r.position.x, r.position.y])
-	# The demo panel (deck 1 of 3) shows its three lines, "Proceed to deck 2" and the route hint.
+		print("%s: %d rows (of %d unfitted + 1 crew), panel %.0f x %.0f at (%.0f, %.0f), %.0f %% of the height" % [t, rows.size(),
+			MissionRules.fit(pn, 99).size(), r.size.x, r.size.y, r.position.x, r.position.y, r.size.y / root.size.y * 100.0])
+	mh.demo_downed = false
+	# The demo panel: deck 1 current, its lines, then deck 2's proceed line (the next step) with its route, deck 3's.
 	mh.source = Callable()
 	hud.demo = true
 	mh.demo_plan = true
 	await frames(2)
 	var demo := mh.shown_lines()
-	check(demo.size() == 5 and demo.has("Proceed to deck 2") and demo.has("ramp down 120 m"),
-		tag + ": the demo panel lists this deck, then Proceed to deck 2 with its route (%s)" % [demo])
+	eq(demo, ["Deck 1:", "Clear hostiles, waves 3/3", "Raise the flag: 60% (optional)", "Defend the position: wave 1/2 (optional)",
+		"Deck 2:", "Proceed to deck 2", "ramp down 120 m", "Deck 3:", "Proceed to deck 3"], tag + ": the demo panel")
 	mh.demo_plan = false
 	await frames(1)
 
@@ -443,7 +445,11 @@ func _menu(sz: Vector2i) -> void:
 	await _reachable(fe.quality_pick, tag + " settings graphics quality")
 	await _reachable(fe.renderer_pick, tag + " settings renderer")
 	await _reachable(fe.quality_note, tag + " settings graphics note")
+	await _reachable(fe.display_pick, tag + " settings display mode")
+	await _reachable(fe.resolution_pick, tag + " settings resolution")
+	check(fe.resolution_pick.size.x >= 200.0, "%s: the resolution picker is wide enough to read (%.0f px)" % [tag, fe.resolution_pick.size.x])
 	await _reachable(fe.btn_back, tag + " settings Back")
+	_readable(fe, tag + " settings")
 
 	fe.show_screen("hangar")
 	await frames(2)
@@ -453,6 +459,10 @@ func _menu(sz: Vector2i) -> void:
 	await _hangar_framing(fe, left, tag)
 	for hp: String in fe.weapon_picks:
 		await _reachable(fe.weapon_picks[hp], "%s hangar %s" % [tag, hp])
+		check(fe.weapon_picks[hp].size.y >= FrontEnd.ROW_H - 0.5, "%s: hangar %s picker is a full row (%.0f px)" % [tag, hp, fe.weapon_picks[hp].size.y])
+	await _reachable(fe.stats_label, tag + " hangar loadout readout")
+	await _reachable(fe.crew_list, tag + " hangar crew list")
+	_readable(fe, tag + " hangar")
 	await _hangar_bulwark(fe, left, tag)
 	# The main actions are pinned in the footer: fully on screen without scrolling, even when a long note and a crew
 	# list make the panel taller than the window.
@@ -464,9 +474,56 @@ func _menu(sz: Vector2i) -> void:
 		check(b.get_parent() == fe.footer, "%s: '%s' sits in the pinned footer" % [tag, b.text])
 	fe.note = ""
 	await _hangar_bots(fe, tag)
+	await _debrief(fe, left, tag)
 	await _invite_prompt(fe, tag)
 	fe.queue_free()
 	await frames(1)
+
+
+## Every label in the menu panel is at least FrontEnd.NOTE_FONT (R2.16: readable at 1080p / 1440p).
+func _readable(fe: FrontEnd, tag: String) -> void:
+	var small: Array = []
+	for n: Node in fe.panel_box.find_children("*", "Label", true, false) + fe.footer.find_children("*", "Label", true, false):
+		var l := n as Label
+		if l.is_visible_in_tree() and l.text != "" and l.get_theme_font_size("font_size") < FrontEnd.NOTE_FONT:
+			small.append("%s (%d)" % [l.text.left(24), l.get_theme_font_size("font_size")])
+	check(small.is_empty(), "%s: no text under %d px in the menu panel %s" % [tag, FrontEnd.NOTE_FONT, small])
+
+
+## The debrief board (R2.15a) with a full crew (three pilots and a bot, also with long names): over the bay, right of
+## the menu panel, fully on screen; every name in the top row and every stat cell on screen at its size; Next in the
+## pinned footer, on screen; Next goes back to the loadout and takes the board down.
+func _debrief(fe: FrontEnd, left: Control, tag: String) -> void:
+	var crews := [
+		[{"peer": 1, "name": "Layout"}, {"peer": 2, "name": "Ripley"}, {"peer": 3, "name": "Vasquez"}, {"peer": -1, "name": "Bishop"}],
+		[{"peer": 1, "name": "A Pilot With A Long Name"}, {"peer": 2, "name": "WWWWWWWWWWWWWWWWWWWWWWWW"},
+			{"peer": 3, "name": "Pilot Three"}, {"peer": -2, "name": "Bot With Long Name 2"}]]
+	for crew: Array in crews:
+		NetMission.last_debrief = NetMission.clean_debrief(DebriefStats.stub(crew))
+		fe.show_screen("debrief")
+		await frames(3)
+		var t := "%s debrief (%s)" % [tag, crew[1]["name"]]
+		var b := fe.debrief_board
+		if not check(b != null and b.is_visible_in_tree(), t + ": the board shows"):
+			return
+		lc.on_screen(b, t + " board", Vector2(400, 300), 1.0)
+		check(b.get_global_rect().position.x >= left.get_global_rect().end.x, t + ": the board is right of the menu panel")
+		check(fe.stage.get_global_rect().encloses(b.get_global_rect()), t + ": the board stands over the bay")
+		eq(b.name_labels.size(), 4, t + ": a name per pilot across the top")
+		for l: Label in b.name_labels:
+			lc.on_screen(l, "%s name %s" % [t, l.name], Vector2(DebriefBoard.PILOT_W, DebriefBoard.ROW_H), 1.0)
+		for r: int in b.cells.size():
+			for l: Label in b.cells[r]:
+				lc.on_screen(l, "%s cell %d" % [t, r], Vector2(DebriefBoard.PILOT_W, DebriefBoard.ROW_H), 1.0)
+		for l: Label in b.row_labels:
+			lc.on_screen(l, "%s row %s" % [t, l.text], Vector2(DebriefBoard.LABEL_W, DebriefBoard.ROW_H), 1.0)
+		lc.on_screen(fe.btn_next, t + " Next", Vector2(100, 40), 1.0)
+		check(fe.btn_next.get_parent() == fe.footer, t + ": Next sits in the pinned footer")
+		_readable(fe, t)
+	fe.btn_next.pressed.emit()
+	await frames(2)
+	eq(fe.screen, "hangar", tag + " debrief: Next goes to the loadout")
+	check(fe.debrief_board == null, tag + " debrief: the board is gone")
 
 
 ## A Steam invite asks first (FrontEnd.show_invite_prompt): a modal over the whole menu naming the inviter, its Accept and
@@ -654,3 +711,6 @@ func _reachable(c: Control, what: String) -> void:
 	await get_tree().process_frame
 	lc.on_screen(c, what + " (scrolled to)")
 	sc.scroll_vertical = 0
+	# The children move to the reset scroll on the next layout pass: until then their rects are stale, and the next
+	# ensure_control_visible would scroll from the old positions (it under-scrolled a row below the fold).
+	await get_tree().process_frame

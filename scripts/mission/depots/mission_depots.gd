@@ -51,6 +51,8 @@ const BOT_NEED_STRUCTURE := 0.7   ## a bot needs a core below this share of its 
 ## docs/design/hangar-bots.md). The bot's code applies the effect on its mech: MissionDepots.apply_core_to(its
 ## PlayerTarget, its WeaponRack) (rule 2: the owner, the host, changes its own bot's mech).
 signal bot_core_granted(pilot_id: int, depot_id: String)
+## Every machine: a grant was applied here, any pilot, once per grant (by seq). The host's MissionStats counts `cores` from it.
+signal core_granted(pilot_id: int, depot_id: String)
 
 var flow: MissionFlow
 var drive: MissionScene
@@ -216,7 +218,8 @@ var _stack_ref: CityStack = null  ## place_on: the stack to place on (else the d
 var _mw_ref: MissionWorld = null  ## place_on: the mission world (else the flow's)
 
 
-## Distance (m, in the deck's arc coordinates) from (x, s) to depot `id`'s footprint (SupplyDepot.BLOCK).
+## Distance (m, in the deck's arc coordinates) from (x, s) to depot `id`'s footprint (SupplyDepot.footprint_half: the
+## symmetric box round its collision).
 func footprint_dist(id: String, x: float, s: float) -> float:
 	var st: Dictionary = sites.get(id, {})
 	if st.is_empty():
@@ -601,6 +604,7 @@ func _take_grant(g: Dictionary) -> bool:
 	if cores_left.has(id):
 		cores_left[id] = int(g.get("cores_left", 0))
 	last_grant = g.duplicate()
+	core_granted.emit(int(g.get("peer", 0)), id)
 	if int(g.get("peer", 0)) != local_peer() or drive == null:
 		var bp := int(g.get("peer", 0))
 		if _deciding() and _bot(bp):

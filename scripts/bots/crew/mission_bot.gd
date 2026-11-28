@@ -170,6 +170,9 @@ var _route_goal := Vector3.INF
 var _route_t := 0.0           ## s since the route's goal was checked
 var _target: Variant = null   ## the committed enemy (clear objectives): an EnemyBase, untyped (it may be freed; _live_on)
 var _target_t := 0.0          ## s it has been held
+var _tgt_id := 0             ## the committed scout drone's instance id, its HP and the bot time it last lost HP or came
+var _tgt_hp := 0.0            ## near (_drone_given_up: PlayerBot's reach rules give it up after DRONE_GIVE_UP s)
+var _tgt_prog_t := 0.0
 var _mode_t := 0.0            ## s in the current mode
 var _said := ""
 var _status_t := 0.0
@@ -266,17 +269,29 @@ var _dodge_ok := false          ## ...and this dodge is honoured
 var depot_visits := 0         ## times it went for a supply depot (tests)
 var revives := 0              ## downed crewmates it stood up (tests)
 var revive_declines := 0      ## revives it turned down (hot wreck while low, too many threats; tests)
-var revive_log: Array = []    ## [{t, peer, kind: go | done | gone | decline | gave_up, why}] (tests, report)
+var revive_log: Array = []    ## [{t, peer, kind: go | done | gone | decline | gave_up | self, why}] (tests, report)
 var _rv_peer := 0             ## the downed crewmate it is going to revive (0 = none)
 var _rv_t := 0.0              ## s since it set off
 var _rv_spot := Vector3.INF   ## where it stands for the revive (a covered spot within REVIVE_STAND of the wreck)
 var _rv_skip: Dictionary = {} ## pilot id -> t until which it doesn't reconsider that wreck (declined / gave up)
+var _rv_seen: Dictionary = {} ## pilot id -> t it was first seen downed (its own drone gets REVIVE_SELF_GRACE s to launch)
+var revive_self_skips := 0    ## steps it left a wreck to that pilot's own self-reviving drone (R2.9; tests)
+var aid: BotAid               ## being helped: the drone leash and the downed wait (R2.6)
+var leash_t := 0.0            ## s a crewmate's repairing drone held its legs in range (tests)
 var _depot := ""                ## plan mode: the supply depot it is walking to ("" = none)
 var _depot_t := 0.0             ## s since it set off for it
 var _depot_cd := 0.0            ## s before it looks for a depot again (after a core, a give-up)
 var _depot_bad: Dictionary = {}  ## depot id -> t until which it is not tried again (a give-up there)
 var _solid_rects: Dictionary = {}  ## deck -> [Rect2] depot footprints the legs keep clear of (_solids)
 var _hp_hist: Array = []      ## [[t, weakest core part]] over PRESSURE_WIN s
+var bay_phase := ""           ## the entry / exit bay leg (_bay_step): "" | entry_wait | entry_out | exit_wait | exit_in | exit_slot
+var bay_wait_t := 0.0         ## s spent waiting in the entry bay for its door (tests)
+var bay_out_t := -1.0         ## bot time it left the entry bay through the door (-1: not yet; tests)
+var _bay_anchor := Vector3.INF  ## walking out of the entry bay: where it last made 1 m of progress
+var _bay_stuck_t := 0.0       ## s since then
+var _bay_retarget_t := 0.0    ## s left heading round a blocker along one side of the bay (BAY_RETARGET)
+var _bay_side := 0            ## that side: +1 / -1 along the door frame's x (0: not chosen yet)
+var _bay_cache: Dictionary = {}  ## door id + world -> its source_bay (static once the mission world is set up)
 ## CHASSIS (read once in _ready from the body's MechCatalog movement block; the Strider's give the constants above, so
 ## Strider behaviour is unchanged): a WIDE body (capsule radius over the Strider's 2.2, the Bulwark's 3.6) widens the
 ## grid plan's side rays and the stand / cover room by the extra radius and keeps the route off road lines its capsule
@@ -298,7 +313,7 @@ func net_fields() -> Dictionary:
 		"pilot": Net.LOCAL, "planner": Net.LOCAL, "mode": Net.PRIVATE, "goal_text": Net.PRIVATE,
 		"_nav": Net.PRIVATE, "_navs": Net.PRIVATE, "_perch": Net.PRIVATE, "_perch_t": Net.PRIVATE, "_perch_hold": Net.PRIVATE, "_perch_prog_t": Net.PRIVATE, "_perch_best": Net.PRIVATE, "_bad_perch": Net.PRIVATE, "perch_fails": Net.PRIVATE, "_perch_anchor": Net.PRIVATE, "_vantage_kind": Net.PRIVATE, "_rng": Net.PRIVATE, "_deck": Net.PRIVATE, "_legs": Net.PRIVATE, "_leg_i": Net.PRIVATE,
 		"_seg_i": Net.PRIVATE, "_route_key": Net.PRIVATE, "_route_goal": Net.PRIVATE, "_route_t": Net.PRIVATE,
-		"_target": Net.LOCAL, "_target_t": Net.PRIVATE, "_mode_t": Net.PRIVATE, "_said": Net.PRIVATE,
+		"_target": Net.LOCAL, "_target_t": Net.PRIVATE, "_tgt_id": Net.PRIVATE, "_tgt_hp": Net.PRIVATE, "_tgt_prog_t": Net.PRIVATE, "_mode_t": Net.PRIVATE, "_said": Net.PRIVATE,
 		"_status_t": Net.PRIVATE, "_last_pos": Net.PRIVATE, "_stk_t": Net.PRIVATE, "_stk_rem": Net.PRIVATE,
 		"_stk_n": Net.PRIVATE, "_stk_pos": Net.PRIVATE, "_backup_t": Net.PRIVATE, "_backup_dir": Net.PRIVATE, "_hop_t": Net.PRIVATE, "_esc_t": Net.PRIVATE, "_esc_dir": Net.PRIVATE, "_esc_spot": Net.PRIVATE, "_esc_n": Net.PRIVATE, "_esc_try": Net.PRIVATE, "_esc_base": Net.PRIVATE, "_esc_from": Net.PRIVATE, "_esc_mark": Net.PRIVATE, "_avoid": Net.PRIVATE, "wedge_escapes": Net.PRIVATE,
 		"_fight_t": Net.PRIVATE, "_no_los_t": Net.PRIVATE, "_alive_prev": Net.PRIVATE, "_vantage": Net.PRIVATE,
@@ -316,8 +331,11 @@ func net_fields() -> Dictionary:
 		"revive_priority": Net.SPAWN, "travel_dodges": Net.PRIVATE, "depot_visits": Net.PRIVATE, "_depot": Net.PRIVATE,
 		"_depot_t": Net.PRIVATE, "_depot_cd": Net.PRIVATE, "_depot_bad": Net.PRIVATE, "_solid_rects": Net.LOCAL,
 		"revives": Net.PRIVATE, "revive_declines": Net.PRIVATE, "revive_log": Net.PRIVATE, "_rv_peer": Net.PRIVATE,
-		"_rv_t": Net.PRIVATE, "_rv_spot": Net.PRIVATE, "_rv_skip": Net.PRIVATE, "_dodge_seen": Net.PRIVATE, "_dodge_ok": Net.PRIVATE,
-		"body_r": Net.PRIVATE, "hop_only": Net.PRIVATE, "local_side": Net.PRIVATE, "roomy": Net.PRIVATE, "stuck_win": Net.PRIVATE, "veto_grow": Net.PRIVATE}
+		"_rv_t": Net.PRIVATE, "_rv_spot": Net.PRIVATE, "_rv_skip": Net.PRIVATE, "_rv_seen": Net.PRIVATE,
+		"revive_self_skips": Net.PRIVATE, "aid": Net.LOCAL, "leash_t": Net.PRIVATE, "_dodge_seen": Net.PRIVATE, "_dodge_ok": Net.PRIVATE,
+		"body_r": Net.PRIVATE, "hop_only": Net.PRIVATE, "local_side": Net.PRIVATE, "roomy": Net.PRIVATE, "stuck_win": Net.PRIVATE, "veto_grow": Net.PRIVATE,
+		"bay_phase": Net.PRIVATE, "bay_wait_t": Net.PRIVATE, "bay_out_t": Net.PRIVATE, "_bay_cache": Net.LOCAL,
+		"_bay_anchor": Net.PRIVATE, "_bay_stuck_t": Net.PRIVATE, "_bay_retarget_t": Net.PRIVATE, "_bay_side": Net.PRIVATE}
 
 
 ## MissionScene calls this once its scene is set up (and the stack built).
@@ -472,10 +490,15 @@ func _depot_near(k: int, dep: Dictionary) -> bool:
 ## under survival_hp; it goes above REVIVE_GO. It leaves the wreck to a crewmate who can revive and is REVIVE_LEAVE m
 ## nearer (nearest_reviver), and DECLINES (logged) a hot wreck: REVIVE_HOT_COUNT or more live enemies within REVIVE_HOT_R
 ## of it, or REVIVE_HOT_LOW of them while its own weakest core is under survival_hp. It walks there (route, then the grid
-## plan), stands within REVIVE_STAND m (a covered spot when threats see it), launches its drone once (none out: two never
-## stack, and a drone never revives its own launcher), keeps fighting (PlayerBot aims and fires, BotFireGuard has the last
+## plan), stands within REVIVE_STAND m (a covered spot when threats see it), launches its drone once (none of its own on duty:
+## a second would only stack), keeps fighting (PlayerBot aims and fires, BotFireGuard has the last
 ## word), and is done when the wreck is no longer listed (stood up: counted in `revives`; or redeploying). REVIVE_GIVE_UP s
 ## at most; a declined / given-up wreck is left alone REVIVE_SKIP s.
+## SELF-REVIVE (R2.9): a wreck whose own drone is reviving it (CombatWorld.self_reviving) is left alone (logged "self"
+## if it had set off), and so is one first seen downed under REVIVE_SELF_GRACE s ago that still has a drone charge
+## (aid_charges: its drone is about to launch).
+## BEING HELPED (R2.6, BotAid): repaired by a crewmate's drone, it stays inside the drone's range (_drone_leash); downed,
+## it waits for a revive while a reviver is plausibly coming (BotAid.wait_s, installed as its PlayerTarget.revive_wait).
 const REVIVE_REACH := 220.0
 const REVIVE_GO := 0.25
 const REVIVE_HOLD_COST := 0.3
@@ -487,11 +510,17 @@ const REVIVE_HOT_LOW := 2
 const REVIVE_STAND := 10.0
 const REVIVE_GIVE_UP := 60.0
 const REVIVE_SKIP := 20.0
+const REVIVE_SELF_GRACE := 1.5
 
 
 ## This bot's pilot id.
 func _my_id() -> int:
 	return MechSpawn.owner_of(body_mech)
+
+
+## The downed crewmate it is set on reviving (pilot id), 0 = none (BotAid: a downed bot waits for it).
+func reviving_peer() -> int:
+	return _rv_peer
 
 
 ## The revive goal {deck, at, key, text, enemy: false, zone, revive: pilot id}, or {}.
@@ -504,6 +533,11 @@ func _revive_goal(k: int, dt: float) -> Dictionary:
 	var listed := {}
 	for w: Dictionary in dc.downed_crew():
 		listed[int(w["peer"])] = w
+		if not _rv_seen.has(int(w["peer"])):
+			_rv_seen[int(w["peer"])] = t
+	for pid: int in _rv_seen.keys():
+		if not listed.has(pid):
+			_rv_seen.erase(pid)
 	if _rv_peer != 0:
 		_rv_t += dt
 		if not listed.has(_rv_peer):
@@ -516,6 +550,10 @@ func _revive_goal(k: int, dt: float) -> Dictionary:
 		if _rv_t > REVIVE_GIVE_UP or not dc.can_revive(me):
 			_revive_end("gave_up", "%.0f s" % _rv_t, true)
 			return {}
+		if _self_reviving(_rv_peer):
+			revive_self_skips += 1
+			_revive_end("self", "its own drone")
+			return {}
 		var hot := _revive_hot(listed[_rv_peer]["pos"] as Vector3, k)
 		if hot != "":
 			revive_declines += 1
@@ -527,6 +565,9 @@ func _revive_goal(k: int, dt: float) -> Dictionary:
 		for pid: int in listed:
 			if pid == me or t < float(_rv_skip.get(pid, -1.0)):
 				continue
+			if _self_reviving(pid):
+				revive_self_skips += 1
+				continue   # its own drone is on it (R2.9)
 			var at: Vector3 = listed[pid]["pos"]
 			if drive.stack.deck_at(at) != k:
 				continue
@@ -560,6 +601,18 @@ func _revive_goal(k: int, dt: float) -> Dictionary:
 	var wreck: Vector3 = listed[_rv_peer]["pos"]
 	return {"deck": drive.stack.deck_at(wreck), "at": wreck, "key": "revive_%d" % _rv_peer, "text": "to revive a crewmate",
 		"enemy": false, "zone": REVIVE_STAND * 2.0, "revive": _rv_peer}
+
+
+## Pilot `pid`'s own drone is reviving it, or is about to: first seen downed under REVIVE_SELF_GRACE s ago with a charge
+## left (R2.9 launches it on the downing; only while the combat world has self-revive).
+func _self_reviving(pid: int) -> bool:
+	var w := drive.combat.world if drive.combat != null else null
+	if BotAid.self_reviving(w, "player%d" % pid):
+		return true
+	if w == null or not w.has_method("self_reviving") or t - float(_rv_seen.get(pid, t)) >= REVIVE_SELF_GRACE:
+		return false
+	var tg := drive.downed.target_of(pid) if drive.downed != null else null
+	return tg != null and tg.aid_charges > 0
 
 
 func _revive_end(kind: String, why: String, skip: bool = false) -> void:
@@ -601,7 +654,7 @@ func _revive_note(kind: String, pid: int, why: String) -> void:
 
 
 ## Within REVIVE_STAND of the wreck (same deck): stand (on a covered spot when enemies see it), launch the drone once
-## (none out), keep fighting. True when this handled the legs.
+## (none of its own on duty), keep fighting. True when this handled the legs.
 func _revive_near(k: int, rv: Dictionary) -> bool:
 	if int(rv["deck"]) != k:
 		return false
@@ -625,7 +678,7 @@ func _revive_near(k: int, rv: Dictionary) -> bool:
 		mech.move_input = Vector2.ZERO
 	mech.running = false
 	mech.thrust_input = false
-	if body_rack != null and not body_rack.drone_out():
+	if body_rack != null and not _drone_on_duty():
 		for i in body_rack.slot_count():
 			if body_rack.weapons[i] == DownedRules.REVIVER and body_rack.can_launch(i) and body_rack.activate(i + 1):
 				drones += 1
@@ -728,8 +781,12 @@ func stats() -> Dictionary:
 
 func _physics_process(dt: float) -> void:
 	var pp0 := Time.get_ticks_usec() if PerfProbe.on else 0   # bench instrumentation (tests/bench_bot_perf.gd), off in play
+	if aid == null and body_pt != null:
+		aid = BotAid.new(drive, body_pt, _my_id())
+		body_pt.revive_wait = aid.wait_s   # replaces DownedCrew's fixed DownedRules.bot_wait once the AI flies it
 	_step(dt)
 	_wedge_watch(dt)
+	_drone_leash(dt)
 	if hole_guard:
 		_guard_holes()
 	if survival:
@@ -801,6 +858,16 @@ func _step(dt: float) -> void:
 		if _revive_near(k, rv):
 			return
 		goal = rv
+	# The bays are off the street graph: in the entry bay wait for the door and walk out (unless reviving a crewmate in
+	# that bay), or walk into the exit bay once that wins the mission.
+	if not rv.is_empty() and _in_bay(MissionWorld.ENTRY_ID, rv["at"]):
+		if _in_bay(MissionWorld.ENTRY_ID, mech.global_position):
+			_clear_route()   # both in the bay (off the street graph): straight there
+			_set_mode("travel", "to revive a crewmate in the entry bay", "entry bay: to revive pilot %d" % _rv_peer)
+			_steer(_flat((rv["at"] as Vector3) - mech.global_position, mech.up()).normalized(), false, false)
+			return
+	elif _bay_step(k, dt):
+		return
 	if goal.is_empty():
 		_set_mode("idle", "no objective", "idle")
 		return
@@ -893,6 +960,173 @@ func _step(dt: float) -> void:
 		_stand()
 		return
 	_drive_leg(k, dt)
+
+
+# --- Entry and exit bays (docs/design/city-spine.md §4) ----------------------------------------------------
+
+const BAY_RELEASE := 1.5       ## m in front of the entry door plane where the walk out ends and the street route takes over
+const BAY_LEAD := 8.0          ## m ahead along a door's centre line the bay walk aims (pure pursuit)
+const BAY_IN := 5.0            ## m behind the exit door plane the walk in goes straight before turning to its stand point
+const BAY_NEAR := 12.0         ## m from the exit door's street point (source_bay exit) the walk in takes over from the route
+const BAY_SLOT := 1.2          ## m from its exit bay stand point counts as there
+const BAY_MID_IN := 3.0        ## m into the room past the wall's throat (CityWalls.WALL_THICK) the walk out first goes to
+const BAY_ON_LINE := 1.0       ## m off the door's centre line that counts as on it (walk straight out from there)
+const BAY_STUCK_T := 2.0       ## s walking out without 1 m of progress before going back to the centre line
+const BAY_RETARGET := 2.5      ## s spent heading round the blocker along a side of the bay after that
+
+
+## The bay legs the street route graph does not know (the bays are behind the end walls, off the road graph): standing
+## in the ENTRY bay (the crew's spawn, a redeploy there), wait until the entry door is passable, then walk out along the
+## door's centre line until BAY_RELEASE m in front of it, where the street route takes over. Once the exit-bay win is on
+## (_exit_win_on: Missions' R2.10), within BAY_NEAR of the exit door's street point (the route's goal, _exit_goal), wait
+## until door_exit is passable, walk in along its centre line, then on to this pilot's exit_bay_slots point and stand
+## there. True while one of these drives the legs.
+func _bay_step(k: int, dt: float) -> bool:
+	var w := drive.stack.mission
+	if w == null or not is_instance_valid(w):
+		bay_phase = ""
+		return false
+	var mech := body_mech
+	var pos := mech.global_position
+	var up := mech.up()
+	var was := bay_phase
+	bay_phase = ""          # set again below while a bay leg drives the legs
+	var eb := _bay(w, MissionWorld.ENTRY_ID)
+	if not eb.is_empty() and k == int(eb["deck"]):
+		var bc := w.bay_contains(MissionWorld.ENTRY_ID, pos)
+		if bool(bc["inside"]) or (bool(bc["doorway"]) and float(bc["depth"]) > -BAY_RELEASE):
+			_clear_route()
+			if not bool(w.source_state(MissionWorld.ENTRY_ID)["passable"]):
+				bay_phase = "entry_wait"
+				bay_wait_t += dt
+				_set_mode("wait", "in the entry bay: waiting for the door", "entry bay: waiting for the door")
+				_stand()
+				return true
+			bay_phase = "entry_out"
+			_set_mode("travel", "leaving the entry bay", "entry bay: walking out")
+			_steer(_bay_out_dir(eb, pos, up, dt), false, false)
+			return true
+		if was == "entry_out" or was == "entry_wait":
+			_bay_retarget_t = 0.0
+			bay_out_t = t
+			FlowLog.say("bot", "left the entry bay at %.1f s (waited %.1f s for the door)" % [t, bay_wait_t])
+	if not _exit_win_on():
+		return false
+	var xb := _bay(w, MissionWorld.EXIT_ID)
+	if xb.is_empty() or k != int(xb["deck"]):
+		return false
+	var bc2 := w.bay_contains(MissionWorld.EXIT_ID, pos)
+	var inside := bool(bc2["inside"]) or bool(bc2["doorway"])
+	if not inside and _flat((xb["exit"] as Vector3) - pos, up).length() >= BAY_NEAR:
+		return false
+	_clear_route()
+	var slot := _exit_slot(w)
+	if inside and float(bc2["depth"]) >= BAY_IN and slot != Vector3.INF:
+		var to := _flat(slot - pos, up)
+		if to.length() < BAY_SLOT:
+			bay_phase = "exit_slot"
+			_set_mode("hold", "in the exit bay", "exit bay: at the stand point")
+			_stand()
+			return true
+		bay_phase = "exit_in"
+		_set_mode("travel", "walking into the exit bay", "exit bay: to the stand point")
+		_steer(to.normalized(), false, false)
+		return true
+	if not inside and not bool(w.source_state(MissionWorld.EXIT_ID)["passable"]):
+		bay_phase = "exit_wait"
+		_set_mode("wait", "at the exit door: waiting for it to open", "exit bay: waiting for the door")
+		_stand()
+		return true
+	bay_phase = "exit_in"
+	_set_mode("travel", "walking into the exit bay", "exit bay: walking in")
+	var fr2: Transform3D = xb["frame"]
+	var lz2 := (fr2.affine_inverse() * pos).z   # - behind the door plane (into the bay)
+	_steer(_flat(fr2 * Vector3(0.0, 0.0, minf(lz2, 0.0) - BAY_LEAD) - pos, up).normalized(), false, false)
+	return true
+
+
+## Whether `p` stands inside door `id`'s bay (MissionWorld.bay_contains; false without a mission world).
+func _in_bay(id: String, p: Vector3) -> bool:
+	var w := drive.stack.mission
+	return w != null and is_instance_valid(w) and bool(w.bay_contains(id, p)["inside"])
+
+
+## The walk out of the entry bay from wherever the mech stands in it (any slot, a redeploy, a crewmate's revive): first to
+## BAY_MID, a point on the door's centre line in the room just behind the wall's throat (WALL_THICK + BAY_MID_IN behind
+## the door plane), unless already near the centre line or in the throat; then straight along the centre line out to
+## the door's street point (source_bay exit). No progress for BAY_STUCK_T s (a crewmate standing in front, a jamb): for
+## BAY_RETARGET s toward the side of the bay (its inner edge less the capsule), alternating sides, then the centre line
+## again (the bay is off the route graph, so the wedge escape leaves it to this).
+func _bay_out_dir(eb: Dictionary, pos: Vector3, up: Vector3, dt: float) -> Vector3:
+	var fr: Transform3D = eb["frame"]
+	var l := fr.affine_inverse() * pos      # x along the wall from mid-door, z + into the map (- behind the door plane)
+	if pos.distance_to(_bay_anchor) > 1.0:
+		_bay_anchor = pos
+		_bay_stuck_t = 0.0
+	else:
+		_bay_stuck_t += dt
+		if _bay_stuck_t > BAY_STUCK_T:
+			# Blocked (a crewmate standing in front, a jamb): round it along one side of the bay, the other side next time.
+			_bay_stuck_t = 0.0
+			_bay_retarget_t = BAY_RETARGET
+			_bay_side = -_bay_side if _bay_side != 0 else (1 if l.x < float(eb["offset"]) else -1)
+			FlowLog.say("bot", "entry bay: no progress at x %.1f depth %.1f, round by the %s side" % [l.x, -l.z,
+				"+x" if _bay_side > 0 else "-x"])
+	_bay_retarget_t = maxf(_bay_retarget_t - dt, 0.0)
+	var mid_z := -(CityWalls.WALL_THICK + BAY_MID_IN)
+	if _bay_retarget_t > 0.0:
+		var side_x := float(eb["offset"]) + float(_bay_side) * maxf(float(eb["half_width"]) - body_r - 0.5, 0.0)
+		var sp := fr * Vector3(side_x, 0.0, minf(l.z, mid_z))
+		var ds := _flat(sp - pos, up)
+		if ds.length() > 1.0:
+			return ds.normalized()
+		_bay_retarget_t = 0.0
+	if absf(l.x) > BAY_ON_LINE and l.z < mid_z + 1.5:
+		var d := _flat(fr * Vector3(0.0, 0.0, mid_z) - pos, up)
+		if d.length() > 1.0:
+			return d.normalized()
+	return _flat((eb["exit"] as Vector3) - pos, up).normalized()
+
+
+## Door `id`'s bay as MissionWorld.source_bay gives it ({} without one), read once per mission world (it is static).
+func _bay(w: MissionWorld, id: String) -> Dictionary:
+	var key := "%s/%d" % [id, w.get_instance_id()]
+	if not _bay_cache.has(key):
+		var b := w.source_bay(id)
+		_bay_cache[key] = b if bool(b.get("ok", false)) else {}
+	return _bay_cache[key]
+
+
+## This pilot's stand point in the exit bay, by crew seat, INF without one: the four-mech layout
+## (MissionWorld.exit_bay_slots(4)) whatever the crew size, so a seat's point never depends on who is still in.
+func _exit_slot(w: MissionWorld) -> Vector3:
+	var i := clampi(drive.spawn_order.find(_my_id()), 0, 3)
+	var slots := w.exit_bay_slots(4)
+	if slots.is_empty():
+		return Vector3.INF
+	return slots[mini(i, slots.size() - 1)].origin
+
+
+## Whether the mission is won by walking into the exit bay (Missions' R2.10) and that is what is left: the extraction
+## hold is done, the mission has not ended, and the section has an exit door with a bay. Until R2.10 lands the hold's
+## completion ends the mission ("won" in the same evaluate), so this stays false and the exit leg never runs.
+func _exit_win_on() -> bool:
+	var m := drive.mission
+	if m == null or m.rules == null or m.rules.plan == null or m.rules.outcome != "":
+		return false
+	if m.rules.objective("hold").is_empty() or not m.rules.is_done("hold"):
+		return false
+	var w := drive.stack.mission
+	return w != null and is_instance_valid(w) and not _bay(w, MissionWorld.EXIT_ID).is_empty()
+
+
+## After the final hold, with the exit-bay win on: the exit door's street point ({} otherwise). The route ends there;
+## _bay_step walks in.
+func _exit_goal() -> Dictionary:
+	if not _exit_win_on():
+		return {}
+	var xb := _bay(drive.stack.mission, MissionWorld.EXIT_ID)
+	return {"deck": int(xb["deck"]), "at": xb["exit"], "key": "exit_bay", "text": "to the exit bay", "enemy": false}
 
 
 # --- Goal and target ---------------------------------------------------------------------------------------
@@ -1042,6 +1276,8 @@ func _pick_target(td: int, k: int) -> void:
 	if not _live_on(_target, td):
 		_target = null
 	var pb := pilot.bot if pilot != null else null
+	if _target != null and pb != null and is_instance_valid(pb) and _drone_given_up(_target as EnemyBase, pb, pos, td):
+		_target = null
 	if mode == "fight" and k == td and pb != null and is_instance_valid(pb):
 		var pe: Variant = pb.current_target()   # untyped: it may already be freed
 		if _live_on(pe, td) and pe != _target and (_target == null or _target_t > 3.0):
@@ -1050,14 +1286,24 @@ func _pick_target(td: int, k: int) -> void:
 			return
 	var best: EnemyBase = null
 	var best_d := INF
+	var ign: EnemyBase = null   # nearest given-up drone: taken only when nothing else is left on the deck
+	var ign_d := INF
 	for e: Variant in (drive.combat.squad.enemies as Array):   # untyped: the list may hold freed wrecks
 		if not _live_on(e, td):
 			continue
 		var en := e as EnemyBase
 		var d := en.global_position.distance_to(pos)
+		if d > PlayerBot.IGNORE_NEAR and pb != null and is_instance_valid(pb) and pb.ignoring(en.target_id):
+			if d < ign_d:   # a scout drone given up on (PlayerBot reach rules)
+				ign_d = d
+				ign = en
+			continue
 		if d < best_d:
 			best_d = d
 			best = en
+	if best == null:
+		best = ign
+		best_d = ign_d
 	if _target == null:
 		_target = best
 		_target_t = 0.0
@@ -1070,6 +1316,39 @@ func _pick_target(td: int, k: int) -> void:
 		_target_t = 0.0
 
 
+## Another live enemy on deck td than `e` that `pb` has not given up on.
+func _other_live_on(e: EnemyBase, td: int, pb: PlayerBot) -> bool:
+	for o: Variant in (drive.combat.squad.enemies as Array):
+		if o != e and _live_on(o, td) and not pb.ignoring((o as EnemyBase).target_id):
+			return true
+	return false
+
+
+## PlayerBot's reach rules on the sweep's committed target: a scout drone farther than PlayerBot.IGNORE_NEAR that lost no
+## HP for PlayerBot.DRONE_GIVE_UP s is given up (PlayerBot.ignore_enemy, so neither layer takes it again for
+## PlayerBot.DRONE_IGNORE s unless it comes near) while another enemy is left on the deck; the last one is kept. R2.18: one Strider sweep chased one drone holding 72-105 m off for 280 s.
+func _drone_given_up(e: EnemyBase, pb: PlayerBot, pos: Vector3, td: int) -> bool:
+	if not PlayerBot.reach_rules or e.enemy_type != "drone":
+		return false
+	var near := e.global_position.distance_to(pos) <= PlayerBot.IGNORE_NEAR
+	if not _other_live_on(e, td, pb):
+		_tgt_prog_t = t   # the deck's last enemy: the sweep needs it dead, keep at it (the clock restarts)
+		return false
+	if pb.ignoring(e.target_id) and not near:
+		return true
+	var hp := e.total_hp()
+	if e.get_instance_id() != _tgt_id or hp < _tgt_hp - 0.5 or near:
+		_tgt_id = e.get_instance_id()
+		_tgt_hp = hp
+		_tgt_prog_t = t
+		return false
+	if t - _tgt_prog_t < PlayerBot.DRONE_GIVE_UP:
+		return false
+	FlowLog.say("bot", "sweep gives up on drone %s (%.0f s without damage)" % [e.target_id, t - _tgt_prog_t])
+	pb.ignore_enemy(e.target_id)
+	return true
+
+
 # --- Plan mode: objectives (docs/design/player-ai.md, "Mission bot: objectives") --------------------------------
 ## Read like a player: the rules' replicated state on this machine (host or client), the objective records (snapped sites,
 ## the hold zone) and the crew facts. Per deck in order: its primary, then its KNOWN bonuses in order (BONUS_GIVE_UP s
@@ -1079,7 +1358,7 @@ func _plan_goal(k: int) -> Dictionary:
 	var rules := drive.mission.rules
 	var o := _task(rules)
 	if o.is_empty():
-		return {}
+		return _exit_goal()
 	var id := str(o["id"])
 	var td := int(o["deck"])
 	var ty := str(o["type"])
@@ -1530,12 +1809,64 @@ func _use_repair() -> void:
 	var pt := body_pt
 	if pt == null or pt.disabled or _core_hp() > REPAIR_AT:
 		return
+	if _drone_on_duty():
+		return   # one on duty already heals it: keep a second slot's charge (one drone per slot, WeaponRack.can_launch)
 	var rack := body_rack
 	for i in rack.slot_count():
 		if rack.can_launch(i) and rack.activate(i + 1):
 			drones += 1
 			FlowLog.say("bot", "repair drone out (weakest core part at %.0f %%)" % (_core_hp() * 100.0))
 			return
+
+
+## One of its own drones is on duty (rising or circling, not flying home): a launch would only stack a second.
+func _drone_on_duty() -> bool:
+	var w := drive.combat.world if drive != null and drive.combat != null else null
+	if w == null or body_pt == null:
+		return false
+	for e in w.effects:
+		if e is RepairDrone and is_instance_valid(e) and (e as RepairDrone).shooter() == body_pt.target_id \
+				and (e as RepairDrone).active():
+			return true
+	return false
+
+
+## Repaired by a crewmate's drone (BotAid.healer): the last word on the legs keeps it inside the drone's range. It keeps
+## moving and fighting; once where it would stop (braking distance included) nears radius - LEASH_EDGE, a move outward
+## loses its outward part (no run, no hop), past radius - LEASH_PULL it walks back in.
+func _drone_leash(dt: float) -> void:
+	if drive == null or drive.loading or drive.held or drive.combat == null or body_mech == null or body_pt == null \
+			or body_pt.disabled or body_mech.shutdown:
+		return
+	var d := BotAid.healer(drive.combat.world, body_pt)
+	if d == null:
+		return
+	var mech := body_mech
+	var up := mech.up()
+	var off := _flat(mech.global_position - d.centre, up)
+	var dist := off.length()
+	var r := BotAid.radius_of(d)
+	if dist < 0.01:
+		return
+	var out := off / dist
+	# where it stops if it brakes now: the outward speed's braking distance (catalog accel) on top of where it is
+	var v_out := maxf(_flat(mech.velocity, up).dot(out), 0.0)
+	var reach := dist + v_out * v_out / (2.0 * maxf(float(MechCatalog.movement(mech.chassis_id).get("accel", 30.0)), 1.0))
+	if reach < r - BotAid.LEASH_EDGE:
+		return
+	var b := mech.global_transform.basis
+	var want := _flat(b.x * mech.move_input.x - b.z * mech.move_input.y, up)
+	var o := want.dot(out)
+	if reach > r - BotAid.LEASH_PULL:
+		want = (want - out * maxf(o, 0.0)) * 0.5 - out
+	elif o > 0.0:
+		want -= out * o
+		if want.length() < 0.3:
+			want = Vector3.ZERO
+	mech.move_input = Vector2(want.dot(b.x), -want.dot(b.z)).limit_length(1.0)
+	mech.running = false               # near the edge: no run, no hop (it can't brake in the air)
+	mech.thrust_input = false
+	leash_t += dt
 
 
 func _live(e: Variant) -> bool:
@@ -1921,6 +2252,10 @@ func _wedge_watch(dt: float) -> void:
 		_esc_t = 0.0
 		return
 	var up := mech.up()
+	if bay_phase != "":
+		_esc_t = 0.0   # an entry / exit bay leg (off the route graph): _bay_step handles its own lack of progress
+		_esc_mark = _stall_t
+		return
 	if _holding or not (mode == "travel" or mode == "fight"):
 		_esc_t = 0.0   # holding a zone (dodging in place is not a wedge), idle, depot / revive stands
 		_esc_mark = _stall_t
@@ -2393,8 +2728,9 @@ func _dev_jump_arrival(td: int, from: int) -> void:
 	var n := drive.spawn_order.size()
 	var me := MechSpawn.owner_of(body_mech)
 	var i := maxi(drive.spawn_order.find(me), 0)
-	var slots := st.spawn_transforms(clampi(n, 1, 4))
-	var a := st.to_deck_arc(slots[mini(i, slots.size() - 1)].origin)
+	# The avenue formation round the entry (not the entry bay: behind the end wall, outside every other deck's floor).
+	var xf := MissionScene.entry_spawn(st.entry_transform(), drive.city, mini(i, 3), clampi(n, 1, 4))
+	var a := st.to_deck_arc(xf.origin)
 	dev_jump(td, float(a["x"]), float(a["s"]), from)
 
 

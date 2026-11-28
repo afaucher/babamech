@@ -13,7 +13,6 @@ const TEST_TIMEOUT := 420
 const SEED := 4
 const LIMIT := 600.0
 const SPEED := 2.0
-const SETTINGS := "user://test_bot_bulwark_mixed_settings.cfg"
 
 var _saved_path := ""
 
@@ -24,7 +23,8 @@ func _init() -> void:
 
 func setup() -> void:
 	_saved_path = GameSettings.path
-	GameSettings.path = SETTINGS
+	if Boot.test_settings_file == "":   # Boot's per-test, per-process file otherwise (parallel runs never share one)
+		GameSettings.path = "user://test_settings/bulwark_mixed_p%d.cfg" % OS.get_process_id()
 	var d := GameSettings.DEFAULTS.duplicate(true)
 	d["chassis"] = "bulwark"
 	d["loadout"] = BotProfile.get_loadout("bulwark")

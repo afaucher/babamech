@@ -70,7 +70,7 @@ const SCALE_SOURCE := "^\\s*var\\s+(\\w+)\\s*(?::[^=]*)?=.*(\\.crew\\(\\)|\\bros
 const SCALE_ALLOW := {
 	"res://scripts/mission/mission_flow.gd:_pacing_facts": "pairs each pilot with its facts by index (PacingFacts per-pilot intensity): no value is sized by the count",
 	"res://scripts/mission/mission_scene.gd:spawn_enemies": "the pre-play garrison, built from the seed + launch crew before play on the host and checksummed",
-	"res://scripts/mission/mission_scene.gd:build_city": "spawning the mechs: one entry slot per launch-crew mech (spawn layout, not a gameplay value)",
+	"res://scripts/mission/mission_scene.gd:place_crew": "spawning the mechs: one entry slot per launch-crew mech (spawn layout, not a gameplay value; moved out of build_city)",
 	"res://scripts/mission/mission_scene.gd:_spawn_crew": "spawning the mechs: a seat fallback for a launch entry without one",
 	"res://scripts/bots/crew/mission_bot.gd:_dev_jump_arrival": "DEV jump to this mech's entry slot (spawn layout, dev only)",
 }

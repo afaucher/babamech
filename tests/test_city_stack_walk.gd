@@ -144,7 +144,7 @@ func _spawn() -> void:
 	check(float(a["x"]) > av.x and float(a["x"]) < av.y, "on the avenue lane (x %.1f)" % float(a["x"]))
 
 
-## Down the whole ramp from its top cross line on the upper deck to past its foot on the lower deck, then back up.
+## Down the whole ramp from before its slope run (run_top) on the upper deck to past its foot on the lower deck, then back up.
 func _ramp(ci: int) -> void:
 	var cn: Dictionary = sec.connectors[ci]
 	var top := int(cn["from"])
@@ -152,8 +152,8 @@ func _ramp(ci: int) -> void:
 	var x0 := float(cn["x0"])
 	var x1 := float(cn["x1"])
 	var mid := (x0 + x1) * 0.5
-	var th_top := float(sec.row_theta[int(cn["top_line"])])
-	var th_foot := float(sec.row_theta[int(cn["foot_line"])])
+	var th_top := float(cn["run_top"])
+	var th_foot := float(cn["run_foot"])
 	var down := signf(th_foot - th_top)
 	var pitch := sec.p("pitch")
 	var r_low := sec.radius_of(low)
@@ -223,14 +223,14 @@ func _ramp(ci: int) -> void:
 
 
 ## Headroom down the whole ramp (CityPlan.BRIDGE_CLEAR): the mech's own capsule (radius, height), standing 0.3 m above
-## the ramp's surface on its centre line, every 2 m from 20 m before the top line to 10 m past the foot line, touches no
+## the ramp's surface on its centre line, every 2 m from 20 m before the slope's top (run_top) to 10 m past its foot, touches no
 ## collision shape of the stack (the first cross road past the head used to bridge the cut ~7 m above the ramp: a mech
 ## walked through the drawn slab, whose collision is only its top 1 m). The mech itself is moved out of the way.
 func _headroom(ci: int) -> void:
 	var cn: Dictionary = sec.connectors[ci]
 	var mid := (float(cn["x0"]) + float(cn["x1"])) * 0.5
-	var th_top := float(sec.row_theta[int(cn["top_line"])])
-	var th_foot := float(sec.row_theta[int(cn["foot_line"])])
+	var th_top := float(cn["run_top"])
+	var th_foot := float(cn["run_foot"])
 	var r_low := sec.radius_of(int(cn["to"]))
 	var pitch := sec.p("pitch")
 	var cap0 := (mech.get_node("Shape") as CollisionShape3D).shape as CapsuleShape3D
@@ -264,7 +264,7 @@ func _headroom(ci: int) -> void:
 		if not res.is_empty():
 			hits += 1
 			if first == "":
-				first = "%.0f m from the top line (t %.2f)" % [arc, t]
+				first = "%.0f m from the slope's top (t %.2f)" % [arc, t]
 		# The drawn slab of the upper deck (a bridge is the whole slab, `slab` deep; its collision is only the top 1 m):
 		# where the upper floor is not cut over the ramp, the capsule's top must stay under the slab's bottom.
 		var top_p := foot + up * cap.height
@@ -288,8 +288,8 @@ func _parapets(ci: int) -> void:
 	var cn: Dictionary = sec.connectors[ci]
 	var x0 := float(cn["x0"])
 	var x1 := float(cn["x1"])
-	var th_top := float(sec.row_theta[int(cn["top_line"])])
-	var th_foot := float(sec.row_theta[int(cn["foot_line"])])
+	var th_top := float(cn["run_top"])
+	var th_foot := float(cn["run_foot"])
 	var r_low := sec.radius_of(int(cn["to"]))
 	var pitch := sec.p("pitch")
 	var cap := ((mech.get_node("Shape") as CollisionShape3D).shape as CapsuleShape3D).radius

@@ -192,8 +192,8 @@ func _build_interdeck_links() -> void:
 				continue
 			var lx := sec.lane_x(str(cn["lane"]))
 			var xc := (lx.x + lx.y) * 0.5
-			var s_top := sec.line_s(fk, int(cn["top_line"]))
-			var s_foot := sec.line_s(tk, int(cn["foot_line"]))
+			var s_top := sec.ramp_run(ci, fk).x     # the slope's ends (SectionPlan.ramp_run), not the cross lines
+			var s_foot := sec.ramp_run(ci, tk).y
 			var a := _add_node(fk, Vector2(xc, s_top))
 			var b := _add_node(tk, Vector2(xc, s_foot))
 			_link_node_to_deck(fk, a)

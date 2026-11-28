@@ -7,8 +7,8 @@ extends TestCase
 ## 2. Downed in solo: no automatic respawn, no "lost" (wipe off); held SPACE respawns it (DownedRules).
 ## 3. Killing every enemy and standing on each deck finishes every sweep; the extraction hold becomes the objective,
 ##    with an EXTRACT waypoint on the HUD.
-## 4. The mech in the hold zone for the hold: "won", the MISSION COMPLETE banner with the objectives' reason, and
-##    END_HOLD later the end flow finishes (MissionFlow.finished; a test's drive isn't the current scene: no scene change).
+## 4. The mech in the hold zone for the hold (the exit opens), then in the exit bay: "won", the MISSION COMPLETE banner
+##    with the objectives' reason, and END_HOLD later the end flow finishes (MissionFlow.finished; a test's drive isn't the current scene: no scene change).
 
 const PLAN := {"primary": "sweep", "bonus_max": 0, "waves_per_deck": 0, "hold": 3.0}
 
@@ -162,7 +162,7 @@ func _flow() -> void:
 			return
 	await _seconds(0.5)
 	eq(rules.current(), "hold", "every primary done: the extraction hold is the objective")
-	check(rules.text().begins_with("Hold the extraction portal"), "the objective line says so (%s)" % rules.text())
+	check(rules.text().begins_with("Hold the exit"), "the objective line says so (%s)" % rules.text())
 	var mk := rules.marker()
 	if not check(not mk.is_empty(), "the rules give the hold's marker"):
 		return
@@ -171,14 +171,20 @@ func _flow() -> void:
 		var wp: Dictionary = hud.mission_hud.state()["waypoint"]
 		eq(str(wp.get("label", "")), "EXTRACT", "the HUD has the EXTRACT waypoint")
 
-	# 4. Into the hold zone for the hold: won.
+	# 4. Into the hold zone for the hold, then into the exit bay (R2.10 walk-out): won.
 	var hold: Dictionary = mf.plan.objective("hold")
 	var t1 := mf.now()
-	while rules.outcome == "" and mf.now() < t1 + float(PLAN["hold"]) + 10.0:
+	while not rules.exit_open() and rules.outcome == "" and mf.now() < t1 + float(PLAN["hold"]) + 10.0:
 		_place(td, mf, hold)
 		_kill_all(td)
 		await _seconds(0.1)
-	eq(rules.outcome, "won", "holding the portal wins (%s)" % str(rules.state()))
+	check(rules.exit_open() and rules.outcome == "", "the hold opens the exit, not won yet (%s)" % str(rules.state()))
+	td.mech.global_position = mf.world.exit_door()["center"]
+	td.mech.velocity = Vector3.ZERO
+	t1 = mf.now()
+	while rules.outcome == "" and mf.now() < t1 + 3.0:
+		await _seconds(0.1)
+	eq(rules.outcome, "won", "walking into the exit bay wins (%s)" % str(rules.state()))
 	var hs := mf.hud_model.build()
 	eq(str((hs["banner"] as Dictionary).get("reason", "")), MissionHudModel.REASONS["objectives"], "the objectives' reason")
 	if hud != null:

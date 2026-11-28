@@ -11,7 +11,7 @@ const PARAMS := [
 	{"id": "width", "label": "Axial width (m)", "min": 160.0, "max": 450.0, "value": 270.0},
 	{"id": "radius", "label": "Top deck radius (m)", "min": 150.0, "max": 1200.0, "value": 400.0},
 	{"id": "cell", "label": "District cell (m)", "min": 60.0, "max": 140.0, "value": 90.0},
-	{"id": "ramp_grade", "label": "Ramp grade", "min": 0.08, "max": 0.35, "value": 0.18},
+	{"id": "ramp_grade", "label": "Ramp grade (fitted run)", "min": 0.08, "max": 0.35, "value": 0.20},
 	{"id": "shafts", "label": "Shafts per deck", "min": 0.0, "max": 3.0, "value": 1.0},
 	{"id": "express", "label": "Express lift (0/1)", "min": 0.0, "max": 1.0, "value": 1.0},
 	{"id": "w_urban", "label": "Zone mix: urban", "min": 0.0, "max": 2.0, "value": 1.0},
@@ -119,7 +119,7 @@ func _build_deck(k: int) -> void:
 	var bands := [[-w * 0.5, (lanes["ramp_a"] as Vector2).x, SectionMap.C_ROAD],
 			[(lanes["ramp_a"] as Vector2).x, (lanes["ramp_a"] as Vector2).y, SectionMap.C_ROAD.lightened(0.08)],
 			[(lanes["avenue"] as Vector2).x, (lanes["avenue"] as Vector2).y, SectionMap.C_ROAD],
-			[(lanes["rail"] as Vector2).x, (lanes["rail"] as Vector2).y, Color(0.36, 0.38, 0.44)],
+			[(lanes["rail"] as Vector2).x, (lanes["rail"] as Vector2).y, SectionMap.C_RAIL if plan.lane_kind(k, "rail") == "rail" else SectionMap.C_VERGE],
 			[(lanes["ramp_b"] as Vector2).x, (lanes["ramp_b"] as Vector2).y, SectionMap.C_ROAD.lightened(0.08)],
 			[(lanes["ramp_b"] as Vector2).y, w * 0.5, SectionMap.C_ROAD]]
 	for b: Array in bands:
@@ -175,7 +175,7 @@ func _build_walls(k: int) -> void:
 			var gr := Rect2(float(g["x"]) - gw, float(g["s"]) - (0.0 if edge == "s0" else 1.0), gw * 2.0, 1.0)
 			if not along_x:
 				gr = Rect2(float(g["x"]) - (0.0 if edge == "x0" else 1.0), float(g["s"]) - gw, 1.0, gw * 2.0)
-			_box(k, gr, 0.0, 14.0, SectionMap.C_GATE[g["kind"]])
+			_box(k, gr, 0.0, float(g["h"]), SectionMap.C_GATE[g["kind"]])
 
 
 func _build_connector(ci: int) -> void:
@@ -186,8 +186,8 @@ func _build_connector(ci: int) -> void:
 		"ramp":
 			if not (_shown(from) or _shown(to)):
 				return
-			var t_top: float = plan.row_theta[int(c["top_line"])]
-			var t_foot: float = plan.row_theta[int(c["foot_line"])]
+			var t_top := float(c["run_top"])       # the slope run, inside the whole-row span (R2.17)
+			var t_foot := float(c["run_foot"])
 			var n := maxi(8, int(ceil(absf(t_top - t_foot) * plan.radius_of(from) / FACET)))
 			for i in n:
 				var f0 := float(i) / float(n)

@@ -3,18 +3,28 @@ extends TestCase
 ## combat log; docs/design/pacing-director.md "Downed, revive, respawn"), single process, stepped by hand (no wall clock).
 ## A. No auto-respawn: a downed mech stays down, takes no damage, is not hittable, enemies drop it as a target.
 ## B. Hold to respawn: 2.9 s held then released resets the hold; 3 s held -> redeploying for 5 s -> standing, every
-##    component at 50 %, heat 0, on_respawn called once (the placement), player_respawned.
+##    component at FULL (R2.12: RESPAWN_STRUCTURE 1.0), heat 0, on_respawn called once (the placement), player_respawned.
 ## C. Revive by a repair drone: 0.5 s rise + 4 s of beam in range stands it up in place at 30 % (destroyed rebuilt at
 ##    30 %, others at least 30 %), heat 0, 2 s invulnerable, player_revived (by the drone's shooter); the drone loses no
-##    life and no charge (its cost is the charge that launched it); the downed mech's own drone never revives it.
+##    life and no charge (its cost is the charge that launched it); an ORDINARY drone of the downed mech dies with it and
+##    never revives it; a SELF-REVIVE drone (R2.9, record "self") does: once, at 30 %, player_revived by its own id.
 ## D. An interrupted beam drains the bar over 2 s (decay, not reset), a beam resumes from what is left.
-## E. A downed bot (pilot -1, auto_redeploy): waits 8 s with a reviver, 2 s without, then the respawn path.
+## E. A downed bot (pilot -1, auto_redeploy): waits 8 s with a reviver, 2 s without, then the respawn path, at full.
+##    R2.9: while its own drone self-revives it (DownedRules.bot_wait_for) it does not redeploy, and stands up after the
+##    revive; when the self-revive ends without one, the normal wait applies.
 ## F. A downed (or redeploying) mech gets no power core and holds no flag; `wipe` on loses only with everyone down and
 ##    nobody redeploying; `wipe` off never loses.
 ## G. The combat log: down + help, revive, respawn lines; end fields deaths (respawns only), revives, revives_given,
-##    down_s; intensity +40 once per down.
+##    down_s; intensity +40 once per down; respawn tot=100 (R2.12); a self-revive logs `revive by=self`, no death, and
+##    no revive given.
 ## H. A solo stack drive: the downed mech can't move; holding SPACE (respawn_held) respawns it at deck 1's arrival point
-##    when it went down on deck 1, at its own spawn slot on the entry deck; the HUD state / prompt follow.
+##    when it went down on deck 1, at its own spawn slot on the entry deck; the HUD state / prompt follow (a self-revive:
+##    "Your repair drone is reviving you", the hold hint stays, holding SPACE still redeploys). R2.12: the redeploy brings
+##    the mech back FULL (every component, a destroyed weapon usable and selectable, ammo and drone charges refilled by
+##    DownedCrew on the owner, heat 0, shutdown cleared).
+## H3. R2.9 end to end in a solo drive with a charged repair drone: down alone -> up by its own drone once (by=self);
+##    down with no charge -> stays down; SPACE redeploys at full with the charges refilled; SPACE during a self-revive
+##    still redeploys, at full.
 
 const DT := 1.0 / 60.0
 const SEED := 7
@@ -42,7 +52,9 @@ func setup() -> void:
 	_bots()
 	_depot_flag_wipe()
 	_log()
+	_self_log()
 	await _drive()
+	await _drive_self_revive()
 	finish()
 
 
@@ -141,7 +153,7 @@ func _hold_to_respawn() -> void:
 	eq(placed[0], 1, "placed once (on_respawn)")
 	eq(got.size(), 1, "player_respawned once")
 	for c: String in pt.hp:
-		near(float(pt.hp[c]), float(pt.max_hp[c]) * DownedRules.RESPAWN_STRUCTURE, 0.01, "respawn: %s at 50 %%" % c)
+		near(float(pt.hp[c]), float(pt.max_hp[c]) * DownedRules.RESPAWN_STRUCTURE, 0.01, "respawn: %s at full (R2.12)" % c)
 	near(pt.mech.heat, 0.0, 1e-6, "respawn: heat 0")
 	_gone(pt)
 
@@ -210,10 +222,31 @@ func _revive() -> void:
 	_run(1.0)
 	_down(self_med)
 	_run(DownedRules.REVIVE_TIME + 1.0)
-	check(self_med.disabled and self_med.revive_progress <= 0.0, "its own drone never revives a downed mech")
+	check(self_med.disabled and self_med.revive_progress <= 0.0, "its own ORDINARY drone never revives a downed mech")
 	check(d2 == null or not d2 in world.effects, "its drone died with it")
 	_gone(self_med)
 	sm_node.queue_free()
+	# R2.9: a SELF-REVIVE drone (record "self": true, launched by the mech's own rack as it goes down) revives it once.
+	var sr := _pilot("selfrev", at + Vector3(0, 0, 80))
+	var sr_node := _medic("selfrev_n", sr.position)
+	var sr_revs := []
+	sr.player_revived.connect(func(by: String, t: float) -> void: sr_revs.append([by, t]))
+	world.set_anchor("selfrev", func() -> Node3D: return sr_node)
+	_down(sr)
+	var d3 := world.launch_drone({"shooter": "selfrev", "peer": 1, "hardpoint": "back", "weapon": "repair_drone",
+		"t": world.now, "self": true})
+	if check(d3 != null, "R2.9: the self-revive drone launched"):
+		_run(0.2)
+		check(world.self_reviving("selfrev"), "R2.9: CombatWorld.self_reviving while it is out")
+		check(sr.disabled, "R2.9: not yet revived")
+		_run(d3.rise_time() + d3.self_revive_time() + 0.5)
+		check(not sr.disabled, "R2.9: its own self-revive drone stood it up")
+		if eq(sr_revs.size(), 1, "R2.9: player_revived once"):
+			eq(str(sr_revs[0][0]), "selfrev", "R2.9: revived by its OWN id")
+		near(float(sr.hp["head"]), 100.0 * DownedRules.REVIVE_STRUCTURE, 5.0, "R2.9: a self-revive is a revive (30 %, + the drone's repair since)")
+		check(not world.self_reviving("selfrev"), "R2.9: no longer self-reviving once revived")
+	_gone(sr)
+	sr_node.queue_free()
 	_gone(pt)
 	medic.queue_free()
 	_run(DT)
@@ -229,7 +262,7 @@ func _decay() -> void:
 	var d := _launch("medic2", medic)
 	_run(d.rise_time() + 2.0)
 	near(pt.revive_progress, 2.0, 0.05, "2 s of beam")
-	pt.position = at + Vector3(40, 0, 0)          # out of the drone's 15 m
+	pt.position = at + Vector3(40, 0, 0)          # out of the drone's 30 m
 	_run(0.5)
 	near(pt.revive_progress, 2.0 - 0.5 * DownedRules.decay_rate(), 0.06, "the bar drains over 2 s (half a second: -1 s)")
 	check(pt.disabled, "still downed")
@@ -263,8 +296,26 @@ func _bots() -> void:
 		_run(DownedRules.RESPAWN_PENALTY + 0.1)
 		check(not bt.disabled and placed[0] == 1, "bot (reviver %s): respawned after the penalty" % helped)
 		for c: String in bt.hp:
-			near(float(bt.hp[c]), float(bt.max_hp[c]) * DownedRules.RESPAWN_STRUCTURE, 0.01, "bot respawn: %s at 50 %%" % c)
+			near(float(bt.hp[c]), float(bt.max_hp[c]) * DownedRules.RESPAWN_STRUCTURE, 0.01, "bot respawn: %s at full (R2.12)" % c)
 		_gone(bt)
+	# R2.9: while its own drone self-revives it the bot does not redeploy (stub: the flag DownedCrew reads from
+	# CombatWorld.self_reviving), then stands up after the revive; the flag gone without a revive: the normal wait.
+	for revived: bool in [true, false]:
+		var sb := _pilot("player-3", Vector3(1100 if revived else 1150, 0, 0))
+		sb.auto_redeploy = true
+		var flag := [true]
+		sb.revive_wait = func() -> float: return DownedRules.bot_wait_for(flag[0], false)
+		_down(sb)
+		_run(DownedRules.BOT_REVIVE_WAIT + 2.0)
+		check(sb.disabled and not sb.redeploying, "R2.9 bot: no redeploy while its own drone self-revives it (%.0f s)" % sb.down_time)
+		flag[0] = false
+		if revived:
+			sb.revive("player-3")
+			check(not sb.disabled and not sb.redeploying, "R2.9 bot: stood up by the self-revive")
+		else:
+			_run(DT * 2.0)
+			check(sb.redeploying, "R2.9 bot: the self-revive gone without a revive: the normal wait (already past) redeploys it")
+		_gone(sb)
 	# A revive in progress keeps the bot waiting past its wait.
 	var at := Vector3(1000, 0, 0)
 	var bt2 := _pilot("player-2", at + Vector3(6, 0, 0))
@@ -401,6 +452,7 @@ func _log() -> void:
 	var rs := _recs(out, "respawn")
 	if eq(rs.size(), 1, "one respawn line"):
 		eq(rs[0].get("hold", ""), "1", "respawn: by the hold")
+		eq(rs[0].get("tot", ""), "100", "respawn: tot=100 (R2.12: back at full structure)")
 		check(float(rs[0].get("down_s", "0")) >= DownedRules.RESPAWN_HOLD + DownedRules.RESPAWN_PENALTY - 0.1,
 			"respawn: time down %s" % rs[0].get("down_s", ""))
 	cl.finish("won", "test")
@@ -422,6 +474,41 @@ func _log() -> void:
 	medic.queue_free()
 	_gone(pt)
 	_gone(medic_pt)
+	_run(DT)
+
+
+## G2 (R2.9): a self-revive in the combat log: `revive by=self`, the down is not a death, no revive given.
+func _self_log() -> void:
+	var at := Vector3(1600, 0, 0)
+	var pt := _pilot("g2", at)
+	var node := _medic("g2_n", at)
+	world.set_anchor("g2", func() -> Node3D: return node)
+	var out: Array = []
+	var cl := CombatLog.new()
+	add_child(cl)
+	cl.bind(world, pt)
+	cl.sink = func(l: String) -> void: out.append(l)
+	cl.start()
+	_down(pt)
+	var d := world.launch_drone({"shooter": "g2", "peer": 1, "hardpoint": "back", "weapon": "repair_drone", "t": world.now,
+		"self": true})
+	if check(d != null, "G2: self-revive drone launched"):
+		for i in roundi((d.rise_time() + d.self_revive_time() + 0.5) / DT):
+			world.advance(DT)
+			cl.step(DT)
+		check(not pt.disabled, "G2: self-revived")
+		var rv := _recs(out, "revive")
+		if eq(rv.size(), 1, "G2: one revive line"):
+			eq(rv[0].get("by", ""), "self", "G2: revive by=self")
+	cl.finish("won", "test")
+	var ends := _recs(out, "end")
+	if eq(ends.size(), 1, "G2: end line"):
+		eq(ends[0].get("deaths", ""), "0", "G2: a self-revive is not a death")
+		eq(ends[0].get("revives", ""), "1", "G2: it counts as a revive received")
+		eq(ends[0].get("revives_given", ""), "0", "G2: and never as a revive given")
+	cl.queue_free()
+	node.queue_free()
+	_gone(pt)
 	_run(DT)
 
 
@@ -480,12 +567,61 @@ func _drive() -> void:
 		var dist := (pl[2] as Transform3D).origin.distance_to(target)
 		check(dist < 40.0, "at deck 1's arrival point (%.1f m from it)" % dist)
 	for c: String in pt.hp:
-		near(float(pt.hp[c]), float(pt.max_hp[c]) * DownedRules.RESPAWN_STRUCTURE, 0.01, "drive respawn: %s at 50 %%" % c)
-	# Entry deck: the own spawn slot (the old point).
+		near(float(pt.hp[c]), float(pt.max_hp[c]) * DownedRules.RESPAWN_STRUCTURE, 0.01, "drive respawn: %s at full (R2.12)" % c)
+	# R2.9 prompt: down with a self-revive drone out (the record the rack sends as its mech goes down): the help line says
+	# so, the hold hint stays, and holding SPACE still redeploys (the drone dies with the redeploy), at full.
+	var cw := td.combat.world
+	var rk0 := td.combat.rack
+	await frames(5)
+	_down(pt)
+	var sd := cw.launch_drone({"shooter": pt.target_id, "peer": rk0.peer, "hardpoint": "back", "weapon": "repair_drone",
+		"t": cw.now, "self": true})
+	await frames(3)
+	if check(sd != null and dc.self_reviving(dc.local_id()), "R2.9: DownedCrew sees the self-revive"):
+		var pr2: Dictionary = dc.hud_state().get("prompt", {})
+		eq(str(pr2.get("help", "")), DownedCrew.SELF_HELP, "R2.9: the prompt: Your repair drone is reviving you")
+		eq(str(pr2.get("hint", "")), "Hold SPACE to respawn", "R2.9: the hold hint stays")
+		var dl := dc.downed_crew()
+		check(dl.size() == 1 and bool((dl[0] as Dictionary).get("self_revive", false)), "R2.9: downed_crew marks the wreck self_revive")
+	pt.respawn_held = true
+	await frames(int(DownedRules.RESPAWN_HOLD * 60.0) + 10)
+	pt.respawn_held = false
+	check(pt.redeploying, "R2.9: holding SPACE still redeploys during a self-revive")
+	await frames(int(DownedRules.RESPAWN_PENALTY * 60.0) + 10)
+	check(not pt.disabled, "R2.9: back after the redeploy")
+	for c: String in pt.hp:
+		near(float(pt.hp[c]), float(pt.max_hp[c]), 0.01, "R2.9 redeploy over a self-revive: %s at full" % c)
+	# Entry deck: the own spawn slot (the old point). R2.12: before going down a weapon's hardpoint is destroyed, every
+	# limited-ammo weapon is emptied, the drone charges spent, the mech overheated into a shutdown; the redeploy brings
+	# it back FULL: every component at max, the destroyed weapon usable (it can be selected), ammo and charges full, cold.
 	td.mech.move_input = Vector2.ZERO
 	td.mech.running = false
 	td.respawn()
 	await frames(10)
+	var rack := td.combat.rack
+	var broke := -1
+	var dry: Array[int] = []
+	for i in rack.slot_count():
+		if rack.weapons[i] == "" or rack.charges[i] >= 0 or rack.mounts[i] == null:
+			continue
+		if rack.ammo_max[i] >= 0:
+			dry.append(i)
+			(rack.mounts[i] as WeaponMount).ammo = 0
+		elif broke < 0:
+			broke = i
+	if broke < 0 and not dry.is_empty():
+		broke = dry[0]
+	for i in rack.slot_count():
+		if rack.charges[i] >= 0:
+			rack.charges[i] = 0
+	check(not dry.is_empty(), "R2.12: the drive's loadout has a limited-ammo weapon (%s)" % str(rack.weapons))
+	if check(broke >= 0, "R2.12: a weapon slot to destroy"):
+		pt.apply_damage(1000.0, rack.hardpoints[broke], "test")
+		check(not rack.usable(broke + 1), "R2.12: its hardpoint destroyed, the weapon is unusable")
+	for i: int in dry:
+		check(not rack.usable(i + 1), "R2.12: %s emptied: unusable" % rack.weapons[i])
+	td.mech.add_heat(1000.0)
+	check(td.mech.shutdown, "R2.12: overheated into a shutdown before going down")
 	_down(pt)
 	pt.respawn_held = true
 	await frames(int(DownedRules.RESPAWN_HOLD * 60.0) + 10)
@@ -494,6 +630,22 @@ func _drive() -> void:
 	if check(not pt.disabled and dc.placed.size() >= 2, "respawned again"):
 		var pl2: Array = dc.placed[-1]
 		near((pl2[2] as Transform3D).origin.distance_to(td.spawn_xf.origin), 0.0, 0.01, "on the entry deck: the own spawn slot")
+	for c: String in pt.hp:
+		near(float(pt.hp[c]), float(pt.max_hp[c]), 0.01, "R2.12 redeploy: %s at full" % c)
+	near(td.mech.heat, 0.0, 1.0, "R2.12 redeploy: heat cleared")
+	check(not td.mech.shutdown, "R2.12 redeploy: shutdown cleared")
+	if broke >= 0:
+		check(rack.usable(broke + 1), "R2.12 redeploy: the destroyed %s's weapon works again" % rack.hardpoints[broke])
+		rack.set_enabled(broke + 1, false)
+		rack.set_enabled(broke + 1, true)
+		check(rack.enabled[broke], "R2.12 redeploy: and can be selected")
+	for i: int in dry:
+		eq((rack.mounts[i] as WeaponMount).ammo, rack.ammo_max[i], "R2.12 redeploy: %s refilled" % rack.weapons[i])
+		check(rack.usable(i + 1), "R2.12 redeploy: %s usable" % rack.weapons[i])
+	for i in rack.slot_count():
+		if rack.charges[i] >= 0:
+			eq(rack.charges[i], int(MechCatalog.weapon(rack.weapons[i]).get("charges", rack.charges[i])),
+				"R2.12 redeploy: %s charges full" % rack.weapons[i])
 	td.queue_free()
 	await frames(2)
 	await _drive_defend()
@@ -682,3 +834,107 @@ func _safe_spots() -> void:
 		td.queue_free()
 		await frames(3)
 	print("[downed] safe respawn spots: %d spots over seeds %s (arrival kinds %s), %d bad" % [n_spots, SAFE_SEEDS, kinds, bad])
+
+
+## H3 (R2.9 end to end, the real path: the drive's own WeaponRack, DownedCrew, CombatLog): a solo Strider with a charged
+## repair drone on its back goes down alone and gets up by itself, once (prompt "Your repair drone is reviving you",
+## `revive by=self`); down again with no charge left: no self-revive ("No repair drone in the crew", still down after
+## 6 s), holding SPACE redeploys at full with the drone's charges refilled (R2.12); down a third time (charged again):
+## holding SPACE during the self-revive still redeploys, at full.
+const SELF_SETTINGS := "user://test_downed_self_settings.cfg"
+
+
+func _drive_self_revive() -> void:
+	var saved := GameSettings.path
+	GameSettings.path = SELF_SETTINGS
+	var st := GameSettings.DEFAULTS.duplicate(true)
+	st["chassis"] = "strider"
+	st["loadout"] = {"side_l": "laser", "side_r": "autocannon", "shoulder_l": "rockets", "shoulder_r": "", "back": "repair_drone"}
+	GameSettings.save_settings(st)
+	var td := (load(MissionScene.SCENE) as PackedScene).instantiate() as MissionScene
+	td.city_mode = MissionScene.MODE_STACK
+	td.seed_value = SEED
+	add_child(td)
+	await frames(4)
+	GameSettings.path = saved
+	var dc := td.downed
+	var rack := td.combat.rack
+	var pt := td.combat.player_target
+	var slot := rack.weapons.find("repair_drone")
+	if not check(dc != null and slot >= 0, "H3: the drive's mech carries a repair drone (%s)" % str(rack.weapons)):
+		td.queue_free()
+		await frames(2)
+		return
+	td.drive_override = true
+	td.mech.move_input = Vector2.ZERO
+	td.combat.squad.clear_enemies()
+	td.combat.enemies.clear()
+	var out: Array = []
+	var cl := td.get_node_or_null("CombatLog") as CombatLog
+	if cl != null:
+		cl.sink = func(l: String) -> void: out.append(l)
+	var revs := []
+	pt.player_revived.connect(func(by: String, _t: float) -> void: revs.append(by))
+	await frames(10)
+	var full := rack.charges[slot]
+	check(full > 0, "H3: charged (%d)" % full)
+	# 1. Alone, charged: up by itself, once.
+	_down(pt)
+	var pr: Dictionary = dc.hud_state().get("prompt", {})
+	eq(str(pr.get("help", "")), DownedCrew.SELF_HELP, "H3: the prompt right at the down (the launch is on its way)")
+	await frames(3)
+	check(dc.self_reviving(dc.local_id()), "H3: its own drone launched (self_reviving)")
+	eq(rack.charges[slot], full - 1, "H3: one charge spent")
+	pr = dc.hud_state().get("prompt", {})
+	eq(str(pr.get("help", "")), DownedCrew.SELF_HELP, "H3: Your repair drone is reviving you")
+	eq(str(pr.get("hint", "")), "Hold SPACE to respawn", "H3: the hold hint stays")
+	var up := await _wait_for(func() -> bool: return not pt.disabled, 8.0)
+	check(up, "H3: stood up by its own drone")
+	if eq(revs.size(), 1, "H3: revived once"):
+		eq(str(revs[0]), pt.target_id, "H3: by its own id")
+	if cl != null:
+		var rv := _recs(out, "revive")
+		check(not rv.is_empty() and str(rv[-1].get("by", "")) == "self", "H3: the log says revive by=self (%s)" % str(rv))
+	# 2. Down again with no charge left: no self-revive; SPACE redeploys at full, charges refilled.
+	await frames(int(DownedRules.REVIVE_INVULN * 60.0) + 10)
+	rack.charges[slot] = 0
+	_down(pt)
+	await frames(10)
+	check(pt.disabled and not dc.self_reviving(dc.local_id()), "H3: no charge: no self-revive")
+	eq(str((dc.hud_state().get("prompt", {}) as Dictionary).get("help", "")), "No repair drone in the crew", "H3: no charge: no help line")
+	await frames(360)
+	check(pt.disabled, "H3: still down after 6 s")
+	eq(revs.size(), 1, "H3: no second revive")
+	pt.respawn_held = true
+	await frames(int(DownedRules.RESPAWN_HOLD * 60.0) + 10)
+	pt.respawn_held = false
+	await frames(int(DownedRules.RESPAWN_PENALTY * 60.0) + 10)
+	check(not pt.disabled, "H3: redeployed")
+	for c: String in pt.hp:
+		near(float(pt.hp[c]), float(pt.max_hp[c]), 0.01, "H3 redeploy: %s at full" % c)
+	eq(rack.charges[slot], full, "H3 redeploy: the drone's charges refilled (R2.12)")
+	# 3. Charged again: holding SPACE during the self-revive still redeploys, at full.
+	await frames(10)
+	_down(pt)
+	pt.respawn_held = true
+	await frames(5)
+	check(dc.self_reviving(dc.local_id()), "H3: self-reviving again")
+	await frames(int(DownedRules.RESPAWN_HOLD * 60.0) + 10)
+	pt.respawn_held = false
+	check(pt.redeploying, "H3: holding SPACE during a self-revive redeploys")
+	check(not dc.self_reviving(dc.local_id()), "H3: the self-revive drone died with the redeploy")
+	await frames(int(DownedRules.RESPAWN_PENALTY * 60.0) + 10)
+	check(not pt.disabled, "H3: back after the redeploy")
+	eq(revs.size(), 1, "H3: that was a redeploy, not a revive")
+	for c: String in pt.hp:
+		near(float(pt.hp[c]), float(pt.max_hp[c]), 0.01, "H3 redeploy over a self-revive: %s at full" % c)
+	td.queue_free()
+	await frames(2)
+
+
+func _wait_for(f: Callable, s: float) -> bool:
+	for i in ceili(s * 60.0):
+		if f.call():
+			return true
+		await get_tree().physics_frame
+	return f.call()
